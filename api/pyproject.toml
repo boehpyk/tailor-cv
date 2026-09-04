@@ -1,0 +1,170 @@
+[project]
+name = "tailorcraft"
+version = "0.1.0"
+description = "AI-powered CV and cover-letter customizer"
+requires-python = ">=3.13"
+
+# Runtime dependencies only. Feature libraries (pypdf, python-docx, WeasyPrint, trafilatura,
+# google-genai) are added by the slice that first needs them — a dependency nothing imports is
+# install time, attack surface and upgrade work bought in advance for no one.
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "celery[redis]>=5.4",
+    "redis>=5.2",
+    "structlog>=24.4",
+    "sentry-sdk[fastapi,celery]>=2.19",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "mypy>=1.14",
+    "import-linter>=2.1",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "httpx>=0.28",
+    "watchdog>=6.0",          # provides `watchmedo`, the worker's dev auto-restart
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tailorcraft"]
+
+# ---------------------------------------------------------------------------
+# Ruff — lint + format. One tool, so there is nothing to keep in step.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = [
+    "E", "W",     # pycodestyle
+    "F",          # pyflakes
+    "I",          # isort
+    "UP",         # pyupgrade
+    "B",          # bugbear
+    "C4",         # comprehensions
+    "SIM",        # simplify
+    "TC",         # type-checking blocks
+    "RUF",        # ruff's own
+    "ASYNC",      # blocking calls in async functions — see ADR-0005
+    "S",          # bandit-ish security checks
+    "PT",         # pytest style
+    "ANN",        # every signature is annotated (mypy --strict wants this anyway)
+]
+ignore = [
+    "ANN401",     # `Any` is banned by review, not by a rule that fires on **kwargs
+    "S101",       # assert: fine in tests, and `pytest` is built on it
+    # E501 is off because `ruff format` already owns the width of every line of CODE. What is left
+    # is prose — docstrings and comments — and a linter cannot rewrap prose safely: it will happily
+    # split an f-string across two lines and hand you a syntax error. (Asked for empirically, once.)
+    # The 100-column convention still holds for prose; it is enforced by reading, not by the build.
+    "E501",
+    # TC001/TC002/TC003 want imports that are "only used in annotations" moved into an
+    # `if TYPE_CHECKING:` block. That is wrong here and the failure is not subtle: FastAPI, Pydantic
+    # and SQLAlchemy all resolve annotations at RUNTIME — FastAPI calls `get_type_hints()` to work
+    # out what to inject, Pydantic builds validators from them. Hide `AsyncEngine` or `SettingsDep`
+    # behind TYPE_CHECKING and dependency injection breaks at import time, with a NameError at
+    # startup rather than a lint warning. The rest of the TC group (unquoted annotations, runtime
+    # imports inside a type-checking block) still applies and stays on.
+    "TC001", "TC002", "TC003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may hard-code obviously fake credentials and skip some annotations.
+"tests/**" = ["S105", "S106", "ANN"]
+"alembic/**" = ["ANN", "I001"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tailorcraft"]
+
+# ---------------------------------------------------------------------------
+# mypy — strict everywhere, including tests. A test with a type error is a test
+# that may not be asserting what it looks like it asserts.
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.13"
+files = ["src", "tests", "alembic"]
+strict = true
+warn_unreachable = true
+enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
+
+[[tool.mypy.overrides]]
+module = ["celery.*"]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# BOTH scopes are session, and they must agree. An asyncpg connection is bound to the event loop it
+# was created on, so a session-scoped engine plus a per-test loop (pytest-asyncio's default) gives
+# you `RuntimeError: got Future attached to a different loop` on teardown — from tests that
+# individually pass and only fail when run together. Found by running the suite, not by reading it.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "slow: exercises a real renderer or a large fixture corpus",
+]
+
+# ---------------------------------------------------------------------------
+# import-linter — the hexagonal boundary (ADR-0002).
+#
+# Two contracts do two different jobs and neither replaces the other:
+#   1. `layers` catches an UPWARD import between our own layers.
+#   2. `forbidden` catches a named third-party package reaching `domain`.
+#
+# The forbidden list is explicit, so it only knows about packages we thought to
+# name. The default-deny backstop is `tests/unit/test_domain_purity.py`, which
+# walks every import in `domain/` and rejects anything that is not the standard
+# library — that one needs no maintenance and catches a dependency added
+# tomorrow by someone who never read this file.
+# ---------------------------------------------------------------------------
+[tool.importlinter]
+root_packages = ["tailorcraft"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Hexagonal layers: infrastructure -> application -> domain"
+type = "layers"
+layers = [
+    "tailorcraft.infrastructure",
+    "tailorcraft.application",
+    "tailorcraft.domain",
+]
+
+[[tool.importlinter.contracts]]
+name = "Domain imports no framework or vendor"
+type = "forbidden"
+source_modules = ["tailorcraft.domain"]
+forbidden_modules = [
+    "fastapi", "starlette", "pydantic", "pydantic_settings",
+    "sqlalchemy", "alembic", "asyncpg",
+    "celery", "redis", "kombu",
+    "httpx", "requests", "structlog", "sentry_sdk",
+]
+
+[[tool.importlinter.contracts]]
+name = "Application imports no framework or vendor"
+type = "forbidden"
+source_modules = ["tailorcraft.application"]
+forbidden_modules = [
+    "fastapi", "starlette", "pydantic", "pydantic_settings",
+    "sqlalchemy", "alembic", "asyncpg",
+    "celery", "redis", "kombu",
+    "httpx", "requests", "sentry_sdk",
+]

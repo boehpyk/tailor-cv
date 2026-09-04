@@ -218,17 +218,81 @@ judgement up as a passing assertion is how you ship a confident, useless feature
 
 ## Where we are right now
 
-The harness is done: the Constitution, nine ADRs, the SDLC and infrastructure docs, spec templates,
-seven agents, five commands, four skills, two Claude Code hooks, two git hooks, the Makefile, both
-compose files, the Dockerfiles, the nginx configs, and CI/CD.
+The harness is done, and so is the skeleton. `api/` is a real FastAPI application with the three
+hexagonal packages, `uv`-managed dependencies and a health endpoint; `web/` is a real React app that
+renders that health endpoint's report. Every gate has been *run*, not just written: Ruff, mypy
+`--strict`, import-linter, 27 passing Python tests, TypeScript, ESLint, Prettier, 4 passing Vitest
+tests, a production build, and a production API image that boots as a non-root user.
 
-**And there is no application code at all.** `api/` and `web/` don't exist yet. Every `make` target
-describes a build that hasn't happened.
+**And there is still no product code.** No aggregate, no use case, no migration. `domain/` contains
+a `Clock` protocol, a `DomainEvent` base and an error class — about eighty lines, all of which will
+outlive every feature built on top of them.
 
-That's deliberate, and it's the last lesson of day one. The decisions above — Pydantic out of the
-domain, imperative mapping, ports around the LLM, where the worker lives, what the health check probes
-— are all *cheap right now* and *expensive in three weeks*. Writing them down before there's code to
-argue with is the entire point of a Constitution. Next up is Phase 0's actual scaffolding, and then
-the first real slice: uploading a CV and getting text out of it.
+## Day two: four bugs, and the one thing they have in common
+
+Everything above went from "written" to "verified", and that transition found four real bugs. All
+four are worth keeping, because each is a small lesson about where confidence comes from.
+
+**1. The virtualenv was in the wrong place.** The Dockerfile put it at uv's default, `/app/.venv`.
+The dev override bind-mounts `./api` over `/app` — so the container's carefully built environment
+would have been *shadowed* by whatever the host happened to have at `api/.venv`, which points at a
+host interpreter path that does not exist inside the container. The symptom would have been a
+missing-interpreter error that reads like a corrupt image. The fix is one environment variable
+(`UV_PROJECT_ENVIRONMENT=/opt/venv`), and the general lesson is: **a bind mount does not merge with
+the image, it hides it.** Anything the image builds must live somewhere the mount cannot reach.
+
+**2. The test suite passed one test at a time and failed as a suite.** The engine fixture is
+session-scoped; pytest-asyncio's default is a fresh event loop *per test*. An asyncpg connection is
+bound to the loop it was born on, so tearing down a session-scoped engine on test 27's loop produced
+`RuntimeError: got Future attached to a different loop`. Every test passed in isolation. This is
+the most dangerous shape a bug can have — **it disappears exactly when you try to reproduce it in
+the smallest case** — and no amount of reading the code would have found it. Running it did, in
+about four seconds.
+
+**3. A test asserted the wrong thing, confidently.** `test_domain_module_does_not_import_other_layers`
+searched the file's raw text for the string `tailorcraft.infrastructure`. It went red — not on an
+import, but on a *docstring in `clock.py` that mentions where the adapter lives*. A test that
+punishes you for documenting something is worse than no test: it would have taught the lesson
+backwards. The fix was to parse the imports instead of grepping the text.
+
+There is a rule in this repo's CLAUDE.md that says a test must encode what the code *should* do,
+never what it was observed doing. This was the neighbouring failure: a test encoding what the author
+*assumed* the code does. Same cure — go and check.
+
+**4. Ruff wanted to break dependency injection.** The `TC` rules move imports "only used in
+annotations" into an `if TYPE_CHECKING:` block, which is excellent advice in most Python and
+actively wrong here: FastAPI calls `get_type_hints()` at runtime to decide what to inject, and
+Pydantic builds validators from annotations. Following the linter would have produced a `NameError`
+at startup. **A lint rule is a heuristic with an author who did not know about your framework** —
+when it and the runtime disagree, the runtime is not the one that is wrong.
+
+The common thread: **every one of these four was invisible to reading and obvious to running.**
+Three of them would have been discovered by a future me at a much worse moment — the venv one on
+first `make up.dev`, the loop one on the first CI run with more than one test, the DI one on the
+first deploy. The cheapest possible time to meet a bug is the minute after you write it.
+
+## A note on what got left out, on purpose
+
+Phase 0's roadmap entry mentioned a fake `LlmPort` for tests. It is not there, and that is a
+decision rather than an omission: `LlmPort` is *domain* code in the `tailoring` context, and it does
+not exist yet. Building a fake for a port with no definition would be guessing at a contract — the
+exact speculative work the Constitution's non-goals list exists to prevent. It lands with slice 1.3,
+as a task on that slice's list.
+
+Two other things were deliberately declared but not implemented: `make purge.dry` and `make eval`
+resolve to real CLI subcommands that print "this arrives with slice 1.6 / 1.3" and exit non-zero.
+That is better than a `ModuleNotFoundError`, which reads like a broken install rather than an
+honest "not yet".
+
+The temptation in a scaffolding phase is to build the shape of everything and fill it in later. The
+trouble is that a shape built before the thing it holds is a guess wearing the costume of a
+decision. Empty is more honest than approximately right.
+
+## What's next
+
+Slice 1.1, `intake-base-cv-upload`: a user drops in a PDF, and text comes out. It is the first real
+domain code in the project — a `BaseCv` aggregate, a `FileRef`, an `ExtractedText` value object, a
+`CvTextExtractorPort` — and the first time the architecture has to carry actual weight rather than
+describe itself.
 
 The specs die when the features ship. This file doesn't.

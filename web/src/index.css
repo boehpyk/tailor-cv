@@ -1,0 +1,11 @@
+@import 'tailwindcss';
+
+/* Tailwind v4 configures itself in CSS rather than in a JS config file. Design tokens live here,
+   as custom properties, so a colour has one definition that both Tailwind utilities and hand-written
+   CSS can reach. */
+@theme {
+  --color-brand-50: oklch(0.97 0.02 250);
+  --color-brand-500: oklch(0.62 0.16 250);
+  --color-brand-600: oklch(0.55 0.17 250);
+  --color-brand-700: oklch(0.47 0.16 250);
+}

@@ -78,8 +78,19 @@ types: ## Static analysis (mypy --strict)
 imports: ## Enforce hexagonal layer boundaries (import-linter)
 	$(API) lint-imports
 
-test: ## Run the backend suite (opts: k=<expr>, file=<path>) against tailorcraft_test
+test.db: ## Create the dedicated test database if it does not exist
+	@$(DC_DEV) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d postgres -tc \
+		"SELECT 1 FROM pg_database WHERE datname = '"'"'$$POSTGRES_DB'"'"'_test" \
+		| grep -q 1 || psql -U "$$POSTGRES_USER" -d postgres -c \
+		"CREATE DATABASE $$POSTGRES_DB""_test"'
+	@echo "test database ready"
+
+test: test.db ## Run the backend suite (opts: k=<expr>, file=<path>) — provisions the test DB first
 	$(DC_DEV) exec -T -e APP_ENV=test api pytest $(if $(k),-k "$(k)") $(file)
+
+test.twice: ## Run the suite twice. A second run that fails means state leaked (usually Redis).
+	$(MAKE) test
+	$(MAKE) test
 
 #-----------------------------------------------------------
 # Quality gates — frontend
@@ -90,13 +101,19 @@ web.types: ## TypeScript check
 web.lint: ## ESLint
 	$(WEB) npm run lint
 
+web.format: ## Format the frontend (prettier)
+	$(WEB) npm run format
+
+web.format.check: ## Check frontend formatting without changing files
+	$(WEB) npm run format:check
+
 web.test: ## Vitest
 	$(WEB) npx vitest run
 
 web.build: ## Production build (a build failure is a deploy failure)
 	$(WEB) npm run build
 
-web.check: web.types web.lint web.test web.build ## All frontend gates
+web.check: web.types web.lint web.format.check web.test web.build ## All frontend gates
 
 #-----------------------------------------------------------
 # The Definition-of-Done chain. Must stay in lockstep with .github/workflows/ci.yml.
@@ -126,5 +143,5 @@ help: ## Show this help
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: up.dev down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
-        db.dump purge.dry purge fmt lint types imports test web.types web.lint web.test web.build \
-        web.check check eval hooks.install help
+        db.dump purge.dry purge fmt lint types imports test.db test test.twice web.types web.lint \
+        web.format web.format.check web.test web.build web.check check eval hooks.install help

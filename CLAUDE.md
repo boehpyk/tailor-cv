@@ -18,17 +18,24 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: Phase 0 in progress.** The SDLC harness is complete (2026-09-04): Constitution, ADRs
-> 0000–0008, the docs set, spec templates, seven agents, five commands, four skills, two Claude Code
-> hooks and two git hooks, Makefile, both compose files, Dockerfiles, nginx configs, and CI/CD.
-> **No application code exists yet** — `api/` and `web/` are unscaffolded, so every `make` target and
-> every CI step describes a build that has not happened. That is the next work: see
-> [docs/roadmap.md](./docs/roadmap.md) Phase 0.
+> **Status: Phase 0 scaffolded (2026-09-04).** The SDLC harness and the application skeleton both
+> exist. `api/` is a FastAPI app with the three hexagonal packages, `uv`-managed dependencies, an
+> Alembic environment and a health endpoint that probes Postgres, Redis **and Celery**. `web/` is a
+> React 19 + TypeScript + Vite + Tailwind v4 + TanStack Query app rendering the dependency report.
+>
+> All gates were verified by running them: Ruff, mypy `--strict` (41 files), import-linter (3
+> contracts kept), pytest (27 passed — twice in a row), `tsc --noEmit`, ESLint, Prettier, Vitest (4
+> passed), `vite build`, and a production API image that builds and boots as a non-root user. Not yet
+> verified: a CI run on GitHub (no remote), and the deploy path (no VDS or domain).
+>
+> **There is still no product code.** No aggregate, no use case, no migration — `domain/` holds
+> `Clock`, `DomainEvent` and the error base, and nothing else. The first slice is roadmap 1.1,
+> `intake-base-cv-upload`.
 >
 > The harness was ported from the muzbar.com project's SDLC and adapted to this stack. Four things
-> were changed deliberately rather than copied, each because of a documented failure there:
-> the Claude Code hooks are **wired now** instead of listed as a to-do; **Sentry is in Phase 0**
-> instead of deferred; `/health/ready` **probes Celery** and not only the datastores; and the deploy
+> were changed deliberately rather than copied, each because of a documented failure there: the
+> Claude Code hooks are **wired now** instead of listed as a to-do; **Sentry is in Phase 0** instead
+> of deferred; `/health/ready` **probes Celery** and not only the datastores; and the deploy
 > **verifies the running image of every container**, not just the web one.
 
 ## Architecture — non-negotiable
@@ -231,6 +238,20 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
 - **`make db.dump` is not a backup of this product.** Restoring rows that point at uploaded files you
   did not restore gives you a broken application with a green restore. Back up the uploads volume
   alongside the database.
+- **The venv lives at `/opt/venv`, not `/app/.venv`.** The dev override bind-mounts `./api` over
+  `/app`, so a virtualenv at uv's default location is shadowed by whatever the host has there — and
+  a host venv points at a host interpreter path that does not exist in the container. `UV_PROJECT_ENVIRONMENT`
+  moves it out of the mount's way. The symptom otherwise is a missing-interpreter error that reads
+  like a corrupt image rather than a mount collision.
+- **pytest-asyncio's two loop scopes must agree.** An asyncpg connection is bound to the event loop
+  it was created on. A session-scoped engine plus pytest-asyncio's default per-test loop produces
+  `RuntimeError: got Future attached to a different loop` on teardown — **from tests that pass
+  individually and fail only when run together**, which is the worst way to meet a bug. Both
+  `asyncio_default_fixture_loop_scope` and `asyncio_default_test_loop_scope` are `session`.
+- **`TC001`/`TC002`/`TC003` are disabled and must stay disabled.** They move imports "only used in
+  annotations" into `if TYPE_CHECKING:`. FastAPI, Pydantic and SQLAlchemy all resolve annotations at
+  **runtime** — FastAPI calls `get_type_hints()` to decide what to inject — so obeying those rules
+  breaks dependency injection with a `NameError` at startup.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global
