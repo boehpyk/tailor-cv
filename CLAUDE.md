@@ -252,6 +252,18 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   annotations" into `if TYPE_CHECKING:`. FastAPI, Pydantic and SQLAlchemy all resolve annotations at
   **runtime** — FastAPI calls `get_type_hints()` to decide what to inject — so obeying those rules
   breaks dependency injection with a `NameError` at startup.
+- **`proxy_set_header` inheritance in nginx is all-or-nothing.** A block inherits the outer block's
+  `proxy_set_header` directives only if it declares **none** of its own. Adding one header inside a
+  `location` silently drops every server-level header. It cost a debugging round already: the dev
+  config's `location /` set only `Upgrade`/`Connection`, so `Host` fell back to nginx's default of
+  `$proxy_host` — the literal upstream name — and Vite refused the request. The tempting fix (add
+  the upstream name to Vite's `allowedHosts`) would have hidden a proxy misconfiguration and left
+  `X-Forwarded-*` missing too. **Repeat the headers in any block that sets one.**
+- **`NODE_ENV=development` in the dev container leaks into `npm run build`.** Vite honours it during
+  `build`, so `make web.build` produced a React *development* bundle — 442 kB where production ships
+  236 kB. The gate passed while checking an artifact neither CI nor the box ever builds. `make
+  web.build` now forces `NODE_ENV=production`. A gate that checks a different thing is worse than no
+  gate, because it also supplies confidence.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global

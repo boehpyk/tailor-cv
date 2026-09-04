@@ -79,10 +79,10 @@ imports: ## Enforce hexagonal layer boundaries (import-linter)
 	$(API) lint-imports
 
 test.db: ## Create the dedicated test database if it does not exist
-	@$(DC_DEV) exec -T postgres sh -c 'psql -U "$$POSTGRES_USER" -d postgres -tc \
-		"SELECT 1 FROM pg_database WHERE datname = '"'"'$$POSTGRES_DB'"'"'_test" \
-		| grep -q 1 || psql -U "$$POSTGRES_USER" -d postgres -c \
-		"CREATE DATABASE $$POSTGRES_DB""_test"'
+	@# `createdb` rather than a SELECT-then-CREATE dance: three levels of quoting (make -> sh ->
+	@# psql) is how you end up asking for a database called 'tailorcraft'_test. Re-running is a
+	@# no-op, and if creation genuinely fails, pytest's next connection error says so loudly.
+	@$(DC_DEV) exec -T postgres sh -c 'createdb -U "$$POSTGRES_USER" "$${POSTGRES_DB}_test" 2>/dev/null || true'
 	@echo "test database ready"
 
 test: test.db ## Run the backend suite (opts: k=<expr>, file=<path>) — provisions the test DB first
@@ -111,7 +111,12 @@ web.test: ## Vitest
 	$(WEB) npx vitest run
 
 web.build: ## Production build (a build failure is a deploy failure)
-	$(WEB) npm run build
+	@# NODE_ENV is forced here. The dev container sets NODE_ENV=development (it runs the Vite dev
+	@# server), and Vite honours it during `build` too — so without this line the local gate quietly
+	@# checked a React DEVELOPMENT bundle, 442 kB where production ships 236 kB. It passed, and it
+	@# was not checking the artifact CI and the box actually build. Local and CI stay in lockstep
+	@# (docs/cicd.md); a gate that checks a different thing is worse than no gate.
+	$(DC_DEV) exec -T -e NODE_ENV=production web npm run build
 
 web.check: web.types web.lint web.format.check web.test web.build ## All frontend gates
 
