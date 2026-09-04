@@ -238,6 +238,11 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
 - **`make db.dump` is not a backup of this product.** Restoring rows that point at uploaded files you
   did not restore gives you a broken application with a green restore. Back up the uploads volume
   alongside the database.
+- **Any container process that persists state to a relative path writes it into your source tree.**
+  Celery Beat's last-run database defaults to `celerybeat-schedule` in the working directory, which
+  under the dev bind mount is `./api` — three files landed in a commit before anyone noticed.
+  `--schedule` now points at a named volume, which is also where it belongs operationally: lose that
+  file on restart and a schedule can double-fire. Check this for every new daemon.
 - **The venv lives at `/opt/venv`, not `/app/.venv`.** The dev override bind-mounts `./api` over
   `/app`, so a virtualenv at uv's default location is shadowed by whatever the host has there — and
   a host venv points at a host interpreter path that does not exist in the container. `UV_PROJECT_ENVIRONMENT`

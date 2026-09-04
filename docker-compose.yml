@@ -94,7 +94,14 @@ services:
       target: production
     env_file: .env
     entrypoint: []
-    command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "beat", "--loglevel=info"]
+    # `--schedule` is not optional. Beat keeps a small database of when each task last ran, and it
+    # defaults to `celerybeat-schedule` in the WORKING DIRECTORY — which in dev is the bind-mounted
+    # source tree, so it drops three files into ./api and they end up in a commit. It also belongs on
+    # a volume rather than in the container: lose it on restart and a schedule can double-fire.
+    command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "beat", "--loglevel=info",
+              "--schedule=/var/lib/tailorcraft/state/celerybeat-schedule"]
+    volumes:
+      - beat_state:/var/lib/tailorcraft/state
     depends_on:
       redis:
         condition: service_started
@@ -133,5 +140,6 @@ networks:
 volumes:
   postgres_data:
   redis_data:
+  beat_state:   # beat's last-run database — never in the source tree
   uploads:     # shared by api and worker — see the `worker` comment above
   web_dist:    # nginx serves this; the web container fills it on start (prod only)

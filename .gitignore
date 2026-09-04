@@ -29,6 +29,11 @@ uploads/
 backups/
 *.dump
 
+# Celery Beat's last-run database. It belongs on a volume (see docker-compose.yml); this is the
+# backstop for the day someone runs `celery beat` by hand in the source tree.
+celerybeat-schedule*
+celerybeat.pid
+
 # Docs — kept local, out of version control by the owner's decision (2026-09-04).
 # Note the consequence: docs/constitution.md, docs/adr/ and docs/PRD.md are the durable
 # documents everything else links to, and a fresh clone will not have them.

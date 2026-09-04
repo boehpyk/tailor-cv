@@ -41,6 +41,8 @@ services:
       target: development
     volumes:
       - ./api:/app
+      # Keep beat's schedule database off the bind mount — see the base compose file.
+      - beat_state:/var/lib/tailorcraft/state
     environment:
       APP_ENV: dev
       LOG_LEVEL: debug
@@ -73,3 +75,6 @@ services:
   redis:
     ports:
       - "127.0.0.1:6379:6379"
+
+volumes:
+  beat_state:
