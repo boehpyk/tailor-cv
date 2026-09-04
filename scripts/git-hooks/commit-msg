@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Tracked commit-msg hook. Nudges toward imperative, well-formed subjects.
+set -euo pipefail
+
+msg_file="$1"
+subject="$(head -n1 "$msg_file")"
+
+# Allow merge/revert/fixup commits through untouched.
+case "$subject" in
+  Merge*|Revert*|fixup!*|squash!*) exit 0 ;;
+esac
+
+if [ "${#subject}" -gt 72 ]; then
+  echo "commit-msg: subject exceeds 72 chars — tighten it." >&2
+  exit 1
+fi
+
+first_word="$(printf '%s' "$subject" | awk '{print tolower($1)}')"
+case "$first_word" in
+  added|fixed|updated|removed|changed|adding|fixing|updating|removing|changing)
+    echo "commit-msg: use the imperative mood (e.g. 'Add', not '$first_word')." >&2
+    exit 1 ;;
+esac
+
+exit 0

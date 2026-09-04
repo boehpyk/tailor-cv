@@ -1,0 +1,75 @@
+# Development override — MUST be passed explicitly (never auto-loaded), which is the safety mechanism
+# that keeps dev config (open ports, hot reload, debug logging) off production:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# All published ports bind to 127.0.0.1 only. Docker bypasses UFW — see infrastructure.md footgun #2.
+services:
+  api:
+    build:
+      target: development
+    volumes:
+      - ./api:/app                       # live-mounted source
+      - uploads:/var/lib/tailorcraft/uploads
+    environment:
+      # Dev-ness is a property of *loading this override file*, not of a value someone copied into a
+      # gitignored .env. The image bakes APP_ENV=production so the safe value is the default
+      # everywhere; this line is what makes `make up.dev` a dev box. Compose's `environment:`
+      # outranks `env_file:`, so it also wins over the root .env.
+      APP_ENV: dev
+      LOG_LEVEL: debug
+    command: ["uvicorn", "tailorcraft.infrastructure.api.main:app",
+              "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    ports:
+      - "127.0.0.1:8000:8000"            # direct API access for curl / OpenAPI docs
+
+  worker:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+      - uploads:/var/lib/tailorcraft/uploads
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: debug
+    # No --max-tasks-per-child in dev: recycling hides the memory behaviour you may be trying to see.
+    command: ["watchmedo", "auto-restart", "--directory=/app/src", "--pattern=*.py", "--recursive",
+              "--", "celery", "-A", "tailorcraft.infrastructure.tasks.app", "worker",
+              "--loglevel=debug", "--concurrency=1"]
+
+  beat:
+    build:
+      target: development
+    volumes:
+      - ./api:/app
+    environment:
+      APP_ENV: dev
+      LOG_LEVEL: debug
+
+  # In dev this is the Vite dev server, not a build-and-exit container. Hot reload is the whole point
+  # of the frontend feedback loop (ADR-0001).
+  web:
+    build:
+      target: development
+    volumes:
+      - ./web:/app
+      - /app/node_modules                # keep the container's installed modules, not the host's
+    environment:
+      NODE_ENV: development
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:5173:5173"
+    restart: unless-stopped
+
+  nginx:
+    ports:
+      - "127.0.0.1:8080:80"              # http://localhost:8080 — the integrated app
+    volumes:
+      - ./docker/nginx/dev.conf:/etc/nginx/conf.d/default.conf:ro
+
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"            # 127.0.0.1 ONLY — never 0.0.0.0
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"

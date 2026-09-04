@@ -1,0 +1,38 @@
+# Secrets — .env.example is the only one that is ever committed.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+web/dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local data — uploaded CVs and rendered documents are PII (Constitution §8). They belong in a
+# volume, never in the repository, and never in a diff.
+uploads/
+backups/
+*.dump
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Claude Code local overrides (settings.json IS committed — the hooks are part of the harness)
+.claude/settings.local.json

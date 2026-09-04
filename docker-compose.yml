@@ -1,0 +1,137 @@
+name: tailorcraft
+
+# Production stack. No container_name (Compose prefixes with the project name) so this coexists with
+# other stacks on the same VDS. No datastore ports are published in production — Docker writes
+# iptables directly and bypasses UFW, so a `ports:` line here is a hole in a firewall you believe is
+# closed (ADR-0003, infrastructure.md footgun #2).
+services:
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      # Production has no source tree on the host: nginx serves the built React bundle from a shared
+      # volume the web image fills on start. The dev override replaces this with a Vite dev server.
+      - web_dist:/usr/share/nginx/html:ro
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tailorcraft.rule=Host(`tailorcraft.app`)"
+      - "traefik.http.routers.tailorcraft.entrypoints=websecure"
+      - "traefik.http.routers.tailorcraft.tls.certresolver=le"
+    networks:
+      - default
+      - traefik
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+  # Publishes the built bundle into the volume nginx serves, then exits. Not a long-running service.
+  web:
+    image: ${TAILORCRAFT_WEB_IMAGE:-tailorcraft-web:local}
+    build:
+      context: .
+      dockerfile: docker/web/Dockerfile
+      target: production
+    volumes:
+      - web_dist:/mnt/dist
+    restart: "no"
+
+  api:
+    image: ${TAILORCRAFT_API_IMAGE:-tailorcraft-api:local}
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: production
+    env_file: .env
+    volumes:
+      - uploads:/var/lib/tailorcraft/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live').status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  worker:
+    # Same image and same code as `api`, different entrypoint. It renders PDFs and DOCX (ADR-0005),
+    # which is why it mounts the SAME uploads volume the api writes to: the api stores the upload,
+    # the worker reads it. That sharing is the one thing that must die first if this ever runs on two
+    # boxes — which is exactly why every access goes through FileStorePort (ADR-0006).
+    image: ${TAILORCRAFT_API_IMAGE:-tailorcraft-api:local}
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: production
+    env_file: .env
+    entrypoint: []
+    # --max-tasks-per-child recycles the process periodically. PDF rendering is the kind of workload
+    # that leaks, and a supervisor you do not have to install is a supervisor you cannot misconfigure
+    # (infrastructure.md footgun #6).
+    command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "worker",
+              "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=50"]
+    volumes:
+      - uploads:/var/lib/tailorcraft/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  beat:
+    # The scheduler. Today it runs exactly one job: the 24-hour guest purge (FR-6, ADR-0006).
+    # Deliberately a container and not host cron — host cron lives outside the deploy, so it runs
+    # whatever code was on the box last, and it is invisible to every check this stack has.
+    image: ${TAILORCRAFT_API_IMAGE:-tailorcraft-api:local}
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+      target: production
+    env_file: .env
+    entrypoint: []
+    command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "beat", "--loglevel=info"]
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data   # named volume only (stale-password footgun)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    # Always password-protected. Redis here is the Celery broker, the result backend, the cache and
+    # the rate-limiter store — four load-bearing jobs in one process that is unauthenticated by
+    # default.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD}", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+
+networks:
+  default: {}
+  traefik:
+    external: true   # shared proxy network, created once on the VDS
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads:     # shared by api and worker — see the `worker` comment above
+  web_dist:    # nginx serves this; the web container fills it on start (prod only)

@@ -1,0 +1,132 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # Automatic on merge: build the immutable images and push to GHCR. Production never builds.
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push the API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/api/Dockerfile
+          target: production
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-api:${{ github.sha }}
+            ghcr.io/${{ github.repository }}-api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
+      - name: Build and push the web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web/Dockerfile
+          target: production
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}-web:${{ github.sha }}
+            ghcr.io/${{ github.repository }}-web:latest
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+  # Manual gate: bound to the `production` Environment. Add a required reviewer on that Environment
+  # in GitHub settings — that approval IS the gate. Prod pulls the images; it never builds.
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      # Ship the non-secret runtime config. The application ships inside the images; only the compose
+      # file and the nginx conf need to live on the host. The prod .env is created on the box by
+      # hand, once, and is never shipped from CI.
+      - name: Sync compose + nginx config to the VDS
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          source: "docker-compose.yml,docker/nginx/default.conf"
+          target: /home/tailorcraft-deploy/tailor-craft
+
+      - name: Release over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_DEPLOY_KEY }}
+          envs: GITHUB_SHA,GITHUB_REPOSITORY,GITHUB_ACTOR
+          script: |
+            set -euo pipefail
+            cd /home/tailorcraft-deploy/tailor-craft
+
+            export API_IMAGE="ghcr.io/${GITHUB_REPOSITORY}-api:${GITHUB_SHA}"
+            export WEB_IMAGE="ghcr.io/${GITHUB_REPOSITORY}-web:${GITHUB_SHA}"
+
+            # Persist the deployed tags into .env so a hand-run `docker compose` on the box targets
+            # the images that are actually deployed, instead of defaulting to :local and trying to
+            # build from a context that was never shipped. Rewrite via a temp file + `cat >` so .env
+            # keeps its 600 perms and its owner.
+            tmp="$(mktemp)"
+            grep -vE '^(TAILORCRAFT_API_IMAGE|TAILORCRAFT_WEB_IMAGE)=' .env > "$tmp" || true
+            echo "TAILORCRAFT_API_IMAGE=${API_IMAGE}" >> "$tmp"
+            echo "TAILORCRAFT_WEB_IMAGE=${WEB_IMAGE}" >> "$tmp"
+            cat "$tmp" > .env
+            rm -f "$tmp"
+
+            echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+            # EVERY container that runs application code is pulled. In the previous project the
+            # background worker was missing from this line and ran a stale image for four releases;
+            # the only symptom was behaviour that did not match the source. Here that is api, worker
+            # and beat. A fourth daemon means a fourth entry here AND in the verification loop below.
+            docker compose pull api worker beat web
+
+            # Publish the new frontend bundle, then bring up the API.
+            docker compose up -d web
+            docker compose up -d api nginx
+
+            # Stopped for the migration window rather than restarted after it: these are the two
+            # processes that keep executing application code while the schema changes underneath
+            # them. Celery finishes the task in flight on SIGTERM; queued work waits in Redis.
+            docker compose stop worker beat
+            docker compose exec -T api alembic upgrade head
+            # Started last, on the new image, against the migrated schema.
+            docker compose up -d worker beat
+
+            # Prove it rather than hope. A stale container is invisible from the outside, which is
+            # exactly why that bug survived four releases last time. Fail loudly instead of
+            # succeeding quietly with a container running last month's code.
+            for svc in api worker beat; do
+              running="$(docker compose ps -q "$svc" | xargs -r docker inspect -f '{{.Config.Image}}')"
+              if [ "$running" != "$API_IMAGE" ]; then
+                echo "::error::$svc is running '$running', expected '$API_IMAGE'"
+                exit 1
+              fi
+            done
+
+      # /health/ready probes Postgres, Redis AND Celery (ADR-0005). If it only probed the datastores,
+      # this check would pass with every export silently queueing forever.
+      - name: Smoke check
+        run: curl -fsS --retry 5 --retry-delay 3 https://tailorcraft.app/health/ready

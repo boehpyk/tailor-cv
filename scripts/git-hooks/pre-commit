@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Tracked pre-commit hook. Install once per clone: `make hooks.install`.
+# Guards the Constitution's quality gates + the infrastructure footguns.
+set -euo pipefail
+
+fail() { echo "pre-commit: $1" >&2; exit 1; }
+
+# --- Infra footgun guards (fast, no containers needed) -------------------------
+
+# 1) Never publish datastore ports in the PRODUCTION compose. Docker writes iptables directly and
+#    bypasses UFW, so this is a firewall hole, not a convenience (ADR-0003).
+if git show ":docker-compose.yml" 2>/dev/null | grep -Eq '^[[:space:]]*-[[:space:]]*"?[0-9.]*:?[0-9]+:(5432|6379)"?'; then
+  fail "docker-compose.yml publishes a Postgres/Redis port. Datastores expose NO ports in prod."
+fi
+
+# 2) Dev ports must bind to the loopback, never 0.0.0.0.
+if git show ":docker-compose.dev.yml" 2>/dev/null | grep -Eq '^[[:space:]]*-[[:space:]]*"?0\.0\.0\.0:'; then
+  fail "docker-compose.dev.yml binds a port to 0.0.0.0. Dev ports bind to 127.0.0.1 only."
+fi
+
+# 3) Block committing real secrets: a staged root .env (only .env.example is allowed).
+if git diff --cached --name-only | grep -qx ".env"; then
+  fail "Refusing to commit the root .env (secrets). Commit .env.example instead."
+fi
+
+# 4) Block obvious credentials in the diff. Not a scanner — a tripwire for the two mistakes that
+#    actually happen: a pasted API key and a filled-in password in a committed file.
+if git diff --cached -U0 -- . ':(exclude).env.example' \
+   | grep -E '^\+' \
+   | grep -Eiq '(AIza[0-9A-Za-z_-]{20,}|sk-[0-9A-Za-z]{20,}|api[_-]?key["'"'"' ]*[:=]["'"'"' ]*[A-Za-z0-9_-]{16,})'; then
+  fail "The staged diff looks like it contains an API key. Secrets go in .env, never in source."
+fi
+
+# 5) Uploaded CVs are PII and must never reach the repository (Constitution §8, ADR-0006).
+if git diff --cached --name-only | grep -Eq '^uploads/'; then
+  fail "Refusing to commit anything under uploads/ — that is user PII."
+fi
+
+# --- Quality gates (run in the dev stack if it's up) ---------------------------
+if docker compose -f docker-compose.yml -f docker-compose.dev.yml ps --status running api 2>/dev/null | grep -q api; then
+  echo "pre-commit: running make check ..."
+  make check
+else
+  echo "pre-commit: dev stack not running — skipping make check (run 'make up.dev' to enable)." >&2
+fi
+
+echo "pre-commit: OK"
