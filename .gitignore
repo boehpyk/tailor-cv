@@ -29,6 +29,11 @@ uploads/
 backups/
 *.dump
 
+# Docs — kept local, out of version control by the owner's decision (2026-09-04).
+# Note the consequence: docs/constitution.md, docs/adr/ and docs/PRD.md are the durable
+# documents everything else links to, and a fresh clone will not have them.
+docs/
+
 # Editors / OS
 .idea/
 .vscode/
