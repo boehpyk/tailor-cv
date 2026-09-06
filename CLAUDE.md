@@ -127,6 +127,7 @@ make imports             # import-linter — the proof the domain stayed pure
 make test                # pytest (opts: k=, file=) against tailorcraft_test
 make web.check           # tsc --noEmit + eslint + vitest + vite build
 make check               # all of the above — run before every commit
+make check.static        # every gate EXCEPT pytest/vitest — the RED commit of a TDD cycle only
 
 # Guest retention (ADR-0006) — rehearse, do not discover. See docs/infrastructure.md.
 make purge.dry                                     # report only; deletes nothing
@@ -164,6 +165,18 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   from "this failed" (a user who cannot tell will refresh and pay for a second LLM call). No `any`,
   no `!` to silence the compiler, no access token in `localStorage`, no business rule re-implemented
   in TypeScript.
+- **Tests are tiered red-first** (docs/sdlc.md §2). Domain, application, **every row of the failure
+  contract**, the HTTP contract and the React loading/error/empty/success states are written
+  **before** their implementation, against a skeleton of real signatures with `NotImplementedError`
+  bodies, and must be observed failing **on their assertion** — an `ImportError` red proves a file is
+  absent, not that the assertion discriminates, so it does not count. The failure is pasted into the
+  RED commit body (`Recorded red: …`), which commits with `TDD_RED=1` / `make check.static`; never
+  `--no-verify`, which would also drop the secret, PII and port guards. Mappings, repositories,
+  migrations, adapters, DI wiring and component markup stay **test-after** on purpose: their shape is
+  discovered against the library, so test-first there buys rewrite churn, not confidence. The
+  implementer writes the skeleton; `qa` never touches production code. **A test edited in the commit
+  that made it pass is the failure this whole cycle exists to prevent** — the reviewer looks for it in
+  the history, not the diff.
 - **Tests:** `domain` gets pure unit tests with no I/O at all — they should be the fastest and most
   numerous in the suite, and if they are hard to write without a database, logic has leaked outward.
   Application and API tests run against a **real** Postgres with transactional rollback, against
@@ -277,7 +290,9 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
 ## SDLC
 
 Lean solo Spec-Driven Development. Loop: **`/plan` → `/implement` → `/verify`.** Every feature gets a
-short spec in `docs/specs/<feature>/`. Details: [docs/sdlc.md](./docs/sdlc.md). Agents/commands/hooks:
+short spec in `docs/specs/<feature>/`. Inside `/implement`, the red-first tiers run
+**SKELETON (implementer) → RED (`qa`, failure recorded) → GREEN (implementer)**; the rest is
+test-after by design. Details: [docs/sdlc.md](./docs/sdlc.md). Agents/commands/hooks:
 [docs/tooling.md](./docs/tooling.md).
 
 **A slice is not done at the API.** This is a full-stack product; a tailoring endpoint nobody can

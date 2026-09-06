@@ -37,11 +37,26 @@ if git diff --cached --name-only | grep -Eq '^uploads/'; then
 fi
 
 # --- Quality gates (run in the dev stack if it's up) ---------------------------
+# The RED commit of a tiered-TDD cycle (docs/sdlc.md §2) stages a test that is SUPPOSED to fail, so
+# `make check` cannot be the gate for it. TDD_RED=1 swaps in `make check.static` — every gate except
+# pytest and vitest. The guard below is the point: an escape hatch that skips tests will be used to
+# skip tests, so this one only opens when a test file is actually part of the commit.
+GATE="check"
+if [ "${TDD_RED:-0}" = "1" ]; then
+  if git diff --cached --name-only \
+     | grep -Eq '(^api/tests/|(^|/)test_[^/]*\.py$|\.test\.tsx?$|\.spec\.tsx?$)'; then
+    GATE="check.static"
+    echo "pre-commit: TDD_RED=1 — running make check.static (pytest/vitest skipped for this RED commit)." >&2
+  else
+    fail "TDD_RED=1 but no test file is staged. That flag is for the RED commit of a TDD cycle, not for skipping a suite you have not fixed."
+  fi
+fi
+
 if docker compose -f docker-compose.yml -f docker-compose.dev.yml ps --status running api 2>/dev/null | grep -q api; then
-  echo "pre-commit: running make check ..."
-  make check
+  echo "pre-commit: running make $GATE ..."
+  make "$GATE"
 else
-  echo "pre-commit: dev stack not running — skipping make check (run 'make up.dev' to enable)." >&2
+  echo "pre-commit: dev stack not running — skipping make $GATE (run 'make up.dev' to enable)." >&2
 fi
 
 echo "pre-commit: OK"

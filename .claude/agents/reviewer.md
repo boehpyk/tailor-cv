@@ -65,6 +65,22 @@ violation **add one line on why the pattern matters** (teaching mode), not just 
 - Real database, fake `LlmPort`, fake `Clock`. Descriptive names. Covers the acceptance criteria and
   every row of the failure contract. No test that merely records current behaviour.
 
+### The red-first cycle (sdlc.md §2) — check the history, not just the file
+The red-first tiers are domain, application, the failure contract, the HTTP contract and the React
+loading/error/empty/success states. For each, the git history is evidence a diff alone is not:
+
+- **A test edited in the same commit that made it pass is CRITICAL.** That is the failure the whole
+  practice exists to prevent — the implementation became the source of truth for the test. Find it
+  with `git log -p --follow -- <test file>`; a RED commit followed by a GREEN commit that touches the
+  test file is the signature. Report the specific assertion that moved.
+- **A RED commit with no `Recorded red:` line, or one recording an `ImportError` /
+  `ModuleNotFoundError` / "fixture not found", is MAJOR.** The skeleton step was skipped, so the red
+  proved a file was absent rather than that the assertion discriminates. The test is unproven.
+- **A red-first-tier test that has no RED commit at all is MAJOR** — it was written against working
+  code and may only encode what that code happened to do.
+- Do **not** flag the absence of a red cycle on a test-after tier (mappings, repositories, migrations,
+  adapters, DI wiring, component markup). That is the designed shape, not a lapse.
+
 ## Report format
 ```
 Files reviewed: <list>

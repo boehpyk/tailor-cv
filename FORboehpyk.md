@@ -288,6 +288,89 @@ The temptation in a scaffolding phase is to build the shape of everything and fi
 trouble is that a shape built before the thing it holds is a guess wearing the costume of a
 decision. Empty is more honest than approximately right.
 
+## Day three: teaching the process to distrust itself
+
+The SDLC already had the expensive half of TDD and nobody had noticed. Every feature spec enumerates
+measurable acceptance criteria and a failure-contract table before a line of code is written, and a
+human signs it off. That *is* "think about the behaviour first" — the part that actually makes TDD
+work. What was missing was smaller and meaner: proof that a test can fail.
+
+The gap is easiest to see in the rule that was already written down: *a test encodes what the code
+should do — never what it was observed doing.* Good rule. Completely unenforced. It sat in the `qa`
+agent's instructions as an appeal to virtue, and the `qa` agent was called **last**, with the fresh
+implementation sitting right there in its context window. Asking anything — human or model — to write
+an independent test about 200 lines it just read is asking it to un-know something. A human drifts
+into it slowly and feels vaguely guilty. A model does it immediately, thoroughly, and reports green
+with total confidence. The test then agrees with the code forever, because it was *derived* from the
+code, and a test that cannot disagree with the implementation is decoration.
+
+Red-first fixes that structurally rather than morally. You cannot record behaviour that does not
+exist yet.
+
+**But the naive version of this is theatre, and it is worth understanding why.** "Write the test
+first, watch it fail" sounds complete until you watch what it actually fails *with*:
+
+```
+ImportError: cannot import name 'BaseCv' from 'tailorcraft.domain.intake'
+```
+
+That is red. It is also worthless. It proves one thing — a file does not exist — and says nothing
+about whether the assertion you wrote can tell correct behaviour from incorrect. You could assert
+`2 + 2 == 5` and get the same beautiful red. Ship that cycle a hundred times and you have a hundred
+tests that were each "proven" by a missing import.
+
+So the cycle here has three steps, not two. The implementer writes a **skeleton** first — real names,
+real signatures, real types, `NotImplementedError` in every body. Now `qa` writes the test and it
+fails like this instead:
+
+```
+Failed: DID NOT RAISE <class 'tailorcraft.domain.intake.errors.EmptyCvText'>
+```
+
+*That* is a red worth having: the assertion ran, discriminated, and came back negative. And because
+it's worth having, it gets recorded — pasted verbatim into the RED commit body. An unrecorded red
+did not happen.
+
+The second thing worth stealing from this: **we deliberately did not apply it everywhere.** The
+tempting move was blanket TDD, all layers, no exceptions — it sounds more rigorous and it reads
+better in a document. It would have been worse. Writing tests against a SQLAlchemy imperative mapping
+or an Alembic migration *before* you have discovered how those libraries actually behave means
+writing the test wrong and rewriting it once reality arrives. That is not discipline, it's churn, and
+it's especially wasteful in a codebase where learning the library is a stated goal. TDD quietly
+assumes you already know the shape of the thing you're driving toward. In `domain/` you do — you
+designed it. In `infrastructure/` you often don't yet.
+
+So the line falls on **who owns the contract**. Domain rules, use cases, failure contracts, HTTP
+status codes, "the user can tell 'still working' from 'this failed'" — those come from the spec, and
+you can write the test first because you already decided the answer. Mappings, migrations, adapters,
+DI wiring, markup — those come from the framework, and you find out what they look like by building
+them. Red-first for the first list. Test-after, unapologetically, for the second.
+
+Three smaller things fell out of the change, each a small lesson of its own:
+
+**An escape hatch that skips tests will be used to skip tests.** A red commit can't pass `make check`
+— its new test is *supposed* to fail — so it needed a way through the pre-commit hook. The lazy
+answer is `git commit --no-verify`, and it's wrong twice over: it also drops the secret guard, the
+PII guard and the published-port guard, none of which have anything to do with the test being red.
+The answer instead was a narrower door: `make check.static` runs every gate except pytest and vitest,
+and `TDD_RED=1` only opens it **when a test file is actually staged**. Design the hatch so it can only
+be used for the thing it was built for, because otherwise, in six months, tired, you will use it for
+everything.
+
+**Enforcement went into the git history, not the diff.** The way this practice really dies isn't
+someone skipping the red — it's the implementer, stuck on GREEN, quietly editing the test until it
+passes. The end state looks perfect: a test, an implementation, all green. The diff at review time
+shows nothing wrong. Only the history shows it — a RED commit, then a GREEN commit that touched the
+test file. So the reviewer now runs `git log -p --follow` on test files and treats that signature as
+CRITICAL. Some invariants are only visible in the sequence of states, never in the final one.
+
+**And we wrote down what it does *not* cover.** The highest-risk items in this project are the
+infrastructure footguns — the Traefik network pin, the worker running a stale image for four
+releases, the migration that isn't backward-compatible. Not one of them has a failing test that turns
+green. Adding a satisfying ritual is exactly when you're most likely to feel covered in areas the
+ritual never touched, so the tier table says so out loud. A green suite is evidence about the things
+it tests. It is silent about everything else, and silence is easy to mistake for approval.
+
 ## What's next
 
 Slice 1.1, `intake-base-cv-upload`: a user drops in a PDF, and text comes out. It is the first real

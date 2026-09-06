@@ -125,6 +125,14 @@ web.check: web.types web.lint web.format.check web.test web.build ## All fronten
 #-----------------------------------------------------------
 check: lint types imports test web.check ## Run all quality gates — run before every commit
 
+# check.static exists for exactly one job: the RED commit of a tiered-TDD cycle (docs/sdlc.md §2),
+# where a new test is *supposed* to be failing. Every other gate still applies — a red test is still
+# Ruff-clean, mypy-clean and does not break the frontend build. Do NOT reach for this to get a commit
+# past a test you have not fixed; that is exactly what it looks like from the outside, which is why
+# the pre-commit hook refuses TDD_RED=1 unless a test file is actually staged.
+check.static: lint types imports web.types web.lint web.format.check web.build ## All gates except pytest/vitest — RED commits only
+	@echo "check.static: OK (pytest and vitest deliberately NOT run)"
+
 #-----------------------------------------------------------
 # LLM evaluation (NOT a test — it calls the real API and costs money)
 #-----------------------------------------------------------
