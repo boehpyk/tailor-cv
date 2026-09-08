@@ -1,6 +1,6 @@
 """Shared test fixtures.
 
-Three decisions here shape every test in this suite:
+Four decisions here shape every test in this suite:
 
 1. **A real PostgreSQL, never a mock and never SQLite.** A mocked repository tests the mock. SQLite
    would silently accept things PostgreSQL rejects (and vice versa) — `JSONB`, timezone-aware
@@ -12,6 +12,13 @@ Three decisions here shape every test in this suite:
    limiter counters, the purge lock or its heartbeat. `clear_redis` exists for exactly that, and
    the cheap proof that a suite gets it right is to run it **twice in a row**: a second run that
    fails is the classic symptom (CLAUDE.md).
+4. **The transaction does not roll back the filesystem either.** Every upload a test makes through
+   `LocalFileStore` lands on disk for real, and `settings.upload_dir` defaults to the same shared,
+   named volume `docker-compose.yml` mounts on both `api` and `worker` in production — the volume
+   CLAUDE.md singles out as load-bearing precisely because it is real user data. Left unredirected,
+   a test run writes real files into it and never cleans them up, growing without bound across every
+   `make test` anyone runs. The `settings` fixture below points `upload_dir` at a session-scoped
+   temp directory for exactly this reason, the same way `clear_redis` isolates Redis.
 
 The test database is `tailorcraft_test`, dedicated and never the dev one.
 """
@@ -45,14 +52,27 @@ from tailorcraft.infrastructure.tasks.app import app as celery_app
 
 
 @pytest.fixture(scope="session")
-def settings() -> Settings:
-    """Settings pointed at the TEST database.
+def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
+    """Settings pointed at the TEST database, and at a disposable upload directory.
 
     `database_url` is overridden rather than read, so there is no path by which a test run reaches
     the dev database because someone's shell had the wrong variable exported.
+
+    `upload_dir` is overridden for the same reason `clear_redis` exists: a database transaction's
+    rollback does not touch the filesystem, so every upload a test makes through `LocalFileStore`
+    would otherwise land in the real, shared `uploads` volume and stay there forever — this is the
+    module docstring's fourth point. `tmp_path_factory.mktemp` is session-scoped, matching this
+    fixture's own scope (and pytest-asyncio's session-scoped loop, CLAUDE.md); pytest removes it
+    afterwards on its own schedule, so nothing here needs to.
     """
     base = get_settings()
-    return base.model_copy(update={"app_env": "test", "database_url": base.test_database_url})
+    return base.model_copy(
+        update={
+            "app_env": "test",
+            "database_url": base.test_database_url,
+            "upload_dir": tmp_path_factory.mktemp("uploads"),
+        }
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
