@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tailorcraft.domain.identity.errors import GuestSessionExpired
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.intake.base_cv import BaseCv
+from tailorcraft.domain.intake.errors import CvExtractionFailed, TooManyBaseCvs
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
@@ -21,7 +24,7 @@ from tailorcraft.domain.intake.value_objects import (
 )
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.shared.files import FileStorePort
+from tailorcraft.domain.shared.files import FileRef, FileStorePort
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,4 +100,56 @@ class UploadBaseCv:
         self._max_per_session = max_per_session
 
     async def __call__(self, cmd: UploadBaseCvCommand) -> UploadBaseCvResult:
-        raise NotImplementedError
+        session = await self._sessions.get(cmd.guest_session_id)
+        if session.is_expired(self._clock.now()):
+            raise GuestSessionExpired(str(session.id))
+
+        # Cross-aggregate policy, deliberately not an invariant of `BaseCv`: the rule spans every
+        # `BaseCv` a session owns, a fact no single `BaseCv` instance has access to (F-23, OQ-10).
+        if await self._cvs.count_for_session(session.id) >= self._max_per_session:
+            raise TooManyBaseCvs(str(session.id))
+
+        cv_id = self._cvs.next_identity()
+        ref = FileRef.for_base_cv(cv_id, cmd.content_type)
+
+        # Write the file *before* the row exists. A filesystem write cannot join the database
+        # transaction, so this is the deliberate ADR-0006 §2 crash-window choice: the survivor of a
+        # crash here is an orphan *file*, which a directory sweep can reclaim without the database
+        # (ADR-0011 §4 makes the layout sweepable), rather than an orphan *row* pointing at nothing,
+        # which presents to a user as a broken download (F-15). `FileStoreUnavailable` propagates
+        # unchanged — no row is created, so a failed write leaves nothing to clean up.
+        await self._files.put(ref, cmd.content)
+
+        cv = BaseCv.upload(
+            id=cv_id,
+            guest_session_id=session.id,
+            original_filename=cmd.original_filename,
+            content_type=cmd.content_type,
+            size_bytes=len(cmd.content),
+            file=ref,
+            uploaded_at=self._clock.now(),
+        )
+
+        # A failed extraction is a recorded state of the aggregate, not a 500 (ADR-0004). Catching
+        # `CvExtractionFailed` here and turning it into `mark_extraction_failed` is the whole point
+        # of this use case's shape — deleting this `try/except` would look like simplification and
+        # would silently break the contract every later `TailoringRun`-shaped flow depends on.
+        try:
+            text = await self._extractor.extract(cmd.content_type, cmd.content)
+        except CvExtractionFailed as exc:
+            cv.mark_extraction_failed(exc.reason, self._clock.now())
+        else:
+            cv.mark_extracted(text, self._clock.now())
+
+        await self._cvs.add(cv)
+
+        # Released and published only after the aggregate is saved — never before, so a publish
+        # never announces a fact that a failed save is about to un-happen.
+        await self._events.publish(*cv.release_events())
+
+        return UploadBaseCvResult(
+            base_cv_id=cv.id,
+            status=cv.status,
+            character_count=cv.extracted_text.character_count if cv.extracted_text else None,
+            failure_reason=cv.failure_reason,
+        )
