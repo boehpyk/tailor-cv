@@ -15,11 +15,20 @@ adds a re-export to `domain/intake/__init__.py`, that guarantee breaks silently;
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Protocol
 
+from tailorcraft.domain.intake.errors import InvalidFileRef
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType
 from tailorcraft.domain.shared.errors import DomainError
+
+# ADR-0011's grammar. A `fullmatch` against this pattern already rejects everything the failure
+# contract lists by construction, with no separate checks needed: a leading `/` or a `..` segment
+# cannot start with two hex digits followed by `/`; a backslash cannot appear where the grammar
+# requires `/`; an embedded NUL (or anything else) after the extension breaks the trailing `$`
+# anchor because `fullmatch` requires the *entire* string to match, not merely a prefix.
+_KEY_GRAMMAR = re.compile(r"^[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f-]{36}\.(pdf|docx|txt)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +42,8 @@ class FileRef:
     key: str
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        if not _KEY_GRAMMAR.fullmatch(self.key):
+            raise InvalidFileRef(f"{self.key!r} does not match the storage grammar")
 
     @classmethod
     def for_base_cv(cls, cv_id: BaseCvId, content_type: CvContentType) -> FileRef:
@@ -44,7 +54,9 @@ class FileRef:
         Two-level hex sharding keeps any one directory small without a second piece of state to keep
         in step with the id (ADR-0011 §§1, 3).
         """
-        raise NotImplementedError
+        hex_digits = cv_id.value.hex
+        key = f"{hex_digits[0:2]}/{hex_digits[2:4]}/{cv_id.value}.{content_type.file_extension}"
+        return cls(key=key)
 
 
 class FileStorePort(Protocol):

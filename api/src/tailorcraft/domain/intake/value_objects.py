@@ -29,8 +29,10 @@ class BaseCvId:
 
     value: UUID
 
-    def __post_init__(self) -> None:
-        raise NotImplementedError
+    # No `__post_init__` here on purpose: every `UUID` is already a valid `BaseCvId`, so a
+    # validation method that does nothing would just be a place a future reader adds a rule that
+    # does not belong. `GuestSessionId` (`domain/identity/value_objects.py`) is the same shape for
+    # the same reason.
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +48,29 @@ class OriginalFilename:
     value: str
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        # Deferred (function-local) import to break a module cycle: `domain/intake/errors.py`
+        # imports `ExtractionFailureReason` from this module, so importing `errors` back at module
+        # scope here would make the two modules import each other during collection — whichever
+        # loads first would ask for names the other hasn't defined yet. Importing inside the method
+        # instead defers the import to call time, by which point both modules have finished
+        # loading. This is a local decision about *this* module's import shape, not a domain-purity
+        # exception — `errors` is still `tailorcraft.domain`, so the purity test is unaffected.
+        from tailorcraft.domain.intake.errors import InvalidFilename
+
+        # Reduce to a basename by splitting on both `/` and `\` unconditionally. `os.path.basename`
+        # alone would only split on `\` when the *server's* platform is Windows, but the browser can
+        # send a Windows-style path regardless of where this process runs — the separator has to be
+        # treated as a separator on principle, not on `os.sep`.
+        basename = self.value.replace("\\", "/").rsplit("/", 1)[-1].strip()
+
+        if not basename:
+            raise InvalidFilename("filename must not be empty")
+        if len(basename) > 255:
+            raise InvalidFilename("filename must be at most 255 characters")
+        if any(ord(char) < 0x20 or ord(char) == 0x7F for char in basename):
+            raise InvalidFilename("filename must not contain control characters or NUL")
+
+        object.__setattr__(self, "value", basename)
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,13 +88,49 @@ class ExtractedText:
     value: str
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        # See `OriginalFilename.__post_init__` for why this import is function-local rather than
+        # module-level: `errors.py` imports `ExtractionFailureReason` from this module, so a
+        # module-level import in the other direction would be a circular import at collection time.
+        from tailorcraft.domain.intake.errors import EmptyExtraction, ExtractedTextTooShort
+
+        # Whitespace normalization: `str.split()` with no argument already treats any run of
+        # whitespace (spaces, tabs, newlines) as one separator and drops leading/trailing
+        # whitespace, so re-joining with a single space collapses everything in one pass.
+        normalized = " ".join(self.value.split())
+        non_whitespace_count = sum(1 for char in normalized if not char.isspace())
+
+        if not normalized:
+            raise EmptyExtraction("extracted text must not be blank")
+        if non_whitespace_count < 200:
+            raise ExtractedTextTooShort(
+                f"extracted text has only {non_whitespace_count} non-whitespace characters; "
+                "the floor is 200 (OQ-9)"
+            )
+
+        object.__setattr__(self, "value", normalized)
 
     @property
     def character_count(self) -> int:
         """The count callers report to the user — so nobody downstream needs the text itself to
-        say how much of it there is, which matters because the text is PII (Constitution §8)."""
-        raise NotImplementedError
+        say how much of it there is, which matters because the text is PII (Constitution §8).
+
+        DECISION (made here, on purpose, per the T3 brief): the spec's validation floor and AC-1's
+        reporting contract measure two different things. `__post_init__` enforces "≥ 200
+        **non-whitespace** characters" as the validity floor — a document padded with 300 blank
+        lines must not sneak past a 200-character minimum meant to guarantee real content. AC-1,
+        separately, defines `character_count` as "the length of the extracted text". Those two
+        counts diverge on any text that contains whitespace, so one of them has to give way, and it
+        is written here rather than left for whoever next reads this to guess.
+
+        `character_count` reports **the length of the normalized text** (whitespace collapsed to
+        single spaces, ends stripped) — AC-1's reading, not the non-whitespace-only count used for
+        the floor. Rationale: this is the number shown to the user ("4,821 characters extracted"),
+        and a person counting characters in their own CV would count the spaces between words too.
+        Reporting only non-whitespace characters would make the number on screen silently disagree
+        with what they can see in the document itself, which is a worse failure than the two counts
+        merely being *different numbers* internally.
+        """
+        return len(self.value)
 
 
 class CvContentType(StrEnum):
@@ -87,7 +147,12 @@ class CvContentType(StrEnum):
     def file_extension(self) -> str:
         """The extension `FileRef.for_base_cv` puts on the storage key — `pdf`, `docx` or `txt`,
         never re-derived from the original filename (ADR-0011)."""
-        raise NotImplementedError
+        extensions = {
+            CvContentType.PDF: "pdf",
+            CvContentType.DOCX: "docx",
+            CvContentType.TXT: "txt",
+        }
+        return extensions[self]
 
 
 class BaseCvStatus(StrEnum):

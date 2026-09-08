@@ -20,5 +20,7 @@ class GuestSessionId:
 
     value: UUID
 
-    def __post_init__(self) -> None:
-        raise NotImplementedError
+    # No `__post_init__` here on purpose: every `UUID` is already a valid `GuestSessionId`, so a
+    # validation method that does nothing would just be a place a future reader adds a rule that
+    # does not belong (see the domain-modeler brief). `BaseCvId` is the same shape for the same
+    # reason.
