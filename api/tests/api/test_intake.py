@@ -422,6 +422,104 @@ async def test_middleware_never_calls_receive_on_the_rejection_path(
     assert json.loads(body["body"])["error"]["code"] == "file_too_large"
 
 
+async def test_the_413_is_readable_cross_origin_because_max_body_size_sits_inside_cors(
+    settings: Settings,
+) -> None:
+    """Pins `main.py`'s ordering invariant, corrected 2026-09-08: `MaxBodySizeMiddleware` is
+    registered *before* `CORSMiddleware`, which — because Starlette's `add_middleware` prepends and
+    `build_middleware_stack` wraps over `reversed(...)` — makes the LAST-registered middleware
+    OUTERMOST, so `MaxBodySizeMiddleware` ends up *inside* CORS, not outside it:
+
+        ServerErrorMiddleware > CORSMiddleware > MaxBodySizeMiddleware > ExceptionMiddleware > router
+
+    That is what lets a cross-origin browser actually *read* the 413: `CORSMiddleware` only ever
+    inspects and stamps `Access-Control-Allow-Origin` on a response passing through it, regardless of
+    which inner layer produced that response, so a 413 raised inside it still comes back carrying the
+    header. The `access-control-allow-origin` assertion below is the one that fails if someone "fixes"
+    the ordering by moving `MaxBodySizeMiddleware`'s registration to *after* the CORS block, making it
+    outermost: the 413 would then leave the app before ever passing through `CORSMiddleware`, arrive
+    at the browser with no CORS headers at all, and a cross-origin `fetch` would reject with an opaque
+    network error — telling the user nothing about a file we know exactly what is wrong with.
+
+    Builds its own app rather than using the shared `app`/`client` fixtures: those are wired from the
+    session-scoped `settings` fixture, whose `cors_origins` is `""` (CORS middleware not even
+    registered) — mutating it here would leak into every other test in this module.
+    """
+    cors_settings = settings.model_copy(update={"cors_origins": "http://example.test"})
+    cors_app = create_app(cors_settings)
+    spoofed_length = cors_settings.max_upload_bytes + 1_000_000
+
+    async with _new_client(cors_app) as cors_client:
+        request = cors_client.build_request(
+            "POST",
+            "/api/base-cvs",
+            content=b"tiny",
+            headers={
+                "content-length": str(spoofed_length),
+                "content-type": "text/plain",
+                "origin": "http://example.test",
+            },
+        )
+        response = await cors_client.send(request)
+
+    assert response.status_code == 413, response.text
+    assert _error_code(response) == "file_too_large"
+    assert response.headers.get("access-control-allow-origin") == "http://example.test"
+
+
+async def test_middleware_never_calls_receive_on_the_rejection_path_with_cors_enabled(
+    settings: Settings,
+) -> None:
+    """The receive-transparency property `test_middleware_never_calls_receive_on_the_rejection_path`
+    proves above must still hold once `CORSMiddleware` sits outside `MaxBodySizeMiddleware` in the
+    real stack — this is not a lucky accident of that test's CORS-disabled configuration. `main.py`'s
+    comment states the mechanism: `CORSMiddleware` wraps `send`, never `receive`, so it is
+    receive-transparent and cannot itself drain the channel this whole check depends on staying
+    undrained. Driving the ASGI app directly (past `httpx`/`ASGITransport`) with a `receive` that
+    raises if ever awaited is what actually exercises that: a 413 coming back — through CORS —
+    with `receive` untouched is the only way this test can pass.
+    """
+    cors_settings = settings.model_copy(update={"cors_origins": "http://example.test"})
+    cors_app = create_app(cors_settings)
+    spoofed_length = cors_settings.max_upload_bytes + 1_000_000
+
+    async def _receive_must_not_be_called() -> Message:
+        raise AssertionError("MaxBodySizeMiddleware must reject before ever calling receive()")
+
+    sent: list[Message] = []
+
+    async def _send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/base-cvs",
+        "raw_path": b"/api/base-cvs",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"content-length", str(spoofed_length).encode("ascii")),
+            (b"content-type", b"multipart/form-data; boundary=xyz"),
+            (b"origin", b"http://example.test"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+
+    await cors_app(scope, _receive_must_not_be_called, _send)
+
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    body = next(message for message in sent if message["type"] == "http.response.body")
+    assert start["status"] == 413
+    assert json.loads(body["body"])["error"]["code"] == "file_too_large"
+    header_names = {name.lower() for name, _value in start["headers"]}
+    assert b"access-control-allow-origin" in header_names
+
+
 async def test_health_endpoints_are_exempt_from_the_body_size_check(
     client: AsyncClient, settings: Settings
 ) -> None:

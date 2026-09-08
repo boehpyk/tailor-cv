@@ -66,11 +66,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     # Added first so it is the outermost user middleware — the earliest thing that sees a request
-    # (Starlette runs user middleware in the order `add_middleware` was called). It must run ahead of
-    # everything else, including CORS: the whole point is to answer 413 before this app calls
-    # `receive()` at all, and a client sending `Expect: 100-continue` is then still waiting for
-    # permission to send the body when this responds — see `middleware.py`'s docstring for why a
-    # cap enforced only inside the handler (the previous state of this code) never achieved that.
+    # ORDERING, which is the opposite of what it looks like: `add_middleware` does
+    # `user_middleware.insert(0, ...)` and `build_middleware_stack` wraps over `reversed(...)`, so the
+    # LAST middleware registered ends up OUTERMOST. Registering this one first therefore puts it
+    # *inside* CORS, and that is the arrangement we want — verified, not assumed:
+    #
+    #   ServerErrorMiddleware > CORSMiddleware > MaxBodySizeMiddleware > ExceptionMiddleware > router
+    #
+    # Inside CORS is correct because the 413 then carries `Access-Control-Allow-Origin`, so a browser
+    # doing a cross-origin upload can actually READ the error envelope. Outermost, the same 413 would
+    # reach the browser stripped of CORS headers and the fetch would reject with an opaque failure —
+    # the user would be told nothing, for a file we know exactly what is wrong with.
+    #
+    # It is safe to sit inside CORS only because CORSMiddleware is *receive-transparent*: it wraps
+    # `send`, never `receive`, so the undrained receive channel this depends on arrives intact.
+    # THE CONSTRAINT THAT FOLLOWS: any middleware added LATER becomes outermost, and if it touches
+    # `receive` or reads the body it silently defeats this check with no test to catch it. Register
+    # anything body-reading BEFORE this line, and re-read middleware.py's docstring first.
+    #
+    # The point of all this is to answer 413 before the app calls `receive()` at all, so a client
+    # sending `Expect: 100-continue` is still waiting for permission when the refusal arrives — see
+    # `middleware.py` for why a cap enforced only inside the handler never achieved that.
     # Every route pays this check except `/health/*`, which polls far more often than anyone uploads.
     app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_upload_bytes)
 
