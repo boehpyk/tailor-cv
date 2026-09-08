@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     # FR-6. A privacy promise, not a tuning knob: raising it needs a reason a user would accept.
     guest_retention_hours: int = 24
 
+    # -- CV text extraction (ADR-0009) ---------------------------------------
+    # The backstop for a pathological file, not the mechanism: the page cap below bounds the work
+    # *before* parsing starts, so this timeout should fire only on something genuinely stuck.
+    extraction_timeout_seconds: int = 10
+    # PDFs over this many pages are refused before `pypdf` ever opens them — bounded work, not a
+    # timeout discovered the hard way on a 400-page file (ADR-0009 §2).
+    max_cv_pages: int = 50
+
     # -- Observability -------------------------------------------------------
     # Empty in dev and in CI; set on the box. Phase 0 rather than deferred, because this product has
     # silent failure paths from its first slice (roadmap).
