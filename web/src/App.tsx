@@ -1,11 +1,13 @@
+import { BaseCvUploadPanel } from './features/intake/components/BaseCvUploadPanel';
 import { SystemStatus } from './features/health/components/SystemStatus';
 
 /**
  * The application shell.
  *
- * Phase 0 renders one thing: the dependency report. The dual-tab workspace (upload a CV / paste a
- * posting) arrives with slice 1.4, and deliberately not before — a shell full of buttons that do
- * nothing is harder to reason about than an honest empty one.
+ * Slice 1.1 (`intake-base-cv-upload`) adds the first real product surface: upload a base CV,
+ * see it get extracted. It renders as a section here rather than behind a route, because React
+ * Router is not installed until 1.4 (technical-plan.md) — the dual-tab workspace (CV / job
+ * posting) is that slice's job, not this one's.
  */
 export function App(): React.JSX.Element {
   return (
@@ -16,6 +18,13 @@ export function App(): React.JSX.Element {
           Tailor your CV and cover letter to a job posting in under two minutes.
         </p>
       </header>
+
+      <section aria-labelledby="base-cv-heading" className="mb-10">
+        <h2 id="base-cv-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
+          Your base CV
+        </h2>
+        <BaseCvUploadPanel />
+      </section>
 
       <section aria-labelledby="system-status-heading">
         <h2

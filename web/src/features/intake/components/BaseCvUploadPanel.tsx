@@ -1,5 +1,10 @@
 import { useState } from 'react';
 
+import { ApiError } from '@/api/client';
+
+import { BaseCvCard } from './BaseCvCard';
+import { CvDropzone } from './CvDropzone';
+import { UploadErrorNotice } from './UploadErrorNotice';
 import { useBaseCvs } from '../hooks/useBaseCvs';
 import { useUploadBaseCv } from '../hooks/useUploadBaseCv';
 
@@ -50,42 +55,25 @@ function latestBaseCv(items: readonly BaseCv[]): BaseCv | null {
   return items.reduce((latest, item) => (item.uploaded_at > latest.uploaded_at ? item : latest));
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${String(bytes)} B`;
-  }
-  const kib = bytes / 1024;
-  if (kib < 1024) {
-    return `${kib.toFixed(0)} KB`;
-  }
-  return `${(kib / 1024).toFixed(1)} MB`;
-}
-
-function formatStoredUntil(expiresAt: string): string {
-  const date = new Date(expiresAt);
-  return date.toLocaleString(undefined, {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
 /**
- * The base-CV upload surface (T33 skeleton) — a **container**, wired to `useBaseCvs` (the list)
- * and `useUploadBaseCv` (the mutation). Visual design is T35's job; this component's job is the
- * state wiring itself: which of loading / empty / uploading / success is showing, and which of the
- * three textually-distinct error kinds (AC-15).
+ * The base-CV upload surface — a **container**, wired to `useBaseCvs` (the list) and
+ * `useUploadBaseCv` (the mutation). It owns which of loading / empty / uploading / success is
+ * showing, and which of the three textually-distinct error kinds (AC-15); the actual markup for
+ * each piece lives in `CvDropzone`, `BaseCvCard` and `UploadErrorNotice` (T35).
  *
  * **No `useEffect`.** There is nothing outside React to synchronize with here — the CV list is
- * server state and lives entirely in TanStack Query; the only local state is the transient
- * "did the client-side pre-check on the last chosen file fail" flag, which belongs to this
- * component and nothing else.
+ * server state and lives entirely in TanStack Query; the only local state is transient rendering
+ * detail that belongs to this component alone: the client-side pre-check message, and whether the
+ * user has asked to replace an already-successful CV.
  */
 export function BaseCvUploadPanel(): React.JSX.Element {
   const { data, isPending: listIsPending, isError: listIsError, error: listError } = useBaseCvs();
   const upload = useUploadBaseCv();
   const [preValidationError, setPreValidationError] = useState<string | null>(null);
+  // "Replace CV" (BaseCvCard) swaps the success card back out for the dropzone. It resets itself
+  // once a replacement upload succeeds (below) — there is no case where a stale `true` should
+  // survive past that, so there is nothing here for a `useEffect` to synchronize.
+  const [isReplacing, setIsReplacing] = useState(false);
 
   function handleFileChosen(file: File): void {
     const problem = preValidate(file);
@@ -95,17 +83,11 @@ export function BaseCvUploadPanel(): React.JSX.Element {
       return;
     }
     setPreValidationError(null);
-    upload.mutate(file);
-  }
-
-  function handleInputChange(event: React.ChangeEvent<HTMLInputElement>): void {
-    const file = event.target.files?.[0];
-    if (file !== undefined) {
-      handleFileChosen(file);
-    }
-    // Reset the input so choosing the same filename again (e.g. after fixing and re-saving a file
-    // that failed) fires a change event instead of being silently ignored.
-    event.target.value = '';
+    upload.mutate(file, {
+      onSuccess: () => {
+        setIsReplacing(false);
+      },
+    });
   }
 
   // loading — the list query hasn't settled. Deliberately no dropzone here: an interactive control
@@ -113,7 +95,9 @@ export function BaseCvUploadPanel(): React.JSX.Element {
   if (listIsPending) {
     return (
       <div>
-        <p role="status">Loading your CV…</p>
+        <p role="status" className="text-sm text-slate-500">
+          Loading your CV…
+        </p>
       </div>
     );
   }
@@ -125,7 +109,9 @@ export function BaseCvUploadPanel(): React.JSX.Element {
     // of the upload-specific error kinds.
     return (
       <div>
-        <p role="alert">Could not load your CVs: {listError.message}</p>
+        <p role="alert" className="text-sm text-red-700">
+          Could not load your CVs: {listError.message}
+        </p>
       </div>
     );
   }
@@ -133,35 +119,47 @@ export function BaseCvUploadPanel(): React.JSX.Element {
   const items = data.items;
   const isEmpty = items.length === 0;
   const latest = latestBaseCv(items);
+  const isSuccess = latest?.status === 'extracted';
+  const showCard = isSuccess && !isReplacing && !upload.isPending;
 
   return (
-    <div>
-      <label htmlFor="base-cv-file-input">Drop your CV here — PDF, DOCX or TXT, up to 10 MB</label>
-      <input
-        id="base-cv-file-input"
-        type="file"
-        accept=".pdf,.docx,.txt"
-        disabled={upload.isPending}
-        onChange={handleInputChange}
-      />
-
-      {upload.isPending && (
-        // uploading — the chosen filename comes from the mutation's own `variables`, not a second
-        // piece of local state that would just be a copy of it.
-        <div>
-          <p>{upload.variables.name}</p>
-          <p role="status">Reading your CV…</p>
-        </div>
+    <div className="space-y-3">
+      {showCard ? (
+        <BaseCvCard
+          cv={latest}
+          onReplace={() => {
+            setIsReplacing(true);
+          }}
+        />
+      ) : (
+        <CvDropzone
+          disabled={upload.isPending}
+          // The chosen filename comes from the mutation's own `variables`, not a second piece of
+          // local state that would just be a copy of it.
+          uploadingFileName={upload.isPending ? upload.variables.name : null}
+          onFileChosen={handleFileChosen}
+        />
       )}
 
-      {isEmpty && !upload.isPending && <p>We delete guest CVs after 24 hours.</p>}
+      {isEmpty && !upload.isPending && (
+        <p className="text-sm text-slate-500">We delete guest CVs after 24 hours.</p>
+      )}
 
-      {preValidationError !== null && <p role="alert">{preValidationError}</p>}
+      {preValidationError !== null && (
+        <UploadErrorNotice kind="preValidation" message={preValidationError} />
+      )}
 
       {upload.isError && (
-        // Error B — rejected by the API (413 / 415 / 422 / 409 / 429). `upload.error.message` is
-        // the server's own message from the `{"error": {"code", "message"}}` envelope (api/client.ts).
-        <p role="alert">{upload.error.message}</p>
+        // Error B — rejected by the API (413 / 415 / 422 / 409 / 429). `upload.error` is typed as
+        // `Error` (useUploadBaseCv.ts) because a transport-level failure (offline, DNS) throws a
+        // plain `Error`, not an `ApiError` — the `instanceof` guard is what lets this stay honest
+        // for that case instead of inventing a status/code that was never on the wire.
+        <UploadErrorNotice
+          kind="apiError"
+          message={upload.error.message}
+          status={upload.error instanceof ApiError ? upload.error.status : 0}
+          code={upload.error instanceof ApiError ? upload.error.code : null}
+        />
       )}
 
       {latest?.status === 'extraction_failed' && (
@@ -171,20 +169,13 @@ export function BaseCvUploadPanel(): React.JSX.Element {
         // server-owned (technical-plan.md's API contract) so the client renders it rather than
         // re-deciding the wording per `failure_reason`; the literal fallback only guards the type
         // (`failure_message: string | null`) for a case the domain should never actually produce.
-        <p role="alert">
-          {latest.failure_message ??
-            "We saved your file but couldn't read any text from it — it looks like a scan. Try a text-based PDF, or paste your CV as a .txt file."}
-        </p>
-      )}
-
-      {latest?.status === 'extracted' && (
-        // success
-        <div>
-          <p>{latest.original_filename}</p>
-          <p>{formatSize(latest.size_bytes)}</p>
-          <p>{latest.character_count ?? 0} characters extracted</p>
-          <p>stored until {formatStoredUntil(latest.expires_at)}</p>
-        </div>
+        <UploadErrorNotice
+          kind="extractionFailed"
+          message={
+            latest.failure_message ??
+            "We saved your file but couldn't read any text from it — it looks like a scan. Try a text-based PDF, or paste your CV as a .txt file."
+          }
+        />
       )}
     </div>
   );
