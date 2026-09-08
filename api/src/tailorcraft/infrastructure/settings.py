@@ -72,6 +72,21 @@ class Settings(BaseSettings):
     # timeout discovered the hard way on a 400-page file (ADR-0009 §2).
     max_cv_pages: int = 50
 
+    # -- Upload rate limiting & caps (F-16, F-23, F-24) -----------------------
+    # Fixed-window limits enforced by `RedisFixedWindowRateLimiter`
+    # (`infrastructure/rate_limit.py`). Two limits, not one: per-session bounds one guest's use,
+    # per-IP bounds one network's use across many guest sessions (a guest can always mint a new one).
+    upload_rate_limit_per_hour: int = 10
+    upload_rate_limit_per_ip_per_hour: int = 30
+    # A cross-aggregate cap enforced in the use case, not on `BaseCv` itself — see technical-plan.md,
+    # "Not an invariant of BaseCv, deliberately".
+    max_base_cvs_per_session: int = 5
+    # How many reverse-proxy hops in front of this process are ours to trust when reading
+    # `X-Forwarded-For` (`infrastructure/rate_limit.py::client_ip`). `1` is nginx. Raising this
+    # without actually adding a trusted proxy in front of nginx turns the rate limiter's IP bucket
+    # into an attacker-chosen value read straight out of a client-supplied header.
+    trusted_proxy_hops: int = 1
+
     # -- Observability -------------------------------------------------------
     # Empty in dev and in CI; set on the box. Phase 0 rather than deferred, because this product has
     # silent failure paths from its first slice (roadmap).
