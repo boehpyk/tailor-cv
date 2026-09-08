@@ -371,11 +371,151 @@ green. Adding a satisfying ritual is exactly when you're most likely to feel cov
 ritual never touched, so the tier table says so out loud. A green suite is evidence about the things
 it tests. It is silent about everything else, and silence is easy to mistake for approval.
 
+## Day four: the first real feature, and five bugs that only running could find
+
+Slice 1.1 shipped. You can open the page, drop a PDF on it, and watch it come back as
+"999 characters extracted, stored until 9 Sept 21:45". Thirty-seven commits, 220 backend tests and
+32 frontend ones, and the architecture finally carrying weight instead of describing itself.
+
+The interesting part isn't that it worked. It's the five things that were wrong while everything
+looked fine.
+
+### 1. The test suite was migrating the wrong database
+
+The rule "never the dev DB" is in CLAUDE.md in bold. The suite obeyed it in spirit and violated it in
+fact: `conftest.py` politely set `sqlalchemy.url` to `tailorcraft_test` before calling
+`command.upgrade`, and `alembic/env.py` politely overwrote it from the `lru_cache`d settings, which
+had been populated with the dev URL long before the test fixture existed. Two pieces of code being
+careful in opposite directions.
+
+Nobody noticed for a whole phase, because **the bug had nothing to migrate.** Phase 0 had zero
+migrations, so the wrong-database write was a no-op against an empty list. It became real and visible
+in the same hour the first migration was written. The proof was embarrassingly simple once suspected:
+run the suite, then look in both databases. Dev had the tables. `tailorcraft_test` had none.
+
+The lesson isn't "check your Alembic config". It's that **a safety rule with no observable
+consequence is not yet a safety rule** — it's a belief. This one became testable only when it
+acquired something to break.
+
+### 2. The streaming upload cap did not stream
+
+`_read_capped` read the upload in 64 KiB chunks and aborted the moment the running total crossed
+10 MB. Its docstring said so. The acceptance criterion said so — "aborted **while streaming**, not
+buffered and then measured". A reviewer flagged it anyway, and the measurement settled it:
+
+```
+curl -F "file=@11mb.pdf" localhost:8000/api/base-cvs
+  -> 413, bytes_uploaded=11000202
+```
+
+The whole 11 MB went up the wire, and *then* got refused. The cause is one of those framework facts
+that is obvious in hindsight and invisible in the code: declaring `file: Annotated[UploadFile, File(...)]`
+makes FastAPI call `await request.form()` **during dependency resolution**, before your function
+body starts. Starlette's multipart parser drains the entire request into a temp file right there.
+The careful chunked loop was reading bytes back out of a file that already held all of them.
+
+The fix is a pure-ASGI middleware that checks `Content-Length` and answers 413 **without ever calling
+`receive()`** — because not draining the receive channel is precisely what leaves a client that sent
+`Expect: 100-continue` waiting for permission that never arrives. `bytes_uploaded` went 11000202 → 0.
+
+Two things worth keeping. First: **a comment describing a guarantee is not a guarantee**, and this one
+had been reviewed, tested and shipped while being false. The test that "covered" it asserted the 413
+and honestly said in its own docstring that it could not observe the streaming half — which is how a
+green suite and a false claim coexisted peacefully. Second, and more useful: through nginx the fix
+changes nothing, because nginx answers `100-continue` itself before it has even opened the upstream
+connection. So the honest description is three layers, not one, and the spec now says that instead of
+the sentence it could not keep.
+
+### 3. F-15 was unsatisfiable, and the spec had promised it anyway
+
+The failure contract said: if the commit fails after the file is written, answer **503**. Reasonable.
+Impossible. FastAPI runs the exit half of a `yield` dependency **after the response has been sent** —
+documented behaviour since 0.106 — so `get_session`'s commit fires with the `201` already on the wire.
+When it raises, Starlette sees `response_started` and the client keeps the 201 regardless. No
+exception handler can fix that, because by then there is no longer a response to change.
+
+The fix was to commit explicitly inside the handler's own error boundary, where a failure can still
+become a status code. But the thing worth remembering is the *shape* of the discovery: a test was
+written from the spec, it failed, and the failure was not in the code. **The spec was wrong, and the
+test found it** — which is the entire argument for writing tests from acceptance criteria rather than
+from implementations. A test derived from the code would have cheerfully asserted the 201.
+
+### 4. The harness was lying twice
+
+Both found by chasing that same F-15 test.
+
+`conftest.py` overrode `get_session` — a *yield* dependency — with `lambda: session`. FastAPI calls
+the override, sees something that isn't a generator, and uses the return value directly: the whole
+`try/yield/except: rollback / else: commit` body never ran during any request in the suite. The
+fixture's own docstring claimed "the code behaves exactly as it does in production". For the entire
+HTTP path, it didn't. **Replacing a yield dependency with a plain callable silently deletes its
+teardown**, and nothing fails — the suite just quietly stops testing something it says it tests.
+
+And the API tests were writing real uploaded files into the shared dev volume: 706 of them, growing
+on every `make test`. The database rolls back. The filesystem does not. It's the same lesson as the
+Redis one already in CLAUDE.md, in the one volume the docs single out as load-bearing — and the proof
+of the fix wasn't a passing test, it was counting files before and after: 706 → 706.
+
+### 5. A date that rendered differently for every visitor
+
+`formatStoredUntil` called `toLocaleString(undefined, {...})`. The spec's example said
+`"8 Sep 10:00"`. On an `en-US` default it produced `"Sep 8, 10:00 AM"` — different word order,
+different punctuation, different clock. `undefined` means "whatever this browser decides", so the
+retention promise read differently depending on who was looking at it, and no test could pin it.
+
+The `qa` agent found it, refused to write the test that recorded the wrong output, left the assertion
+red and said so. That refusal is the whole system working: the rule "never write the test that
+ratifies the accident" produced a red test and a decision instead of a quiet green.
+
+### The one that got away, and what it cost
+
+The frontend red-first cycle **degenerated**. The implementer was asked for a skeleton — real
+signatures, `NotImplementedError` bodies — and delivered a complete, working component instead. So
+when `qa` wrote the eight behavioural tests, all eight passed on arrival. No red. Nothing proven.
+
+There is a strong temptation to call that a success (the tests exist! they're green!) and move on.
+Instead: mutation testing. Delete the retention sentence — one test dies. Un-disable the upload
+control — one test dies. Break pre-validation — two die. Collapse the "unreadable file" notice into
+the "upload failed" notice — three die, including the AC-15 assertion that exists specifically to keep
+them distinct.
+
+That recovered most of the value and the commit says plainly that it is *not* the same thing: **a
+mutation proves the test notices a change you thought of; a red proves the assertion discriminated
+before the code existed.** One is a check on your imagination, the other is a check on the test.
+Worth knowing which you have.
+
+### The common thread, again
+
+Day two's four bugs were all invisible to reading and obvious to running. Day four's five are worse:
+**every one of them was invisible to reading, invisible to a green test suite, and obvious to
+measuring.** The migration bug needed a look inside two databases. The upload cap needed
+`%{size_upload}` from curl. The event-loop question needed a stopwatch on `/health/live` during four
+concurrent uploads — which is how we learned that `asyncio.to_thread` buys liveness but not
+throughput, because pypdf is pure Python and the GIL serialises it anyway (four concurrent
+extractions came in *slower* than four serial ones).
+
+The suite was green through all of it. It was green because it tested what it tested — which is all a
+suite ever does, and is exactly why the tier table in the SDLC says out loud what it does not cover.
+
+### Two places the spec contradicted itself
+
+Both resolved on purpose, both written down, because the rule is "fix one of them and say which won".
+
+**RTF.** F-4 said reject it; AC-3 defined text as anything decoding without a NUL — and RTF markup
+decodes perfectly. F-4 won, via a `{\rtf` magic check, on the grounds that accepting it would hand
+the model a CV made of `\rtf1\ansi\deff0` control words. An honest 415 naming the three formats
+that work beats a successful upload that produces garbage.
+
+**Blank TXT.** The technical plan mapped it to `EmptyExtraction` — which is not a `CvExtractionFailed`
+subclass, so it would have escaped the use case's `except` and become exactly the 500-with-nothing-on-disk
+that ADR-0004 exists to forbid. The plan lost to its own failure contract, which had already said
+`too_short`.
+
 ## What's next
 
-Slice 1.1, `intake-base-cv-upload`: a user drops in a PDF, and text comes out. It is the first real
-domain code in the project — a `BaseCv` aggregate, a `FileRef`, an `ExtractedText` value object, a
-`CvTextExtractorPort` — and the first time the architecture has to carry actual weight rather than
-describe itself.
+Slice 1.2, the job posting: a URL goes in, a description comes out, and with it the SSRF guard —
+scheme allow-list, no private ranges, re-check on redirect. It is the first time this application
+makes an outbound request on a stranger's instruction, which is a different and more interesting kind
+of dangerous than anything in 1.1.
 
 The specs die when the features ship. This file doesn't.
