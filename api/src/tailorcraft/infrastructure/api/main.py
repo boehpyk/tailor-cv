@@ -14,7 +14,7 @@ import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from tailorcraft.infrastructure.api.routers import health
+from tailorcraft.infrastructure.api.routers import health, intake
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -74,6 +74,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     app.include_router(health.router)
+    app.include_router(intake.router)
 
     return app
 
