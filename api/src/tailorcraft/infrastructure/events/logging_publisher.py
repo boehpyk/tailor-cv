@@ -64,4 +64,9 @@ class LoggingEventPublisher:
             fields: dict[str, Any] = {
                 f.name: _to_loggable(getattr(event, f.name)) for f in dataclasses.fields(event)
             }
-            log.info("domain_event", event=type(event).__name__, **fields)
+            # `event_type`, not `event`: structlog's `BoundLogger.info(event, **kwargs)` already
+            # treats its first positional argument as the log line's own `event` field (here,
+            # the literal string "domain_event") — passing a *second* `event=` keyword on top of
+            # that collides with it (`TypeError: ... got multiple values for argument 'event'`),
+            # found by running this adapter for the first time rather than by reading it.
+            log.info("domain_event", event_type=type(event).__name__, **fields)

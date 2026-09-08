@@ -20,6 +20,18 @@ from tailorcraft.domain.intake.value_objects import CvContentType
 _PDF_MAGIC = b"%PDF-"
 _ZIP_MAGIC = b"PK\x03\x04"
 _DOCX_MARKER = "word/document.xml"
+# `{\rtf` at offset 0: RTF markup (`{\rtf1\ansi\deff0 ...}`) is ASCII/CP1252-clean control words, so
+# it decodes as plain text and would otherwise fall straight through to the TXT branch below — this
+# check exists specifically to intercept it first.
+#
+# DECISION (made here, on purpose — T26's brief flags this as a real contradiction in the spec, not
+# an oversight to quietly resolve): feature-spec.md's failure contract (F-4) lists RTF among the
+# formats a 415 must reject, but its AC-3 defines TXT as "decodes as UTF-8 or cp1252 with no NUL" —
+# a definition RTF satisfies. F-4 wins: handing the model a CV made of `\rtf1\ansi\deff0` control
+# words is a worse outcome for the user than an honest 415 naming the three formats that work. This
+# narrows AC-3's blanket text rule on purpose — a reader comparing this code to the spec should find
+# this paragraph, not "fix" the disagreement back the other way.
+_RTF_MAGIC = b"{\\rtf"
 
 # Bounds the UTF-8/cp1252 decode-and-scan below to a fixed amount of work regardless of how large
 # `data` is — sniffing must stay cheap even for a file that will later be rejected on size.
@@ -35,6 +47,8 @@ def sniff_cv_content_type(data: bytes) -> CvContentType | None:
       check is load-bearing, not decorative: a magic-byte check alone would also accept an `.xlsx`,
       a `.pptx`, an `.odt`, or a bare zip archive, all of which share the same four leading bytes as
       every Office Open XML format.
+    - `{\\rtf` at offset 0 → `None` (415), **before** the text check below — see `_RTF_MAGIC`'s own
+      comment for why this deliberately narrows AC-3's general text rule (F-4).
     - Otherwise: decodes as UTF-8, falling back to cp1252, with **no NUL byte** in the first 8 KiB →
       TXT. The NUL check is what keeps an arbitrary binary blob that happens to decode from being
       accepted as "plain text".
@@ -49,6 +63,9 @@ def sniff_cv_content_type(data: bytes) -> CvContentType | None:
         # by whether it happens to decode as text (an .xlsx, a .pptx, an .odt or a bare zip archive
         # all share these four leading bytes, and none of them is a CV).
         return CvContentType.DOCX if _is_docx(data) else None
+
+    if data.startswith(_RTF_MAGIC):
+        return None
 
     if _looks_like_text(data):
         return CvContentType.TXT
