@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
+from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
 from tailorcraft.infrastructure.api.routers import health, intake
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
@@ -63,6 +64,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         docs_url=None if settings.is_production else "/docs",
         openapi_url=None if settings.is_production else "/openapi.json",
     )
+
+    # Added first so it is the outermost user middleware — the earliest thing that sees a request
+    # (Starlette runs user middleware in the order `add_middleware` was called). It must run ahead of
+    # everything else, including CORS: the whole point is to answer 413 before this app calls
+    # `receive()` at all, and a client sending `Expect: 100-continue` is then still waiting for
+    # permission to send the body when this responds — see `middleware.py`'s docstring for why a
+    # cap enforced only inside the handler (the previous state of this code) never achieved that.
+    # Every route pays this check except `/health/*`, which polls far more often than anyone uploads.
+    app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_upload_bytes)
 
     if settings.cors_origin_list:
         # An explicit origin list, never a wildcard. Cookies carry the refresh token (ADR-0008) and

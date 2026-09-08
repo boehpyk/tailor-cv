@@ -54,9 +54,10 @@ from tailorcraft.infrastructure.settings import Settings
 
 router = APIRouter(prefix="/api/base-cvs", tags=["intake"])
 
-# Read the upload in fixed-size chunks and count as we go — never buffer the whole body first and
-# measure it afterward (F-3/AC-2: "the request body is aborted at the cap, not buffered and then
-# measured").
+# Read the already-received upload in fixed-size chunks and count as we go, rather than joining it
+# into one second copy first and measuring that — a memory bound within this handler, not a network
+# one. `MaxBodySizeMiddleware` (infrastructure/api/middleware.py) is what aborts a streaming request
+# before it lands; see `_read_capped`'s own docstring for why the two are not the same guarantee.
 _UPLOAD_CHUNK_BYTES = 64 * 1024
 
 # Shared `responses=` fragments, so the same failure mode is documented with the same shape at every
@@ -141,10 +142,33 @@ def _failure_message(reason: ExtractionFailureReason, settings: Settings) -> str
 
 
 async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
-    """Read `file` in `_UPLOAD_CHUNK_BYTES` chunks, aborting the instant the running total exceeds
-    `max_bytes` (F-3/AC-2). Never buffers the whole body first and measures it afterward — the loop
-    stops issuing `read()` calls as soon as the cap is crossed, so a 500 MB upload against a 10 MB
-    cap never lands more than one chunk past the limit in memory.
+    """Read `file` back from FastAPI's already-parsed `UploadFile` in `_UPLOAD_CHUNK_BYTES` chunks,
+    aborting as soon as the running total exceeds `max_bytes`, rather than joining the whole thing
+    into one `bytes` object first and measuring it afterward.
+
+    **This does not bound what crosses the network** — despite what an earlier version of this
+    docstring claimed. Declaring `file: Annotated[UploadFile, File(...)]` on the handler above hands
+    multipart parsing to the framework *before this function, or even the handler body, starts
+    running*: FastAPI resolves that parameter by awaiting `request.form()` during dependency
+    resolution, and Starlette's `MultiPartParser` drains the entire request body into a
+    `SpooledTemporaryFile` while doing it. By the time this loop's first `file.read()` returns, the
+    whole upload has already been received and spooled — this function is reading bytes back off
+    disk/memory, not bytes still arriving on the wire. Verified empirically: an 11 MB upload against
+    a 10 MB cap transferred all 11,000,202 bytes before this loop's 413 fired.
+
+    So what actually guarantees what:
+
+    * `MaxBodySizeMiddleware` (`infrastructure/api/middleware.py`), reading `Content-Length` before
+      FastAPI ever calls `receive()`, is what rejects an honest client's request while it is still
+      streaming — the guarantee this docstring used to (wrongly) claim for this function.
+    * nginx's `client_max_body_size` bounds a client that lies about `Content-Length` or omits it
+      outright, upstream of this process entirely.
+    * **This function's actual job** is narrower: bound how much of an *already-received* body this
+      handler holds in memory at once, rather than materializing a second full copy via
+      `await file.read()` with no size argument. It also remains the only line of defense against a
+      chunked-transfer-encoding request, which carries no `Content-Length` for the middleware to see
+      coming (F-3/AC-2's "aborted while streaming" is achieved by the middleware for the common case;
+      this loop is the fallback for the case the middleware structurally cannot catch).
     """
     chunks: list[bytes] = []
     total = 0
@@ -181,7 +205,9 @@ async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
         },
         status.HTTP_413_CONTENT_TOO_LARGE: {
             "model": ErrorResponse,
-            "description": "file_too_large — aborted while streaming, at 10,485,760 bytes.",
+            "description": "file_too_large — at 10,485,760 bytes. Answered by "
+            "`MaxBodySizeMiddleware` before the body is read for a client that declares "
+            "`Content-Length`; by `_read_capped` in-handler otherwise (chunked transfer-encoding).",
         },
         status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {
             "model": ErrorResponse,
@@ -265,7 +291,10 @@ async def upload_base_cv(
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 
-    # Streamed, capped read (F-3/AC-2) — see `_read_capped`'s own docstring.
+    # The streaming abort (F-3/AC-2) already happened, if it was going to: `MaxBodySizeMiddleware`
+    # ran ahead of routing and would have answered 413 before this handler was even invoked. This is
+    # the in-memory-bound read over a body FastAPI has already received — see `_read_capped`'s own
+    # docstring for exactly what it does and does not guarantee.
     data = await _read_capped(file, settings.max_upload_bytes)
 
     if not data:
