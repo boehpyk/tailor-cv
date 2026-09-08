@@ -17,9 +17,11 @@ is a check every caller gets for free.
 
 from __future__ import annotations
 
+from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
+from tailorcraft.domain.intake.errors import BaseCvNotFound, BaseCvNotOwnedBySession
 from tailorcraft.domain.intake.ports import BaseCvRepository
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.shared.clock import Clock
@@ -57,4 +59,14 @@ class GetBaseCvForSession:
         self._clock = clock
 
     async def __call__(self, base_cv_id: BaseCvId, guest_session_id: GuestSessionId) -> BaseCv:
-        raise NotImplementedError
+        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
+
+        cv = await self._cvs.get(base_cv_id)
+
+        if cv.guest_session_id != session.id:
+            # "Not mine" must look identical to "does not exist" at this boundary (F-20/AC-8,
+            # ADR-0008): the public exception is `BaseCvNotFound`, same as a missing id, and the
+            # distinction survives only on `__cause__` for this use case's own tests.
+            raise BaseCvNotFound(str(base_cv_id)) from BaseCvNotOwnedBySession(str(base_cv_id))
+
+        return cv

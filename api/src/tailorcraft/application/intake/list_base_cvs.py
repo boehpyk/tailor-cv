@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -45,4 +46,5 @@ class ListBaseCvsForSession:
         self._clock = clock
 
     async def __call__(self, guest_session_id: GuestSessionId) -> Sequence[BaseCv]:
-        raise NotImplementedError
+        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
+        return await self._cvs.list_for_session(session.id)

@@ -44,4 +44,12 @@ class StartGuestSession:
         self._retention_hours = retention_hours
 
     async def __call__(self, token_hash: str) -> GuestSession:
-        raise NotImplementedError
+        session_id = self._sessions.next_identity()
+        session = GuestSession.start(
+            id=session_id,
+            token_hash=token_hash,
+            at=self._clock.now(),
+            ttl_hours=self._retention_hours,
+        )
+        await self._sessions.add(session)
+        return session
