@@ -1,0 +1,79 @@
+%PDF-1.3
+%‚„œ”
+1 0 obj
+<<
+/Producer (pypdf)
+>>
+endobj
+2 0 obj
+<<
+/Type /Pages
+/Count 1
+/Kids [ 4 0 R ]
+>>
+endobj
+3 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+4 0 obj
+<<
+/Type /Page
+/Resources <<
+/Font <<
+/F1 5 0 R
+>>
+>>
+/MediaBox [ 0.0 0.0 612 792 ]
+/Parent 2 0 R
+/Contents 6 0 R
+>>
+endobj
+5 0 obj
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Helvetica
+>>
+endobj
+6 0 obj
+<<
+/Length 1435
+>>
+stream
+BT /F1 11 Tf 50 760 Td (Alex Rivera) Tj ET
+BT /F1 11 Tf 50 744 Td (Backend Engineer) Tj ET
+BT /F1 11 Tf 50 728 Td (alex.rivera@example.com | +1 \(555\) 010-2020 | Springfield, USA) Tj ET
+BT /F1 11 Tf 50 696 Td (Summary) Tj ET
+BT /F1 11 Tf 50 680 Td (Backend engineer with eight years of experience building payment and logistics platforms in Python and Go. Comfortable owning a service from design through on-call, and partial to boring technology that keeps working at 3am.) Tj ET
+BT /F1 11 Tf 50 648 Td (Experience) Tj ET
+BT /F1 11 Tf 50 632 Td (Senior Backend Engineer, Northwind Logistics, 2021-2026) Tj ET
+BT /F1 11 Tf 50 616 Td (Rebuilt the shipment-tracking service around an event-sourced ledger, cutting reconciliation incidents by 90 percent. Mentored two junior engineers and ran the on-call rotation for a twelve-person team.) Tj ET
+BT /F1 11 Tf 50 600 Td (Backend Engineer, Fabrikam Payments, 2018-2021) Tj ET
+BT /F1 11 Tf 50 584 Td (Implemented idempotent payment retries and a fraud-scoring pipeline processing four million transactions a day. Migrated the primary datastore from a single Postgres instance to a sharded cluster with zero downtime.) Tj ET
+BT /F1 11 Tf 50 552 Td (Education) Tj ET
+BT /F1 11 Tf 50 536 Td (B.Sc. Computer Science, University of Springfield, 2018) Tj ET
+BT /F1 11 Tf 50 504 Td (Skills) Tj ET
+BT /F1 11 Tf 50 488 Td (Python, Go, PostgreSQL, Redis, Kafka, Docker, Kubernetes, Terraform.) Tj ET
+endstream
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000015 00000 n 
+0000000054 00000 n 
+0000000113 00000 n 
+0000000162 00000 n 
+0000000294 00000 n 
+0000000364 00000 n 
+trailer
+<<
+/Size 7
+/Root 3 0 R
+/Info 1 0 R
+>>
+startxref
+1851
+%%EOF
