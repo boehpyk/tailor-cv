@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,3 +58,12 @@ class RecordsEvents:
         events = tuple(getattr(self, "_recorded_events", ()))
         self._recorded_events = []
         return events
+
+
+class EventPublisherPort(Protocol):
+    """The seam between "events were released from an aggregate" and wherever they end up —
+    `LoggingEventPublisher` today (`infrastructure/events/logging_publisher.py`), a real message bus
+    later, unchanged on this side of the port. Called by a use case **after** a successful save
+    (`RecordsEvents`'s own docstring above says why); never by an aggregate directly."""
+
+    async def publish(self, *events: DomainEvent) -> None: ...
