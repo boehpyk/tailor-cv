@@ -50,6 +50,7 @@ processors and a logger cached from the first run, before relying on it here.
 from __future__ import annotations
 
 import io
+import json
 import logging
 import zipfile
 from collections.abc import AsyncIterator, Callable
@@ -64,6 +65,7 @@ from httpx import ASGITransport, AsyncClient, Response
 from pypdf import PdfWriter
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from starlette.types import Message, Scope
 
 from tailorcraft.domain.intake.value_objects import CvContentType
 from tailorcraft.infrastructure.api.deps import get_app_settings, get_clock, get_session
@@ -334,6 +336,104 @@ async def test_oversized_upload_returns_413(client: AsyncClient, settings: Setti
 
     assert response.status_code == 413, response.text
     assert _error_code(response) == "file_too_large"
+
+
+async def test_middleware_rejects_a_spoofed_content_length_even_with_a_tiny_actual_body(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """AC-2/F-3, corrected 2026-09-08: `MaxBodySizeMiddleware` decides from the declared
+    `Content-Length` header alone, never from how many bytes actually arrive. Proven by an asymmetry
+    `_read_capped`'s counting loop could never produce: a `Content-Length` far above the cap, paired
+    with a body that is genuinely tiny. If this 413 came from counting bytes as they were read off an
+    already-spooled body, it could not have fired — there were never enough bytes on the wire to
+    count past the cap in the first place.
+
+    `httpx.Request`/`client.build_request` is used directly (not `files=`) so the declared header and
+    the real body can disagree; `httpx.ASGITransport.handle_async_request` forwards `request.headers`
+    into `scope["headers"]` verbatim and streams only the real body through `receive()` (read from
+    `httpx`'s own source before relying on it here), so this really is the asymmetry the fix depends
+    on, not an artifact of how the test builds the request.
+    """
+    spoofed_length = settings.max_upload_bytes + 1_000_000
+    request = client.build_request(
+        "POST",
+        "/api/base-cvs",
+        content=b"tiny",
+        headers={"content-length": str(spoofed_length), "content-type": "text/plain"},
+    )
+
+    response = await client.send(request)
+
+    assert response.status_code == 413, response.text
+    # Byte-for-byte the same envelope a router-level 413 emits for the identical condition
+    # (`routers/intake.py::_read_capped` raises `HTTPException` with this exact `code` and the same
+    # f-string over the same `settings.max_upload_bytes`) — a client branching on `error.code` must
+    # never be able to tell which of the two layers caught it.
+    assert response.json() == {
+        "error": {
+            "code": "file_too_large",
+            "message": f"The file exceeds the {settings.max_upload_bytes}-byte limit.",
+        }
+    }
+
+
+async def test_middleware_never_calls_receive_on_the_rejection_path(
+    app: FastAPI, settings: Settings
+) -> None:
+    """The mechanism the whole fix rests on (`middleware.py`'s docstring): never draining the ASGI
+    receive channel is what leaves an `Expect: 100-continue` client still waiting for permission to
+    send its body, so a compliant client never transmits it at all. Asserted directly, by driving the
+    ASGI app itself — past `httpx`/`ASGITransport` entirely — with a `receive` that raises if it is
+    ever awaited. A 413 coming back with `receive` untouched is the only way this test can pass.
+    """
+    spoofed_length = settings.max_upload_bytes + 1_000_000
+
+    async def _receive_must_not_be_called() -> Message:
+        raise AssertionError("MaxBodySizeMiddleware must reject before ever calling receive()")
+
+    sent: list[Message] = []
+
+    async def _send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/base-cvs",
+        "raw_path": b"/api/base-cvs",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"content-length", str(spoofed_length).encode("ascii")),
+            (b"content-type", b"multipart/form-data; boundary=xyz"),
+        ],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+
+    await app(scope, _receive_must_not_be_called, _send)
+
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    body = next(message for message in sent if message["type"] == "http.response.body")
+    assert start["status"] == 413
+    assert json.loads(body["body"])["error"]["code"] == "file_too_large"
+
+
+async def test_health_endpoints_are_exempt_from_the_body_size_check(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """`MaxBodySizeMiddleware.exempt_prefixes` includes `/health` so a cheap, bodyless, frequently
+    polled route never pays for a `Content-Length` check it can never fail (`middleware.py`). Proven
+    with a `Content-Length` well above the cap — the same value that gets a 413 on every other
+    route in this file — sent to a route this middleware is supposed to leave alone."""
+    spoofed_length = settings.max_upload_bytes + 1_000_000
+
+    response = await client.get("/health/live", headers={"content-length": str(spoofed_length)})
+
+    assert response.status_code == 200, response.text
 
 
 # ---------------------------------------------------------------------------------------------
