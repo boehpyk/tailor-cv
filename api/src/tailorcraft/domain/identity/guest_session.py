@@ -13,9 +13,10 @@ Invariant: `expires_at > created_at`. There is exactly one way to construct a va
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.shared.errors import InvariantViolated
 
 
 # NOT `slots=True`: this aggregate is later mapped by SQLAlchemy's *imperative* mapping
@@ -62,7 +63,18 @@ class GuestSession:
         practice, if `ttl_hours <= 0`, which a caller should never pass but which this constructor
         does not trust.
         """
-        raise NotImplementedError
+        if ttl_hours <= 0:
+            raise InvariantViolated("ttl_hours must be > 0 (expires_at must be after created_at)")
+
+        session = cls()
+        session._id = id
+        session._token_hash = token_hash
+        session._created_at = at
+        # `at` arrives already whole-second (the `Clock` port's contract, ADR-0007), and adding a
+        # whole number of hours to a whole-second `datetime` cannot introduce a sub-second
+        # component, so no defensive re-truncation is needed here.
+        session._expires_at = at + timedelta(hours=ttl_hours)
+        return session
 
     def is_expired(self, at: datetime) -> bool:
         """Whether `at` is at or past `expires_at`.
@@ -71,20 +83,20 @@ class GuestSession:
         outright (F-19); a `POST` is more forgiving and mints a fresh session instead (F-17/F-18) —
         that asymmetry lives in the use cases that call this method, not here.
         """
-        raise NotImplementedError
+        return at >= self._expires_at
 
     @property
     def id(self) -> GuestSessionId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def token_hash(self) -> str:
-        raise NotImplementedError
+        return self._token_hash
 
     @property
     def created_at(self) -> datetime:
-        raise NotImplementedError
+        return self._created_at
 
     @property
     def expires_at(self) -> datetime:
-        raise NotImplementedError
+        return self._expires_at

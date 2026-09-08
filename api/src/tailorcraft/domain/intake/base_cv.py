@@ -11,6 +11,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.intake.errors import ExtractionAlreadyDecided
+from tailorcraft.domain.intake.events import (
+    BaseCvExtractionFailed,
+    BaseCvTextExtracted,
+    BaseCvUploaded,
+)
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
     BaseCvStatus,
@@ -19,6 +25,7 @@ from tailorcraft.domain.intake.value_objects import (
     ExtractionFailureReason,
     OriginalFilename,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 from tailorcraft.domain.shared.files import FileRef
 
@@ -98,7 +105,46 @@ class BaseCv(RecordsEvents):
         Raises `InvariantViolated` if `size_bytes <= 0` (I-1) — the 10 MB *upper* bound is a
         boundary/config concern checked before this is ever called, not by this method.
         """
-        raise NotImplementedError
+        if size_bytes <= 0:
+            raise InvariantViolated("size_bytes must be > 0 (I-1)")
+
+        cv = cls()
+        cv._id = id
+        cv._guest_session_id = guest_session_id
+        cv._original_filename = original_filename
+        cv._content_type = content_type
+        cv._size_bytes = size_bytes
+        cv._file = file
+        cv._status = BaseCvStatus.UPLOADED
+        cv._extracted_text = None
+        cv._failure_reason = None
+        cv._uploaded_at = uploaded_at
+        cv._extracted_at = None
+
+        cv.record(
+            BaseCvUploaded(
+                base_cv_id=id,
+                guest_session_id=guest_session_id,
+                content_type=content_type,
+                size_bytes=size_bytes,
+                occurred_at=uploaded_at,
+            )
+        )
+        return cv
+
+    def _guard_extraction_not_yet_decided(self, at: datetime) -> None:
+        """The I-3/I-4 guard shared by both `mark_*` methods, written once rather than copy-pasted:
+        two copies of an invariant is one copy that gets fixed and one that does not.
+
+        Raises `ExtractionAlreadyDecided` (I-3) if extraction was already decided in either
+        direction, and `InvariantViolated` (I-4) if `at < uploaded_at`.
+        """
+        if self._status is not BaseCvStatus.UPLOADED:
+            raise ExtractionAlreadyDecided(
+                f"extraction for {self._id!r} was already decided as {self._status!r}"
+            )
+        if at < self._uploaded_at:
+            raise InvariantViolated("extracted_at must be >= uploaded_at (I-4)")
 
     def mark_extracted(self, text: ExtractedText, at: datetime) -> None:
         """Record that extraction succeeded: sets `status = EXTRACTED`, `extracted_text = text`,
@@ -107,7 +153,19 @@ class BaseCv(RecordsEvents):
         Raises `ExtractionAlreadyDecided` (I-3) if extraction was already decided, and
         `InvariantViolated` (I-4) if `at < uploaded_at`.
         """
-        raise NotImplementedError
+        self._guard_extraction_not_yet_decided(at)
+
+        self._status = BaseCvStatus.EXTRACTED
+        self._extracted_text = text
+        self._extracted_at = at
+
+        self.record(
+            BaseCvTextExtracted(
+                base_cv_id=self._id,
+                character_count=text.character_count,
+                occurred_at=at,
+            )
+        )
 
     def mark_extraction_failed(self, reason: ExtractionFailureReason, at: datetime) -> None:
         """Record that extraction failed: sets `status = EXTRACTION_FAILED`,
@@ -117,48 +175,60 @@ class BaseCv(RecordsEvents):
         `InvariantViolated` (I-4) if `at < uploaded_at`. This is the ADR-0004 shape: a failed
         extraction is a recorded state of the aggregate, never an exception that escapes to a 500.
         """
-        raise NotImplementedError
+        self._guard_extraction_not_yet_decided(at)
+
+        self._status = BaseCvStatus.EXTRACTION_FAILED
+        self._failure_reason = reason
+        self._extracted_at = at
+
+        self.record(
+            BaseCvExtractionFailed(
+                base_cv_id=self._id,
+                reason=reason,
+                occurred_at=at,
+            )
+        )
 
     @property
     def id(self) -> BaseCvId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def guest_session_id(self) -> GuestSessionId:
-        raise NotImplementedError
+        return self._guest_session_id
 
     @property
     def original_filename(self) -> OriginalFilename:
-        raise NotImplementedError
+        return self._original_filename
 
     @property
     def content_type(self) -> CvContentType:
-        raise NotImplementedError
+        return self._content_type
 
     @property
     def size_bytes(self) -> int:
-        raise NotImplementedError
+        return self._size_bytes
 
     @property
     def file(self) -> FileRef:
-        raise NotImplementedError
+        return self._file
 
     @property
     def status(self) -> BaseCvStatus:
-        raise NotImplementedError
+        return self._status
 
     @property
     def extracted_text(self) -> ExtractedText | None:
-        raise NotImplementedError
+        return self._extracted_text
 
     @property
     def failure_reason(self) -> ExtractionFailureReason | None:
-        raise NotImplementedError
+        return self._failure_reason
 
     @property
     def uploaded_at(self) -> datetime:
-        raise NotImplementedError
+        return self._uploaded_at
 
     @property
     def extracted_at(self) -> datetime | None:
-        raise NotImplementedError
+        return self._extracted_at
