@@ -7,9 +7,11 @@ that exists (`infrastructure/persistence/mapping/` has no mapping modules, and t
 migration to bring `tailorcraft_test` to head), so a test that imported `conftest.py`'s `session` /
 `engine` fixtures would fail for a reason that has nothing to do with `UploadBaseCv`. Writing the
 red honestly means testing the use case against the ports it actually depends on: in-memory fakes
-of `BaseCvRepository`, `GuestSessionRepository` and `FileStorePort`, defined below, each satisfying
-its Protocol exactly. **T28** is where the real persistence round-trip gets its own test, once the
-repositories exist to round-trip through.
+of `BaseCvRepository`, `GuestSessionRepository` and `FileStorePort`, imported from
+`tests/integration/fakes.py` (shared with T12's read-side and `StartGuestSession` tests — see that
+module's docstring for why they live there rather than being copied per test module) — each
+satisfying its Protocol exactly. **T28** is where the real persistence round-trip gets its own
+test, once the repositories exist to round-trip through.
 
 The aggregates are not faked — `BaseCv` and `GuestSession` are the real domain classes.
 
@@ -20,7 +22,6 @@ code was observed doing.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import timedelta
 from uuid import uuid4
 
@@ -36,7 +37,6 @@ from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import (
-    BaseCvNotFound,
     CorruptCvFile,
     CvExtractionFailed,
     CvHasNoTextLayer,
@@ -54,154 +54,25 @@ from tailorcraft.domain.intake.events import (
     BaseCvUploaded,
 )
 from tailorcraft.domain.intake.value_objects import (
-    BaseCvId,
     BaseCvStatus,
     CvContentType,
     ExtractedText,
     ExtractionFailureReason,
     OriginalFilename,
 )
-from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 from tailorcraft.infrastructure.clock import FixedClock
-
-# --- Fakes -------------------------------------------------------------------------------------
-# Each satisfies its Protocol (domain/intake/ports.py, domain/identity/ports.py,
-# domain/shared/files.py, domain/shared/events.py) exactly. Stand-ins for T14-T17's real adapters —
-# see the module docstring.
-
-
-class FakeBaseCvRepository:
-    """In-memory `BaseCvRepository`."""
-
-    def __init__(self) -> None:
-        self._by_id: dict[BaseCvId, BaseCv] = {}
-
-    def next_identity(self) -> BaseCvId:
-        return BaseCvId(value=uuid4())
-
-    async def add(self, cv: BaseCv) -> None:
-        self._by_id[cv.id] = cv
-
-    async def get(self, cv_id: BaseCvId) -> BaseCv:
-        try:
-            return self._by_id[cv_id]
-        except KeyError:
-            raise BaseCvNotFound(str(cv_id)) from None
-
-    async def list_for_session(self, sid: GuestSessionId) -> Sequence[BaseCv]:
-        return [cv for cv in self._by_id.values() if cv.guest_session_id == sid]
-
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        return len(await self.list_for_session(sid))
-
-    def all(self) -> list[BaseCv]:
-        """Test-only inspection, not part of `BaseCvRepository`."""
-        return list(self._by_id.values())
-
-
-class FakeGuestSessionRepository:
-    """In-memory `GuestSessionRepository`."""
-
-    def __init__(self) -> None:
-        self._by_id: dict[GuestSessionId, GuestSession] = {}
-
-    def next_identity(self) -> GuestSessionId:
-        return GuestSessionId(value=uuid4())
-
-    async def add(self, session: GuestSession) -> None:
-        self._by_id[session.id] = session
-
-    async def get(self, session_id: GuestSessionId) -> GuestSession:
-        try:
-            return self._by_id[session_id]
-        except KeyError:
-            raise GuestSessionNotFound(str(session_id)) from None
-
-    async def find_by_token_hash(self, token_hash: str) -> GuestSession | None:
-        for session in self._by_id.values():
-            if session.token_hash == token_hash:
-                return session
-        return None
-
-
-class InMemoryFileStore:
-    """In-memory `FileStorePort`, backed by a plain dict.
-
-    Optionally takes the `FakeBaseCvRepository` the use case is also given, purely so a test can
-    prove the **ordering** the technical plan requires (step 5 before step 6/8, ADR-0006 §2): the
-    file is written while the repository is still empty. `repo_size_at_put` snapshots
-    `len(repo.all())` at the moment `put` runs, so the assertion is positive ("the repo held zero
-    rows when the file landed") rather than only checking the end state.
-    """
-
-    def __init__(self, repo: FakeBaseCvRepository | None = None) -> None:
-        self._repo = repo
-        self.data: dict[str, bytes] = {}
-        self.repo_size_at_put: int | None = None
-
-    async def put(self, ref: FileRef, data: bytes) -> None:
-        if self._repo is not None:
-            self.repo_size_at_put = len(self._repo.all())
-        self.data[ref.key] = data
-
-    async def get(self, ref: FileRef) -> bytes:
-        return self.data[ref.key]
-
-    async def delete(self, ref: FileRef) -> None:
-        self.data.pop(ref.key, None)
-
-
-class AlwaysFailingFileStore:
-    """`FileStorePort` that fails every write, simulating F-14 (`ENOSPC` / `EACCES`)."""
-
-    async def put(self, ref: FileRef, data: bytes) -> None:
-        raise FileStoreUnavailable("simulated storage failure")
-
-    async def get(self, ref: FileRef) -> bytes:
-        raise AssertionError("get() should not be reached in this scenario")
-
-    async def delete(self, ref: FileRef) -> None:
-        raise AssertionError("delete() should not be reached in this scenario")
-
-
-class FakeExtractor:
-    """`CvTextExtractorPort` that either returns a fixed `ExtractedText` or raises a fixed
-    `CvExtractionFailed` — one instance per test, configured with exactly the outcome that test is
-    about."""
-
-    def __init__(self, outcome: ExtractedText | CvExtractionFailed) -> None:
-        self._outcome = outcome
-
-    async def extract(self, content_type: CvContentType, data: bytes) -> ExtractedText:
-        if isinstance(self._outcome, CvExtractionFailed):
-            raise self._outcome
-        return self._outcome
-
-
-class RecordingEventPublisher:
-    """`EventPublisherPort` that records what it was handed, for AC-13-style assertions on the
-    published events' field sets and content."""
-
-    def __init__(self) -> None:
-        self.published: list[DomainEvent] = []
-
-    async def publish(self, *events: DomainEvent) -> None:
-        self.published.extend(events)
-
+from tests.integration.fakes import (
+    AlwaysFailingFileStore,
+    FakeBaseCvRepository,
+    FakeExtractor,
+    FakeGuestSessionRepository,
+    InMemoryFileStore,
+    RecordingEventPublisher,
+    create_active_session,
+)
 
 # --- Test helpers --------------------------------------------------------------------------------
-
-
-async def _active_session(sessions: FakeGuestSessionRepository, clock: FixedClock) -> GuestSession:
-    session = GuestSession.start(
-        id=sessions.next_identity(),
-        token_hash="a" * 64,
-        at=clock.now(),
-        ttl_hours=24,
-    )
-    await sessions.add(session)
-    return session
 
 
 def _command(
@@ -224,7 +95,7 @@ def _command(
 
 async def test_happy_path_stores_extracts_and_publishes(clock: FixedClock) -> None:
     sessions = FakeGuestSessionRepository()
-    session = await _active_session(sessions, clock)
+    session = await create_active_session(sessions, clock)
     cvs = FakeBaseCvRepository()
     files = InMemoryFileStore()
     text = ExtractedText("word " * 200)
@@ -282,7 +153,7 @@ async def test_extraction_failure_is_recorded_as_a_state_and_does_not_propagate(
     below must return normally. If `CvExtractionFailed` escaped the use case, this test would fail
     with that exception rather than reach any assertion."""
     sessions = FakeGuestSessionRepository()
-    session = await _active_session(sessions, clock)
+    session = await create_active_session(sessions, clock)
     cvs = FakeBaseCvRepository()
     files = InMemoryFileStore()
     extractor = FakeExtractor(outcome=exc)
@@ -319,7 +190,7 @@ async def test_extraction_failure_is_recorded_as_a_state_and_does_not_propagate(
 
 async def test_file_store_unavailable_propagates_and_creates_no_row(clock: FixedClock) -> None:
     sessions = FakeGuestSessionRepository()
-    session = await _active_session(sessions, clock)
+    session = await create_active_session(sessions, clock)
     cvs = FakeBaseCvRepository()
     files = AlwaysFailingFileStore()
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
@@ -343,7 +214,7 @@ async def test_file_is_written_before_the_row_is_added(clock: FixedClock) -> Non
     aggregate — the deliberate ADR-0006 §2 crash-window choice: a crash here leaves an orphan
     *file* (recoverable by a directory sweep), never an orphan *row* pointing at nothing."""
     sessions = FakeGuestSessionRepository()
-    session = await _active_session(sessions, clock)
+    session = await create_active_session(sessions, clock)
     cvs = FakeBaseCvRepository()
     files = InMemoryFileStore(repo=cvs)
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
@@ -364,7 +235,7 @@ async def test_file_is_written_before_the_row_is_added(clock: FixedClock) -> Non
 
 async def test_sixth_base_cv_for_one_session_raises_too_many_base_cvs(clock: FixedClock) -> None:
     sessions = FakeGuestSessionRepository()
-    session = await _active_session(sessions, clock)
+    session = await create_active_session(sessions, clock)
     cvs = FakeBaseCvRepository()
 
     for _ in range(5):
