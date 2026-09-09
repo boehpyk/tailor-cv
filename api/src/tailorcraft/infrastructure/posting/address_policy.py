@@ -64,4 +64,61 @@ class TargetAddressPolicy:
         An empty sequence is **not** allowed: "nothing resolved" is not "everything is fine", and a
         policy that returned `True` for it would turn a resolution bug into an open door.
         """
-        raise NotImplementedError
+        if not addresses:
+            return False
+        if self.allow_private:
+            return True
+        return all(self._is_public(address) for address in addresses)
+
+    @staticmethod
+    def _is_public(address: IPv4Address | IPv6Address) -> bool:
+        """Whether one address is safe to open a socket to.
+
+        **Why the `ipv4_mapped` unwrap comes first — and what it does NOT do.** The received wisdom
+        is that `::ffff:127.0.0.1` slips past an IPv6-only guard because "as an IPv6 address it is
+        not `::1`". Measured against the installed CPython, that is **false**, and the measurement
+        is recorded here because the false version is what a reader will otherwise assume:
+
+            IPv6Address("::ffff:127.0.0.1").is_loopback   -> True
+            IPv6Address("::ffff:10.0.0.1").is_private     -> True
+            IPv6Address("::ffff:169.254.169.254").is_link_local -> True
+
+        `ipaddress` already resolves mapped addresses for every property below. So the unwrap buys
+        nothing for any of them — and if that were the whole story this line would be cargo cult.
+
+        It is load-bearing for exactly one check, and it is **ours**: the CGNAT range at the bottom.
+        `100.64.0.0/10` is the one block `ipaddress` has no property for (it is "shared address
+        space", not private), so this method tests it by hand with `address in _CGNAT_RANGE` — and
+        that test is `IPv4Network`-based, so it can only ever match an `IPv4Address`. Without the
+        unwrap, `::ffff:100.64.0.1` reaches it as an `IPv6Address`, skips the `isinstance` guard,
+        and is **allowed**:
+
+            ::ffff:100.64.0.1  ->  no property fires, not an IPv4Address  ->  slips through
+
+        That is the single address in the whole space that the unwrap saves, which makes it worth a
+        paragraph rather than a word. Keeping the unwrap first also means any future hand-written
+        range — and there will be one, the day IANA designates another block — is automatically
+        judged against the address the kernel will actually connect to, rather than needing this
+        discovery to be made again.
+
+        The properties themselves are `ipaddress`'s own rather than a hand-written list of CIDR
+        blocks, deliberately: the standard library tracks the IANA special-purpose registries, and a
+        hand-rolled list is a snapshot that rots silently.
+        """
+        if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+
+        if (
+            address.is_loopback
+            or address.is_private
+            or address.is_link_local
+            or address.is_multicast
+            or address.is_reserved
+            or address.is_unspecified
+        ):
+            return False
+
+        # Carrier-grade NAT (RFC 6598). `is_private` does not cover it — `100.64.0.0/10` is
+        # "shared address space", not private — but a target inside it is another subscriber on the
+        # provider's network, not a public host, so it is refused for the same reason.
+        return not (isinstance(address, IPv4Address) and address in _CGNAT_RANGE)

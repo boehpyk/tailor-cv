@@ -100,18 +100,51 @@ def test_strict_policy_blocks_the_cloud_metadata_endpoint() -> None:
 
 
 def test_strict_policy_blocks_ipv4_mapped_loopback() -> None:
-    """`::ffff:127.0.0.1` is the check people skip.
+    """`::ffff:127.0.0.1` must be refused, whichever mechanism does the refusing.
 
-    Written as plain text this is a 128-bit address with no obviously "special" prefix, and a naive
-    range check over IPv6 blocks would wave it through as an ordinary global address. But it is the
-    IPv4-mapped form of `127.0.0.1`: `ipaddress.ip_address` parses it as an `IPv6Address`, and only
-    unwrapping `.ipv4_mapped` *first* (ADR-0012 obligation 3) reveals the loopback address underneath.
-    Skip that unwrap and the socket ends up connecting to 127.0.0.1 while every table row above,
-    checked against the wrong representation, reports the address as safe.
+    This pins the *behaviour* we want — a mapped loopback address is not safe to connect to — but it
+    does **not** discriminate on the `ipv4_mapped` unwrap: CPython's `IPv6Address` properties already
+    resolve mapped addresses on their own (`IPv6Address("::ffff:127.0.0.1").is_loopback` is `True`
+    with no unwrap at all), so this assertion passes identically whether or not the unwrap exists.
+    Deleting the unwrap and running this test proves nothing; see
+    `test_strict_policy_blocks_ipv4_mapped_cgnat_address` below for the one address that actually
+    exercises that line, because the CGNAT check is a hand-written `IPv4Network` comparison that
+    `ipaddress`'s own properties don't cover.
     """
     policy = TargetAddressPolicy.strict()
 
     assert policy.allows([IPv6Address("::ffff:127.0.0.1")]) is False
+
+
+def test_strict_policy_blocks_ipv4_mapped_cgnat_address() -> None:
+    """`::ffff:100.64.0.1` is the one address that actually guards the `ipv4_mapped` unwrap.
+
+    Every other mapped special-purpose address — loopback, private, link-local, multicast, reserved,
+    unspecified — is already blocked by `ipaddress`'s own `IPv6Address` properties, which resolve a
+    mapped address transparently. The unwrap buys nothing for any of those, and a test built on one of
+    them (as `test_strict_policy_blocks_ipv4_mapped_loopback` above used to claim) still passes if the
+    unwrap is deleted — it does not discriminate.
+
+    The CGNAT range (`100.64.0.0/10`, RFC 6598) is different: `ipaddress` has no `is_*` property for
+    it, so the policy tests it by hand with `address in _CGNAT_RANGE`, an `IPv4Network` comparison
+    guarded by `isinstance(address, IPv4Address)`. Without the unwrap, `::ffff:100.64.0.1` arrives as
+    an `IPv6Address`, fails every stdlib property, skips the `isinstance` guard, and is allowed —
+    the exact regression this test exists to catch. Deleting the two-line unwrap in
+    `address_policy.py` and running this test turns it red; nothing else in this file moves.
+    """
+    policy = TargetAddressPolicy.strict()
+
+    assert policy.allows([IPv6Address("::ffff:100.64.0.1")]) is False
+
+
+def test_strict_policy_blocks_ipv4_mapped_cgnat_top_boundary() -> None:
+    """The mapped form of the CGNAT range's top address (`100.127.255.255`), pinning the boundary on
+    the path the unwrap actually protects — the plain-`IPv4Address` boundary is already covered by
+    the `cgnat-top` row in `_BLOCKED` above.
+    """
+    policy = TargetAddressPolicy.strict()
+
+    assert policy.allows([IPv6Address("::ffff:100.127.255.255")]) is False
 
 
 def test_strict_policy_allows_the_address_just_past_the_rfc1918_slash_12() -> None:
