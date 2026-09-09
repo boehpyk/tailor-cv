@@ -114,10 +114,23 @@ class JobPostingText:
     """The job description itself — pasted by the user or extracted from a page by the fetcher.
 
     Non-blank; whitespace-normalized with `" ".join(value.split())` exactly as `ExtractedText` does
-    it; **at least 100 and at most 30,000 non-whitespace characters** after normalization. Raises
-    `EmptyJobPostingText`, `JobPostingTextTooShort` or `JobPostingTextTooLong` (P-4, P-5, P-6).
-    Invariant J-1 lives here rather than in `JobPosting`: the aggregate cannot hold an invalid text
-    because the type that carries it cannot exist in an invalid state.
+    it; then **at least 100 non-whitespace characters** and **at most 30,000 characters of
+    normalized length**. Raises `EmptyJobPostingText`, `JobPostingTextTooShort` or
+    `JobPostingTextTooLong` (P-4, P-5, P-6). Invariant J-1 lives here rather than in `JobPosting`:
+    the aggregate cannot hold an invalid text because the type that carries it cannot exist in an
+    invalid state.
+
+    **The two bounds count different things, and that is the decision, not an inconsistency**
+    (DECIDED 2026-09-09 at T2, when the tests found the spec ambiguous and stopped rather than
+    letting this file pick a side). The *floor* asks "is there real content here?" — whitespace is
+    not content, so it counts non-whitespace and a posting padded with 300 blank lines cannot sneak
+    past it. The *ceiling* asks "is this too big for a prompt, a column and a counter?" — a space
+    costs a token, a byte and a column of screen just as a letter does, so it counts the normalized
+    length, which is exactly what `character_count` reports. The tie-breaker was the UI: the live
+    counter reads `3,184 / 30,000` from `character_count`, so measuring the ceiling on the other
+    number would let us accept text the counter then renders as "35,999 / 30,000" — a limit
+    visibly exceeded by input we had just accepted. A reader who spots the asymmetry and reaches to
+    "fix" it should change the counter's source first and see what breaks.
 
     **Why 100 and not the 200 an `ExtractedText` demands.** The floors measure different documents.
     A genuine two-paragraph job posting — "Senior Python engineer, remote, here is the stack, apply
@@ -160,6 +173,11 @@ class JobPostingText:
         guarantee real content; the **report** counts the length of the normalized text, spaces
         included, because that is what a person counting characters in the posting they pasted
         would count. Two different numbers, on purpose, each measuring the thing its own job needs.
+
+        **The ceiling is measured in this number, not in the floor's.** That is what keeps the UI
+        honest: the counter renders `character_count / 30,000`, so the limit and the number shown
+        against it are the same quantity. See the class docstring for why the tie was broken this
+        way — it is the one place the two counts had to agree and could not both win.
         """
         raise NotImplementedError
 
