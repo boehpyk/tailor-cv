@@ -27,9 +27,13 @@ from tailorcraft.application.identity.start_guest_session import StartGuestSessi
 from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCv
+from tailorcraft.application.posting.capture_job_posting import CaptureJobPosting
+from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
+from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
@@ -44,6 +48,8 @@ from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
+from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
+from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import Settings
@@ -311,3 +317,121 @@ async def resolve_or_start_guest_session(
 
 
 ResolveOrStartGuestSessionDep = Annotated[GuestSession, Depends(resolve_or_start_guest_session)]
+
+
+# ---------------------------------------------------------------------------------------------
+# posting — T28. Every port this slice's use cases need gets a binding here. A port with no
+# binding is a bug, and this is the one file where that question has a single place to look.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_job_posting_repository(session: SessionDep) -> JobPostingRepository:
+    """Binds `JobPostingRepository` -> `SqlAlchemyJobPostingRepository` (ADR-0007).
+
+    Deferred import, for the same mapper-configuration reason `get_base_cv_repository` documents:
+    that module reads `JobPosting._id` as a plain attribute at *import* time to build its
+    `InstrumentedAttribute` casts, and those only exist once `configure_mappings()` has run.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+        SqlAlchemyJobPostingRepository,
+    )
+
+    return SqlAlchemyJobPostingRepository(session)
+
+
+JobPostingRepositoryDep = Annotated[JobPostingRepository, Depends(get_job_posting_repository)]
+
+
+def get_job_posting_fetcher(settings: SettingsDep) -> JobPostingFetcherPort:
+    """Binds `JobPostingFetcherPort` -> `HttpxTrafilaturaFetcher` (ADR-0012).
+
+    **`TargetAddressPolicy.strict()` is named explicitly here rather than left to the adapter's
+    default, and the redundancy is the point.** AC-9 asserts that production builds the strict
+    policy, and an assertion about a default is an assertion about a value nobody wrote down. Naming
+    it means the wiring test reads the same decision a human reviewer does, and that loosening it
+    would require editing this line — which is exactly the line a reviewer looks at.
+
+    The User-Agent is honest and identifying. We do not impersonate a browser: Constitution §5 closes
+    the anti-bot road and FR-2 makes the paste fallback the product's answer to a refusal. "Just set
+    a Chrome UA" is the reflexive fix the first time a 403 appears, months after this decision was
+    made, which is why it is written down at the point of temptation.
+    """
+    return HttpxTrafilaturaFetcher(
+        user_agent=f"TailorCraft/0.1 (+{settings.public_base_url})",
+        timeout_seconds=settings.posting_fetch_timeout_seconds,
+        connect_timeout_seconds=settings.posting_fetch_connect_timeout_seconds,
+        read_timeout_seconds=settings.posting_fetch_read_timeout_seconds,
+        max_bytes=settings.posting_fetch_max_bytes,
+        max_redirects=settings.posting_fetch_max_redirects,
+        extraction_timeout_seconds=settings.posting_extraction_timeout_seconds,
+        policy=TargetAddressPolicy.strict(),
+    )
+
+
+JobPostingFetcherDep = Annotated[JobPostingFetcherPort, Depends(get_job_posting_fetcher)]
+
+
+def get_posting_create_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds rows and Postgres writes. **Fails open** — the cost of an unlimited request here is
+    our own database, which is real but ours and bounded."""
+    return RedisFixedWindowRateLimiter(redis, namespace="posting:create", fail_open=True)
+
+
+PostingCreateRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_posting_create_rate_limiter)
+]
+
+
+def get_posting_fetch_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds outbound requests made from our server's IP. **Fails closed** — the cost is someone
+    else's infrastructure, and an unbounded outbound endpoint with no backstop is how a server ends
+    up on a job board's blocklist (ADR-0012's consequences)."""
+    return RedisFixedWindowRateLimiter(redis, namespace="posting:fetch", fail_open=False)
+
+
+PostingFetchRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_posting_fetch_rate_limiter)
+]
+
+
+def get_capture_job_posting(
+    postings: JobPostingRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    fetcher: JobPostingFetcherDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> CaptureJobPosting:
+    return CaptureJobPosting(
+        postings,
+        sessions,
+        fetcher,
+        events,
+        clock,
+        max_per_session=settings.max_job_postings_per_session,
+    )
+
+
+CaptureJobPostingDep = Annotated[CaptureJobPosting, Depends(get_capture_job_posting)]
+
+
+def get_get_job_posting(
+    postings: JobPostingRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    clock: ClockDep,
+) -> GetJobPostingForSession:
+    return GetJobPostingForSession(postings, sessions, clock)
+
+
+GetJobPostingDep = Annotated[GetJobPostingForSession, Depends(get_get_job_posting)]
+
+
+def get_list_job_postings(
+    postings: JobPostingRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    clock: ClockDep,
+) -> ListJobPostingsForSession:
+    return ListJobPostingsForSession(postings, sessions, clock)
+
+
+ListJobPostingsDep = Annotated[ListJobPostingsForSession, Depends(get_list_job_postings)]
