@@ -25,11 +25,29 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from ipaddress import IPv4Address, IPv4Network, IPv6Address
+from typing import Final
 
 # Carrier-grade NAT (RFC 6598). `ipaddress` has no `is_cgnat` property, so this is the one range the
 # policy has to name for itself — which is exactly why it is a named constant with a citation rather
 # than a magic string buried in a comparison.
 _CGNAT_RANGE = IPv4Network("100.64.0.0/10")
+
+# The ONLY ranges `allow_private=True` widens: RFC 1918 plus loopback. Named explicitly rather than
+# reached through `is_private`, and that is not a style preference — `IPv4Address.is_private`
+# INCLUDES link-local (`169.254.0.0/16`), verified against the installed CPython:
+#
+#     IPv4Address("169.254.169.254").is_private  ->  True
+#
+# so a permissive branch written as `is_loopback or is_private` silently re-admits the cloud
+# metadata endpoint, which is the one address this whole module exists to keep out of reach. That
+# exact bug was written here first and caught by driving the fetcher against a stub server; the
+# named list is what makes it unwritable.
+_TEST_WIDENED_RANGES: Final = (
+    IPv4Network("127.0.0.0/8"),
+    IPv4Network("10.0.0.0/8"),
+    IPv4Network("172.16.0.0/12"),
+    IPv4Network("192.168.0.0/16"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +84,45 @@ class TargetAddressPolicy:
         """
         if not addresses:
             return False
-        if self.allow_private:
+        return all(self._is_allowed(address) for address in addresses)
+
+    def _is_allowed(self, address: IPv4Address | IPv6Address) -> bool:
+        """One address, under this policy's setting.
+
+        **`allow_private` widens the loopback and RFC-1918 ranges and NOTHING else**, which is
+        narrower than the name might suggest and narrower than the first version of this class. That
+        version short-circuited to `True` for every address, and two things were wrong with it.
+
+        The first is testability: the adapter's end-to-end tests need a stub server on loopback, and
+        AC-7 needs a redirect from that server to `169.254.169.254` to be **refused at the hop**. If
+        the permissive policy allows everything, that criterion cannot be exercised at all — the
+        redirect would be followed and the test would prove the opposite of what it claims.
+
+        The second matters more. `169.254.169.254` is the cloud metadata endpoint, and with the
+        old shape the test seam could reach it. Narrowing this means **no policy this codebase is
+        able to construct — strict or permissive, in `src/` or in a test — will connect to a
+        link-local, multicast, reserved, CGNAT or unspecified address.** The seam widens exactly the
+        two ranges a local stub server actually lives in, and the address SSRF exists to reach stays
+        out of reach in every configuration.
+        """
+        if not self.allow_private:
+            return self._is_public(address)
+
+        unwrapped = self._unwrap(address)
+        if isinstance(unwrapped, IPv4Address) and any(
+            unwrapped in widened for widened in _TEST_WIDENED_RANGES
+        ):
             return True
-        return all(self._is_public(address) for address in addresses)
+        if isinstance(unwrapped, IPv6Address) and unwrapped.is_loopback:
+            return True
+        return self._is_public(address)
+
+    @staticmethod
+    def _unwrap(address: IPv4Address | IPv6Address) -> IPv4Address | IPv6Address:
+        """Judge an IPv4-mapped IPv6 address as the IPv4 address the kernel will connect to."""
+        if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+            return address.ipv4_mapped
+        return address
 
     @staticmethod
     def _is_public(address: IPv4Address | IPv6Address) -> bool:
@@ -105,8 +159,7 @@ class TargetAddressPolicy:
         blocks, deliberately: the standard library tracks the IANA special-purpose registries, and a
         hand-rolled list is a snapshot that rots silently.
         """
-        if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
-            address = address.ipv4_mapped
+        address = TargetAddressPolicy._unwrap(address)
 
         if (
             address.is_loopback
