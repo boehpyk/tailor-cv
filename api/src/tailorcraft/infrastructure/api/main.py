@@ -88,7 +88,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # sending `Expect: 100-continue` is still waiting for permission when the refusal arrives — see
     # `middleware.py` for why a cap enforced only inside the handler never achieved that.
     # Every route pays this check except `/health/*`, which polls far more often than anyone uploads.
-    app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_upload_bytes)
+    app.add_middleware(
+        MaxBodySizeMiddleware,
+        max_bytes=settings.max_upload_bytes,
+        json_max_bytes=settings.json_request_max_bytes,
+    )
 
     if settings.cors_origin_list:
         # An explicit origin list, never a wildcard. Cookies carry the refresh token (ADR-0008) and
