@@ -10,19 +10,56 @@ All frozen `@dataclass(frozen=True, slots=True)`, validating in `__post_init__`,
 Never Pydantic (ADR-0002): a `BaseModel` here would drag JSON aliases and `model_config` into
 business rules that have nothing to do with the HTTP boundary.
 
-**SKELETON (T1).** Every `__post_init__` and every property here raises `NotImplementedError` on
-purpose. The signatures and field types are real so that `qa`'s tests fail on their *assertion*
-rather than on an `ImportError` — an import red proves a file is absent, not that the assertion
-discriminates (docs/sdlc.md §2). The bodies arrive in T3, after the red is recorded. The three types
-that have nothing to defer — two enums and one plain carrier — are written whole here, for the same
-reason `CvContentType` was: there is no behaviour to fail, so there is nothing to stub.
+Three of these types validate; three do not. `PostingSource`, `FetchedPosting` and
+`FetchFailureReason` have no rule to enforce — a closed enum and a carrier of already-validated
+value objects — so they were written whole at the skeleton step and no test of theirs was ever red.
+That is the tiered cycle working rather than a hole in it (docs/sdlc.md §2): there was nothing to
+stub, so there was nothing that could have failed.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID
+
+# The longest URL a visitor may submit, inclusive. It bounds what a stranger can push into a
+# persisted column and into a log line; 2,048 is the de-facto ceiling browsers and proxies have
+# converged on, so a URL longer than this would not have survived the trip here anyway.
+_MAX_SOURCE_URL_LENGTH = 2048
+
+# The scheme allow-list, and the reason `SourceUrl` is a type at all. See the class docstring.
+_ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
+
+# `JobPostingText`'s two bounds, which count two different things on purpose — see the class
+# docstring for the decision and the tie-breaker that settled it.
+_MIN_POSTING_NON_WHITESPACE_CHARACTERS = 100
+_MAX_POSTING_NORMALIZED_LENGTH = 30_000
+
+_MAX_POSTING_TITLE_LENGTH = 200
+
+
+def _has_control_character(value: str) -> bool:
+    """True if `value` holds a C0 control character, DEL, or NUL.
+
+    NUL is the one worth naming: it is a C-side string terminator, so a value carrying one can mean
+    two different things to two different readers of the same bytes. `PostingTitle` uses this alone
+    — after normalization a title still legitimately contains single spaces, so it must reject the
+    controls without rejecting whitespace.
+    """
+    return any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+
+
+def _has_control_or_whitespace(value: str) -> bool:
+    """True if `value` holds any whitespace *or* a control character — `SourceUrl`'s rule, where a
+    URL is one unbroken token and all three are rejections.
+
+    `str.isspace()` does the whitespace half rather than a literal set, because it covers the
+    Unicode separators — NEL, NBSP, the line separator — that a copy-paste out of a rendered page
+    carries and a hand-written `{" ", "\\t", "\\n"}` misses.
+    """
+    return any(char.isspace() for char in value) or _has_control_character(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,15 +123,72 @@ class SourceUrl:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). T3 fills this in. When it does, the errors it raises must be imported
-        # *inside* this method, not at module scope: `domain/posting/errors.py` imports
-        # `FetchFailureReason` from this module, so a module-level import back the other way would
-        # make the two modules import each other during collection and whichever loaded first would
-        # ask for names the other has not defined yet. `OriginalFilename.__post_init__` in
-        # `domain/intake/value_objects.py` carries the same comment for the same cycle. That is a
-        # local decision about this module's import shape, not a domain-purity exception —
-        # `errors` is still `tailorcraft.domain`.
-        raise NotImplementedError
+        # Deferred (function-local) import to break a module cycle: `domain/posting/errors.py`
+        # imports `FetchFailureReason` from this module, so importing `errors` back at module scope
+        # here would make the two modules import each other during collection — whichever loads
+        # first would ask for names the other hasn't defined yet. Importing inside the method
+        # instead defers the import to call time, by which point both modules have finished
+        # loading. This is a local decision about *this* module's import shape, not a domain-purity
+        # exception — `errors` is still `tailorcraft.domain`, so the purity test is unaffected.
+        # `OriginalFilename.__post_init__` carries the same comment for the same cycle.
+        from tailorcraft.domain.posting.errors import InvalidSourceUrl
+
+        raw = self.value
+
+        # --- The raw string is checked BEFORE anything parses it, and that order is the whole
+        # point of these three lines. `urllib.parse.urlsplit` *removes* tab, CR and LF from its
+        # input before parsing (a CPython hardening fix for header injection), so
+        # `urlsplit("https://exa\nmple.com/jobs")` hands back a spotless host of `example.com` and
+        # the newline vanishes without a trace. A validator that inspects the parse result would
+        # accept that string while every consumer downstream still holds the original — with the
+        # newline in it. Validating the raw string first is what closes that gap, and it is exactly
+        # the kind of "redundant-looking" line a later reader would tidy away, so: do not move
+        # these below the `urlsplit` call.
+        if not raw:
+            raise InvalidSourceUrl("url must not be empty")
+        if len(raw) > _MAX_SOURCE_URL_LENGTH:
+            raise InvalidSourceUrl(
+                f"url must be at most {_MAX_SOURCE_URL_LENGTH} characters, got {len(raw)}"
+            )
+        if _has_control_or_whitespace(raw):
+            raise InvalidSourceUrl("url must not contain whitespace, control characters or NUL")
+
+        try:
+            split = urlsplit(raw)
+            scheme = split.scheme.lower()
+            hostname = split.hostname
+            username = split.username
+            password = split.password
+            port = split.port
+        except ValueError as error:
+            # `urlsplit` and its lazily-parsed `hostname`/`port` properties raise `ValueError` on
+            # a malformed authority (an unbracketed IPv6 literal, a non-numeric port). Re-raised as
+            # the domain's own error `from None`, so a stranger's URL cannot reach a Sentry frame
+            # via the original exception's `__context__` — the same discipline the extractor's
+            # catch-all follows (CLAUDE.md, the LLM/adapter boundary).
+            del error
+            raise InvalidSourceUrl("url is not parseable") from None
+
+        if scheme not in _ALLOWED_URL_SCHEMES:
+            raise InvalidSourceUrl(f"url scheme must be http or https, not {scheme!r}")
+        if not hostname:
+            raise InvalidSourceUrl("url must have a hostname")
+        if username is not None or password is not None:
+            # Deliberately says nothing about the value: the rejected string contains a credential
+            # (P-9 is the one failure row that logs *nothing* about the URL, not even the host).
+            raise InvalidSourceUrl("url must not contain userinfo")
+
+        # Normalize. `split.hostname` is already lowercased by `urlsplit`; the scheme is lowercased
+        # above; the path, query and everything else keep their case, because RFC 3986 makes only
+        # the scheme and the host case-insensitive and lowercasing `/Path` would fetch a different
+        # page or a 404. The fragment is dropped by passing "" as the last component — it is never
+        # sent on the wire, so persisting one would keep a detail the visitor did not mean to give
+        # us, in a row that is already PII-adjacent.
+        netloc = f"[{hostname}]" if ":" in hostname else hostname  # bracket an IPv6 literal back up
+        if port is not None:
+            netloc = f"{netloc}:{port}"
+
+        object.__setattr__(self, "value", urlunsplit((scheme, netloc, split.path, split.query, "")))
 
     @property
     def host(self) -> str:
@@ -105,8 +199,18 @@ class SourceUrl:
         example.com") is enough to debug a fetch without recording anyone's job hunt. Callers should
         reach for this property rather than slicing `value`, so that "log the host, never the URL"
         is a thing the type makes easy instead of a rule someone has to remember.
+
+        The host, not the authority: any port is excluded. A `host` of `example.com:8443` would key
+        log lines and any future per-host metric differently for the same site depending on whether
+        the visitor happened to type the port.
         """
-        raise NotImplementedError
+        hostname = urlsplit(self.value).hostname
+        # `__post_init__` refuses any value without a hostname and rewrites `value` from the parsed
+        # parts, so `None` is unreachable on a constructed `SourceUrl`. The branch exists because
+        # `.hostname` is typed `str | None` and `mypy --strict` is right to make us say what
+        # happens; answering with `""` rather than an exception keeps the logging call site — the
+        # only caller — from being where a would-be impossible state surfaces as a second failure.
+        return hostname if hostname is not None else ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,9 +260,38 @@ class JobPostingText:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). See `SourceUrl.__post_init__` for why T3's error imports go inside the
-        # method body rather than at module scope.
-        raise NotImplementedError
+        # See `SourceUrl.__post_init__` for why this import is function-local rather than
+        # module-level: `errors.py` imports `FetchFailureReason` from this module, so a
+        # module-level import in the other direction would be a circular import at collection time.
+        from tailorcraft.domain.posting.errors import (
+            EmptyJobPostingText,
+            JobPostingTextTooLong,
+            JobPostingTextTooShort,
+        )
+
+        # `str.split()` with no argument already treats any run of whitespace (spaces, tabs,
+        # newlines) as one separator and drops leading/trailing whitespace, so re-joining with a
+        # single space collapses everything in one pass. Same call `ExtractedText` makes.
+        normalized = " ".join(self.value.split())
+        non_whitespace_count = sum(1 for char in normalized if not char.isspace())
+
+        if not normalized:
+            raise EmptyJobPostingText("job posting text must not be blank")
+        # The floor counts non-whitespace; the ceiling counts the normalized length. Two different
+        # quantities, on purpose — see the class docstring for the decision and why the UI counter
+        # broke the tie. Do not "simplify" these to one measure.
+        if non_whitespace_count < _MIN_POSTING_NON_WHITESPACE_CHARACTERS:
+            raise JobPostingTextTooShort(
+                f"job posting text has only {non_whitespace_count} non-whitespace characters; "
+                f"the floor is {_MIN_POSTING_NON_WHITESPACE_CHARACTERS} (OQ-5)"
+            )
+        if len(normalized) > _MAX_POSTING_NORMALIZED_LENGTH:
+            raise JobPostingTextTooLong(
+                f"job posting text is {len(normalized)} characters; "
+                f"the ceiling is {_MAX_POSTING_NORMALIZED_LENGTH}"
+            )
+
+        object.__setattr__(self, "value", normalized)
 
     @property
     def character_count(self) -> int:
@@ -179,7 +312,7 @@ class JobPostingText:
         against it are the same quantity. See the class docstring for why the tie was broken this
         way — it is the one place the two counts had to agree and could not both win.
         """
-        raise NotImplementedError
+        return len(self.value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,9 +332,31 @@ class PostingTitle:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). See `SourceUrl.__post_init__` for why T3's error imports go inside the
-        # method body rather than at module scope.
-        raise NotImplementedError
+        # See `SourceUrl.__post_init__` for why this import is function-local rather than
+        # module-level: it breaks the `value_objects` ↔ `errors` module cycle.
+        from tailorcraft.domain.posting.errors import InvalidPostingTitle
+
+        # Normalize first, then measure. A `<title>` pretty-printed across two indented lines is
+        # padded with whitespace that is about to be thrown away, and checking the raw length would
+        # reject a perfectly good 200-character title for four spaces it does not keep.
+        normalized = " ".join(self.value.split())
+
+        if not normalized:
+            raise InvalidPostingTitle("posting title must not be blank")
+        if len(normalized) > _MAX_POSTING_TITLE_LENGTH:
+            raise InvalidPostingTitle(
+                f"posting title must be at most {_MAX_POSTING_TITLE_LENGTH} characters, "
+                f"got {len(normalized)}"
+            )
+        # Controls only, not `_has_control_or_whitespace`: normalization collapses whitespace runs
+        # to single spaces rather than deleting them, so a normalized title legitimately contains
+        # spaces and the URL predicate would reject every multi-word job title. What must still go
+        # is the control characters a `<title>` tag has no business carrying — a NUL above all,
+        # which truncates a C-side string and quietly changes what a downstream reader sees.
+        if _has_control_character(normalized):
+            raise InvalidPostingTitle("posting title must not contain control characters or NUL")
+
+        object.__setattr__(self, "value", normalized)
 
 
 class PostingSource(StrEnum):
