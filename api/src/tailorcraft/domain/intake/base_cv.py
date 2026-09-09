@@ -66,8 +66,8 @@ class BaseCv(RecordsEvents):
     `UploadBaseCv` use case instead, with a comment there saying why it is not on this class.
     """
 
-    # Class-level annotations only (no assignment): with no `__init__` override, this is how
-    # mypy --strict learns the attribute types that `upload` sets directly on `self` and the
+    # Class-level annotations only (no assignment): the `__init__` below sets nothing, so this is
+    # how mypy --strict learns the attribute types that `upload` sets directly on `self` and the
     # properties below read back. SQLAlchemy's imperative mapping targets these exact names.
     _id: BaseCvId
     _guest_session_id: GuestSessionId
@@ -81,12 +81,34 @@ class BaseCv(RecordsEvents):
     _uploaded_at: datetime
     _extracted_at: datetime | None
 
-    # No `__init__` override. `upload` is the only way application code builds a valid instance —
-    # calling `BaseCv(...)` directly falls through to `object.__init__`, which rejects any keyword
-    # argument, so "the only constructor is `upload`" is enforced by the absence of a constructor
-    # here rather than by convention. SQLAlchemy's imperative mapping does not need `__init__`
-    # either: it rehydrates a mapped instance by instrumenting `__dict__` directly and never calls it
-    # on the load path (ADR-0007).
+    def __init__(self) -> None:
+        """Takes nothing and does nothing. Build a `BaseCv` with `upload`.
+
+        **An empty constructor looks like something to delete, so here is why it must stay.** This
+        class used to define no `__init__` at all and rely on `object.__init__` rejecting keyword
+        arguments — that absence was the whole mechanism behind "`upload` is the only constructor".
+
+        The absence stops working the moment the class is mapped, which this one is.
+        `registry.map_imperatively` installs a default constructor on a mapped class *that does not
+        define one*, and that constructor accepts the **mapped attribute names**, so
+        `BaseCv(_size_bytes=5)` was constructible — bypassing `upload` and every rule it enforces.
+
+        Found while building slice 1.2, when the identical hole in `JobPosting` was caught by a test
+        the moment its mapping was registered. `domain/posting/job_posting.py::JobPosting.__init__`
+        carries the full account, including the two fixes that do **not** work: a raising `__init__`
+        breaks the named constructor (a mapped class must be built through `cls()`, because
+        SQLAlchemy's instrumentation wrapper is what attaches `_sa_instance_state`), and a private
+        sentinel parameter would be persistence leaking into the domain.
+
+        A no-argument `__init__` restores the guarantee exactly and is the smallest thing that does:
+        the mapper leaves a user-defined constructor alone, so any argument — public property name
+        or private mapped name — is now a `TypeError` from Python's own signature check. The body is
+        empty because there is nothing to initialise; `upload` assigns every attribute itself.
+        """
+
+    # SQLAlchemy's imperative mapping does not need a constructor at all: it rehydrates a mapped
+    # instance through `__new__`, instrumenting `__dict__` directly, and never calls `__init__` on
+    # the load path (ADR-0007). The constructor above is for *application* code only.
 
     @classmethod
     def upload(
