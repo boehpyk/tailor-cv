@@ -99,14 +99,54 @@ class JobPosting(RecordsEvents):
     _text: JobPostingText
     _created_at: datetime
 
-    # No `__init__` override, and the absence is load-bearing. `from_pasted_text` and
-    # `from_fetched_url` are the only ways application code builds a valid instance — calling
-    # `JobPosting(...)` directly falls through to `object.__init__`, which rejects any keyword
-    # argument, so "there are exactly two constructors" (the mechanism behind J-2) is enforced by
-    # there being no constructor here rather than by convention or a comment. `GuestSession` uses
-    # the same absence for the same purpose. SQLAlchemy's imperative mapping does not need
-    # `__init__` either: it rehydrates a mapped instance by instrumenting `__dict__` directly and
-    # never calls it on the load path (ADR-0007).
+    def __init__(self) -> None:
+        """Takes nothing and does nothing. Build a `JobPosting` with `from_pasted_text` or
+        `from_fetched_url`.
+
+        **An empty constructor looks like something to delete, so here is why it must stay.** The
+        original design defined no `__init__` at all and relied on `object.__init__` rejecting
+        keyword arguments — that absence was the entire mechanism behind "there are exactly two
+        constructors", which every J-2 and J-4 argument rests on. `BaseCv` and `GuestSession` still
+        rely on it and say so.
+
+        The absence stops working the moment the class is mapped. `registry.map_imperatively`
+        installs a default constructor on a mapped class *that does not define one*, and that
+        constructor accepts the **mapped attribute names**. So with the mapping registered and no
+        `__init__` here, this became perfectly legal:
+
+            JobPosting(_source=PostingSource.PASTED, _source_url=SourceUrl("https://x.com/j"))
+
+        — a third way to build one, setting `source` and `source_url` independently, which is
+        precisely the state J-2 exists to make unrepresentable. It was caught by
+        `test_job_posting_cannot_be_constructed_directly`, whose docstring had already named
+        SQLAlchemy as a way someone might add an `__init__` and dismantle the rule quietly; it went
+        red the hour the mapping was registered.
+
+        Defining a **no-argument** `__init__` restores the guarantee exactly, and is the smallest
+        thing that does. `map_imperatively` leaves a user-defined constructor alone, so the mapper's
+        kwargs-accepting one is never installed, and any argument — public property name or private
+        mapped name — is now a `TypeError` from Python's own signature check. The body stays empty
+        because there is genuinely nothing to initialise: both named constructors assign the seven
+        attributes themselves, and `RecordsEvents.record` creates its buffer lazily.
+
+        Three things this deliberately does **not** do, each rejected for a reason:
+
+        - It does not `raise`. A raising `__init__` would also break the two named constructors,
+          because a mapped class must be instantiated through `cls()` — SQLAlchemy's instrumentation
+          wraps `__init__` and that wrapper is what attaches `_sa_instance_state`. Bypassing it with
+          `cls.__new__(cls)` produces `AttributeError: 'NoneType' object has no attribute 'set'` on
+          the first attribute assignment. Verified, not guessed.
+        - It does not take a private sentinel to distinguish "called by a named constructor" from
+          "called by a stranger". That would work, and it would be persistence leaking into the
+          domain: a parameter existing solely to defeat a constructor that an ORM installs.
+        - It does not make this class the only line of defence. `posting_job_posting` carries a
+          CHECK constraint enforcing the same rule, so even a malformed in-memory instance cannot
+          be stored (AC-21). Two independent mechanisms, which is what J-2 deserves.
+        """
+
+    # SQLAlchemy's imperative mapping does not need a constructor at all: it rehydrates a mapped
+    # instance through `__new__`, instrumenting `__dict__` directly, and never calls `__init__` on
+    # the load path (ADR-0007). The constructor above is for *application* code only.
 
     @classmethod
     def from_pasted_text(
