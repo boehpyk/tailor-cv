@@ -1,9 +1,5 @@
 """The `CaptureJobPosting` use case: accept a job description, pasted or fetched.
 
-**SKELETON (T8).** `__call__` raises `NotImplementedError`; its body arrives at T10, after `qa`
-records the red. The command and result dataclasses are written whole — a frozen dataclass's field
-list is its entire contract, so there is nothing in one that could fail an assertion.
-
 One use case, two commands, one `__call__` with a `match` — deliberately not two use case classes.
 The two paths differ in exactly one step (where the text comes from) and agree on five: resolve the
 session, check it has not expired, check the per-session cap, save, publish. Splitting them would
@@ -16,9 +12,13 @@ first structural pattern match (Constitution §2).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
+from tailorcraft.domain.identity.errors import GuestSessionExpired
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.posting.errors import TooManyJobPostings
+from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
 from tailorcraft.domain.posting.value_objects import (
     JobPostingId,
@@ -122,7 +122,76 @@ class CaptureJobPosting:
         self._max_per_session = max_per_session
 
     async def __call__(self, cmd: CaptureJobPostingCommand) -> CaptureJobPostingResult:
-        raise NotImplementedError
+        session = await self._sessions.get(cmd.guest_session_id)
+        if session.is_expired(self._clock.now()):
+            raise GuestSessionExpired(str(session.id))
+
+        # Cross-aggregate policy, deliberately not an invariant of `JobPosting`: the rule spans
+        # every posting a session owns, a fact no single instance has access to. A soft cap —
+        # concurrent requests can overshoot it by the number in flight, which is accepted and
+        # documented rather than locked, exactly as `TooManyBaseCvs` is (P-32).
+        if await self._postings.count_for_session(session.id) >= self._max_per_session:
+            raise TooManyJobPostings(str(session.id))
+
+        posting_id = self._postings.next_identity()
+        created_at = self._clock.now()
+
+        # The codebase's first structural pattern match, and the reason this is one use case rather
+        # than two: everything above and below is shared, and only this block differs.
+        match cmd:
+            case PasteJobPostingCommand():
+                posting = JobPosting.from_pasted_text(
+                    id=posting_id,
+                    guest_session_id=session.id,
+                    text=cmd.text,
+                    created_at=created_at,
+                )
+            case FetchJobPostingCommand():
+                # `JobPostingFetchFailed` is deliberately NOT caught here, and this is the one line
+                # in the file most likely to be "fixed" by someone who has just read `UploadBaseCv`.
+                #
+                # That use case wraps `extractor.extract` in `try/except CvExtractionFailed` and
+                # turns a failure into `cv.mark_extraction_failed(...)` — a recorded state of an
+                # aggregate that exists either way. Doing the same here would be wrong, because the
+                # two situations differ in the thing that matters: a failed extraction still leaves
+                # a `BaseCv` row that is the receipt for bytes sitting on a volume, while a failed
+                # fetch holds nothing at all — no bytes, no text, no file. A row here would record
+                # an *event*, and this codebase has domain events for that.
+                #
+                # It also protects slice 1.3: "a `JobPosting` always has usable text" is what lets
+                # the tailoring use case skip a `None` check that would otherwise be in every
+                # consumer forever. See ADR-0013. `qa` asserts this propagation over all nine
+                # subclasses, so the "fix" turns nine tests red rather than passing silently.
+                fetched = await self._fetcher.fetch(cmd.url)
+                posting = JobPosting.from_fetched_url(
+                    id=posting_id,
+                    guest_session_id=session.id,
+                    url=cmd.url,
+                    fetched=fetched,
+                    created_at=created_at,
+                )
+            case _:  # pragma: no cover — unreachable while the union has exactly two members
+                # `assert_never` is what turns "I handled every case" from a claim into a check.
+                # mypy narrows `cmd` to `Never` here only if the two cases above are exhaustive; add
+                # a third command to `CaptureJobPostingCommand` without a `case` for it and this
+                # line becomes a type error naming the type that was missed. Without it, the same
+                # mistake is an `UnboundLocalError` at runtime, on whichever request happens to use
+                # the new command — and mypy's `possibly-undefined` already flagged exactly that
+                # gap here, which is how this line came to be written.
+                assert_never(cmd)
+
+        await self._postings.add(posting)
+
+        # Released and published only after the aggregate is saved — never before, so a publish
+        # never announces a fact that a failed save is about to un-happen.
+        await self._events.publish(*posting.release_events())
+
+        return CaptureJobPostingResult(
+            job_posting_id=posting.id,
+            source=posting.source,
+            character_count=posting.text.character_count,
+            title=posting.title,
+        )
 
 
 __all__ = [

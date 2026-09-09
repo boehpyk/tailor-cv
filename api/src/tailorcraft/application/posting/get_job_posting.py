@@ -1,8 +1,6 @@
 """The `GetJobPostingForSession` use case: read one `JobPosting`, authorized by the link to its
 session.
 
-**SKELETON (T11).** `__call__` raises `NotImplementedError`; the body arrives at T13.
-
 A use case rather than `postings.get(id)` called straight from a router, **because it carries the
 authorization rule** (ADR-0008, ADR-0010):
 
@@ -19,8 +17,10 @@ caller eventually forgets.
 
 from __future__ import annotations
 
+from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.posting.errors import JobPostingNotFound, JobPostingNotOwnedBySession
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.ports import JobPostingRepository
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -59,4 +59,18 @@ class GetJobPostingForSession:
     async def __call__(
         self, job_posting_id: JobPostingId, guest_session_id: GuestSessionId
     ) -> JobPosting:
-        raise NotImplementedError
+        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
+
+        posting = await self._postings.get(job_posting_id)
+
+        if posting.guest_session_id != session.id:
+            # "Not mine" must be indistinguishable from "does not exist" at this boundary
+            # (P-30/AC-14, ADR-0008): the public exception is `JobPostingNotFound`, the same type a
+            # missing id raises, because a 403 here would confirm to an attacker that the id exists.
+            # The distinction survives only on `__cause__`, where this use case's own tests can see
+            # it and nothing that crosses the wire can.
+            raise JobPostingNotFound(str(job_posting_id)) from JobPostingNotOwnedBySession(
+                str(job_posting_id)
+            )
+
+        return posting

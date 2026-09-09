@@ -1,7 +1,5 @@
 """The `ListJobPostingsForSession` use case: every `JobPosting` a guest session owns.
 
-**SKELETON (T11).** `__call__` raises `NotImplementedError`; the body arrives at T13.
-
 A use case rather than a bare `postings.list_for_session(sid)` for the same reason
 `GetJobPostingForSession` is one: it carries the authorization rule. Here the rule is enforced **by
 construction** rather than by a per-row comparison — the link (`posting.guest_session_id == the
@@ -18,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -47,4 +46,8 @@ class ListJobPostingsForSession:
         self._clock = clock
 
     async def __call__(self, guest_session_id: GuestSessionId) -> Sequence[JobPosting]:
-        raise NotImplementedError
+        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
+        # Note what is passed: `session.id`, the id this use case just resolved — never an id the
+        # caller supplied. That is the whole authorization rule for a list endpoint, and it is
+        # enforced by there being nothing else available to pass.
+        return await self._postings.list_for_session(session.id)
