@@ -511,6 +511,180 @@ subclass, so it would have escaped the use case's `except` and become exactly th
 that ADR-0004 exists to forbid. The plan lost to its own failure contract, which had already said
 `too_short`.
 
+## Day five: the review that found the bug the tests were built to miss
+
+Slice 1.1 arrived at `/verify` looking finished. Every task ticked, 220 tests green, green twice in a
+row, every one of the 24 failure-contract rows with a test pointing at it. The gates had nothing to
+say. Then the reviewer found two CRITICALs in an hour, and neither of them was the kind of thing a
+test suite finds — because both were bugs about the *shape* of the code, not its behaviour on any
+input anyone had thought to try.
+
+### The allow-list was a bet, and it was already losing
+
+`CvTextExtractorPort` makes a promise in its docstring: raises a `CvExtractionFailed` subclass on
+**every** failure. `UploadBaseCv` believes it — it catches that one type and nothing else. And the
+adapter delivered on that promise by listing the exceptions it knew about: `PdfReadError`,
+`BadZipFile`, `PackageNotFoundError`, `FileNotDecryptedError`.
+
+Spot the assumption. That list is a claim to have enumerated every way two third-party parsers can
+fail on a file a stranger chose. The reviewer tested the claim the only way it can be tested — it
+corrupted 300 random copies of the sample CV and ran them all through. Twenty-one escaped:
+`KeyError`, `AttributeError`, `ValueError`, `LimitReachedError`. Every one of those became a 500,
+with the user's CV already written to disk and no database row pointing at it — the precise outcome
+ADR-0004 exists to forbid, in the codebase that wrote ADR-0004.
+
+Here is the part worth carrying to every other project you work on. The comment in the router already
+said `EXTRACTOR_ERROR` was "the catch-all for a timeout **or an unexpected library failure**". The
+enum member existed. The user-facing message existed. Everything about the design was right, and the
+one line that would have made it true had never been written. **A comment describing behaviour no
+code path produces is worse than no comment**, because it stops the next reader from checking.
+
+The fix is four lines. The lesson is a habit: when you translate a third-party library's exceptions
+into your own, the allow-list goes on top and a catch-all goes underneath. Not defensive
+programming — the allow-list *is* the guess, and the floor is what makes the port's promise true by
+construction instead of by optimism.
+
+### The privacy bug hiding inside the availability bug
+
+That would have been a MAJOR. What made it CRITICAL was where the escaping exception was going.
+
+We were careful about Sentry. `send_default_pii=False`. `max_request_body_size="never"`. Both set in
+Phase 0, both correct, and both entirely beside the point — because `sentry_sdk` also defaults
+`include_local_variables=True`, and that is a *different* setting governed by nothing we had
+configured. An exception escaping the extractor carries a traceback, a traceback carries frames, and
+those frames held `data: bytes` (the whole CV), `raw_text: str` (the extracted text) and the original
+filename. On any box with a DSN, one corrupt upload would have shipped a stranger's complete CV and
+their name to a third-party service.
+
+Two settings that *sound* like they cover PII, one that actually decides it. This is the anatomy of
+most privacy failures: not an absent control, but a control whose name suggested a wider scope than
+it had, next to a default nobody read. The next time you write `send_default_pii=False` and feel
+covered, go and read what the library does with frame locals.
+
+The fix was `raise CvExtractionFailed(...) from None`. And I checked the mechanism rather than
+believing the explanation — `sentry_sdk.utils.walk_exception_chain` genuinely branches on
+`__suppress_context__` and stops when `__cause__` is `None`, so the frame holding the CV is
+unreachable from the report. Worth noting the reviewer's own footnote on it: with the catch-all in
+place nothing escapes the use case anyway, so the `from None` protects a frame that can no longer be
+reached. That is the right order to build defence in — the belt does not become pointless because
+you also have braces.
+
+### Four hundred milliseconds, and no error anywhere
+
+The second CRITICAL: sniffing ran on the event loop.
+
+Deciding whether an upload is a DOCX means opening it as a zip and reading its namelist, and reading
+a zip's namelist means reading its entire central directory. So the cost of that "quick check" is
+chosen by whoever uploaded the file. A crafted archive of 100,000 tiny entries — 8.6 MB, comfortably
+under our 10 MB cap, not malicious in any way a scanner would notice — stalled the loop for **374
+milliseconds**. Not that request. *Every* request, for every concurrent user, including the health
+check.
+
+What makes this the most dangerous class of bug in an async codebase is the failure mode: there
+isn't one. Nothing errors. Nothing logs. The app is just slow, for everyone, occasionally, and you
+will look for that in the database. We had already learned this lesson — extraction and every single
+file-store syscall were correctly in `asyncio.to_thread`, and ADR-0009 even has a measurement proving
+it. Sniffing sat ten lines earlier in the same function and nobody looked at it, because it "isn't
+real work".
+
+One `asyncio.to_thread` later: 374 ms → 50 ms. And the residual 50 ms is itself worth understanding —
+that's GIL contention from pure-Python zip parsing, which is the same "threads buy you event-loop
+liveness, not throughput" effect ADR-0009 already recorded. Knowing which number is a fix and which
+is a known ceiling is the difference between engineering and cargo cult.
+
+I had also argued to myself that the rate limiter made this safe. It doesn't, and the distinction is
+worth keeping: **a rate limit bounds how often the loop is stalled, never whether it is stalled.**
+Thirty 400 ms stalls per IP per hour are still thirty stalls.
+
+### The agent that found the second instance
+
+Small thing, big signal. I handed the fix to `api-dev` with the extraction bug described. It fixed
+that — and then went and found the *same class of bug* in `_is_docx`, which caught only `BadZipFile`
+while its own docstring promised "this function never raises". A malformed zip central directory
+raises `struct.error`, `NotImplementedError('zip file version 17.2')`, `EOFError` and others
+depending on which field the corruption lands in. Each one was a 500 for a file whose only crime was
+not being a DOCX — which is a 415.
+
+Being handed one instance of a bug and returning with the class is the behaviour you want from a
+colleague, and it is worth naming when you see it.
+
+### The test that could not fail
+
+The most instructive finding of the day was the smallest, and it is about testing rather than code.
+
+AC-12 says nothing in this slice logs CV text. There was a test. It uploaded a clean PDF, grepped the
+logs for the fixture's name and email, and passed.
+
+It could not have done anything else. `pypdf` logs through the standard library from inside the
+extraction thread, and it only does so on files that are *damaged but still parseable* — and at least
+one of those call sites formats `repr()` of a raw line lifted straight out of the document. The test
+uploaded a clean file, so it never went near the only code path capable of producing the leak it
+claimed to guard. It was green for the same reason a smoke detector in a sealed box is quiet.
+
+The leak is real, and we captured it:
+`PdfReadError("Invalid Elementary Object starting with b'\x8a' @223: ...(Alex Rivera) Tj E'")` —
+a candidate's name, mid-log-line, from a library we do not control, straight into stdout.
+
+Then it got better. Writing the honest version of that test, `qa` discovered that
+`alembic/env.py`'s generated `fileConfig(...)` boilerplate sets `.disabled = True` on **24**
+pre-existing loggers — `pypdf`, `docx`, `celery`, `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` —
+none of which `alembic.ini` mentions. The migration fixture is session-scoped, so one migration run
+silenced those loggers for the entire suite. Which means: *any* test asserting "X never appears in
+the logs" could pass because nothing was logging at all, and any future test asserting something
+**is** logged would fail for a reason nobody would find quickly.
+
+Two independent silencing mechanisms, one deliberate and one accidental, and the accidental one was
+strong enough to make the deliberate one untestable. `qa` caught it, undid both explicitly in the
+test, and — this is the part I want to remember — **refused to ship the green version**, saying so in
+the report rather than presenting five passing tests. It also volunteered that the extended tests on
+the committed corrupt fixtures stayed green even with the guard removed, so the real discrimination
+rested on one crafted seed. Nobody would have caught that from the outside.
+
+Fixed at the source: `disable_existing_loggers=False`, with a comment explaining why a line of
+generated boilerplate was load-bearing. A trap that every future author has to *remember* is a trap
+with a longer fuse.
+
+### The red that wasn't
+
+One process failure, self-reported, and it belongs here precisely because nothing went wrong
+visibly.
+
+The frontend behavioural tests (T34) are a red-first tier. They never went red. The "skeleton" from
+T33 arrived as a working implementation with the plan's exact sentences already written into it, so
+all eight tests passed the moment they were written. A test that has never been observed failing has
+not been shown to discriminate — and worse, when the implementation already exists, the
+implementation rather than the acceptance criterion quietly becomes the thing the assertion is
+copied from.
+
+The commit says all of this in its own message instead of claiming a red it did not get, and
+substitutes four documented mutations — delete the retention sentence, un-disable the button, break
+each error branch — each confirmed to kill the right tests. That is real evidence, and it is weaker
+in one specific way the commit names better than I would have: *a mutation proves the test notices a
+change you thought of; a red proves the assertion discriminated before the code existed.*
+
+The correction for 1.2 is one sentence: **a skeleton for a red-first React tier renders the structure
+with placeholder copy, never the finished sentences the test is about to assert.**
+
+### The common thread, a third time
+
+Day two's bugs were about state you forgot existed. Day four's were about the harness checking
+something other than what it claimed. Day five's are about **promises**.
+
+Every finding was a place where something asserted a guarantee it did not have: a port's docstring
+promising to translate every failure, backed by a list of four; a function promising "never raises",
+backed by one exception type; a Sentry setting whose name implied it covered PII; a comment
+describing a catch-all that didn't exist; a test whose name promised it guarded a privacy rule it
+could not reach; a red-first cycle that produced no red. In each case the code and the claim about
+the code had drifted apart, and only the claim was visible to a reader.
+
+Which is the argument for the whole apparatus — the reviewer, the mutations, the sweeps. Tests tell
+you the code does what it does. Almost nothing except a second pair of eyes tells you the code does
+what it *says*.
+
+One habit generalises out of all six: when you write a promise down — in a docstring, a comment, a
+test name — ask what would have to be true for it to be false, and then go and check that. That is
+the entire method, and it found two CRITICALs in a slice that passed every gate we had.
+
 ## What's next
 
 Slice 1.2, the job posting: a URL goes in, a description comes out, and with it the SSRF guard —

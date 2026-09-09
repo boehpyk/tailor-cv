@@ -171,8 +171,14 @@ class BaseCvStatus(StrEnum):
 class ExtractionFailureReason(StrEnum):
     """Why `CvTextExtractorPort.extract` failed, recorded on the aggregate as a state rather than
     left as an escaped exception (ADR-0004) — the same shape `TailoringRun` needs in 1.3 for a
-    failed LLM call. Each member has exactly one `CvExtractionFailed` subclass that binds it in
-    `domain/intake/errors.py`."""
+    failed LLM call. Every member except `EXTRACTOR_ERROR` has exactly one `CvExtractionFailed`
+    subclass that binds it in `domain/intake/errors.py`.
+
+    `EXTRACTOR_ERROR` is deliberately the exception to that rule, and the asymmetry is the point:
+    it is the *residual* reason, reached both by the timeout (`CvExtractionTimedOut`) and by the
+    adapter's catch-all for a library failure we have no better name for. A named subclass per
+    cause would be a taxonomy of things we specifically failed to identify. See the catch-all in
+    `infrastructure/intake/extraction.py` for what it absorbs and why."""
 
     ENCRYPTED = "encrypted"
     CORRUPT = "corrupt"

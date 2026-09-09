@@ -94,6 +94,52 @@ describe('BaseCvUploadPanel', () => {
     expect(screen.getByText(RETENTION_SENTENCE)).toBeInTheDocument();
   });
 
+  it('shows a distinct error state — not the empty state — when the list request fails for a reason other than session expiry', async () => {
+    // A 500 (or a network failure) is a genuine "this failed" — unlike F-19's 401, `useBaseCvs`
+    // does not fold this one away, so it must surface as `listIsError` (BaseCvUploadPanel.tsx:105).
+    stubFetch(
+      () =>
+        Promise.resolve(
+          jsonResponse(500, { error: { code: 'internal_error', message: 'Server error' } }),
+        ),
+      () => Promise.reject(new Error('POST should not be called in this test')),
+    );
+
+    renderWithQuery(<BaseCvUploadPanel />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Could not load your CVs: Server error',
+    );
+    // Textually AND visibly distinct from the empty state (CLAUDE.md: a user must be able to tell
+    // "still working"/"no CVs yet" from "this failed") — neither the dropzone nor the retention
+    // sentence a first-time visitor sees should be present behind an error box.
+    expect(screen.queryByLabelText(DROPZONE_LABEL)).not.toBeInTheDocument();
+    expect(screen.queryByText(RETENTION_SENTENCE)).not.toBeInTheDocument();
+  });
+
+  it('folds a 401 guest_session_expired list response into the empty dropzone state, not an error', async () => {
+    // F-19: "The UI clears local state and shows the fresh dropzone." A cleared/expired guest
+    // session must render identically to a first-time visitor with zero CVs — not the error box
+    // from useBaseCvs.ts:40-46's fold.
+    stubFetch(
+      () =>
+        Promise.resolve(
+          jsonResponse(401, {
+            error: { code: 'guest_session_expired', message: 'Session expired' },
+          }),
+        ),
+      () => Promise.reject(new Error('POST should not be called in this test')),
+    );
+
+    renderWithQuery(<BaseCvUploadPanel />);
+
+    expect(await screen.findByLabelText(DROPZONE_LABEL)).toBeInTheDocument();
+    expect(screen.getByText(RETENTION_SENTENCE)).toBeInTheDocument();
+    // Distinct from the error state above: no alert, and none of its text.
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/could not load your cvs/i)).not.toBeInTheDocument();
+  });
+
   it('disables the control and shows the chosen filename while the upload is pending', async () => {
     const user = userEvent.setup();
     stubFetch(

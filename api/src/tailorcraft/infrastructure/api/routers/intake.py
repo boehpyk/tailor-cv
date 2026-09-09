@@ -12,6 +12,7 @@ job is to make it true.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
@@ -134,10 +135,18 @@ def _failure_message(reason: ExtractionFailureReason, settings: Settings) -> str
             f"This PDF has more than {settings.max_cv_pages} pages, which is more than we can "
             "process. Try a shorter version of your CV."
         )
-    # ExtractionFailureReason.EXTRACTOR_ERROR — the catch-all for a timeout or an unexpected library
-    # failure; there is no more specific sentence to give the user than "try again".
+    # ExtractionFailureReason.EXTRACTOR_ERROR — the catch-all, reached two ways: the 10 s timeout
+    # (F-12) and, since `PypdfDocxTextExtractor` grew its catch-all, any library failure we have no
+    # better name for (a `KeyError` out of `pypdf` on a mangled cross-reference table, say). The
+    # earlier wording here — "we couldn't read this file in time" — described only the first of
+    # those, and would have been a confidently wrong diagnosis for the second, which is now the
+    # commoner one. It names both causes rather than retreating into "something went wrong":
+    # "too long" and "gave up part-way" are different things a user can act on differently, and
+    # "part-way" is also what distinguishes this sentence from CORRUPT's "looks damaged" — that one
+    # is a verdict on the file, this one is an admission about us.
     return (
-        "We couldn't read this file in time. Try again, or use a different PDF, DOCX or TXT file."
+        "We couldn't read this file — it either took too long or our reader gave up part-way "
+        "through. Try again, or use a different PDF, DOCX or TXT file."
     )
 
 
@@ -305,7 +314,19 @@ async def upload_base_cv(
 
     # Sniffing decides the type — never the client's Content-Type header, never the filename
     # extension (F-4/F-5/F-6/AC-3/AC-4).
-    content_type = sniff_cv_content_type(data)
+    #
+    # In a worker thread, for the same reason `LocalFileStore` and `PypdfDocxTextExtractor` use one
+    # (Constitution §1, ADR-0009): `sniff_cv_content_type` is synchronous and CPU-bound, and its cost
+    # is chosen by the *uploader*. Opening a zip reads its whole central directory, so an archive of
+    # 100,000 tiny entries — 8.6 MB, comfortably inside the 10 MB cap — measured 340 ms in the
+    # container, and 120,000 entries 410 ms. On the event loop that is a stall for every concurrent
+    # user of every endpoint, and it presents as "the app is slow" rather than as an error, which is
+    # why §1 grades it CRITICAL rather than as a style note.
+    #
+    # The 30/hour/IP limiter above already ran, so the damage is bounded rather than unbounded. That
+    # is a cost ceiling, not a licence: a rate limit bounds how *often* the loop is stalled, never
+    # whether it is stalled, and thirty 400 ms stalls per IP per hour are still thirty stalls.
+    content_type = await asyncio.to_thread(sniff_cv_content_type, data)
     if content_type is None:
         raise HTTPException(
             status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,

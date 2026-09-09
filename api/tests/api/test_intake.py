@@ -52,11 +52,12 @@ from __future__ import annotations
 import io
 import json
 import logging
+import random
 import zipfile
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -67,10 +68,12 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.types import Message, Scope
 
-from tailorcraft.domain.intake.value_objects import CvContentType
+from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractionFailureReason
+from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.api.deps import get_app_settings, get_clock, get_session
 from tailorcraft.infrastructure.api.guest_session import COOKIE_NAME
 from tailorcraft.infrastructure.api.main import create_app
+from tailorcraft.infrastructure.api.routers.intake import _failure_message
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
@@ -183,6 +186,55 @@ def _rtf_bytes() -> bytes:
 
 def _png_bytes() -> bytes:
     return _read_fixture("not-a-pdf.pdf")
+
+
+def _corrupt_bytes(data: bytes, seed: int, n: int) -> bytes:
+    """Flip `n` random bytes of `data` under a fixed `seed` — deterministic across runs and
+    machines, which is what lets the specific findings below be reproduced byte-for-byte rather
+    than "some corrupted variant or other" (the sweep tests that found them live in
+    `tests/integration/adapters/test_extraction.py` and `test_sniffing.py`)."""
+    rng = random.Random(seed)  # noqa: S311 — deterministic corruption, not cryptography
+    mutable = bytearray(data)
+    for position in rng.sample(range(len(mutable)), n):
+        mutable[position] = rng.randrange(256)
+    return bytes(mutable)
+
+
+def _corrupt_tail_bytes(data: bytes, seed: int, n: int, tail: int) -> bytes:
+    """Same as `_corrupt_bytes`, but confined to the last `tail` bytes — where a zip's central
+    directory and End Of Central Directory record live (see `test_sniffing.py`'s `_corrupt_tail`
+    for why that concentration matters)."""
+    rng = random.Random(seed)  # noqa: S311 — deterministic corruption, not cryptography
+    mutable = bytearray(data)
+    start = max(0, len(mutable) - tail)
+    for position in rng.sample(range(start, len(mutable)), min(n, len(mutable) - start)):
+        mutable[position] = rng.randrange(256)
+    return bytes(mutable)
+
+
+def _malformed_docx_bytes() -> bytes:
+    """`sample.docx` with `word/document.xml` replaced by well-formed XML that has no `<w:body>`
+    element — a *valid* zip that python-docx cannot read: `.paragraphs` does
+    `document.element.body.p_lst`, and `body` is `None`, raising a bare `AttributeError` (verified
+    empirically). F-8/F-15's end-to-end case: this must not be a 500 with the file on disk and no
+    row (ADR-0004)."""
+    data = _read_fixture("sample.docx")
+    malformed_document_xml = (
+        b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        b'<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        b"</w:document>"
+    )
+    buffer = io.BytesIO()
+    with (
+        zipfile.ZipFile(io.BytesIO(data)) as source,
+        zipfile.ZipFile(buffer, "w") as rebuilt,
+    ):
+        for item in source.infolist():
+            content = source.read(item.filename)
+            if item.filename == "word/document.xml":
+                content = malformed_document_xml
+            rebuilt.writestr(item, content)
+    return buffer.getvalue()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -590,6 +642,37 @@ async def test_bytes_that_decode_as_neither_utf8_nor_cp1252_are_rejected_as_unsu
     assert _error_code(response) == "unsupported_format"
 
 
+async def test_a_corrupted_zip_with_a_broken_central_directory_is_rejected_415_not_500(
+    client: AsyncClient,
+) -> None:
+    """`sniffing.py::_is_docx` used to catch only `zipfile.BadZipFile`. A corrupted zip central
+    directory can instead raise `struct.error`, `ValueError`, `EOFError`, `OverflowError` or
+    `zipfile.LargeZipFile`, and every one of those escaped `_is_docx`, escaped
+    `sniff_cv_content_type`, and became a bare 500 for a file whose only real problem is not being a
+    readable DOCX — which is a 415. This exact byte sequence (`sample.docx` with 10 bytes flipped
+    under a fixed seed, confined to the last 300 bytes where the central directory and EOCD record
+    live) raises `NotImplementedError('zip file version 17.2')` from `zipfile.ZipFile.__init__` —
+    verified empirically, and not `BadZipFile` — so it stands in for the sweep in
+    `tests/integration/adapters/test_sniffing.py` as the one deterministic case proven end-to-end.
+    """
+    corrupted = _corrupt_tail_bytes(_read_fixture("sample.docx"), seed=56, n=10, tail=300)
+    assert corrupted.startswith(b"PK\x03\x04"), (
+        "expected the corruption to leave the zip magic intact"
+    )
+
+    response = await client.post(
+        "/api/base-cvs",
+        files=_file_part(
+            "cv.docx",
+            corrupted,
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+    )
+
+    assert response.status_code == 415, response.text
+    assert _error_code(response) == "unsupported_format"
+
+
 # ---------------------------------------------------------------------------------------------
 # F-5, F-6 / AC-4 — sniffing wins over the filename and the Content-Type header, both directions
 # ---------------------------------------------------------------------------------------------
@@ -725,6 +808,47 @@ async def test_extraction_exceeding_the_timeout_records_extractor_error(
     body = response.json()
     assert body["status"] == "extraction_failed"
     assert body["failure_reason"] == "extractor_error"
+
+
+# ---------------------------------------------------------------------------------------------
+# F-8 / F-15 — the extraction catch-all's own regression: a library exception with no allow-list
+# entry must still be a recorded state, never a 500 with the file on disk and no row (ADR-0004).
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_a_docx_with_a_malformed_document_xml_is_recorded_as_extractor_error(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """A valid zip whose `word/document.xml` is well-formed XML but has no `<w:body>` element used
+    to raise a bare `AttributeError` out of python-docx's `.paragraphs` property — before
+    `PypdfDocxTextExtractor` grew its catch-all (`extraction.py`'s `except Exception` clause), this
+    escaped as an uncaught 500 with the file already written and no row (verified empirically; the
+    adapter-level proof lives in `tests/integration/adapters/test_extraction.py`). Now it is a
+    recorded state: 201, `extraction_failed`/`extractor_error`, the row is readable, and the file
+    really is on disk — the two halves of ADR-0004's "a failed run is a recorded state, never a 500
+    with nothing on disk."""
+    response = await client.post(
+        "/api/base-cvs",
+        files=_file_part(
+            "cv.docx",
+            _malformed_docx_bytes(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "extraction_failed"
+    assert body["failure_reason"] == "extractor_error"
+
+    # The row exists and is readable back through the same session.
+    get_response = await client.get(f"/api/base-cvs/{body['id']}")
+    assert get_response.status_code == 200, get_response.text
+
+    # The file really is on disk, not merely claimed to be — `FileRef` is deterministic from the id
+    # and content type (ADR-0011), so the expected key can be computed rather than guessed.
+    ref = FileRef.for_base_cv(BaseCvId(UUID(body["id"])), CvContentType(body["content_type"]))
+    assert (settings.upload_dir / ref.key).exists()
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1156,3 +1280,183 @@ async def test_no_cv_text_or_filename_ever_appears_in_the_logs(
     assert _SAMPLE_CV_NAME_FRAGMENT not in log_output
     assert _SAMPLE_CV_EMAIL_FRAGMENT not in log_output
     assert _SAMPLE_CV_EMPLOYER_FRAGMENT not in log_output
+
+
+@pytest.mark.parametrize(
+    "fixture_name",
+    [
+        pytest.param("corrupt.pdf", id="corrupt.pdf"),
+        pytest.param("scanned.pdf", id="scanned.pdf"),
+    ],
+)
+async def test_no_cv_text_ever_appears_in_the_logs_for_a_damaged_or_scanned_upload(
+    client: AsyncClient, caplog: pytest.LogCaptureFixture, fixture_name: str
+) -> None:
+    """The finding behind this test: the privacy test above only ever uploads a *clean* PDF, so it
+    never exercises the one path `PypdfDocxTextExtractor`'s non-strict parsing takes through a
+    damaged file — the path where `pypdf`'s own logger, not this codebase's, has something to say
+    (`observability.py`'s `_SILENCED_VENDOR_LOGGERS`). `corrupt.pdf` and `scanned.pdf` are both
+    genuinely damaged/content-free PDFs already in the fixture corpus, so this is the same assertion
+    against inputs that actually walk that code path — not proof the guard does anything on its own
+    (that is `test_the_pypdf_logger_guard_actually_prevents_a_real_content_leak` below), just proof
+    that a real upload of a damaged file stays clean with the guard in its normal, active state."""
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            "/api/base-cvs",
+            files=_file_part(fixture_name, _read_fixture(fixture_name), "application/pdf"),
+        )
+
+    assert response.status_code == 201, response.text
+    assert caplog.records, "expected the upload to have produced at least one log record"
+
+    log_output = caplog.text
+    assert _SAMPLE_CV_NAME_FRAGMENT not in log_output
+    assert _SAMPLE_CV_EMAIL_FRAGMENT not in log_output
+    assert _SAMPLE_CV_EMPLOYER_FRAGMENT not in log_output
+
+
+def _currently_disabled_pypdf_loggers() -> list[logging.Logger]:
+    """Every already-instantiated `pypdf*` logger whose `.disabled` flag is set.
+
+    Unrelated to `observability.py`'s guard, and worth naming precisely because it is a second,
+    *accidental* reason `pypdf`'s loggers are quiet in this suite: `alembic/env.py`'s generated
+    boilerplate calls `logging.config.fileConfig(config.config_file_name)` (from the `_migrated`
+    session fixture's `command.upgrade`), and stdlib `fileConfig` defaults
+    `disable_existing_loggers=True` — which sets `.disabled = True` on *every* logger that already
+    existed at that moment (verified empirically: the disabled set spans `pypdf`, `celery`, `httpx`,
+    `sqlalchemy`, `sentry_sdk` and more, none of which `alembic.ini` even mentions), for the rest of
+    the test session. A logger's own `.disabled` flag short-circuits `isEnabledFor` before its level
+    is even consulted, so this test's whole premise — that undoing `observability.py`'s *level*
+    reveals a real leak — would be silently vacuous unless this second, incidental mechanism is also
+    neutralised first."""
+    return [
+        obj
+        for name, obj in logging.Logger.manager.loggerDict.items()
+        if isinstance(obj, logging.Logger)
+        and obj.disabled
+        and (name == "pypdf" or name.startswith("pypdf."))
+    ]
+
+
+async def test_the_pypdf_logger_guard_actually_prevents_a_real_content_leak(
+    client: AsyncClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Proves the privacy tests above are not vacuous — the finding the reviewer raised. `pypdf`'s
+    default `strict=False` parsing catches many internal errors and logs them via its own
+    `logging.Logger` (`pypdf.generic._data_structures`, among others) rather than raising, and at
+    least one of those call sites logs `repr(exc)` verbatim, which can quote raw document bytes.
+
+    Corrupting `sample.pdf` (5 bytes flipped under a fixed seed) makes that logger emit
+    `PdfReadError("Invalid Elementary Object starting with ...(Alex Rivera) Tj E'")` at WARNING —
+    the candidate's own name, mid-log-line, from a library this codebase does not control.
+    `observability.py`'s `_SILENCED_VENDOR_LOGGERS` is what stands between that and the application's
+    own log stream (`configure_logging`, run once per `app` fixture via `create_app`).
+
+    It sweeps a range of seeds and stops at the first that leaks, rather than pinning the one seed
+    that was found by hand. See the comment on the sweep for why: the leak depends on pypdf's
+    internal call sites, so a single seed is one instance of a class, and the failure message
+    distinguishes "pypdf changed" from "something else is suppressing it".
+
+    This test temporarily undoes *both* silencing mechanisms — the deliberate one
+    (`observability.py`'s level) and the incidental one this test discovered while being written
+    (`_currently_disabled_pypdf_loggers`'s docstring) — to show the leak is real without either, then
+    restores both and confirms the identical upload is clean with them back in place. Undoing only
+    the level would have made this test pass for the wrong reason: green whether or not
+    `observability.py`'s guard does anything at all.
+
+    The incidental mechanism has since been fixed at its source (`alembic/env.py` now passes
+    `disable_existing_loggers=False`), so `_currently_disabled_pypdf_loggers()` is expected to
+    return an empty list and its loop to be a no-op. It stays anyway: it costs nothing, and it is
+    what keeps this test honest if any future fixture disables those loggers again.
+    """
+    pypdf_logger = logging.getLogger("pypdf")
+    guarded_level = pypdf_logger.level
+    assert guarded_level > logging.WARNING, (
+        "expected configure_logging() (run by the app fixture via create_app) to have already "
+        "silenced the pypdf logger above WARNING — if this fails, the guard itself did not apply "
+        "and the rest of this test cannot prove anything"
+    )
+    incidentally_disabled = _currently_disabled_pypdf_loggers()
+
+    # A SWEEP rather than one hand-picked seed, for the same reason the extraction and sniffing
+    # tests sweep: one seed proves one instance, and what needs guarding is the class. The
+    # discrimination here rests on pypdf's own log call sites and message text — vendor
+    # implementation detail with no stability contract — so an upgrade that stops `repr`-ing the
+    # offending object would retire whichever single seed we had pinned. A sweep degrades into
+    # "find a different leaking variant" instead of "the one seed stopped reproducing".
+    leaked_seeds: list[int] = []
+    corrupted = b""
+    try:
+        pypdf_logger.setLevel(logging.WARNING)  # undo observability.py's guard, on purpose
+        for logger in incidentally_disabled:
+            logger.disabled = False  # undo alembic's fileConfig side effect too, on purpose
+
+        for seed in range(12440, 12464):
+            variant = _corrupt_bytes(_read_fixture("sample.pdf"), seed=seed, n=5)
+            caplog.clear()
+            with caplog.at_level(logging.INFO):
+                response = await client.post(
+                    "/api/base-cvs", files=_file_part("cv.pdf", variant, "application/pdf")
+                )
+            assert response.status_code == 201, response.text
+            if _SAMPLE_CV_NAME_FRAGMENT in caplog.text:
+                leaked_seeds.append(seed)
+                corrupted = variant
+                break
+
+        assert leaked_seeds, (
+            "no corrupted variant leaked CV text through pypdf's own logger with BOTH silencing "
+            "mechanisms undone. Either pypdf no longer logs `repr(exc)` at these call sites (in "
+            "which case this guard-proof needs a new leak vector, not a wider sweep), or something "
+            "else is now suppressing it — and until that is resolved, the AC-12 privacy tests "
+            "above cannot be assumed to prove anything"
+        )
+    finally:
+        pypdf_logger.setLevel(guarded_level)
+        for logger in incidentally_disabled:
+            logger.disabled = True
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            "/api/base-cvs", files=_file_part("cv.pdf", corrupted, "application/pdf")
+        )
+    assert response.status_code == 201, response.text
+    assert _SAMPLE_CV_NAME_FRAGMENT not in caplog.text
+
+
+# ---------------------------------------------------------------------------------------------
+# `_failure_message(EXTRACTOR_ERROR)` — the wording changed to name both causes it now covers
+# (the 10 s timeout and the extraction catch-all); AC-15 needs every reason's message distinct.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_failure_message_extractor_error_names_both_the_timeout_and_the_catch_all(
+    settings: Settings,
+) -> None:
+    """The old wording ("we couldn't read this file in time") named only the timeout. Since
+    `PypdfDocxTextExtractor` grew its catch-all, `EXTRACTOR_ERROR` is reached by two different
+    causes, and this asserts the new sentence actually speaks to both rather than reverting to a
+    generic "something went wrong" that would name neither."""
+    message = _failure_message(ExtractionFailureReason.EXTRACTOR_ERROR, settings)
+
+    assert "took too long" in message
+    assert "gave up part-way" in message
+    # The wording this replaced — pinned so a future change is a deliberate decision, not a drift
+    # nobody notices (CLAUDE.md: "fix one of them on purpose and say which won").
+    assert message != (
+        "We couldn't read this file in time. Try again, or use a different PDF, DOCX or TXT file."
+    )
+
+
+def test_failure_message_is_textually_distinct_for_every_extraction_failure_reason(
+    settings: Settings,
+) -> None:
+    """AC-15 needs three textually distinct error *kinds* at the UI layer; this is the narrower,
+    machine-checkable claim underneath it at the API layer — the server-owned mapping
+    (`_failure_message`'s own docstring: "the client never re-implements this mapping") must never
+    hand two different `ExtractionFailureReason` members the same sentence, which is what would make
+    them indistinguishable to a user no matter how carefully the frontend renders them."""
+    messages = [_failure_message(reason, settings) for reason in ExtractionFailureReason]
+
+    assert len(messages) == len(set(messages)), messages

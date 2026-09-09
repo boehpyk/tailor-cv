@@ -27,7 +27,19 @@ from tailorcraft.infrastructure.settings import get_settings
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` is load-bearing, not a preference. The default is True, and
+    # it sets `.disabled = True` on every logger that already exists — 24 of them here, including
+    # `pypdf`, `docx`, `celery`, `redis`, `sqlalchemy`, `sentry_sdk` and `httpx`, none of which
+    # `alembic.ini` so much as mentions. `.disabled` short-circuits `isEnabledFor` before the level
+    # is ever consulted, so it silences more thoroughly than any level we set in
+    # `infrastructure/observability.py`.
+    #
+    # That matters because `tests/conftest.py::_migrated` is SESSION-scoped: one migration run would
+    # otherwise switch those loggers off for the whole suite, and a database rollback does not turn
+    # them back on. Any test of the form "X never appears in the logs" — AC-12's privacy tests
+    # above all — could then pass because nothing was logging at all. A gate that checks a different
+    # thing than it claims is worse than no gate, because it also supplies confidence.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 configure_mappings()
 target_metadata = metadata

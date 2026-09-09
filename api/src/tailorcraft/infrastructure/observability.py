@@ -23,12 +23,35 @@ import structlog
 
 from tailorcraft.infrastructure.settings import Settings
 
+# Third-party loggers that emit *document content*, silenced at the source. Not noise reduction —
+# a privacy control (Constitution §8, AC-12: "nothing in this slice logs any fragment of extracted
+# text").
+#
+# `pypdf` logs through the stdlib `logging` module from inside the extraction worker thread whenever
+# a file is damaged-but-parseable, and at least one of those call sites formats content lifted
+# straight out of the document: `pypdf/_cmap.py` logs an unparsable character-map line with `%r` of
+# the raw line. Because `configure_logging` points `basicConfig` at stdout, those records land in the
+# application's own log stream, having passed through none of our review. Every adapter in this
+# codebase is careful about what it logs; a vendor library is under no such obligation, and the way
+# to make AC-12 structurally true rather than merely untested is to make sure the library never gets
+# to speak. Its exceptions still reach us — those we translate ourselves (`intake/extraction.py`).
+#
+# A level ABOVE `CRITICAL` rather than a filter or `propagate = False`: `Logger.isEnabledFor` is
+# consulted before a record is even constructed, so nothing is formatted, and child loggers
+# (`pypdf._cmap`, `pypdf.generic...`) inherit it through `getEffectiveLevel()` walking to this
+# parent, so one entry covers the package. `propagate = False` alone would not do it — a logger with
+# no handlers of its own falls back to `logging.lastResort`, which writes to stderr.
+_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx")
+
 
 def configure_logging(settings: Settings) -> None:
     """Install structlog as the single logging path for the process."""
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
     logging.basicConfig(format="%(message)s", stream=sys.stdout, level=level)
+
+    for name in _SILENCED_VENDOR_LOGGERS:
+        logging.getLogger(name).setLevel(logging.CRITICAL + 1)
 
     processors: list[structlog.typing.Processor] = [
         structlog.contextvars.merge_contextvars,

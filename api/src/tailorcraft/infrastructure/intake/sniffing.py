@@ -75,11 +75,28 @@ def sniff_cv_content_type(data: bytes) -> CvContentType | None:
 
 def _is_docx(data: bytes) -> bool:
     """A DOCX is a zip whose namelist contains `word/document.xml`. Anything that fails to open as
-    a zip at all is simply not a DOCX — this function never raises."""
+    a zip at all is simply not a DOCX — this function never raises.
+
+    "Never raises" used to be a claim resting on `zipfile` only ever signalling a bad archive with
+    `BadZipFile`. It does not: parsing a deliberately malformed central directory can surface
+    `struct.error`, `ValueError`, `EOFError`, `OverflowError` or `zipfile.LargeZipFile` instead,
+    depending on which field the corruption lands in. Every one of those would have escaped this
+    function, escaped `sniff_cv_content_type`, and become a **500 on the upload route** — for a file
+    whose only crime is not being a DOCX, which is a 415. So the promise in the sentence above is now
+    made structurally by the `except Exception` rather than by an allow-list of the ways a hostile
+    zip was expected to be broken; that guess is exactly the one this codebase already lost once, in
+    `intake/extraction.py`.
+
+    Sniffing is a *classification* question with a boolean answer, which is what makes a blanket
+    catch honest here rather than lazy: "this did not open as a DOCX" is the correct and complete
+    answer to every failure mode, and there is no error information a caller could act on.
+    """
     try:
         with zipfile.ZipFile(BytesIO(data)) as archive:
             return _DOCX_MARKER in archive.namelist()
-    except zipfile.BadZipFile:
+    except Exception:
+        # Nothing logged: the only thing worth saying is "not a DOCX", which is the return value,
+        # and an exception message from `zipfile` can quote bytes out of the upload (Constitution §8).
         return False
 
 

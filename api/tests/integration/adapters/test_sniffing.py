@@ -11,13 +11,14 @@ though extraction fails on every one of them (AC-5).
 from __future__ import annotations
 
 import io
+import random
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from tailorcraft.domain.intake.value_objects import CvContentType
-from tailorcraft.infrastructure.intake.sniffing import sniff_cv_content_type
+from tailorcraft.infrastructure.intake.sniffing import _is_docx, sniff_cv_content_type
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent / "fixtures" / "cvs"
 
@@ -86,3 +87,67 @@ def test_a_png_renamed_with_a_pdf_extension_is_rejected_by_bytes_alone() -> None
     what actually makes this representative of a real image file rather than an accidental pass."""
     png_header = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
     assert sniff_cv_content_type(png_header + b"width/height/bit-depth bytes follow") is None
+
+
+# -----------------------------------------------------------------------------------------------
+# `_is_docx`'s `except Exception` (api-dev's second CRITICAL finding): a corrupted zip central
+# directory can raise `struct.error`, `ValueError`, `EOFError`, `OverflowError` or
+# `zipfile.LargeZipFile`, none of which is `zipfile.BadZipFile` — every one of those used to escape
+# `sniff_cv_content_type` entirely and become a 500 on the upload route.
+# -----------------------------------------------------------------------------------------------
+
+
+def _corrupt_tail(data: bytes, seed: int, n: int, tail: int) -> bytes:
+    """Flip `n` random bytes within the last `tail` bytes of `data` under a fixed `seed`.
+
+    Corrupting anywhere in a zip rarely lands on the central directory or the End Of Central
+    Directory record — most of a DOCX is the compressed part payloads, and a byte flip there just
+    produces `BadZipFile` (a bad CRC or a broken deflate stream), the case already handled before
+    this fix. Concentrating the corruption in the tail — where the central directory and EOCD record
+    actually live — is what reliably reaches the `struct.unpack` calls that raise the *other*
+    exception types this catch-all exists for (verified empirically: this exact profile reproduced
+    17/300 non-`BadZipFile` escapes — `NotImplementedError` and `UnicodeDecodeError` — against the
+    unfixed function, none of them the previously-caught `BadZipFile`).
+    """
+    rng = random.Random(seed)  # noqa: S311 — deterministic corruption, not cryptography
+    mutable = bytearray(data)
+    start = max(0, len(mutable) - tail)
+    for position in rng.sample(range(start, len(mutable)), min(n, len(mutable) - start)):
+        mutable[position] = rng.randrange(256)
+    return bytes(mutable)
+
+
+_TAIL_SWEEP_SEED_BASE = 42
+_TAIL_SWEEP_COUNT = 300
+_TAIL_SWEEP_BYTES_FLIPPED = 10
+_TAIL_SWEEP_WINDOW = 300
+
+
+def test_is_docx_corruption_sweep_never_raises_for_any_byte_sequence() -> None:
+    """The regression test for the class of bug, not one instance of it (CLAUDE.md): 300
+    independently-corrupted variants of `sample.docx`'s tail, run through `_is_docx`, must each
+    return a plain `bool` — never raise. Before the `except Exception` widening, this exact sweep
+    raised `NotImplementedError` or `UnicodeDecodeError` (verified empirically); a single
+    hand-picked malformed zip would only ever have proven one of those two safe.
+    """
+    data = _read_fixture("sample.docx")
+    unexpected: list[tuple[int, str, str]] = []
+
+    for i in range(_TAIL_SWEEP_COUNT):
+        variant = _corrupt_tail(
+            data,
+            seed=_TAIL_SWEEP_SEED_BASE + i,
+            n=_TAIL_SWEEP_BYTES_FLIPPED,
+            tail=_TAIL_SWEEP_WINDOW,
+        )
+        try:
+            result = _is_docx(variant)
+        except Exception as exc:
+            unexpected.append((i, type(exc).__name__, str(exc)[:120]))
+        else:
+            assert isinstance(result, bool)
+
+    assert not unexpected, (
+        f"{len(unexpected)}/{_TAIL_SWEEP_COUNT} corrupted variants raised out of _is_docx instead "
+        f"of returning False: {unexpected[:5]}"
+    )
