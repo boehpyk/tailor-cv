@@ -1,0 +1,18 @@
+Alex Rivera
+Backend Engineer
+alex.rivera@example.com | +1 (555) 010-2020 | Springfield, USA
+
+Summary
+Backend engineer with eight years of experience building payment and logistics platforms in Python and Go. Comfortable owning a service from design through on-call, and partial to boring technology that keeps working at 3am.
+
+Experience
+Senior Backend Engineer, Northwind Logistics, 2021-2026
+Rebuilt the shipment-tracking service around an event-sourced ledger, cutting reconciliation incidents by 90 percent. Mentored two junior engineers and ran the on-call rotation for a twelve-person team.
+Backend Engineer, Fabrikam Payments, 2018-2021
+Implemented idempotent payment retries and a fraud-scoring pipeline processing four million transactions a day. Migrated the primary datastore from a single Postgres instance to a sharded cluster with zero downtime.
+
+Education
+B.Sc. Computer Science, University of Springfield, 2018
+
+Skills
+Python, Go, PostgreSQL, Redis, Kafka, Docker, Kubernetes, Terraform.

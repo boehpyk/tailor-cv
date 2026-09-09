@@ -88,6 +88,16 @@ outside `infrastructure/llm/` imports the SDK. Every call has a timeout, a bound
 defined behaviour for four failures: unavailable, rate-limited, refused, and **output that parses but
 is wrong**. A failed run is a recorded state of `TailoringRun`, never a 500 with nothing on disk.
 
+**A port that promises to translate every failure needs a catch-all, not an allow-list.** Listing the
+third-party exceptions you know about (`PdfReadError`, `BadZipFile`, …) is a bet that you enumerated
+every way a vendor library can fail on input a stranger chose, and that bet loses: a corruption sweep
+found `KeyError`, `AttributeError`, `ValueError` and `LimitReachedError` escaping the extractor into a
+500-with-the-file-on-disk. The specific translations go on top, carrying the better reason; an
+`except Exception` floor goes underneath making the port's promise true by construction. `Exception`,
+never `BaseException` — `asyncio.CancelledError` must still cancel. **Log the exception's type, never
+its message or `exc_info`** (a `pypdf` message quotes bytes out of the document), and re-raise
+`from None` so the frame holding the upload is unreachable from a Sentry report.
+
 **Structured output is re-validated on receipt.** "We asked the model for JSON" and "this is valid
 JSON with the fields we need" are different claims, and the gap between them is where the 2 a.m. bug
 lives.
@@ -282,6 +292,22 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   236 kB. The gate passed while checking an artifact neither CI nor the box ever builds. `make
   web.build` now forces `NODE_ENV=production`. A gate that checks a different thing is worse than no
   gate, because it also supplies confidence.
+- **`send_default_pii=False` does not cover traceback frame locals.** `sentry_sdk` defaults
+  `include_local_variables=True`, which is a separate setting that neither `send_default_pii` nor
+  `max_request_body_size="never"` affects. Any exception escaping a function that holds a CV in a
+  local ships that CV to Sentry. Two settings that sound like they cover PII, one that decides it.
+- **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
+  `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
+  `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`
+  short-circuits `isEnabledFor` before the level is read, so it beats anything `observability.py`
+  sets. The migration fixture is **session-scoped**, so in the suite this silences those loggers for
+  every later test: a privacy test asserting "X never appears in the logs" passes vacuously, and a
+  future test asserting something *is* logged fails for a reason nobody finds quickly. `env.py` now
+  passes `disable_existing_loggers=False`.
+- **Any CPU-bound call in an async route is on the loop, including the ones that "aren't real work".**
+  Sniffing a DOCX opens the upload as a zip and reads its whole central directory — a 100,000-entry,
+  8.6 MB archive (under the 10 MB cap) stalled the loop **374 ms** for every concurrent user, with no
+  error and nothing logged. A rate limit bounds how *often* the loop stalls, never whether it stalls.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global

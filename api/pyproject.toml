@@ -4,9 +4,10 @@ version = "0.1.0"
 description = "AI-powered CV and cover-letter customizer"
 requires-python = ">=3.13"
 
-# Runtime dependencies only. Feature libraries (pypdf, python-docx, WeasyPrint, trafilatura,
-# google-genai) are added by the slice that first needs them — a dependency nothing imports is
-# install time, attack surface and upgrade work bought in advance for no one.
+# Runtime dependencies only. Feature libraries (WeasyPrint, trafilatura, google-genai) are added by
+# the slice that first needs them — a dependency nothing imports is install time, attack surface and
+# upgrade work bought in advance for no one. `pypdf` and `python-docx` are the first two: they arrive
+# with `intake-base-cv-upload` (T20), the slice that first needs to read a CV.
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
@@ -19,6 +20,12 @@ dependencies = [
     "redis>=5.2",
     "structlog>=24.4",
     "sentry-sdk[fastapi,celery]>=2.19",
+    "pypdf>=5.1",
+    "python-docx>=1.1",
+    # FastAPI's own multipart parser (Starlette's `request.form()`) is a thin wrapper over this
+    # library and raises at import time without it — required as of T24, the first endpoint that
+    # accepts `multipart/form-data` (the CV upload).
+    "python-multipart>=0.0.20",
 ]
 
 [dependency-groups]
