@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.posting.events import JobPostingCaptured
 from tailorcraft.domain.posting.value_objects import (
     FetchedPosting,
     JobPostingId,
@@ -136,8 +137,38 @@ class JobPosting(RecordsEvents):
         **Takes no title, and that is J-4 written as a signature** rather than as a check. There is
         no argument to pass, so there is no call site that can pass one, so there is no branch
         anywhere that has to decide what a pasted posting's title should be.
+
+        There is no validation here, and the absence is deliberate rather than an omission: every
+        invariant this aggregate has is structural. J-1's text rules live in `JobPostingText`, whose
+        `__post_init__` already refused anything invalid; J-2 and J-4 are the shape of this
+        signature; J-3 is the absence of a setter. There is nothing left for a guard to check, and
+        adding one that re-asserted a rule the type already keeps would be a second copy of the
+        rule — the copy that later gets fixed in one place and not the other. (This is where
+        `BaseCv.upload`'s `size_bytes > 0` check would go; it needs one because `int` has no rules
+        of its own, and this constructor takes no bare primitive.)
         """
-        raise NotImplementedError
+        posting = cls()
+        posting._id = id
+        posting._guest_session_id = guest_session_id
+        posting._source = PostingSource.PASTED
+        posting._source_url = None
+        posting._title = None
+        posting._text = text
+        posting._created_at = created_at
+
+        posting.record(
+            JobPostingCaptured(
+                job_posting_id=id,
+                guest_session_id=guest_session_id,
+                source=PostingSource.PASTED,
+                # The normalized length, not the floor's non-whitespace count — the same number the
+                # API returns and the UI counter divides by 30,000. A third quantity in circulation
+                # for "how long is it" is how two screens end up disagreeing about one posting.
+                character_count=text.character_count,
+                occurred_at=created_at,
+            )
+        )
+        return posting
 
     @classmethod
     def from_fetched_url(
@@ -158,8 +189,35 @@ class JobPosting(RecordsEvents):
         a caller could pair up wrongly — the port promises them together, so they arrive together.
 
         The URL is required and cannot be `None`: that half of J-2 is the type, not a check.
+
+        No validation guard here either, for the reasons `from_pasted_text` sets out — and one more
+        that is specific to this side: `title` is `PostingTitle | None`, so "a page with no readable
+        title" and "a title that passed `PostingTitle`'s rules" are the only two states expressible.
+        There is no third state for a guard to reject.
         """
-        raise NotImplementedError
+        posting = cls()
+        posting._id = id
+        posting._guest_session_id = guest_session_id
+        posting._source = PostingSource.FETCHED
+        posting._source_url = url
+        posting._title = fetched.title
+        posting._text = fetched.text
+        posting._created_at = created_at
+
+        posting.record(
+            JobPostingCaptured(
+                job_posting_id=id,
+                guest_session_id=guest_session_id,
+                source=PostingSource.FETCHED,
+                # Same number as the pasted path, for the same reason — see the sibling. Note what
+                # is NOT here: the URL and the title. Both are on this instance and neither reaches
+                # the event, because `LoggingEventPublisher` logs every field of every event, and a
+                # job-posting URL names the job a specific person is applying for (AC-19).
+                character_count=fetched.text.character_count,
+                occurred_at=created_at,
+            )
+        )
+        return posting
 
     @property
     def id(self) -> JobPostingId:
