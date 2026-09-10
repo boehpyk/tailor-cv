@@ -34,10 +34,30 @@ backups/
 celerybeat-schedule*
 celerybeat.pid
 
-# Docs — kept local, out of version control by the owner's decision (2026-09-04).
-# Note the consequence: docs/constitution.md, docs/adr/ and docs/PRD.md are the durable
-# documents everything else links to, and a fresh clone will not have them.
-docs/
+# Docs — kept local by the owner's decision (2026-09-04), NARROWED 2026-09-10.
+#
+# The original rule ignored all of docs/, and its own comment recorded the consequence: the durable
+# documents everything else links to were absent from a fresh clone. That became concrete when slice
+# 1.2 went up for review — ADR-0012 ("outbound HTTP is a guarded egress") is the contract the whole
+# SSRF adapter was built against, and it was not in the diff, so a reviewer on GitHub was reading
+# the guard without the reasoning.
+#
+# So the two DURABLE, CROSS-SLICE documents are now tracked and everything else stays local:
+#
+#   tracked  — docs/adr/**          decisions that outlive the slice that made them
+#              docs/constitution.md the standing rules every ADR is written against
+#
+#   local    — docs/PRD.md          product strategy
+#              docs/specs/**        disposable; they die when the feature ships
+#              docs/roadmap.md, sdlc.md, cicd.md, infrastructure.md, explanations/
+#
+# The repository is PUBLIC, so this is a publishing decision, not a storage one. The tracked files
+# were scanned before the first commit: no IPs, no hostnames beyond `tailorcraft.app` and `ghcr.io`,
+# no credentials, and no server specifics (`SSH_HOST` appears only as the NAME of a CI secret).
+# Anything added to docs/adr/ later inherits that obligation — an ADR is public the moment it lands.
+docs/*
+!docs/adr/
+!docs/constitution.md
 
 # Editors / OS
 .idea/
