@@ -14,11 +14,11 @@ column — it is that the status is written **only** by three methods that say w
 `status` makes every caller responsible for the transition table; named transitions make the
 aggregate responsible for it, once, where it can be tested exhaustively.
 
-**SKELETON (task T4).** `request` and the three transitions raise `NotImplementedError`; their bodies
-arrive at T6, after `qa` has recorded the red at T5. Everything else here is real — the attribute
-annotations, the read-only properties, the two assembling properties, `__init__`, and all of the
-invariant reasoning — because none of it has behaviour that could fail an assertion, and a skeleton
-exists so that a test fails on its *assertion* rather than on an `ImportError` (docs/sdlc.md §2).
+This module was written in two steps (docs/sdlc.md §2): a T4 skeleton of real signatures with
+`NotImplementedError` bodies, so that `qa`'s T5 tests failed on their *assertions* rather than on an
+`ImportError`, and then this — the T6 GREEN filling in `request` and the three transitions against
+those recorded reds. Nothing else moved between the two steps, and nothing in the tests was touched
+to get here.
 """
 
 from __future__ import annotations
@@ -28,7 +28,19 @@ from datetime import datetime
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
+from tailorcraft.domain.tailoring.errors import (
+    TailoringAlreadyDecided,
+    TailoringAlreadyStarted,
+    TailoringNotRunning,
+)
+from tailorcraft.domain.tailoring.events import (
+    TailoringRunFailed,
+    TailoringRunRequested,
+    TailoringRunStarted,
+    TailoringRunSucceeded,
+)
 from tailorcraft.domain.tailoring.value_objects import (
     CoverLetter,
     LlmCallMetrics,
@@ -237,9 +249,67 @@ class TailoringRun(RecordsEvents):
         primitive, so there is no `size_bytes > 0`-shaped check for it to grow (`BaseCv.upload` needs
         one because `int` has no rules of its own).
         """
-        # SKELETON (T4). T6 assigns the sixteen attributes and records `TailoringRunRequested`; T5
-        # watches this raise first, so its assertions are known to discriminate.
-        raise NotImplementedError
+        run = cls()
+        run._id = id
+        run._guest_session_id = guest_session_id
+        run._base_cv_id = base_cv_id
+        run._job_posting_id = job_posting_id
+        run._status = TailoringRunStatus.QUEUED
+        run._failure_reason = None
+        run._tailored_cv = None
+        run._cover_letter = None
+        run._model_name = None
+        run._prompt_version = None
+        run._prompt_tokens = None
+        run._completion_tokens = None
+        run._llm_duration_ms = None
+        run._requested_at = requested_at
+        run._started_at = None
+        run._completed_at = None
+
+        run.record(
+            TailoringRunRequested(
+                tailoring_run_id=id,
+                guest_session_id=guest_session_id,
+                base_cv_id=base_cv_id,
+                job_posting_id=job_posting_id,
+                occurred_at=requested_at,
+            )
+        )
+        return run
+
+    def _guard_outcome_not_yet_decided(self) -> None:
+        """The bottom two rows of the transition table, written once rather than three times: from
+        `SUCCEEDED` or `FAILED`, every one of the three transitions raises `TailoringAlreadyDecided`
+        (TR-3). Two copies of an invariant is one copy that gets fixed and one that does not, which
+        is the same call `BaseCv._guard_extraction_not_yet_decided` makes.
+
+        Deliberately checked *before* each method's own status rule, so that a redelivered task
+        calling `mark_started` on a run that already succeeded is told the outcome is decided rather
+        than that the run is merely already started — the first is the fact the caller needs.
+        """
+        if self._status in (TailoringRunStatus.SUCCEEDED, TailoringRunStatus.FAILED):
+            raise TailoringAlreadyDecided(
+                f"the outcome of {self._id!r} was already decided as {self._status!r}"
+            )
+
+    def _guard_completed_at(self, at: datetime) -> None:
+        """TR-4's second half, shared by `mark_succeeded` and `mark_failed`: an outcome may not be
+        recorded as happening before the run started, or — when the run never started — before it
+        was requested.
+
+        The `None` branch is reachable only from `mark_failed`, because `mark_succeeded` is legal
+        only from `RUNNING` and `RUNNING` always carries a `started_at`. It is written as a fallback
+        rather than as an assertion precisely so that the one caller that *can* be in that state gets
+        the honest floor instead of no check at all: a `not_queued` or `abandoned` failure recorded
+        before its own run was requested is the same negative duration TR-4 exists to refuse.
+        """
+        floor = self._requested_at if self._started_at is None else self._started_at
+        if at < floor:
+            raise InvariantViolated(
+                "completed_at must be >= started_at, or >= requested_at when the run never "
+                "started (TR-4)"
+            )
 
     def mark_started(self, at: datetime) -> None:
         """Record that a worker picked the run up and is about to call the model: sets
@@ -254,8 +324,16 @@ class TailoringRun(RecordsEvents):
         attempt finds its own run already started. Refusing here is exactly what stops a second paid
         call to Gemini for one button press (AC-10).
         """
-        # SKELETON (T4). T6 fills in the guard and the assignment; T5 records the red.
-        raise NotImplementedError
+        self._guard_outcome_not_yet_decided()
+        if self._status is TailoringRunStatus.RUNNING:
+            raise TailoringAlreadyStarted(f"{self._id!r} is already running")
+        if at < self._requested_at:
+            raise InvariantViolated("started_at must be >= requested_at (TR-4)")
+
+        self._status = TailoringRunStatus.RUNNING
+        self._started_at = at
+
+        self.record(TailoringRunStarted(tailoring_run_id=self._id, occurred_at=at))
 
     def mark_succeeded(
         self, documents: TailoredDocuments, metrics: LlmCallMetrics, at: datetime
@@ -277,9 +355,37 @@ class TailoringRun(RecordsEvents):
         documents (AC-22) — see `domain/tailoring/events.py` for why an event's field set is a log
         field set.
         """
-        # SKELETON (T4). T6 fills in the guard, the seven assignments and the event; T5 records the
-        # red.
-        raise NotImplementedError
+        self._guard_outcome_not_yet_decided()
+        if self._status is not TailoringRunStatus.RUNNING:
+            raise TailoringNotRunning(f"{self._id!r} is {self._status!r}, not running")
+        self._guard_completed_at(at)
+
+        # Written through to the seven scalars rather than stored as the two composites: ADR-0007
+        # maps value objects one per column, so `documents` and `metrics` are assembled on read (see
+        # those two properties for the full reasoning behind the asymmetry, OQ-5).
+        self._tailored_cv = documents.cv
+        self._cover_letter = documents.cover_letter
+        self._model_name = metrics.model
+        self._prompt_version = metrics.prompt_version
+        self._prompt_tokens = metrics.prompt_tokens
+        self._completion_tokens = metrics.completion_tokens
+        self._llm_duration_ms = metrics.duration_ms
+        self._status = TailoringRunStatus.SUCCEEDED
+        self._completed_at = at
+
+        self.record(
+            TailoringRunSucceeded(
+                tailoring_run_id=self._id,
+                model=metrics.model,
+                prompt_version=metrics.prompt_version,
+                prompt_tokens=metrics.prompt_tokens,
+                completion_tokens=metrics.completion_tokens,
+                duration_ms=metrics.duration_ms,
+                cv_character_count=documents.cv.character_count,
+                cover_letter_character_count=documents.cover_letter.character_count,
+                occurred_at=at,
+            )
+        )
 
     def mark_failed(self, reason: TailoringFailureReason, at: datetime) -> None:
         """Record that the run ended without documents: sets `status = FAILED`,
@@ -301,8 +407,19 @@ class TailoringRun(RecordsEvents):
         application test asserts the recording rather than the propagation, so "fixing" it into a
         propagating error turns a test red.
         """
-        # SKELETON (T4). T6 fills in the guard and the assignment; T5 records the red.
-        raise NotImplementedError
+        self._guard_outcome_not_yet_decided()
+        self._guard_completed_at(at)
+
+        # No status check beyond the terminal guard above, and the absence is the `queued` cell of
+        # the table: both non-terminal statuses may fail. `_started_at` is left exactly as it is —
+        # `None` on the `queued` path — because a `started_at` invented to satisfy a state machine is
+        # a timestamp that lies to every latency measurement built on it. The five metric scalars
+        # stay `None` on every path for the reason in the docstring above.
+        self._status = TailoringRunStatus.FAILED
+        self._failure_reason = reason
+        self._completed_at = at
+
+        self.record(TailoringRunFailed(tailoring_run_id=self._id, reason=reason, occurred_at=at))
 
     @property
     def id(self) -> TailoringRunId:
