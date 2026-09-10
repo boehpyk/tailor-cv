@@ -1,13 +1,17 @@
 import { BaseCvUploadPanel } from './features/intake/components/BaseCvUploadPanel';
+import { JobPostingPanel } from './features/posting/components/JobPostingPanel';
 import { SystemStatus } from './features/health/components/SystemStatus';
 
 /**
  * The application shell.
  *
- * Slice 1.1 (`intake-base-cv-upload`) adds the first real product surface: upload a base CV,
- * see it get extracted. It renders as a section here rather than behind a route, because React
- * Router is not installed until 1.4 (technical-plan.md) — the dual-tab workspace (CV / job
- * posting) is that slice's job, not this one's.
+ * Two product surfaces so far, both rendered as sections rather than behind routes: slice 1.1's
+ * base-CV upload, and slice 1.2's job-posting intake below it. React Router is not installed until
+ * 1.4, and the dual-tab workspace (CV | job posting) is that slice's design work — doing it badly
+ * here means doing it twice.
+ *
+ * The order is the order of the task: you tailor a CV *to* a posting, so the CV comes first and the
+ * posting second, and 1.3's "tailor" action will sit below both because it needs them both.
  */
 export function App(): React.JSX.Element {
   return (
@@ -24,6 +28,13 @@ export function App(): React.JSX.Element {
           Your base CV
         </h2>
         <BaseCvUploadPanel />
+      </section>
+
+      <section aria-labelledby="job-posting-heading" className="mb-10">
+        <h2 id="job-posting-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
+          The job you are applying for
+        </h2>
+        <JobPostingPanel />
       </section>
 
       <section aria-labelledby="system-status-heading">
