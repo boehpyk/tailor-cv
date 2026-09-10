@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
-from tailorcraft.infrastructure.api.routers import health, intake
+from tailorcraft.infrastructure.api.routers import health, intake, posting
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -88,7 +88,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # sending `Expect: 100-continue` is still waiting for permission when the refusal arrives — see
     # `middleware.py` for why a cap enforced only inside the handler never achieved that.
     # Every route pays this check except `/health/*`, which polls far more often than anyone uploads.
-    app.add_middleware(MaxBodySizeMiddleware, max_bytes=settings.max_upload_bytes)
+    app.add_middleware(
+        MaxBodySizeMiddleware,
+        max_bytes=settings.max_upload_bytes,
+        json_max_bytes=settings.json_request_max_bytes,
+    )
 
     if settings.cors_origin_list:
         # An explicit origin list, never a wildcard. Cookies carry the refresh token (ADR-0008) and
@@ -204,6 +208,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(intake.router)
+    app.include_router(posting.router)
 
     return app
 

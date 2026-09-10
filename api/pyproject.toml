@@ -26,6 +26,21 @@ dependencies = [
     # library and raises at import time without it — required as of T24, the first endpoint that
     # accepts `multipart/form-data` (the CV upload).
     "python-multipart>=0.0.20",
+    # The guarded egress (ADR-0012) and the job-posting extractor, added by slice 1.2 — the first
+    # slice that reaches OUT of this process to a host a stranger chose.
+    #
+    # `httpx` moved here from `[dependency-groups] dev` in the same commit. It was test-only (the
+    # ASGI client), and importing it from runtime code while it is a dev dependency works perfectly
+    # on a developer's machine and breaks the production image, where dev groups are not installed.
+    # A small, real footgun; it gets named rather than silently fixed.
+    "httpx>=0.28",
+    # Pulls `lxml`, which ships manylinux wheels for cp313 — so no apt package is expected on
+    # python:3.13-slim. That is a prediction, and T32 verifies it by building the image and running
+    # the extractor inside it. If a wheel turns out to be missing and uv falls back to a source
+    # build, the fix is libxml2-dev + libxslt1-dev + a compiler in docker/api/Dockerfile AND in
+    # .github/workflows/ci.yml, in the same commit — the WeasyPrint lesson, where the import
+    # succeeds and the first *use* fails, in the container nobody is watching.
+    "trafilatura>=2.0",
 ]
 
 [dependency-groups]
@@ -35,7 +50,7 @@ dev = [
     "import-linter>=2.1",
     "pytest>=8.3",
     "pytest-asyncio>=0.25",
-    "httpx>=0.28",
+    # NOTE: httpx is NOT here any more — it is a runtime dependency as of slice 1.2 (see above).
     "watchdog>=6.0",          # provides `watchmedo`, the worker's dev auto-restart
 ]
 
@@ -109,6 +124,13 @@ enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
 
 [[tool.mypy.overrides]]
 module = ["celery.*"]
+ignore_missing_imports = true
+
+# trafilatura ships no type information (no py.typed, no stubs on typeshed). The import is confined
+# to `infrastructure/posting/fetching.py`, which wraps every call in its own typed helper, so the
+# untyped surface stops at that module rather than spreading through the codebase.
+[[tool.mypy.overrides]]
+module = ["trafilatura.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

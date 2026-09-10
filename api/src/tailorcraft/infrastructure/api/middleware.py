@@ -59,10 +59,25 @@ class MaxBodySizeMiddleware:
         app: ASGIApp,
         *,
         max_bytes: int,
+        json_max_bytes: int,
         exempt_prefixes: tuple[str, ...] = ("/health",),
     ) -> None:
+        """Two caps, because two kinds of body are two different sizes of legitimate.
+
+        `max_bytes` is the multipart/upload cap (10 MB — a CV really is that big sometimes) and its
+        rejection code is `file_too_large`. `json_max_bytes` is the cap for everything else (256 KiB)
+        and its code is `request_too_large`.
+
+        One cap for both would have to be the larger of the two, which would let a 10 MB JSON body be
+        parsed into memory before anything rejected it — and would answer `file_too_large` to a
+        request that contains no file, a `code` the client is supposed to branch on. Thirty thousand
+        characters of UTF-8 is at most ~120 KB, so 256 KiB refuses the absurd while leaving every
+        legal body comfortable, and it protects every future JSON endpoint rather than just this
+        slice's (slice 1.3's included).
+        """
         self.app = app
         self.max_bytes = max_bytes
+        self.json_max_bytes = json_max_bytes
         self.exempt_prefixes = exempt_prefixes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -70,12 +85,39 @@ class MaxBodySizeMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Which cap applies is decided by the request's own `Content-Type`, before the body is read.
+        # A multipart request is an upload and gets the upload cap; everything else gets the JSON
+        # cap. Note this deliberately does NOT trust the header to decide anything a client could
+        # gain by lying about: claiming `multipart/form-data` on a JSON body buys a *larger* cap but
+        # the request still has to satisfy the route, which for `/api/job-postings` means a JSON body
+        # FastAPI will refuse to parse as a form. The header chooses between two refusals, never
+        # between refusing and permitting — the same distinction `routers/posting.py` draws when it
+        # trusts a *server's* content-type to decline work but never to grant it.
+        is_multipart = self._is_multipart(scope)
+        limit = self.max_bytes if is_multipart else self.json_max_bytes
+        code = "file_too_large" if is_multipart else "request_too_large"
+
         content_length = self._content_length(scope)
-        if content_length is not None and content_length > self.max_bytes:
-            await self._reject(send)
+        if content_length is not None and content_length > limit:
+            await self._reject(send, limit=limit, code=code)
             return
 
         await self.app(scope, receive, send)
+
+    @staticmethod
+    def _is_multipart(scope: Scope) -> bool:
+        """True when the request declares `multipart/form-data`.
+
+        Matched on a prefix because the real header carries a boundary parameter —
+        `multipart/form-data; boundary=----WebKitFormBoundary...` — so an equality test would fail on
+        every genuine upload the browser sends.
+        """
+        for key, value in scope.get("headers", ()):
+            if key == b"content-type":
+                # `bool(...)` because `scope["headers"]` is untyped in Starlette's `Scope`, so
+                # mypy --strict sees `startswith` returning `Any`.
+                return bool(value.lower().lstrip().startswith(b"multipart/form-data"))
+        return False
 
     def _is_exempt(self, scope: Scope) -> bool:
         path = scope.get("path", "")
@@ -93,18 +135,16 @@ class MaxBodySizeMiddleware:
                     return None
         return None
 
-    async def _reject(self, send: Send) -> None:
+    async def _reject(self, send: Send, *, limit: int, code: str) -> None:
         # Same envelope the router uses for the identical `file_too_large` condition
         # (`routers/intake.py`) — a client branches on `code`, and must never see two shapes for one
         # failure depending on which layer happened to catch it.
-        body = json.dumps(
-            {
-                "error": {
-                    "code": "file_too_large",
-                    "message": f"The file exceeds the {self.max_bytes}-byte limit.",
-                }
-            }
-        ).encode("utf-8")
+        message = (
+            f"The file exceeds the {limit}-byte limit."
+            if code == "file_too_large"
+            else f"The request body exceeds the {limit}-byte limit."
+        )
+        body = json.dumps({"error": {"code": code, "message": message}}).encode("utf-8")
         await send(
             {
                 "type": "http.response.start",

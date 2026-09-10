@@ -13,11 +13,15 @@ Used by:
 - `tests/integration/intake/test_read_base_cvs.py` (T12 — `GetBaseCvForSession`,
   `ListBaseCvsForSession`)
 - `tests/integration/identity/test_start_guest_session.py` (T12 — `StartGuestSession`)
+- `tests/integration/posting/test_capture_job_posting.py` (T9/T10 — `CaptureJobPosting`)
+- `tests/integration/posting/test_read_job_postings.py` (T12/T13 — `GetJobPostingForSession`,
+  `ListJobPostingsForSession`)
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Protocol
 from uuid import uuid4
 
 from tailorcraft.domain.identity.errors import GuestSessionNotFound
@@ -26,6 +30,9 @@ from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound, CvExtractionFailed
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
+from tailorcraft.domain.posting.errors import JobPostingFetchFailed, JobPostingNotFound
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import FetchedPosting, JobPostingId, SourceUrl
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 from tailorcraft.infrastructure.clock import FixedClock
@@ -87,6 +94,37 @@ class FakeGuestSessionRepository:
         return None
 
 
+class FakeJobPostingRepository:
+    """In-memory `JobPostingRepository`. Same shape as `FakeBaseCvRepository`, deliberately: the two
+    ports are the same shape (`domain/posting/ports.py`'s docstring says so explicitly), so the fakes
+    are too."""
+
+    def __init__(self) -> None:
+        self._by_id: dict[JobPostingId, JobPosting] = {}
+
+    def next_identity(self) -> JobPostingId:
+        return JobPostingId(value=uuid4())
+
+    async def add(self, posting: JobPosting) -> None:
+        self._by_id[posting.id] = posting
+
+    async def get(self, posting_id: JobPostingId) -> JobPosting:
+        try:
+            return self._by_id[posting_id]
+        except KeyError:
+            raise JobPostingNotFound(str(posting_id)) from None
+
+    async def list_for_session(self, sid: GuestSessionId) -> Sequence[JobPosting]:
+        return [posting for posting in self._by_id.values() if posting.guest_session_id == sid]
+
+    async def count_for_session(self, sid: GuestSessionId) -> int:
+        return len(await self.list_for_session(sid))
+
+    def all(self) -> list[JobPosting]:
+        """Test-only inspection, not part of `JobPostingRepository`."""
+        return list(self._by_id.values())
+
+
 class InMemoryFileStore:
     """In-memory `FileStorePort`, backed by a plain dict.
 
@@ -141,14 +179,53 @@ class FakeExtractor:
         return self._outcome
 
 
+class FakeJobPostingFetcher:
+    """`JobPostingFetcherPort` that either returns a fixed `FetchedPosting` or raises a fixed
+    `JobPostingFetchFailed` — one instance per test, configured with exactly the outcome that test
+    is about. Mirrors `FakeExtractor`'s shape, with one addition: `calls` counts invocations, so a
+    paste-path test can assert the fetcher was never reached (`fetcher.calls == 0`) rather than only
+    trusting that a value it never used happened not to matter."""
+
+    def __init__(self, outcome: FetchedPosting | JobPostingFetchFailed) -> None:
+        self._outcome = outcome
+        self.calls = 0
+
+    async def fetch(self, url: SourceUrl) -> FetchedPosting:
+        self.calls += 1
+        if isinstance(self._outcome, JobPostingFetchFailed):
+            raise self._outcome
+        return self._outcome
+
+
+class _HasAll(Protocol):
+    """Structural type for "a fake repository with a test-only `.all()` inspector" — satisfied by
+    both `FakeBaseCvRepository` and `FakeJobPostingRepository` without either needing to share a
+    base class with the other (CLAUDE.md: shared shape is not shared behaviour; this is a
+    test-fixture convenience typed narrowly enough to stay honest about that)."""
+
+    def all(self) -> Sequence[object]: ...
+
+
 class RecordingEventPublisher:
     """`EventPublisherPort` that records what it was handed, for AC-13-style assertions on the
-    published events' field sets and content."""
+    published events' field sets and content.
 
-    def __init__(self) -> None:
+    Optionally takes a repository-like fake exposing `.all()`, purely so a test can prove
+    **publish-after-save** ordering — the same technique `InMemoryFileStore(repo=cvs)` uses for
+    T9's file-before-row proof, aimed the other way. `repo_size_at_first_publish` snapshots
+    `len(repo.all())` at the moment `publish` is first called, so an assertion that it is nonzero is
+    positive evidence the save already happened by then, rather than only an end-state check that
+    would pass even if publish ran first.
+    """
+
+    def __init__(self, repo: _HasAll | None = None) -> None:
+        self._repo = repo
         self.published: list[DomainEvent] = []
+        self.repo_size_at_first_publish: int | None = None
 
     async def publish(self, *events: DomainEvent) -> None:
+        if self._repo is not None and self.repo_size_at_first_publish is None:
+            self.repo_size_at_first_publish = len(self._repo.all())
         self.published.extend(events)
 
 

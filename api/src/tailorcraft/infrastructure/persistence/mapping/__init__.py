@@ -11,12 +11,16 @@ from __future__ import annotations
 def load_all() -> None:
     """Import every mapping module for its side effect of calling `map_imperatively()`.
 
-    `guest_session` is imported first: `base_cv`'s `Table` references
-    `guest_session_table.c.id` for its foreign key, so the table it depends on must exist on
+    `guest_session` is imported first: both `base_cv`'s and `job_posting`'s `Table` reference
+    `guest_session_table.c.id` for their foreign key, so the table they depend on must exist on
     `metadata` first. Import order does not affect mapper *configuration* (SQLAlchemy resolves that
     lazily), but it does affect whether the `Table` objects themselves are ready to be referenced.
     """
     from tailorcraft.infrastructure.persistence.mapping.identity import guest_session
     from tailorcraft.infrastructure.persistence.mapping.intake import base_cv
+    from tailorcraft.infrastructure.persistence.mapping.posting import job_posting
 
-    _ = (guest_session, base_cv)  # imported for their side effect; silence "unused import"
+    # Imported for their side effect (each module calls `map_imperatively` at import time); the
+    # assignment silences "unused import". A module missing from this list is silently unmapped —
+    # which is why the list is explicit rather than a directory scan.
+    _ = (guest_session, base_cv, job_posting)

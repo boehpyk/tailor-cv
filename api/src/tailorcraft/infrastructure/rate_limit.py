@@ -37,6 +37,17 @@ class RateLimitDecision:
     retry_after_seconds: int
 
 
+class RateLimiterUnavailable(Exception):
+    """Redis was unreachable and this limiter is configured to fail closed.
+
+    Not a `DomainError`: rate limiting is an HTTP-boundary concern and the domain has no idea it
+    exists (see the module docstring). The router maps this to 503 `rate_limit_unavailable`.
+
+    Carries the namespace and nothing else — never the identifier, which for the IP scope is the
+    client's address (Constitution §8).
+    """
+
+
 class RedisFixedWindowRateLimiter:
     """`INCR` + `EXPIRE` on one key per (namespace, scope, identifier, hour) — a classic fixed
     window. Not a sliding window or a token bucket: a fixed window can let up to 2x the limit through
@@ -50,21 +61,37 @@ class RedisFixedWindowRateLimiter:
     hour has passed, and `EXPIRE` is what reclaims it instead of a background sweep.
     """
 
-    def __init__(self, redis: aioredis.Redis, namespace: str) -> None:
+    def __init__(self, redis: aioredis.Redis, namespace: str, *, fail_open: bool = True) -> None:
+        """`fail_open` decides what an unreachable Redis means for this limiter.
+
+        The default is `True` — the existing behaviour, unchanged, for every caller that had one
+        before slice 1.2. A flag on this class rather than a second class, because the counting is
+        identical and only the answer to one exception differs; two classes would be two copies of
+        the `INCR`/`EXPIRE` logic kept in step by hand.
+
+        **The asymmetry between the two settings is the interesting part, and it generalizes.**
+        Slice 1.1 recorded the question as a two-point spectrum: the upload limiter fails open
+        because the cost of an unlimited request is our own disk and CPU — real, but ours and
+        bounded — while 1.3's tailoring limiter must fail closed because the cost is money paid to a
+        third party. A job-posting *fetch* is a third point and it sits with 1.3, not with 1.1: the
+        cost is **someone else's infrastructure, spent from our IP address**. An unbounded outbound
+        endpoint with no backstop is how a server ends up on a job board's blocklist, and it is also
+        the shape in which we are used as an anonymizing fetch proxy or an SSRF prober.
+
+        The rule that generalizes, and the one to apply to the next limiter: *fail open when the
+        cost is ours and bounded; fail closed when the cost is money or somebody else's.*
+        """
         self._redis = redis
         self._namespace = namespace
+        self._fail_open = fail_open
 
     async def check(self, scope: RateLimitScope, identifier: str, limit: int) -> RateLimitDecision:
         """Record one hit for `identifier` in the current hour's window and report whether it is
         within `limit`.
 
-        **Fails OPEN on `redis.RedisError`.** This is a deliberate asymmetry, not a shortcut carried
-        over from a tutorial: this endpoint's cost per request is disk I/O and CPU (parsing a CV) —
-        a real but bounded, on-box cost. Slice 1.3's tailoring endpoint calls a paid LLM API per
-        request, so *that* limiter fails **closed**: an unreachable Redis there must block the
-        request, because the alternative is an unauthenticated endpoint that spends money with no
-        backstop (OQ-7). Copying this method's fail-open behaviour onto the LLM endpoint would be the
-        wrong direction to generalize it.
+        On `redis.RedisError` this either fails **open** (serves the request, logs one warning) or
+        fails **closed** (raises `RateLimiterUnavailable`), according to the `fail_open` flag given
+        to the constructor — see `__init__` for why the two exist and which cost justifies which.
         """
         now = int(time.time())
         epoch_hour = now // _SECONDS_PER_HOUR
@@ -89,7 +116,14 @@ class RedisFixedWindowRateLimiter:
                 scope=scope,
                 namespace=self._namespace,
                 error=type(exc).__name__,
+                fail_open=self._fail_open,
             )
+            if not self._fail_open:
+                # The caller cannot serve this request safely without a working counter, so it does
+                # not serve it at all. `from None`, not `from exc`: this frame's locals include
+                # `identifier`, which for the IP scope IS the client's address, and a chained
+                # exception keeps that frame reachable from a Sentry report.
+                raise RateLimiterUnavailable(self._namespace) from None
             return RateLimitDecision(allowed=True, retry_after_seconds=seconds_to_edge)
 
         return RateLimitDecision(allowed=count <= limit, retry_after_seconds=seconds_to_edge)

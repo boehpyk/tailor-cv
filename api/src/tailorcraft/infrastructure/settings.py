@@ -87,6 +87,54 @@ class Settings(BaseSettings):
     # into an attacker-chosen value read straight out of a client-supplied header.
     trusted_proxy_hops: int = 1
 
+    # -- Job-posting intake: the guarded egress (slice 1.2, ADR-0012) ---------
+    # Every bound below is a bound on what ONE outbound request to a host a stranger chose may cost
+    # us. None of them is a security control that can be switched off: there is deliberately no
+    # setting here that disables the SSRF address policy, no `allow_private_fetch_targets`, no "dev
+    # mode" bypass. A flag that turns off a security control is a flag someone eventually sets in
+    # production (ADR-0012, "The SSRF guard has no off switch"). The seam that makes the fetcher
+    # testable is a constructor argument with a strict default, and a wiring test asserts the
+    # production default is the strict one.
+    #
+    # The hard outer bound on one fetch. Per-phase timeouts are what a hostile server evades by
+    # trickling one byte before each read deadline; this is the one that actually stops it.
+    posting_fetch_timeout_seconds: int = 10
+    posting_fetch_connect_timeout_seconds: float = 3.0
+    posting_fetch_read_timeout_seconds: float = 5.0
+    # Enforced on DECODED bytes while streaming, never from `Content-Length` — that header is a
+    # claim by the party we are defending against, and a chunked response carries none at all.
+    posting_fetch_max_bytes: int = 2 * 1024 * 1024
+    # Every hop re-runs the whole guard (scheme, host, DNS, address policy). Three is generous for
+    # real job boards, which redirect once or twice for canonicalisation or a country splash.
+    posting_fetch_max_redirects: int = 3
+    # The backstop for a pathological document; the byte cap above is the mechanism that bounds
+    # ordinary extraction work.
+    posting_extraction_timeout_seconds: int = 5
+
+    # -- Job-posting rate limits & caps (P-32, P-33) --------------------------
+    # Two counters with DIFFERENT failure modes on an unreachable Redis, and the asymmetry is
+    # deliberate — see `RedisFixedWindowRateLimiter`. Creating a posting fails OPEN (the cost is our
+    # own database, bounded). Fetching fails CLOSED (the cost is someone else's infrastructure,
+    # spent from our IP address).
+    posting_rate_limit_per_hour: int = 20
+    posting_fetch_rate_limit_per_hour: int = 10
+    posting_fetch_rate_limit_per_ip_per_hour: int = 30
+    # A cross-aggregate cap enforced in `CaptureJobPosting`, not on the aggregate — the rule spans
+    # every posting a session owns, which no single `JobPosting` can know.
+    max_job_postings_per_session: int = 10
+
+    # The `MaxBodySizeMiddleware` cap for NON-multipart bodies. 30,000 characters of UTF-8 is at
+    # most ~120 KB, so this refuses an absurd paste before it is parsed while leaving every legal
+    # one comfortable. Separate from `max_upload_bytes` (10 MB) because a JSON body and a CV upload
+    # are different sizes of legitimate, and answering `file_too_large` to a JSON request would be
+    # wrong in both the number and the wording.
+    json_request_max_bytes: int = 256 * 1024
+
+    # NOT settings, deliberately: `JobPostingText`'s 100 / 30,000 character bounds. The domain must
+    # not read configuration, and "a posting shorter than this is not a posting" is a rule about the
+    # type rather than a deployment knob. The client's pre-validation constant is a separate,
+    # clearly-marked UX-only copy that says the API is the authority.
+
     # -- Observability -------------------------------------------------------
     # Empty in dev and in CI; set on the box. Phase 0 rather than deferred, because this product has
     # silent failure paths from its first slice (roadmap).

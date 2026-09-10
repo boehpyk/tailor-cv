@@ -411,7 +411,14 @@ async def test_middleware_rejects_a_spoofed_content_length_even_with_a_tiny_actu
         "POST",
         "/api/base-cvs",
         content=b"tiny",
-        headers={"content-length": str(spoofed_length), "content-type": "text/plain"},
+        # Multipart, because this asserts the UPLOAD cap. Slice 1.2 gave the middleware a second,
+        # much smaller cap for non-multipart bodies (256 KiB, `request_too_large`), so the
+        # content-type now decides which 413 applies — `text/plain` here would take the JSON branch
+        # and stop testing what this test is named for.
+        headers={
+            "content-length": str(spoofed_length),
+            "content-type": "multipart/form-data; boundary=----tc",
+        },
     )
 
     response = await client.send(request)
@@ -508,7 +515,13 @@ async def test_the_413_is_readable_cross_origin_because_max_body_size_sits_insid
             content=b"tiny",
             headers={
                 "content-length": str(spoofed_length),
-                "content-type": "text/plain",
+                # Declares multipart because this asserts the UPLOAD cap. Slice 1.2 gave
+                # `MaxBodySizeMiddleware` a second, much smaller cap for non-multipart bodies
+                # (`json_request_max_bytes`, 256 KiB, answering `request_too_large`), so the
+                # content-type now decides WHICH 413 a request gets. Before that there was one cap
+                # and this header was arbitrary; now sending `text/plain` here would exercise the
+                # JSON path and quietly stop testing the thing this test is named for.
+                "content-type": "multipart/form-data; boundary=----tc",
                 "origin": "http://example.test",
             },
         )
