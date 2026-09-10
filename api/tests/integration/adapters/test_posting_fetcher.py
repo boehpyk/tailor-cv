@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import gzip
 import http.server
+import logging
 import socket
 import threading
 import time
@@ -546,3 +547,55 @@ async def test_a_redirect_to_a_link_local_address_is_refused_even_under_the_perm
 
     with pytest.raises(SourceUrlNotAllowed):
         await _fetcher().fetch(SourceUrl(stub.url("/redirect-metadata")))
+
+
+async def test_the_real_adapter_logs_the_host_and_nothing_else_from_the_url(
+    stub: _StubServer, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-18 / Constitution §8, asserted against the **real** adapter's own logging.
+
+    **This test exists because the one that was supposed to cover this could not.**
+    `tests/api/test_posting.py::test_a_full_fetch_never_logs_the_text_or_the_urls_path_or_query`
+    is named as though it proves the whole fetch logs nothing sensitive, but it runs against a fake
+    `JobPostingFetcherPort` installed through `app.dependency_overrides` — so it never calls
+    `HttpxTrafilaturaFetcher._log_outcome`, `_log_event`, `_log_unreachable` or
+    `_log_unexpected_error` at all. Those four are the only functions in the slice that touch a
+    `SourceUrl` near a log line, which makes them the entire subject of the rule. Its assertions
+    could not fail if every one of them logged `url.value`.
+
+    So this asserts both halves, and the positive half is the one that keeps it honest: a test that
+    only checked for absence would pass identically against an adapter that logged **nothing**, and
+    would then stay green while someone added a line — which is the regression it exists to catch.
+
+    `caplog` rather than `structlog.testing.capture_logs()`, for the reason
+    `tests/api/test_intake.py`'s module docstring sets out at length: `cache_logger_on_first_use`
+    means a module-level logger bound during an earlier test keeps a reference to that test's
+    processor list, which `capture_logs`'s in-place mutation cannot reach.
+    """
+    secret_path = "/secret-path-abc123"
+    secret_query = "ref=xyz789"
+    body_marker = b"Northwind-Logistics-Confidential-Marker"
+    page = _JOB_POSTING_HTML.replace(b"</article>", body_marker + b"</article>")
+    # Registered WITH the query string: the stub matches on `self.path`, which for a real request
+    # includes it. Keying on the bare path 404s, which surfaces as `SourceRejectedRequest` and would
+    # make this test pass for the wrong reason — a failed fetch logs less than a successful one.
+    stub.state.routes[f"{secret_path}?{secret_query}"] = lambda h: _respond(
+        h, headers={"Content-Type": "text/html; charset=utf-8"}, body=page
+    )
+
+    url = SourceUrl(f"{stub.url(secret_path)}?{secret_query}")
+    with caplog.at_level(logging.INFO):
+        await _fetcher().fetch(url)
+
+    assert caplog.records, "expected the fetch to have produced at least one log record"
+    output = caplog.text
+
+    # The negative half: nothing identifying this particular posting may appear.
+    assert "secret-path-abc123" not in output, "the URL's path reached a log line"
+    assert secret_query not in output, "the URL's query reached a log line"
+    assert "xyz789" not in output, "a query value reached a log line"
+    assert body_marker.decode() not in output, "the fetched page's text reached a log line"
+
+    # The positive half: the host MUST be there. Without this the test passes against an adapter
+    # that logs nothing at all, and tells you nothing the day someone adds a line.
+    assert url.host in output, "the host should be logged — it is the one part of a URL that may be"

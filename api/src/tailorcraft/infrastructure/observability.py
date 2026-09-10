@@ -41,7 +41,22 @@ from tailorcraft.infrastructure.settings import Settings
 # (`pypdf._cmap`, `pypdf.generic...`) inherit it through `getEffectiveLevel()` walking to this
 # parent, so one entry covers the package. `propagate = False` alone would not do it — a logger with
 # no handlers of its own falls back to `logging.lastResort`, which writes to stderr.
-_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx")
+#
+# `httpx` was added by slice 1.2, and it is the sharpest entry in this tuple. `httpx` logs every
+# request it makes at INFO, in full:
+#
+#     INFO httpx:_client.py:1740  HTTP Request: GET https://jobs.example.com/postings/1234?ref=abc "200 OK"
+#
+# That is a job-posting URL — the specific job a specific, probably anxious person is applying for —
+# written to the application log on every fetch, complete with path and query (Constitution §8 names
+# those as never-loggable, and job boards routinely put tracking and referral tokens in the query).
+# `HttpxTrafilaturaFetcher` is scrupulous about logging only `url.host`; none of that mattered while
+# the library it calls was logging the whole URL one frame away.
+#
+# Found by the AC-18 test that runs against the REAL adapter. The pre-existing privacy test drove a
+# FAKE fetcher through `app.dependency_overrides`, so no `httpx` request was ever made and the leak
+# could not appear — a test whose name promised coverage its assertions could not deliver.
+_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx", "httpx")
 
 
 def configure_logging(settings: Settings) -> None:
