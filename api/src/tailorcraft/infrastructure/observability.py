@@ -56,7 +56,14 @@ from tailorcraft.infrastructure.settings import Settings
 # Found by the AC-18 test that runs against the REAL adapter. The pre-existing privacy test drove a
 # FAKE fetcher through `app.dependency_overrides`, so no `httpx` request was ever made and the leak
 # could not appear — a test whose name promised coverage its assertions could not deliver.
-_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx", "httpx")
+# `httpcore` is httpx's transport and a SEPARATE top-level logger namespace — not a child of
+# `httpx`, so silencing that name does not reach it. It was measured before being added here and it
+# does not currently leak: at DEBUG with every logger open it emitted six records carrying `host`
+# and `port` only, and it elides request/response reprs (`<Request [b'GET']>`). It is silenced
+# anyway, because the sentence above says the library never gets to speak and that should be true
+# rather than true-today: httpcore's messages are debug-gated, and "nothing leaks as long as nobody
+# sets LOG_LEVEL=debug while chasing a stuck fetch" is not a guarantee, it is a hope.
+_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx", "httpx", "httpcore")
 
 
 def configure_logging(settings: Settings) -> None:
