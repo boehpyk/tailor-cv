@@ -134,6 +134,30 @@ def test_tailored_document_rejects_an_embedded_nul(
 
 
 @_document_types
+def test_tailored_document_reports_control_character_before_length_floor(
+    document_type: type[TailoredCv | CoverLetter],
+) -> None:
+    """**Addendum, not part of the red cycle.** Pins an ordering the fixtures above cannot see: every
+    malformed fixture in this file is exactly 500 non-whitespace characters (250 + 1 + 250), so each
+    one clears the 400/200 floor regardless of which check runs first, and none of them can tell
+    "control-before-bounds" apart from "bounds-before-control". This fixture is short — 50 characters,
+    comfortably under both floors — precisely so the two orderings disagree: bounds-first would
+    report `TailoredDocumentTooShort`, control-first reports `InvalidTailoredDocument`.
+
+    The decision, settled here on purpose because the spec left it open: **control-character before
+    bounds.** "This is not a document at all" outranks "this document is the wrong size" — a NUL
+    means the model's output is corrupt at any length, and a corrupt 50-character string is not
+    usefully described as "37 characters too short". This test passes immediately against the current
+    implementation (`TailoredCv.__post_init__` and `CoverLetter.__post_init__` both call
+    `_has_disallowed_control_character` before either bound check) — it is a test-after guard on a
+    decision already made, not a red-first assertion, and it is expected to be green the moment it is
+    committed.
+    """
+    with pytest.raises(InvalidTailoredDocument):
+        document_type("a" * 50 + "\x00")
+
+
+@_document_types
 def test_tailored_document_rejects_a_bare_vertical_tab(
     document_type: type[TailoredCv | CoverLetter],
 ) -> None:
