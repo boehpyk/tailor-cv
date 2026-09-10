@@ -179,7 +179,8 @@ async def _hammer_health_live(client: AsyncClient, *, stop: asyncio.Event) -> li
     task's continuation, starving it just as completely as no yield at all). A small positive delay
     (rather than `sleep(0)`) is what actually lets the fetch tasks — and the outer test coroutine —
     get scheduled turns; it also caps the hammering rate to something sane instead of an unbounded
-    tight loop, which matters on this container's one-CPU cgroup quota (see the module docstring).
+    tight loop, which is worth doing on its own merits — an unbounded loop makes the samples measure
+    the loop rather than the fetcher.
     A real deployed `/health/live` request arrives over an actual socket and would not have this
     problem; it is specific to driving the app in-process, and the fetcher's own I/O (real sockets,
     a real worker thread) does not share this failure mode, which is exactly why gathering it

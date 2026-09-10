@@ -1092,3 +1092,57 @@ async def test_a_full_fetch_never_logs_the_text_or_the_urls_path_or_query(
     assert _PRIVACY_FIXTURE_IP not in log_output, (
         "the client IP must never reach a log line (Constitution §8) — not even paired with a host"
     )
+
+
+async def test_an_invalid_url_does_not_consume_the_fetch_rate_limit_budget(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    """A URL that never reaches the network must not spend the outbound budget.
+
+    The fetch limiters bound **outbound requests made from our IP address**. A body whose `url`
+    fails `SourceUrl`'s rules — a bad scheme, userinfo, a control character — is refused at the
+    boundary and opens no socket, so charging it against a 10/hour budget bills the visitor for
+    something they did not do. Someone mistyping `htp://` four times would burn nearly half their
+    hourly fetches before making a single request, against a limit they cannot see.
+
+    This was fixed by moving boundary validation ahead of the fetch limiter checks, and it was
+    originally verified only by hand against the running stack — which is precisely the shape of
+    verification this project has repeatedly watched regress in silence. Hence this test.
+
+    The limit is set to 1 so the assertion is unambiguous: three invalid URLs, then one VALID fetch
+    that must still succeed. If any of the three had consumed the budget, that fourth request would
+    be a 429 instead of a 201 — which is the whole claim, stated as an outcome rather than as an
+    inspection of Redis.
+    """
+    _override_settings(app, settings, posting_fetch_rate_limit_per_hour=1)
+    _install_fetcher(app, posting=_fetched_posting())
+
+    # Establish a real session FIRST, with a request that succeeds. Without this the test is
+    # vacuous, and the reason is worth writing down: a 422 propagates out of the handler, which
+    # rolls back `get_session`'s transaction — so the `GuestSession` minted for that request is
+    # never persisted AND its `Set-Cookie` never reaches the client (FastAPI builds a fresh
+    # response for the exception). Every invalid request therefore arrives with no cookie, mints a
+    # brand-new session id, and is counted under a Redis key of its own. The per-session fetch
+    # limiter can never fire across them no matter which order the checks run in, so the test
+    # passes under both orderings and proves nothing. Verified by mutation before this line existed.
+    seeded = await client.post(
+        "/api/job-postings", json={"source": "pasted", "text": PASTED_TEXT_RAW}
+    )
+    assert seeded.status_code == 201, seeded.text
+
+    for bad_url in ("htp://not-a-scheme.example/jobs", "file:///etc/passwd", "http://u:p@host/x"):
+        rejected = await client.post(
+            "/api/job-postings", json={"source": "fetched", "url": bad_url}
+        )
+        assert rejected.status_code == 422, rejected.text
+        assert _error_code(rejected) == "invalid_source_url"
+
+    allowed = await client.post(
+        "/api/job-postings",
+        json={"source": "fetched", "url": "https://jobs.example.com/postings/1"},
+    )
+
+    assert allowed.status_code == 201, (
+        "the single fetch this session was entitled to was consumed by URLs that never "
+        "opened a socket"
+    )

@@ -46,7 +46,11 @@ from tailorcraft.infrastructure.api.schemas.posting import (
     JobPostingResponse,
     JobPostingSummary,
 )
-from tailorcraft.infrastructure.rate_limit import RateLimiterUnavailable, client_ip
+from tailorcraft.infrastructure.rate_limit import (
+    RateLimitDecision,
+    RateLimiterUnavailable,
+    client_ip,
+)
 
 router = APIRouter(prefix="/api/job-postings", tags=["posting"])
 
@@ -199,7 +203,29 @@ async def create_job_posting(
     create_decision = await create_limiter.check(
         "session", str(session.id.value), settings.posting_rate_limit_per_hour
     )
-    decisions = [create_decision]
+    # The create budget is answered IMMEDIATELY, before validation — matching slice 1.1's upload
+    # handler, which likewise answers 429 before it validates a filename.
+    #
+    # Deferring this one alongside the fetch checks was a regression introduced while fixing their
+    # ordering: a session over its create budget that also sent a bad URL got 422, spent the counter
+    # anyway, fixed the URL, and only then learned it was rate-limited. Two round trips to deliver
+    # one piece of bad news, and the second one contradicted the first. The fetch checks are the
+    # ones that must wait for validation, because they bound OUTBOUND requests; this one bounds our
+    # own database and an attempt is an attempt either way.
+    if not create_decision.allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "rate_limited",
+                "message": (
+                    f"Too many job postings. Try again in "
+                    f"{create_decision.retry_after_seconds} seconds."
+                ),
+            },
+            headers={"Retry-After": str(create_decision.retry_after_seconds)},
+        )
+
+    decisions: list[RateLimitDecision] = []
 
     # Boundary validation happens HERE — between the two limiters — and the ordering is deliberate.
     #
