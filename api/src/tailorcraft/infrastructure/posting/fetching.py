@@ -133,6 +133,33 @@ class HttpxTrafilaturaFetcher:
         except JobPostingFetchFailed as exc:
             self._log_outcome(url, started_at, outcome=exc.reason.value, character_count=None)
             raise
+        except httpx.TimeoutException as exc:
+            # A PER-PHASE timeout: connect, read, write or pool. Distinct from the outer
+            # `asyncio.wait_for` above, which bounds the whole operation — these fire first and
+            # more often, and `httpx.TimeoutException` is NOT a subclass of the builtin
+            # `TimeoutError`, so the handler above does not see them.
+            #
+            # This translation was MISSING in the first implementation, and the gap was invisible
+            # for a specific reason worth recording: the only timeout test in the suite used a
+            # slow-trickling server, which the ten-second outer bound catches before any per-phase
+            # deadline expires. So the tested path went through `TimeoutError` and produced the right
+            # answer, while every real per-phase timeout fell to the floor below and came back as
+            # `fetcher_error` — a 502 where the contract says 504 (P-15). A test that exercises the
+            # generous bound cannot tell you anything about the tight ones.
+            self._log_outcome(url, started_at, outcome="timed_out", character_count=None)
+            raise SourceTimedOut() from exc
+        except (httpx.ConnectError, httpx.RemoteProtocolError) as exc:
+            # The connection never established, or the peer broke the protocol mid-response:
+            # refused, reset, a TLS handshake failure, a truncated response (P-13/P-14).
+            # `socket.gaierror` is translated at the resolution step in `_resolve`, before any
+            # socket is opened.
+            #
+            # This is a better answer than the floor, and "better" is concrete: both are 502, but
+            # the `code` differs, and `code` is the contract a client branches on. `fetcher_error`
+            # says "something went wrong inside us"; `source_unreachable` says "that site did not
+            # answer" — and only the second is a fact the user can act on.
+            self._log_unreachable(url, started_at, exc)
+            raise SourceUnreachable() from exc
         except Exception as exc:
             # THE FLOOR (ADR-0012 obligation 10), and it is load-bearing rather than defensive
             # habit. `JobPostingFetcherPort` promises a `JobPostingFetchFailed` subclass on EVERY
@@ -476,6 +503,20 @@ class HttpxTrafilaturaFetcher:
         if url is not None:
             fields.setdefault("source_host", url.host)
         log.info(event, **fields)
+
+    def _log_unreachable(self, url: SourceUrl, started_at: float, exc: BaseException) -> None:
+        """P-13/P-14's log line: the host, the outcome, and the exception's TYPE.
+
+        `error_type` and never `str(exc)` — an httpx connection error's message embeds the full URL
+        it was trying to reach, path and query included, which is exactly the disclosure
+        Constitution §8 forbids.
+        """
+        self._log_outcome(url, started_at, outcome="unreachable", character_count=None)
+        log.info(
+            "posting_fetch.unreachable",
+            source_host=url.host,
+            error_type=f"{type(exc).__module__}.{type(exc).__qualname__}",
+        )
 
     def _log_unexpected_error(self, url: SourceUrl, started_at: float, exc: BaseException) -> None:
         """The floor's own log line, separate from `posting_fetch.finished` so that line's field set

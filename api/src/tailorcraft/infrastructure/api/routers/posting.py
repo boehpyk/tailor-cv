@@ -201,6 +201,26 @@ async def create_job_posting(
     )
     decisions = [create_decision]
 
+    # Boundary validation happens HERE — between the two limiters — and the ordering is deliberate.
+    #
+    # The `create` counter is consumed first because every source costs a row if it succeeds, so an
+    # attempt is an attempt. The `fetch` counters are consumed only AFTER the URL has been proven to
+    # be a `SourceUrl`, because they bound outbound requests and a request that fails validation
+    # never reaches the network. Checking them first means a visitor who mistypes `htp://` four
+    # times spends four of their ten hourly fetches on requests that never opened a socket — a limit
+    # they cannot see, enforced against something they did not do.
+    #
+    # This is also where `file:///etc/passwd` dies (ADR-0012 obligation 1): the type refuses it, so
+    # the fetch counters are never even reached for a URL we would not have fetched.
+    try:
+        command = (
+            PasteJobPostingCommand(guest_session_id=session.id, text=JobPostingText(body.text))
+            if body.source == "pasted"
+            else FetchJobPostingCommand(guest_session_id=session.id, url=SourceUrl(body.url))
+        )
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from exc
+
     if body.source == "fetched":
         try:
             decisions.append(
@@ -236,18 +256,6 @@ async def create_job_posting(
             },
             headers={"Retry-After": str(retry_after)},
         )
-
-    # Boundary validation: the untrusted string becomes a value object here, and its `DomainError`
-    # becomes the response. `SourceUrl` is what makes `file:///etc/passwd` unrepresentable rather
-    # than rejected downstream (ADR-0012 obligation 1), so this is the line that enforces it.
-    try:
-        command = (
-            PasteJobPostingCommand(guest_session_id=session.id, text=JobPostingText(body.text))
-            if body.source == "pasted"
-            else FetchJobPostingCommand(guest_session_id=session.id, url=SourceUrl(body.url))
-        )
-    except DomainError as exc:
-        raise domain_error_to_http_exception(exc) from exc
 
     try:
         result = await capture(command)

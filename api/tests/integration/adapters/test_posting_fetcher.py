@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import gzip
 import http.server
+import socket
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -35,6 +36,7 @@ from tailorcraft.domain.posting.errors import (
     SourceResponseTooLarge,
     SourceTimedOut,
     SourceTooManyRedirects,
+    SourceUnreachable,
     SourceUrlNotAllowed,
 )
 from tailorcraft.domain.posting.value_objects import FetchFailureReason, SourceUrl
@@ -394,6 +396,70 @@ async def test_a_slow_trickling_server_times_out(stub: _StubServer) -> None:
         await _fetcher(timeout_seconds=1, read_timeout_seconds=0.5).fetch(
             SourceUrl(stub.url("/slow"))
         )
+
+
+# --- Extraction exceeding its OWN budget is a separate timeout from the outer fetch budget (P-23) --
+
+
+async def test_extraction_exceeding_its_own_timeout_budget_is_source_timed_out(
+    stub: _StubServer,
+) -> None:
+    """P-23: "Extraction exceeds its 5 s budget -> 504 `source_timed_out`, logged with
+    `source_host`, `duration_ms`, `outcome=timed_out`."
+
+    A DIFFERENT code path from `test_a_slow_trickling_server_times_out` above: that one trips the
+    OUTER `asyncio.wait_for(self._fetch_guarded(url), timeout=self._timeout_seconds)` wrapping the
+    whole fetch, driven by a server that trickles bytes slowly. This one trips the INNER
+    `asyncio.wait_for(asyncio.to_thread(self._extract_sync, html), timeout=self._extraction_timeout_seconds)`
+    inside `_read_and_extract`, which has its own `except TimeoutError` -> `SourceTimedOut`
+    translation — a fully-fetched, ordinary page whose *extraction* alone cannot finish in time.
+
+    `extraction_timeout_seconds=0` is a deadline `asyncio.wait_for` cannot possibly meet regardless
+    of how fast `trafilatura.extract` actually runs — the same shape `test_intake.py`'s
+    `test_extraction_exceeding_the_timeout_records_extractor_error` uses for
+    `CvTextExtractorPort`'s identical budget-of-zero trick, chosen for the same reason: it forces
+    the timeout deterministically without a real multi-second sleep in the suite.
+
+    This test's whole reason to exist is discriminating the branch it names: reverting
+    `_read_and_extract`'s `except TimeoutError as exc: raise SourceTimedOut() from exc` to
+    `raise RuntimeError(...)` was verified BY HAND to turn this test red (see the QA report for the
+    verbatim failure) — a passing run alone does not prove that, which is why it is recorded here.
+    """
+    stub.state.routes["/ok"] = lambda h: _respond(
+        h, headers={"Content-Type": "text/html"}, body=_JOB_POSTING_HTML
+    )
+
+    with pytest.raises(SourceTimedOut):
+        await _fetcher(extraction_timeout_seconds=0).fetch(SourceUrl(stub.url("/ok")))
+
+
+# --- A closed port is a connection refused, and must be SourceUnreachable, not the FETCHER_ERROR ---
+# --- floor (P-14) -------------------------------------------------------------------------------
+
+
+async def test_a_closed_port_on_localhost_is_source_unreachable() -> None:
+    """P-14: "Connection refused, reset, or TLS handshake failure -> 502 `source_unreachable`,
+    logged with `source_host`, `outcome=unreachable`, plus `error_type`. Tested by: adapter test
+    against a closed port."
+
+    A socket is bound to `127.0.0.1` on an OS-assigned ephemeral port and immediately closed —
+    freeing the port while guaranteeing the OS actively refuses the very next connection attempt to
+    it (`ECONNREFUSED`), which is the cheapest, fully-local way to drive a real connection-refused
+    failure without depending on an external host or a firewall rule. No stub server is started for
+    this test; the whole point is that nothing is listening.
+
+    `SourceUnreachable`'s own docstring is explicit that "the connection was refused" is one of the
+    conditions it covers, alongside DNS failure. This is the only test in this module — or anywhere
+    in the suite — that drives a refused connection through the real adapter; every other exercise
+    of `SourceUnreachable` goes through a fake fetcher at the use-case or API layer.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    with pytest.raises(SourceUnreachable):
+        await _fetcher().fetch(SourceUrl(f"http://127.0.0.1:{port}/"))
 
 
 # --- The two floor tests: an unrecognised exception, and CancelledError NOT swallowed (P-25, P-26) --
