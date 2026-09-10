@@ -685,11 +685,163 @@ One habit generalises out of all six: when you write a promise down — in a doc
 test name — ask what would have to be true for it to be false, and then go and check that. That is
 the entire method, and it found two CRITICALs in a slice that passed every gate we had.
 
+## Day six: the outbound request, and four claims that measurement destroyed
+
+Slice 1.2 shipped. You can paste a job description or hand the app a link, and when the link does not
+work — which for about half the job boards people actually use, it will not — you get a button that
+switches you to pasting with the URL still on screen, rather than a sentence suggesting you do that
+yourself.
+
+Twenty-nine commits. But the number worth remembering from this slice is **four**: the number of
+things I wrote down as fact, in a docstring or a comment, that turned out to be false when I went and
+checked. Not typos. Confident, plausible, load-bearing claims — the kind a reviewer nods at.
+
+### The one that mattered: what an IPv4-mapped address actually does
+
+Every SSRF guide tells you to unwrap `::ffff:127.0.0.1` before judging it, and the reason given is
+always the same: as an IPv6 address it is not `::1`, so `is_loopback` is False and it sails through.
+I wrote that in the docstring. It reads well. It is wrong:
+
+```
+IPv6Address("::ffff:127.0.0.1").is_loopback         -> True
+IPv6Address("::ffff:10.0.0.1").is_private           -> True
+IPv6Address("::ffff:169.254.169.254").is_link_local -> True
+```
+
+CPython already resolves mapped addresses for every property the policy uses. So the received wisdom
+is not just imprecise, it is backwards — and I had copied it into a security control's documentation.
+
+Then the sharper question: **is the unwrap doing anything at all?** I deleted the line and ran the
+suite. All thirty-one tests passed. The line was decoration as far as the tests were concerned, and
+the test named `blocks_ipv4_mapped_loopback` passed on CPython's behaviour rather than on ours — a
+test whose docstring claimed to guard a regression it structurally could not catch.
+
+It turns out the unwrap *is* load-bearing, for exactly one address, for a reason nobody would guess.
+`100.64.0.0/10` — carrier-grade NAT — is the one range `ipaddress` has no property for, so the policy
+checks it by hand against an `IPv4Network`, gated by `isinstance(address, IPv4Address)`. Without the
+unwrap, `::ffff:100.64.0.1` arrives as an `IPv6Address`, skips that gate, matches nothing, and is
+allowed. One address in the whole space. The tests now cover it, and I proved they discriminate by
+deleting the line again and watching exactly those two fail.
+
+**The lesson is not "verify your security code".** It is narrower and more useful: *a line that every
+tutorial tells you to write is the line least likely to be tested*, because everyone including you
+already believes it works.
+
+### The bug the tests could not have found
+
+The fetcher passed everything. Then I pointed it at a stub server that answers
+`302 Location: http://169.254.169.254/latest/meta-data/` — the cloud metadata endpoint, the thing
+SSRF exists to reach.
+
+It came back `fetcher_error`, after a three-second connect timeout.
+
+Read that again, because the distinction is the entire slice. The guard had **not refused it.** The
+socket had simply failed to open, because there is no metadata service on a laptop. On a real cloud
+box that socket connects, and the response is credentials.
+
+The cause was in the test seam itself: `allow_private=True` short-circuited to allow *everything*, so
+the permissive policy the adapter's own tests use could reach the metadata endpoint — and AC-7, the
+criterion that says a redirect to a blocked range must be refused at the hop, was untestable by
+construction.
+
+My first fix was also wrong, and wrong in a way I would not have predicted: narrowing the permissive
+branch to `is_loopback or is_private` still let it through, because **`IPv4Address.is_private`
+includes link-local.** `169.254.169.254` is "private" as far as the standard library is concerned.
+
+So the permissive policy now widens four *named* ranges — loopback and the three RFC 1918 blocks —
+and nothing else. Which buys a property worth stating plainly: **no policy this codebase can
+construct, strict or permissive, in `src/` or in a test, will connect to a link-local, multicast,
+reserved or CGNAT address.** The address SSRF exists to reach is out of reach in every configuration,
+including the convenient ones.
+
+### SQLAlchemy quietly removed an invariant
+
+`JobPosting` has two named constructors and no `__init__`, and the absence *is* the mechanism: call
+`JobPosting(...)` directly and you fall through to `object.__init__`, which rejects keyword arguments.
+That is what makes invariant J-2 — `source == FETCHED` iff `source_url is not None` — unbreakable
+rather than merely checked. `BaseCv` and `GuestSession` say the same thing.
+
+It stopped being true the hour the imperative mapping was registered. `registry.map_imperatively`
+installs a default constructor on a mapped class *that does not define one*, and that constructor
+accepts the mapped attribute names. So this became legal:
+
+```python
+JobPosting(_source=PASTED, _source_url=SourceUrl("https://x.com/j"))
+```
+
+A third way to build one, setting the two fields independently — precisely the state the design makes
+unrepresentable everywhere else.
+
+What makes this a good story rather than an embarrassing one is *how* it was caught. `qa` had written
+the guard test three commits earlier, and its docstring read: "Someone adding an `__init__` later —
+for a test fixture, **for SQLAlchemy**, for convenience — would dismantle that quietly, and this
+assertion is the thing that notices." It named the culprit before the culprit arrived.
+
+Two fixes failed before the right one. A *raising* `__init__` breaks the named constructors, because
+a mapped class must be built through `cls()` — SQLAlchemy's instrumentation wrapper is what attaches
+`_sa_instance_state`, and `cls.__new__(cls)` dies with `'NoneType' object has no attribute 'set'` on
+the first assignment. A private sentinel parameter works and is persistence leaking into the domain.
+The answer was an `__init__` that takes nothing and does nothing: the mapper leaves a user-defined
+constructor alone, so every argument is a `TypeError` again.
+
+`BaseCv` and `GuestSession` had carried the same hole since 1.1, with comments asserting a guarantee
+they had stopped providing. Three hundred and forty-four tests passed before and after the fix —
+which is the finding, not a footnote. **Nothing was using the hole. It was simply a promise three
+docstrings made and none of them kept.**
+
+### A spec ambiguity, caught by writing the test first
+
+`JobPostingText` caps at 30,000 characters. The feature spec said "characters after normalization";
+the technical plan, the error class and my own skeleton docstring all said "**non-whitespace**
+characters after normalization". Different numbers for any real posting — six thousand words of
+`aaaaa` is 30,000 non-whitespace and 35,999 long.
+
+`qa` found it while writing the boundary test, and — this is the part that matters — **stopped**
+rather than picking one and moving on. A test that ratifies whichever reading the implementation
+happens to use has no source of truth independent of the code.
+
+The tie-breaker came from a place neither document mentioned: the UI shows a live counter reading
+`3,184 / 30,000`, fed by `character_count`. Measure the ceiling in the other unit and we accept text
+the counter then renders as **"35,999 / 30,000"** — a limit visibly exceeded by input we just called
+fine.
+
+So the two bounds now measure different things, on purpose: the floor counts non-whitespace, because
+whitespace is not content and three hundred blank lines must not sneak past a minimum meant to
+guarantee some; the ceiling counts what the counter counts. Three sources said one thing, one said
+the other, and the one won — so the reasoning went into all four places rather than just the number.
+
+### What the four claims have in common
+
+The `ipv4_mapped` justification. The "injectable resolver" I documented and never built. `is_private`
+not covering what its name suggests. A comment from the first commit saying normalization "removes"
+whitespace when it *collapses* it — which two commits later made a shared predicate reject
+"Senior Python Engineer" for containing a space.
+
+None was a mistake in the code. All four were mistakes in the *description* of the code, and every
+one of them survived a review that only read the code. Day five's chapter ended on the observation
+that almost nothing except a second pair of eyes tells you the code does what it says. Day six
+narrows it: **the second pair of eyes does not have to be a person.** Three of these four fell to a
+single move — take the sentence, work out what would be observably true if it were false, and run
+that.
+
+The fourth fell to a stub server, which is the same move with a socket.
+
+### The other thing worth keeping: a fixture trap
+
+Seeding rows with `session.flush()` and then making two requests in one test loses the rows. The
+first request's exception — including a perfectly legitimate 404 — triggers the test session
+override's rollback, which discards flushed-but-uncommitted fixtures before the second request runs.
+Use `commit()` in fixtures; under `join_transaction_mode="create_savepoint"` that only releases a
+savepoint, so the outer rollback still isolates the test.
+
+It cost twenty minutes and it will cost twenty more in some future slice, which is why it is written
+down here rather than in a comment in one test file.
+
 ## What's next
 
-Slice 1.2, the job posting: a URL goes in, a description comes out, and with it the SSRF guard —
-scheme allow-list, no private ranges, re-check on redirect. It is the first time this application
-makes an outbound request on a stranger's instruction, which is a different and more interesting kind
-of dangerous than anything in 1.1.
+Slice 1.3: the LLM. A CV and a job posting go in, a tailored CV comes out, and for the first time
+this application spends money per request and waits fifteen seconds for an answer it cannot verify.
+Everything learned about failure paths so far applies, plus one new category — output that parses
+cleanly and is wrong.
 
 The specs die when the features ship. This file doesn't.

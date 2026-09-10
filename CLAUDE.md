@@ -98,6 +98,33 @@ never `BaseException` — `asyncio.CancelledError` must still cancel. **Log the 
 its message or `exc_info`** (a `pypdf` message quotes bytes out of the document), and re-raise
 `from None` so the frame holding the upload is unreachable from a Sentry report.
 
+**Outbound HTTP to a caller-chosen host is a guarded egress, not a client**
+([ADR-0012](./docs/adr/0012-outbound-http-is-a-guarded-egress.md)). Ten obligations, all of them
+non-negotiable, and the ADR is a review checklist rather than a record: the scheme allow-list lives
+in a **value object** (so `file:///etc/passwd` is unconstructable, not rejected downstream); DNS
+resolves through the loop's `getaddrinfo` **before** connecting; the address policy judges **every**
+resolved address, not the first; the socket connects to a **verified** address (IP-pinned, with
+`Host` and `extensions={"sni_hostname": …}` keeping TLS verification on the name — measured against
+the installed httpx, not assumed); redirects are manual and **every hop re-runs the whole guard**;
+`trust_env=False`; timeouts are layered under a hard `asyncio.wait_for`; the byte cap is enforced
+**while streaming, on decoded bytes** (never `Content-Length` — a claim by the party you are
+defending against); parsing goes in a thread; and an `except Exception` floor guarantees the port's
+contract. **There is no off switch** — no setting weakens the address policy, and the testing seam is
+a constructor argument with a strict default.
+
+Two things measurement disproved here, both worth knowing before you write the next guard:
+`IPv6Address("::ffff:127.0.0.1").is_loopback` is **True** (CPython already unwraps mapped addresses,
+so the usual justification for `ipv4_mapped` is wrong — it is load-bearing only for the hand-written
+CGNAT range), and **`IPv4Address.is_private` includes link-local**, so `is_private` is not a safe way
+to say "private but not `169.254.169.254`".
+
+**A mapped class needs an explicit `__init__`, even an empty one.** `registry.map_imperatively`
+installs a default constructor on a mapped class that defines none, and it accepts the **mapped
+attribute names** — so `Aggregate(_source=…, _source_url=…)` bypasses your named constructors and
+every invariant they enforce. A no-argument `def __init__(self) -> None: ...` restores the guarantee;
+a *raising* one breaks the named constructors, because a mapped class must be built through `cls()`
+(the instrumentation wrapper is what attaches `_sa_instance_state`).
+
 **Structured output is re-validated on receipt.** "We asked the model for JSON" and "this is valid
 JSON with the fields we need" are different claims, and the gap between them is where the 2 a.m. bug
 lives.
@@ -144,6 +171,10 @@ make purge.dry                                     # report only; deletes nothin
 make purge limit=50                                # a small, explicit bite
 make purge                                         # a full run
 curl -s localhost:8080/health/ready | jq .jobs.guest_purge   # the backlog — the signal to trust
+
+# Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
+# decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
+# deliberately NO setting that weakens the SSRF address policy.
 
 # LLM evaluation — NOT a test. Calls the real API, costs money, is not in `make check`.
 make eval
