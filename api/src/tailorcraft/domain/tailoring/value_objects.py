@@ -8,17 +8,17 @@ do with the HTTP boundary — and this is the one context where the temptation i
 the model's answer arrives as JSON. It is parsed and re-validated in `infrastructure/llm/parsing.py`
 and only then does it become one of these types.
 
-**SKELETON (task T1).** Five of these types have a `__post_init__` that raises `NotImplementedError`
-on purpose: `TailoredCv`, `CoverLetter`, `ModelName`, `PromptVersion` and `LlmCallMetrics`. The
-signatures, the field types and the bounds below are final; only the checking is deferred so that
-T2's tests fail on their assertions rather than on an `ImportError` (docs/sdlc.md §2). T3 fills the
-bodies in and touches nothing else.
+Five of these types validate; five do not. `TailoredCv`, `CoverLetter`, `ModelName`, `PromptVersion`
+and `LlmCallMetrics` each enforce their rule in `__post_init__`, and every one of those rules was
+watched failing on its own assertion before it was written (docs/sdlc.md §2) — the skeleton step
+fixed the signatures, the field types and the bounds so that the red step could fail on a `raises`
+assertion rather than on an `ImportError`.
 
 The other five — `TailoringRunId`, `TailoredDocuments`, `TailoringRunStatus`,
-`TailoringFailureReason` and `TailoredDraft` — are written whole here and were never red, because
-there is nothing to defer: a typed UUID, two carriers of already-validated value objects, and two
-closed enums. That is the tiered cycle working rather than a hole in it, exactly as `PostingSource`,
-`FetchedPosting` and `FetchFailureReason` were in slice 1.2.
+`TailoringFailureReason` and `TailoredDraft` — have nothing to enforce: a typed UUID, two carriers of
+already-validated value objects, and two closed enums. There was nothing to defer, so no test of
+theirs was ever red. That is the tiered cycle working rather than a hole in it, exactly as
+`PostingSource`, `FetchedPosting` and `FetchFailureReason` were in slice 1.2.
 """
 
 from __future__ import annotations
@@ -60,6 +60,42 @@ _MAX_PROMPT_VERSION_LENGTH = 16
 _PROMPT_VERSION_ALLOWED_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
 )
+
+# The document types' two legal control characters. Named rather than written inline in a `not in
+# "\n\t"` test, because that literal form silently also accepts the empty string and reads as a
+# substring check when it is meant as a membership one.
+_ALLOWED_DOCUMENT_CONTROL_CHARACTERS = frozenset({"\n", "\t"})
+
+
+def _has_disallowed_control_character(value: str) -> bool:
+    """True if `value` holds a C0 control character, DEL or NUL that is not `\\n` or `\\t`.
+
+    The document types' rule. It is `domain/posting/value_objects.py`'s `_has_control_character` with
+    two characters carved out, and the carve-out is the whole difference between the two families: a
+    job posting's newlines are layout noise that gets collapsed away, while these types hold Markdown
+    where a newline is a paragraph break and a tab is indentation inside a line. Everything else in
+    the C0 range stays refused — a NUL above all, which terminates a C-side string and so lets the
+    database, the renderer and the browser disagree about where the document ends.
+    """
+    return any(
+        (ord(char) < 0x20 or ord(char) == 0x7F) and char not in _ALLOWED_DOCUMENT_CONTROL_CHARACTERS
+        for char in value
+    )
+
+
+def _has_control_or_whitespace(value: str) -> bool:
+    """True if `value` holds any whitespace *or* a control character — `ModelName`'s rule, where a
+    model id is one unbroken token and all three are rejections.
+
+    `str.isspace()` does the whitespace half rather than a literal set, because it covers the Unicode
+    separators — NEL, NBSP, the line separator — that a copy-paste out of a rendered docs page carries
+    and a hand-written `{" ", "\\t", "\\n"}` misses. `SourceUrl` applies the identical predicate to a
+    URL for the identical reason, and the duplication is deliberate: importing a private helper across
+    two bounded contexts would couple `tailoring` to `posting` for four characters of code.
+    """
+    return any(char.isspace() for char in value) or any(
+        ord(char) < 0x20 or ord(char) == 0x7F for char in value
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,15 +169,66 @@ class TailoredCv:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). The bounds and the rules are fixed — see the class docstring and the module
-        # constants — but the checking lands in T3, after T2 has watched each of them fail. When it
-        # does, the import of `EmptyTailoredDocument`, `TailoredDocumentTooShort`,
-        # `TailoredDocumentTooLong` and `InvalidTailoredDocument` must be **function-local**, exactly
-        # as `OriginalFilename.__post_init__` and `SourceUrl.__post_init__` do it: `errors.py`
-        # imports `TailoringFailureReason` from this module, so a module-level import in the other
-        # direction is a circular import at collection time. That is a local decision about this
-        # module's import shape, not a domain-purity exception.
-        raise NotImplementedError
+        # Deferred (function-local) import to break a module cycle: `domain/tailoring/errors.py`
+        # imports `TailoringFailureReason` and `TailoringRunId` from this module, so importing
+        # `errors` back at module scope here would make the two modules import each other during
+        # collection — whichever loads first would ask for names the other hasn't defined yet.
+        # Importing inside the method instead defers the import to call time, by which point both
+        # modules have finished loading. `OriginalFilename.__post_init__`
+        # (`domain/intake/value_objects.py`) and `SourceUrl.__post_init__` carry the same comment for
+        # the same cycle. This is a local decision about *this* module's import shape, not a
+        # domain-purity exception — `errors` is still `tailorcraft.domain`, so the purity test is
+        # unaffected.
+        from tailorcraft.domain.tailoring.errors import (
+            EmptyTailoredDocument,
+            InvalidTailoredDocument,
+            TailoredDocumentTooLong,
+            TailoredDocumentTooShort,
+        )
+
+        # Normalize in this order and no other. `\r\n` collapses to `\n` **first**, so a Windows line
+        # ending is a line ending rather than a control character the rule below would refuse; what
+        # is left is then stripped of trailing spaces and tabs **per line**, which is the point of
+        # splitting and re-joining rather than calling `self.value.rstrip()` — the latter reaches
+        # only the last line, and a model that pads every bullet with a space pads every line.
+        #
+        # `rstrip(" \t")`, deliberately NOT the bare `rstrip()`. The bare form strips *every* trailing
+        # whitespace character, and `\r` and `\x0b` are whitespace: it would therefore delete, at the
+        # end of a line, precisely the control characters the next rule exists to refuse. A lone `\r`
+        # in the middle of a line would raise while the same `\r` at the end of one vanished
+        # silently, leaving the control-character rule true everywhere except the one position a
+        # stray control character is most likely to occupy. Stripping only the two characters that
+        # legitimately pad a line's end keeps that rule unconditional.
+        normalized = "\n".join(
+            line.rstrip(" \t") for line in self.value.replace("\r\n", "\n").split("\n")
+        )
+        non_whitespace_count = sum(1 for char in normalized if not char.isspace())
+
+        if not normalized.strip():
+            raise EmptyTailoredDocument("tailored cv must not be blank")
+        # Control characters are judged before the bounds, so that a document carrying a NUL is
+        # reported as malformed rather than as too short. The two failures mean different things to
+        # whoever reads them — "the model returned junk" against "the model returned too little" —
+        # and a control character is a malformed document at any length.
+        if _has_disallowed_control_character(normalized):
+            raise InvalidTailoredDocument(
+                "tailored cv must not contain control characters or NUL other than newline and tab"
+            )
+        # The floor counts non-whitespace characters and the ceiling counts the normalized length:
+        # two different quantities, on purpose, for the reasons recorded above the module constants.
+        # Do not "simplify" them to one measure.
+        if non_whitespace_count < _MIN_TAILORED_CV_NON_WHITESPACE_CHARACTERS:
+            raise TailoredDocumentTooShort(
+                f"tailored cv has only {non_whitespace_count} non-whitespace characters; "
+                f"the floor is {_MIN_TAILORED_CV_NON_WHITESPACE_CHARACTERS} (OQ-5)"
+            )
+        if len(normalized) > _MAX_TAILORED_CV_LENGTH:
+            raise TailoredDocumentTooLong(
+                f"tailored cv is {len(normalized)} characters; "
+                f"the ceiling is {_MAX_TAILORED_CV_LENGTH}"
+            )
+
+        object.__setattr__(self, "value", normalized)
 
     @property
     def character_count(self) -> int:
@@ -187,9 +274,46 @@ class CoverLetter:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1) — see `TailoredCv.__post_init__` for what T3 fills in here and why the error
-        # import must be function-local when it does.
-        raise NotImplementedError
+        # See `TailoredCv.__post_init__` for why this import is function-local rather than
+        # module-level: `errors.py` imports `TailoringFailureReason` and `TailoringRunId` from this
+        # module, so a module-level import in the other direction is a circular import at collection
+        # time.
+        from tailorcraft.domain.tailoring.errors import (
+            EmptyTailoredDocument,
+            InvalidTailoredDocument,
+            TailoredDocumentTooLong,
+            TailoredDocumentTooShort,
+        )
+
+        # The same two normalizations in the same order, and `TailoredCv.__post_init__` carries the
+        # full reasoning for both — why `\r\n` is rewritten before anything judges a control
+        # character, why the strip is per line, and why it is `rstrip(" \t")` rather than the bare
+        # `rstrip()` that would swallow a trailing `\r`. Written out rather than shared through a
+        # helper because the four checks below differ in their numbers and their messages, and the
+        # numbers are the thing a reader of this class came here for.
+        normalized = "\n".join(
+            line.rstrip(" \t") for line in self.value.replace("\r\n", "\n").split("\n")
+        )
+        non_whitespace_count = sum(1 for char in normalized if not char.isspace())
+
+        if not normalized.strip():
+            raise EmptyTailoredDocument("cover letter must not be blank")
+        if _has_disallowed_control_character(normalized):
+            raise InvalidTailoredDocument(
+                "cover letter must not contain control characters or NUL other than newline and tab"
+            )
+        if non_whitespace_count < _MIN_COVER_LETTER_NON_WHITESPACE_CHARACTERS:
+            raise TailoredDocumentTooShort(
+                f"cover letter has only {non_whitespace_count} non-whitespace characters; "
+                f"the floor is {_MIN_COVER_LETTER_NON_WHITESPACE_CHARACTERS} (OQ-5)"
+            )
+        if len(normalized) > _MAX_COVER_LETTER_LENGTH:
+            raise TailoredDocumentTooLong(
+                f"cover letter is {len(normalized)} characters; "
+                f"the ceiling is {_MAX_COVER_LETTER_LENGTH}"
+            )
+
+        object.__setattr__(self, "value", normalized)
 
     @property
     def character_count(self) -> int:
@@ -303,9 +427,26 @@ class ModelName:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). T3 enforces the bounds above and raises `InvalidModelName`, importing it
-        # function-locally to avoid the `value_objects` ↔ `errors` cycle.
-        raise NotImplementedError
+        # See `TailoredCv.__post_init__` for why this import is function-local rather than
+        # module-level: it breaks the `value_objects` ↔ `errors` module cycle.
+        from tailorcraft.domain.tailoring.errors import InvalidModelName
+
+        # No normalization at all here, and the absence is the rule rather than an omission. The two
+        # document types above rewrite what they are given; this one refuses it. `strip()`ing a model
+        # id would accept `" gemini-2.5-flash "` and quietly record something the caller never
+        # configured, and the value is a provenance fact — what it says must be what the adapter was
+        # handed, not our tidied-up guess at it. So `value` is stored exactly as it arrived.
+        if not self.value:
+            raise InvalidModelName("model name must not be empty")
+        if len(self.value) > _MAX_MODEL_NAME_LENGTH:
+            raise InvalidModelName(
+                f"model name must be at most {_MAX_MODEL_NAME_LENGTH} characters, "
+                f"got {len(self.value)}"
+            )
+        if _has_control_or_whitespace(self.value):
+            raise InvalidModelName(
+                "model name must not contain whitespace, control characters or NUL"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,9 +467,28 @@ class PromptVersion:
     value: str
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). T3 enforces the grammar above and raises `InvalidPromptVersion`, importing
-        # it function-locally to avoid the `value_objects` ↔ `errors` cycle.
-        raise NotImplementedError
+        # See `TailoredCv.__post_init__` for why this import is function-local rather than
+        # module-level: it breaks the `value_objects` ↔ `errors` module cycle.
+        from tailorcraft.domain.tailoring.errors import InvalidPromptVersion
+
+        # An allow-list, never a deny-list. Enumerating the characters a key may contain is a closed
+        # question with a checkable answer; enumerating the ones it may not is a bet that nobody
+        # invents a new way to break a log field, and that is the same bet CLAUDE.md records losing
+        # at the extractor's exception allow-list. The empty string fails this loop vacuously, so the
+        # length check below is what names it — worth keeping separate, because "blank" and "has a
+        # slash in it" are different mistakes and deserve different messages.
+        if not self.value:
+            raise InvalidPromptVersion("prompt version must not be empty")
+        if len(self.value) > _MAX_PROMPT_VERSION_LENGTH:
+            raise InvalidPromptVersion(
+                f"prompt version must be at most {_MAX_PROMPT_VERSION_LENGTH} characters, "
+                f"got {len(self.value)}"
+            )
+        if any(char not in _PROMPT_VERSION_ALLOWED_CHARACTERS for char in self.value):
+            # Says what the grammar is, never which character offended: the value is a key we are
+            # about to persist and log, and quoting the rejected byte back into an exception message
+            # puts a stranger's string in every frame that touches it.
+            raise InvalidPromptVersion("prompt version must contain only [A-Za-z0-9._-]")
 
 
 @dataclass(frozen=True, slots=True)
@@ -366,10 +526,24 @@ class LlmCallMetrics:
     duration_ms: int
 
     def __post_init__(self) -> None:
-        # SKELETON (T1). T3 rejects a negative count or duration with `InvalidLlmCallMetrics`,
-        # importing it function-locally to avoid the `value_objects` ↔ `errors` cycle. The two
-        # value-object fields need no checking here — they validated themselves.
-        raise NotImplementedError
+        # See `TailoredCv.__post_init__` for why this import is function-local rather than
+        # module-level: it breaks the `value_objects` ↔ `errors` module cycle.
+        from tailorcraft.domain.tailoring.errors import InvalidLlmCallMetrics
+
+        # `model` and `prompt_version` are not checked here, and that is the point of them being
+        # value objects: each refused every invalid value of its own at its own construction, so
+        # re-checking them would be a second lock on a door that cannot open. The three bare `int`s
+        # are the only fields with a rule left to enforce — `>= 0`, with zero legal, because a
+        # provider that reports no usage metadata is a gap in accounting rather than a reason to fail
+        # a run that produced two good documents.
+        if self.prompt_tokens < 0:
+            raise InvalidLlmCallMetrics(f"prompt_tokens must not be negative: {self.prompt_tokens}")
+        if self.completion_tokens < 0:
+            raise InvalidLlmCallMetrics(
+                f"completion_tokens must not be negative: {self.completion_tokens}"
+            )
+        if self.duration_ms < 0:
+            raise InvalidLlmCallMetrics(f"duration_ms must not be negative: {self.duration_ms}")
 
 
 @dataclass(frozen=True, slots=True)
