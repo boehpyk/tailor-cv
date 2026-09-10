@@ -18,19 +18,37 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: Phase 0 scaffolded (2026-09-04).** The SDLC harness and the application skeleton both
-> exist. `api/` is a FastAPI app with the three hexagonal packages, `uv`-managed dependencies, an
-> Alembic environment and a health endpoint that probes Postgres, Redis **and Celery**. `web/` is a
-> React 19 + TypeScript + Vite + Tailwind v4 + TanStack Query app rendering the dependency report.
+> **Status: two slices shipped (2026-09-10).** Phase 1 is under way and the architecture is
+> carrying weight rather than describing itself.
 >
-> All gates were verified by running them: Ruff, mypy `--strict` (41 files), import-linter (3
-> contracts kept), pytest (27 passed — twice in a row), `tsc --noEmit`, ESLint, Prettier, Vitest (4
-> passed), `vite build`, and a production API image that builds and boots as a non-root user. Not yet
-> verified: a CI run on GitHub (no remote), and the deploy path (no VDS or domain).
+> - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
+>   worker thread, owned by a guest session.
+> - **1.2 `posting-job-description-intake`** (PR #2) — paste a job description or hand over a link,
+>   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
 >
-> **There is still no product code.** No aggregate, no use case, no migration — `domain/` holds
-> `Clock`, `DomainEvent` and the error base, and nothing else. The first slice is roadmap 1.1,
-> `intake-base-cv-upload`.
+> **473 backend and 66 frontend tests**, green twice in a row. Every gate verified by running it:
+> Ruff, mypy `--strict` (142 files), import-linter (3 contracts kept), pytest, `tsc --noEmit`,
+> ESLint, Prettier, Vitest, `vite build`, and a production API image that builds, boots as a
+> non-root user, and **runs the extractor inside itself** rather than merely importing it.
+>
+> **CI on GitHub is now verified** — Phase 0 listed it as unproven for want of a remote; `api` and
+> `web` both pass on `main`, which also proves the WeasyPrint system libraries and the
+> `trafilatura`/`lxml` wheels install there and not only in the dev container. The deploy's **build**
+> job passes and pushes images to GHCR.
+>
+> **The deploy path is still unproven, and one part of it is worse than unproven.** There is no VDS,
+> so `deploy` fails at the SSH sync — expected. But the `production` environment has **zero
+> protection rules**, so the "manual-gated deploy" this file and `docs/cicd.md` both describe does
+> not exist: the job has the `environment:` hook and nothing attached to it. Today a missing
+> `SSH_KEY` is what stops a release, which is an accident rather than a control. **Configure a
+> required reviewer on the `production` environment before setting the SSH secrets**, or the first
+> merge after they land deploys unattended.
+>
+> Three ADRs were added by 1.2, two of them tracked in git for the first time: `.gitignore` excluded
+> all of `docs/`, which meant ADR-0012 — the contract the SSRF adapter was built against — was
+> absent from its own review. `docs/adr/**` and `docs/constitution.md` are now tracked; the PRD,
+> the specs and the infra notes stay local. **The repository is public**, so anything added to
+> `docs/adr/` is published the moment it lands.
 >
 > The harness was ported from the muzbar.com project's SDLC and adapted to this stack. Four things
 > were changed deliberately rather than copied, each because of a documented failure there: the
