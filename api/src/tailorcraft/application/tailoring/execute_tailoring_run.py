@@ -1,9 +1,6 @@
 """The `ExecuteTailoringRun` use case: the worker's half of a tailoring run — pick up a queued run,
 call the model, and record what happened.
 
-This is a **T11 skeleton** (docs/sdlc.md §2): the signatures below are final, `__call__` raises
-`NotImplementedError`, and T13 fills it in against the reds `qa` records at T12.
-
 Read this module's class docstring next to `request_tailoring_run.RequestTailoringRun`'s. The two
 are deliberately asymmetric in how they reach a `BaseCv` and a `JobPosting`, and each says why by
 pointing at the other; either one read alone looks like an inconsistency worth "fixing".
@@ -12,14 +9,23 @@ pointing at the other; either one read alone looks like an inconsistency worth "
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 
+from tailorcraft.domain.intake.errors import BaseCvNotFound
 from tailorcraft.domain.intake.ports import BaseCvRepository
+from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.posting.ports import JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
+from tailorcraft.domain.tailoring.errors import TailoringFailed
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
-from tailorcraft.domain.tailoring.value_objects import TailoringRunId
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
+from tailorcraft.domain.tailoring.value_objects import (
+    TailoringFailureReason,
+    TailoringRunId,
+    TailoringRunStatus,
+)
 
 # **This layer does not log, and that is the convention rather than an omission.** No use case in
 # `application/` has a logger — across two shipped slices, not one — and this slice keeps it that
@@ -192,4 +198,127 @@ class ExecuteTailoringRun:
         self._stale_after_seconds = stale_after_seconds
 
     async def __call__(self, cmd: ExecuteTailoringRunCommand) -> ExecuteTailoringRunOutcome:
-        raise NotImplementedError
+        # Step 1. `find`, not `get`: absence is an ordinary branch for the worker, not an exception
+        # (see `TailoringRunRepository.find`). A guest session purged at the 24-hour mark (ADR-0006)
+        # cascades its runs away while a message for one of them is still sitting in Redis, and
+        # `task_acks_late=True` makes redelivery of an already-purged id real rather than
+        # theoretical. Raising here would hand a routine outcome to the worker's error machinery.
+        run = await self._runs.find(cmd.tailoring_run_id)
+        if run is None:
+            return ExecuteTailoringRunOutcome.MISSING
+
+        # Step 2. A decided run is done, for good (TR-3). Returning before the LLM is what makes a
+        # redelivery unable to buy a second paid call — AC-10 — and the aggregate would refuse
+        # `mark_started` anyway; this branch is here so the refusal is a return value rather than an
+        # exception the task would have to interpret.
+        if run.status in (TailoringRunStatus.SUCCEEDED, TailoringRunStatus.FAILED):
+            return ExecuteTailoringRunOutcome.SKIPPED
+
+        # Step 3. A run that is already `RUNNING` has two very different explanations, and the stale
+        # window is the only thing that tells them apart: a worker is mid-call right now (leave it
+        # alone), or a worker died holding it and nobody is coming back (record it and stop the
+        # client polling forever).
+        if run.status is TailoringRunStatus.RUNNING:
+            now = self._clock.now()
+            started_at = run.started_at
+            stale_after = timedelta(seconds=self._stale_after_seconds)
+            # `started_at` cannot be `None` while the status is `RUNNING` — `mark_started` sets both
+            # in one breath and nothing else writes either — but `mypy --strict` cannot see that, so
+            # the narrowing is a real branch. It is folded into the stale side deliberately: a run
+            # that claims to be running and cannot say since when is precisely "nobody is coming
+            # back for it", and the alternative (treat it as fresh) would leave it `RUNNING` for
+            # ever, which is the one outcome this window exists to prevent.
+            if started_at is None or now - started_at > stale_after:
+                await self._record_failure(run, TailoringFailureReason.ABANDONED, now)
+                return ExecuteTailoringRunOutcome.ABANDONED
+            return ExecuteTailoringRunOutcome.SKIPPED
+
+        # Step 4. **The first of two transactions**, and the only place in the codebase that needs a
+        # second one. `running` has to be durable *before* the call, not with its outcome: the call
+        # takes on the order of twelve seconds and the client polls throughout, so a single
+        # transaction would show `queued` for the whole call and then jump to a terminal status —
+        # indistinguishable from a run nobody ever picked up, which is exactly the "still working"
+        # vs. "this failed" distinction the frontend owes the user. Committing is the caller's job
+        # (`TailoringRunRepository.save` says nothing about transactions on purpose); the worker's
+        # composition root closes this one here. An application test snapshots `save_calls` at the
+        # instant `tailor()` starts, so moving this below the call turns it red.
+        run.mark_started(self._clock.now())
+        await self._runs.save(run)
+        # Published after the save that made it durable, never before — and released per
+        # transaction, so `TailoringRunStarted` goes out with the state it describes rather than
+        # arriving at the end bundled with the outcome.
+        await self._events.publish(*run.release_events())
+
+        # Step 5. Both reads go straight to the repositories, with no ownership check — see this
+        # class's docstring: the run already encodes the authorization decision made at request
+        # time, and re-asking against a session that may have expired since would fail the run for a
+        # reason that has nothing to do with tailoring.
+        try:
+            cv = await self._base_cvs.get(run.base_cv_id)
+            posting = await self._job_postings.get(run.job_posting_id)
+        except (BaseCvNotFound, JobPostingNotFound):
+            # Effectively unreachable: the only way an input disappears is the guest-session purge,
+            # and that cascades the run row away with it, so step 1 would have returned `MISSING`
+            # already. Handled as `MISSING` rather than as a failure reason **because there is no
+            # run left to record a failure on** — this is not a forgotten `TailoringFailureReason`.
+            return ExecuteTailoringRunOutcome.MISSING
+
+        cv_text = cv.extracted_text
+        if cv_text is None:
+            # A genuine impossibility, not a contingency: `RequestTailoringRun` refused anything but
+            # an `EXTRACTED` CV, and I-2 makes that equivalent to the text being present. So the CV
+            # changed underneath us. Recorded as `LLM_ERROR` — explicitly **not**
+            # `INPUTS_TOO_LARGE`, which is right next door and would fit the signature: nothing was
+            # measured and nothing was too large, and a reason picked because it was nearby lies to
+            # whoever reads the failure breakdown later. The finer label (`problem=cv_text_missing`)
+            # belongs to the task, which has a logger; this layer has none, by the convention at the
+            # top of this module. No call to the model is made on this path.
+            await self._record_failure(run, TailoringFailureReason.LLM_ERROR, self._clock.now())
+            return ExecuteTailoringRunOutcome.FAILED
+
+        # Step 6. **`TailoringFailed` is caught here, and that is the deliberate opposite of
+        # `CaptureJobPosting`**, which lets `JobPostingFetchFailed` propagate to the boundary and
+        # records nothing (ADR-0013). The line deciding which of the two shapes applies is ADR-0014
+        # §2 — *was anything spent, and is there an artifact to own?* Before the enqueue the answer
+        # is no on both counts, so 1.2 records nothing; past the enqueue it is yes on both: Google
+        # has been paid on the user's behalf and twelve seconds of somebody's afternoon are gone, so
+        # the run owns the fact that it happened and the reason it produced nothing. A failed run is
+        # a recorded state, never a 500 with nothing on disk (ADR-0004).
+        #
+        # The base class, not a tuple of its seven subclasses: `TailoringFailed` is what carries
+        # `.reason`, and an allow-list of subclasses would be the same bet-you-enumerated-them-all
+        # mistake `LlmPort.tailor`'s docstring warns about — the one the extractor sweep lost.
+        #
+        # For whoever is tempted to simplify this into a propagating error: the application tests
+        # assert the **recording** — the outcome, the run's status, its `failure_reason` — not the
+        # propagation, so that change turns them red rather than passing quietly.
+        try:
+            draft = await self._llm.tailor(cv_text, posting.text)
+        except TailoringFailed as exc:
+            await self._record_failure(run, exc.reason, self._clock.now())
+            return ExecuteTailoringRunOutcome.FAILED
+
+        # Step 7. The second transaction. `clock.now()` is read again rather than reused from step 4
+        # — the whole point of two timestamps is that the gap between them is the call.
+        run.mark_succeeded(draft.documents, draft.metrics, self._clock.now())
+        await self._runs.save(run)
+        await self._events.publish(*run.release_events())
+        return ExecuteTailoringRunOutcome.SUCCEEDED
+
+    async def _record_failure(
+        self, run: TailoringRun, reason: TailoringFailureReason, at: datetime
+    ) -> None:
+        """Record a decided-as-failed run: `mark_failed`, save, then publish — in that order.
+
+        The three failure paths above (`ABANDONED`, `cv_text_missing`, and every `TailoringFailed`)
+        differ only in the reason and in the instant, so the save/publish ordering is written once.
+        Publishing strictly **after** the save is the rule `RequestTailoringRun` step 7 states: a
+        publish that ran first would announce a fact a failed save is about to un-happen.
+
+        The five metric scalars are deliberately not touched. `mark_failed` already guarantees they
+        stay `None` on every path, and a partially-filled metrics row would show up in a token-spend
+        total as a real number nothing was paid for.
+        """
+        run.mark_failed(reason, at)
+        await self._runs.save(run)
+        await self._events.publish(*run.release_events())
