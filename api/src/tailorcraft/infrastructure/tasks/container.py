@@ -12,8 +12,13 @@ So the worker gets its own root, deliberately, and the cost is stated rather tha
 this slice needs must appear in `deps.py` *or* here, depending on which process needs it, and the two
 lists are deliberately different: the worker binds no `GuestSessionRepository` (it never authorizes —
 `ExecuteTailoringRun`'s docstring says why at length) and no `TailoringQueuePort` (it consumes the
-queue, it does not publish to it), while the API binds both and binds no `LlmPort` at all. Neither
-file is the complete list; the port list in technical-plan.md is, and it is checked against both.
+queue, it does not publish to it), while the API binds both. The API *does* also bind `LlmPort`, and
+that one is the odd entry in either file: no API route resolves it, because ADR-0014's entire point
+is that the request does not call the model. `deps.get_llm` exists so that the question "which
+adapter satisfies `LlmPort`?" has an answer in whichever root a reader opens, and so that an API test
+has a `dependency_overrides` key with which to guarantee the suite can never reach Google. The
+process that actually calls `tailor` is this one. Neither file is the complete list; the port list in
+technical-plan.md is, and it is checked against both.
 
 **Two commits, and the unit of work is therefore explicit.** `ExecuteTailoringRun` saves twice — step
 4 records `running` before a twelve-second call, step 6/7 records the outcome after it — and those
@@ -194,9 +199,9 @@ def _build_use_case(settings: Settings, session: AsyncSession) -> ExecuteTailori
         base_cvs=SqlAlchemyBaseCvRepository(session),
         job_postings=SqlAlchemyJobPostingRepository(session),
         # `LlmPort` -> `GeminiLlm`, built with the real SDK client (its `generate` seam keeps its
-        # strict default; the stub lives only in the adapter's own test module). This is the one
-        # binding the API does not have — the API never calls the model, which is the entire point
-        # of ADR-0014's queue.
+        # strict default; the stub lives only in the adapter's own test module). `deps.get_llm`
+        # makes the same binding, but this is the only process that ever *resolves* it: the API
+        # never calls the model, which is the entire point of ADR-0014's queue.
         llm=GeminiLlm(settings),
         # `EventPublisherPort` -> `LoggingEventPublisher`, the same binding `deps.py` makes, and the
         # enforcement point for "an event carries no document body" (AC-22).
