@@ -41,8 +41,15 @@ migration.make: ## Autogenerate a migration (usage: make migration.make name="ad
 migration.down: ## Roll back one migration
 	$(API) alembic downgrade -1
 
-deps: ## Sync Python dependencies from uv.lock
-	$(API) uv sync --frozen
+deps: ## Sync Python dependencies from uv.lock — in EVERY container running application code
+	# api, worker AND beat. All three mount the same source and run the same package, so a sync
+	# that reaches only `api` leaves the other two on a venv from whenever they were last built.
+	# That is not hypothetical: slice 1.3 found `worker` and `beat` still holding a venv from
+	# slice 1.2, which went unnoticed only because the posting fetch happens to run in the API.
+	# The Gemini call does not — it runs in the worker. Same failure shape as the previous
+	# project's worker running a stale image for four releases: no error, just behaviour that
+	# does not match the source.
+	for c in api worker beat; do $(DC_DEV) exec -T $$c uv sync --frozen; done
 
 db.dump: ## Dump the database (custom format) to backups/
 	@mkdir -p $(DUMP_DIR)

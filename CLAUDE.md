@@ -307,6 +307,14 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   reads it to render. Lose it on either and exports break in a way no health check sees. It is also
   the one assumption that must die first if this ever runs on two boxes — which is why every access
   goes through `FileStorePort`.
+- **`make deps` must sync every container running application code, not just `api`.** `api`,
+  `worker` and `beat` all mount the same source and run the same package, so a sync that reaches
+  only one of them leaves the others on a venv from whenever they were last built — with no error
+  and nothing in a log. Slice 1.3 found `worker` and `beat` still holding a venv from **slice 1.2**;
+  it had gone unnoticed because the only new dependency since then (`trafilatura`) is used by the
+  posting fetch, which runs in the API. The Gemini call does not — it runs in the worker, which is
+  where it would have surfaced as a `ModuleNotFoundError` in a process nobody is watching. This is
+  the image-verification lesson one level down: same failure, a venv instead of an image.
 - **`make db.dump` is not a backup of this product.** Restoring rows that point at uploaded files you
   did not restore gives you a broken application with a green restore. Back up the uploads volume
   alongside the database.
