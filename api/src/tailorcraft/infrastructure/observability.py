@@ -115,4 +115,14 @@ def configure_sentry(settings: Settings) -> None:
         traces_sample_rate=0.1,
         # Bodies can contain a CV. Never ship them.
         max_request_body_size="never",
+        # **The third setting, and the one that actually decides it.** `sentry_sdk` defaults
+        # `include_local_variables=True`, and neither `send_default_pii=False` nor
+        # `max_request_body_size="never"` touches it: they govern the *request*, this governs the
+        # **traceback frames**. Any exception escaping a function that holds a CV in a local ships
+        # that CV to Sentry, and slice 1.3 creates the worst instance of it in the codebase — the
+        # Gemini adapter's local variable is the assembled prompt, which is the entire CV. The
+        # adapter defends itself with `raise … from None` so the frame is unreachable; this is the
+        # floor underneath that, for every frame nobody thought about. Two settings that sound like
+        # they cover PII, one that does (CLAUDE.md's footgun list; feature-spec AC-23).
+        include_local_variables=False,
     )
