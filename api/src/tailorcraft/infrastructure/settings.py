@@ -15,10 +15,39 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["production", "dev", "test"]
+
+
+class MisconfiguredSettings(RuntimeError):
+    """A configuration that must stop the process at startup rather than fail later, in public.
+
+    **Deliberately not a `ValueError`**, and the reason is a footgun worth stating once here rather
+    than rediscovering in a crash log. Pydantic wraps a `ValueError` raised inside a validator into a
+    `ValidationError`, and a `ValidationError`'s rendered message carries `input_value` — which for a
+    model validator on this class is *the settings input dict*, the object holding `DATABASE_URL`
+    with its password, `REDIS_URL` with its password, `JWT_SIGNING_KEY` and the very API key the
+    check is complaining about.
+
+    Measured rather than assumed, because the detail matters: pydantic **truncates** that repr, so
+    what a `ValueError` here actually prints is something like
+    `input_value={'database_url': 'postgre...'app_env': 'production'}`. On the shape tested, no
+    secret survived the truncation.
+
+    **That is precisely why this is not a `ValueError`.** "No secret leaked" is not a property of the
+    design here, it is an accident of how many fields this class has, what order they fall in and how
+    long their values are — every one of which changes the moment someone adds a setting. A guard
+    that prints a truncated dump of every secret the process holds, and is safe only because the
+    truncation happened to land in a lucky place, is not a guard anyone should have to re-measure
+    after each new field. Raising something pydantic does not wrap removes the question.
+
+    Any exception that is not a `ValueError` or an `AssertionError` propagates out of a pydantic
+    validator untouched (verified against the installed pydantic, not assumed), so this one carries
+    exactly the sentence it was given and nothing else. It still kills uvicorn and the Celery worker
+    at import of the composition root, which is the whole point.
+    """
 
 
 class Settings(BaseSettings):
@@ -135,14 +164,141 @@ class Settings(BaseSettings):
     # type rather than a deployment knob. The client's pre-validation constant is a separate,
     # clearly-marked UX-only copy that says the API is the authority.
 
+    # -- The LLM call (slice 1.3, ADR-0004) -----------------------------------
+    # The one dependency in this product that is slow, non-deterministic, priced per call and
+    # carrying the user's entire CV over the wire. Every bound below follows from one of those four
+    # facts, and `infrastructure/llm/gemini.py` is the only module that reads any of them.
+    #
+    # Empty is LEGAL in dev and test — `tailor()` then raises `LlmUnavailable` immediately, logs
+    # `llm.not_configured` and makes no call (G-32), which is what lets the whole suite run with no
+    # key and no possibility of a surprise bill. Empty is FATAL in production: see
+    # `_refuse_to_boot_without_a_key_in_production` at the bottom of this class.
+    gemini_api_key: str = ""
+    # Flash, not Pro, and recorded here as a choice rather than a default someone inherited: the
+    # budget is 15 seconds (Constitution §7) and the task is rewriting, not reasoning. Swapping it is
+    # a decision with a latency and a quality consequence, and `ModelName` is persisted on every run
+    # so the swap is visible in the history rather than inferred from a deploy date.
+    gemini_model: str = "gemini-2.5-flash"
+    # Per ATTEMPT, enforced with `asyncio.wait_for` around the SDK call rather than with a
+    # client-level option we have not measured.
+    llm_request_timeout_seconds: float = 12.0
+    # The hard outer bound over the whole of `tailor()`, retries and backoff included — the layered
+    # shape ADR-0012 obligation 8 used for the fetcher, and for the same reason: per-phase timeouts
+    # are what a slow provider evades, and the outer bound is what actually stops it.
+    #
+    # **Deliberately ABOVE the 15-second budget, and that is not an oversight.** 12 s + 1 s backoff +
+    # 12 s is 25 s, so a run that retries MISSES the budget. That is accepted and made visible rather
+    # than hidden: the alternative — a total deadline of 15 s — would cut the second attempt off
+    # part-way and turn every retryable blip into `llm_timed_out`, which is a worse answer for the
+    # user and a worse signal for us. The budget is defended by watching `llm_duration_ms` (the model
+    # call's own share) and the retry rate, not by a deadline that lies about what happened.
+    llm_total_deadline_seconds: int = 25
+    # Total attempts, not retries: 2 means one retry. Only for the four retryable classes
+    # (`LlmUnavailable`, `LlmRateLimited`, `LlmTimedOut`, `LlmOutputInvalid`) — never a refusal,
+    # which retried is a refusal repeated at twice the price, and never `LlmInputsTooLarge`, where
+    # nothing about the second attempt would differ.
+    llm_max_attempts: int = 2
+    # Never retry without backoff.
+    llm_retry_backoff_seconds: float = 1.0
+    # Bounds a runaway generation before the documents' ceilings have to.
+    #
+    # Worth doing the arithmetic rather than trusting the number: 4,096 tokens is roughly 16,000
+    # characters for BOTH documents plus their JSON wrapper, while `TailoredCv`'s ceiling alone is
+    # 20,000. So this cap, not the value object, is what a very long CV meets first — it comes back
+    # truncated, fails `parse_tailoring_response` as `not_json`, and is recorded `llm_output_invalid`.
+    # That is the intended ordering (a cheap bound before an expensive one), but it means raising the
+    # document ceilings without raising this would change nothing at all.
+    llm_max_output_tokens: int = 4096
+    # The G-22 pre-flight refusal, checked in the adapter BEFORE any API call. ~6,000 tokens; with a
+    # 30,000-character posting (~7,500) and the template, comfortably inside the window with room for
+    # the output. **Reject, never truncate** — a run against a CV the user did not know was cut is a
+    # wrong answer they cannot diagnose (the 1.2 rule, carried).
+    #
+    # It lives here rather than in a value object because "how much fits" is a fact about THIS model
+    # and moves when the model does, which is exactly what an adapter's configuration is for.
+    llm_max_cv_characters: int = 25_000
+
+    # -- Tailoring rate limits, caps & queue (slice 1.3) ----------------------
+    # This endpoint costs MONEY per call and is open to guests, so its limiter is constructed with
+    # `fail_open=False` — the far end of the spectrum OQ-7 opened in 1.1 and 1.2 generalized: fail
+    # open when the cost is ours and bounded, fail closed when the cost is money or somebody else's
+    # infrastructure. An unauthenticated endpoint that spends money with no backstop is a funded
+    # denial-of-wallet, and the first evidence would be an invoice.
+    tailoring_rate_limit_per_hour: int = 10
+    # Per client IP, because a guest can always mint a new session — the per-session limit alone
+    # bounds nothing.
+    tailoring_rate_limit_per_ip_per_hour: int = 30
+    # A cross-aggregate cap enforced in `RequestTailoringRun`, not on `TailoringRun` — the rule spans
+    # every run a session owns, which no single run can know.
+    max_tailoring_runs_per_session: int = 20
+    # When a redelivered `running` run is old enough to be called `abandoned`. **Above Celery's
+    # `task_time_limit` (180) on purpose**, so on a genuinely hung task the hard limit fires first and
+    # the worker dies with a recorded outcome, rather than this threshold quietly relabelling a task
+    # that is still running.
+    tailoring_stale_after_seconds: int = 300
+    # A named queue from the first slice so 1.5's export tasks can land on a second one without a
+    # long render starving a tailoring run. One line now; expensive to retrofit.
+    tailoring_queue_name: str = "tailoring"
+
+    # NOT settings, deliberately, and this list is the answer to "why is X not configurable?":
+    #
+    #   * `TailoredCv`'s and `CoverLetter`'s length floors and ceilings. They live in the value
+    #     objects. The domain must not read configuration, and "a 40-word CV is not a CV" is a rule
+    #     about the type rather than a deployment knob — the same reasoning that keeps
+    #     `JobPostingText`'s 100/30,000 out of this file.
+    #   * The 15-second budget (Constitution §7). A TARGET, measured at `/verify` against
+    #     `llm_duration_ms` and `make eval`, not a knob. A budget you can edit is a budget you will
+    #     edit the first time it is missed.
+    #   * The client's "this is taking a while" threshold. Pure UX, and a clearly-marked constant in
+    #     `web/` that says the API is the authority.
+    #   * Anything that would weaken an authorization rule or a rate limit. Same rule as the SSRF
+    #     policy above: a flag that turns off a control is a flag someone eventually sets in
+    #     production.
+
     # -- Observability -------------------------------------------------------
     # Empty in dev and in CI; set on the box. Phase 0 rather than deferred, because this product has
     # silent failure paths from its first slice (roadmap).
     sentry_dsn: str = Field(default="")
 
-    # NOTE: GEMINI_* and JWT_* are declared in .env.example but deliberately absent here. A setting
-    # with no consumer is a promise the code does not keep. They land with the slices that read
-    # them — tailoring (1.3) and identity (2.1).
+    # NOTE: JWT_* is declared in .env.example but deliberately absent here. A setting with no
+    # consumer is a promise the code does not keep. It lands with the slice that reads it —
+    # identity (2.1). GEMINI_* was in this note until slice 1.3; it has a consumer now.
+
+    @model_validator(mode="after")
+    def _refuse_to_boot_without_a_key_in_production(self) -> Settings:
+        """AC-32/G-32: `APP_ENV=production` with an empty `GEMINI_API_KEY` must not start.
+
+        **The failure mode this prevents is the expensive one.** Without this check the process
+        boots, serves, accepts an upload, accepts a posting, charges the user fifteen seconds of
+        waiting and a queued task — and then every single run is recorded `failed` /
+        `llm_unavailable` with a `llm.not_configured` line in a log nobody is reading. The product is
+        down while every health check is green, which is the exact shape of failure this codebase
+        keeps writing guards against (`/health/ready` probing Celery, the deploy verifying every
+        container's image). A misconfiguration that can be caught at startup must be caught at
+        startup; the alternative is catching it from a support email.
+
+        Dev and test are **explicitly** allowed to run keyless, and that permission is the point
+        rather than a leniency: it is what lets the whole suite run with no key, so a key that
+        appeared in CI could not silently start spending money (`.env.example` says the same thing
+        one layer out). The two halves are one decision — empty is legal exactly where a call would
+        never be paid for.
+
+        `MisconfiguredSettings` rather than a `ValueError` — see that class for why a `ValueError`
+        here would print every secret this object holds into the crash log. It is raised from
+        `get_settings()` during import of the composition root, which is as loud as a startup failure
+        gets: uvicorn and the Celery worker both die on it with the setting's name in the traceback.
+
+        A whitespace-only key counts as empty. `" "` in a hand-edited `.env` on the box is the
+        plausible typo, and "we have a key" is a claim that should not be satisfiable by a space.
+        """
+        if self.app_env == "production" and not self.gemini_api_key.strip():
+            raise MisconfiguredSettings(
+                "GEMINI_API_KEY must be set when APP_ENV=production: the tailoring endpoint is the "
+                "product, and without a key every run would fail as llm_unavailable after the user "
+                "had already waited for it. Set it in the box's .env (mode 600, created by hand) or "
+                "run with APP_ENV=dev."
+            )
+        return self
 
     @property
     def is_production(self) -> bool:
