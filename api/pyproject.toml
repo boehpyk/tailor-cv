@@ -141,6 +141,13 @@ enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
 module = ["celery.*"]
 ignore_missing_imports = true
 
+# kombu is Celery's messaging layer and ships no py.typed either. One import, in
+# `infrastructure/tasks/app.py`: `Queue`, to declare the named queues the worker
+# consumes. Everything else that touches the broker goes through Celery's own API.
+[[tool.mypy.overrides]]
+module = ["kombu.*"]
+ignore_missing_imports = true
+
 # trafilatura ships no type information (no py.typed, no stubs on typeshed). The import is confined
 # to `infrastructure/posting/fetching.py`, which wraps every call in its own typed helper, so the
 # untyped surface stops at that module rather than spreading through the codebase.

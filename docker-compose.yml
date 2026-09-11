@@ -72,6 +72,13 @@ services:
     # --max-tasks-per-child recycles the process periodically. PDF rendering is the kind of workload
     # that leaks, and a supervisor you do not have to install is a supervisor you cannot misconfigure
     # (infrastructure.md footgun #6).
+    #
+    # **No `-Q` here, deliberately.** The queues this worker consumes are declared in
+    # `create_celery()` (`infrastructure/tasks/app.py`) as `task_queues`, from the same `Settings`
+    # field the *producer* publishes with — so the two halves cannot drift. A `-Q` list here would
+    # override that and is exactly how you get a task published to `tailoring` while the worker
+    # listens only to `celery`: a run that queues forever and looks exactly like a healthy system.
+    # Add `-Q` only to give one workload its own worker, and then check `create_celery()` first.
     command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "worker",
               "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=50"]
     volumes:
