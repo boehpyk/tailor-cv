@@ -1,10 +1,5 @@
 """The `RequestTailoringRun` use case: accept a request to tailor a base CV to a job posting, and
 record it as a `queued` run for a worker to pick up.
-
-This is a **T8 skeleton** (docs/sdlc.md §2): the signatures below are final, `__call__` raises
-`NotImplementedError`, and T10 fills it in against the reds `qa` records at T9. Nothing here is a
-placeholder except the body — the names, the parameter order and the two dataclasses are the design
-work, because `qa`'s tests are written against them.
 """
 
 from __future__ import annotations
@@ -15,11 +10,17 @@ from datetime import datetime
 from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.intake.value_objects import BaseCvId
+from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
+from tailorcraft.domain.tailoring.errors import (
+    BaseCvNotReadyForTailoring,
+    TailoringAlreadyRunning,
+    TooManyTailoringRuns,
+)
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 
 
@@ -88,7 +89,7 @@ class RequestTailoringRun:
     router's (`get_session` opens one `AsyncSession` per request and the handler commits inside its
     own error boundary), and a use case that cannot see that boundary must not straddle it.
 
-    Flow (technical-plan.md, "Application layer"; T10 implements it):
+    Flow (technical-plan.md, "Application layer"):
 
     1. ``cv = await get_base_cv(cmd.base_cv_id, cmd.guest_session_id)`` — resolves the session and
        raises `GuestSessionNotFound` / `GuestSessionExpired` / `BaseCvNotFound` (G-5, G-6).
@@ -144,4 +145,63 @@ class RequestTailoringRun:
         self._max_per_session = max_per_session
 
     async def __call__(self, cmd: RequestTailoringRunCommand) -> RequestTailoringRunResult:
-        raise NotImplementedError
+        # Both reads go through the composed *use cases* rather than the two repositories, so the
+        # "what authorizes access is the link" rule (ADR-0008) is inherited rather than written a
+        # third time. Each resolves the guest session itself — that is the pair of extra
+        # primary-key lookups this class's docstring puts a price on, paid deliberately.
+        cv = await self._get_base_cv(cmd.base_cv_id, cmd.guest_session_id)
+        posting = await self._get_job_posting(cmd.job_posting_id, cmd.guest_session_id)
+
+        # G-8 reads the **aggregate's own status**, not `cv.extracted_text is not None`. I-2 makes
+        # the two equivalent, so this is not a correctness choice — it is a meaning one: the status
+        # is the attribute that says *why* the CV cannot be tailored, and it is what the error
+        # carries to the caller. A `None` check would also leave a reader wondering which of the two
+        # is authoritative the first time they disagree.
+        if cv.status is not BaseCvStatus.EXTRACTED:
+            raise BaseCvNotReadyForTailoring(cv.id, cv.status)
+
+        # The next two checks are **cross-aggregate policy, and neither belongs on `TailoringRun`**:
+        # each spans every run the session owns, which is a fact no single aggregate instance has
+        # any way to know. Reaching for it from inside `TailoringRun.request` would mean a
+        # repository call in a constructor — the road to a domain layer that cannot be tested
+        # without a database (ADR-0014 §4). `TooManyBaseCvs` (1.1) and `TooManyJobPostings` (1.2)
+        # live in their use cases for the identical reason.
+        #
+        # Both are also **soft**. Two genuinely concurrent requests can pass either check and both
+        # create a run; that is accepted, exactly as 1.1's F-23 and 1.2's P-32 accept the same
+        # shape. The alternative is a unique partial index or a lock on the hot path, bought to beat
+        # a double-click that the disabled button already prevents.
+        #
+        # Their **order is load-bearing**: the active-run rule is checked first, so a visitor who
+        # already has a run in flight is told *that*, and handed its id to attach a poller to,
+        # rather than being told they are at the cap — which would also be true, and useless.
+        active_run = await self._runs.find_active_for_session(cmd.guest_session_id)
+        if active_run is not None:
+            raise TailoringAlreadyRunning(active_run.id)
+
+        run_count = await self._runs.count_for_session(cmd.guest_session_id)
+        if run_count >= self._max_per_session:
+            raise TooManyTailoringRuns(run_count, self._max_per_session)
+
+        # Identity is application-assigned (ADR-0007): the aggregate is valid before it ever meets
+        # the database. The two ids come off the aggregates just loaded rather than off `cmd` —
+        # same values, but these two are the ones ownership was actually checked on.
+        run = TailoringRun.request(
+            id=self._runs.next_identity(),
+            guest_session_id=cmd.guest_session_id,
+            base_cv_id=cv.id,
+            job_posting_id=posting.id,
+            requested_at=self._clock.now(),
+        )
+        await self._runs.add(run)
+
+        # Released and published only after the aggregate is saved — never before, so a publish
+        # never announces a fact a failed save is about to un-happen. The enqueue that follows is
+        # the router's, after the commit; see this class's docstring for why it is not on this line.
+        await self._events.publish(*run.release_events())
+
+        return RequestTailoringRunResult(
+            tailoring_run_id=run.id,
+            status=run.status,
+            requested_at=run.requested_at,
+        )
