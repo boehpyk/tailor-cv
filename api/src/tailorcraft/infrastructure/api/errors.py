@@ -1,4 +1,5 @@
-"""`DomainError` -> `HTTPException` translation for the `intake`/`identity` HTTP surface.
+"""`DomainError` -> `HTTPException` translation for this API's whole HTTP surface — `identity`,
+`intake`, `posting` and `tailoring`.
 
 The domain never raises `HTTPException` and never carries a status code (CLAUDE.md, ADR-0004) — this
 is the one module that assigns one, for every `DomainError` this slice's use cases can raise.
@@ -34,6 +35,13 @@ from tailorcraft.domain.posting.errors import (
 from tailorcraft.domain.posting.value_objects import FetchFailureReason
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable
+from tailorcraft.domain.tailoring.errors import (
+    BaseCvNotReadyForTailoring,
+    TailoringAlreadyRunning,
+    TailoringNotQueued,
+    TailoringRunNotFound,
+    TooManyTailoringRuns,
+)
 
 # Shared by `deps.py::require_guest_session` (which never reaches a use case at all — it raises
 # straight from a missing/unknown cookie) and this module's own mapping for a `GuestSessionExpired`/
@@ -154,6 +162,95 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         # `FetchFailureReason` and `assert_never` proves it, so a reason added later is a type error
         # here rather than an unmapped 500 discovered by a user.
         return _fetch_failure_to_http(exc.reason)
+
+    # -- tailoring (slice 1.3) -----------------------------------------------------------------
+    # Again a branch in the SAME function, for the same reason: `deps.py` and all three routers
+    # share one mapping, and one mapping is what keeps three 401s from becoming three messages.
+    #
+    # Note which tailoring errors are NOT here, and that the absences are structural rather than
+    # forgotten. Every `TailoringFailed` subclass (`LlmUnavailable`, `LlmRefused`, `LlmTimedOut`, …)
+    # is caught by `ExecuteTailoringRun` inside the worker and recorded on the aggregate as
+    # `failed` + a `failure_reason`; it never reaches an HTTP boundary, and the client learns about
+    # it from a **200** on the next poll (AC-12). The same goes for the aggregate's transition
+    # guards (`TailoringAlreadyStarted`, `TailoringNotRunning`, `TailoringAlreadyDecided`) and the
+    # document value objects' errors — all of them live entirely inside the task. Reaching the
+    # `raise exc` floor below with one of those is a genuine bug, and a real 500 is the honest
+    # answer to it, exactly as this function's docstring says.
+
+    if isinstance(exc, TailoringRunNotFound):
+        # G-29: also what `GetTailoringRunForSession` raises (`from TailoringRunNotOwnedBySession`)
+        # for a run that exists but belongs to someone else. The two are indistinguishable on the
+        # wire on purpose — a 403 would confirm that a guessed id is real.
+        return HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "tailoring_run_not_found",
+                "message": "We couldn't find that tailoring run.",
+            },
+        )
+
+    if isinstance(exc, BaseCvNotReadyForTailoring):
+        # G-8. 409 rather than 422: the request was well-formed and named a CV the caller really
+        # owns — it is the *state* of that CV that conflicts with what was asked for, and the fix is
+        # to upload a different file rather than to correct the request.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "base_cv_not_extracted",
+                "message": (
+                    "We couldn't read that CV, so there's nothing to tailor. Upload a different "
+                    "file."
+                ),
+            },
+        )
+
+    if isinstance(exc, TailoringAlreadyRunning):
+        # G-9, and the one error in this module whose body carries a THIRD field beyond the
+        # envelope's `code`/`message`. No new mechanism was needed for that: `main.py`'s
+        # `HTTPException` handler renders `{"error": exc.detail}` whenever the detail dict carries a
+        # `code` and a `message`, so any extra key rides along untouched. `ErrorResponse` in
+        # `schemas/intake.py` documents the two guaranteed fields and does not forbid others.
+        #
+        # The id is the point rather than a nicety: without it the browser can only tell the user
+        # "something is already running" and offer them nothing to look at, and the obvious next
+        # click is another POST. With it, the client attaches its poller to the run that is already
+        # paying for itself. It is stringified here because this dict is JSON-serialized directly by
+        # `JSONResponse`, which has no encoder for a `UUID`.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_already_running",
+                "message": "You already have a tailoring run in progress.",
+                "active_tailoring_run_id": str(exc.active_run_id.value),
+            },
+        )
+
+    if isinstance(exc, TooManyTailoringRuns):
+        # G-10. The message names the limit it hit, from the error's own payload, so the number
+        # lives in one place (the settings object the use case read) rather than being repeated as a
+        # literal in a sentence that would then age separately from the rule.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_tailoring_runs",
+                "message": (
+                    f"You've reached the limit of {exc.limit} tailoring runs for this session."
+                ),
+            },
+        )
+
+    if isinstance(exc, TailoringNotQueued):
+        # G-14. 503 and not 500: nothing about the request was wrong, the broker was unreachable,
+        # and trying again later is the right advice. By the time this is raised the run row has
+        # been committed and re-recorded as `failed`/`not_queued` (the router's second transaction),
+        # so the user is not left polling a run that can never run.
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "queue_unavailable",
+                "message": "We couldn't start your tailoring run. Please try again.",
+            },
+        )
 
     if isinstance(exc, FileStoreUnavailable):
         return HTTPException(
