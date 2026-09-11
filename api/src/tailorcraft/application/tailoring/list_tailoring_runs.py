@@ -1,7 +1,5 @@
 """The `ListTailoringRunsForSession` use case: every `TailoringRun` a guest session owns.
 
-**SKELETON (T14).** `__call__` raises `NotImplementedError`; the body arrives at T16.
-
 A use case rather than a bare `runs.list_for_session(sid)` for the same reason
 `GetTailoringRunForSession` is one: it carries the authorization rule. Here the rule is enforced
 **by construction** rather than by a per-row comparison — the link (`run.guest_session_id == the
@@ -22,6 +20,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.clock import Clock
@@ -57,4 +56,9 @@ class ListTailoringRunsForSession:
         self._clock = clock
 
     async def __call__(self, guest_session_id: GuestSessionId) -> Sequence[TailoringRun]:
-        raise NotImplementedError
+        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
+        # Note what is passed: `session.id`, the id this use case just resolved — never an id the
+        # caller supplied. That is the whole authorization rule for a list endpoint, and it is
+        # enforced by there being nothing else available to pass. The ordering
+        # (`requested_at DESC, id DESC`) is the repository's, deliberately not re-applied here.
+        return await self._runs.list_for_session(session.id)
