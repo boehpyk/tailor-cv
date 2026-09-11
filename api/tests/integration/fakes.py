@@ -21,12 +21,16 @@ Used by:
   yet exercise them — T12 (`ExecuteTailoringRun`) and the T29 API tests need both, and a fake added
   in the commit that first uses its sibling port is how this file avoids ever growing a second,
   drifting copy of one.
+- `tests/integration/tailoring/test_execute_tailoring_run.py` (T12 — `ExecuteTailoringRun`).
+  `FakeTailoringRunRepository.save_calls` and `FakeLlm.on_call` are added in this commit: T12 needs
+  to observe the repository's state at the exact moment the LLM is invoked, to prove `running` is
+  saved before the call rather than after (technical-plan.md's "Step 4 — two commits").
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Protocol
 from uuid import uuid4
 
@@ -229,10 +233,20 @@ class FakeTailoringRunRepository:
     in-memory dict has no concept of "the row already existed") and `find` (the worker's
     `get`-returns-`None` counterpart, so a fake exercising `ExecuteTailoringRun` can hand back
     `MISSING` for a purged id without raising).
+
+    `save_calls` records the `status` recorded by every `save()` call, in order — added for T12's
+    "`running` is committed before the LLM is called" test (technical-plan.md's "Step 4 — two
+    commits"). That test needs to observe the repository's state at the exact moment `LlmPort.tailor`
+    is invoked (via `FakeLlm.on_call`, below), and a plain end-state assertion cannot do that: by the
+    time the use case returns, `save` has already been called again with the terminal outcome, so
+    only a call log — not the current row — can prove `running` was saved *before* the model was
+    ever asked. A count alone would not do either, since `1` is consistent with "saved before the
+    call" and "saved after, coincidentally also once"; recording the status distinguishes them.
     """
 
     def __init__(self) -> None:
         self._by_id: dict[TailoringRunId, TailoringRun] = {}
+        self.save_calls: list[TailoringRunStatus] = []
 
     def next_identity(self) -> TailoringRunId:
         return TailoringRunId(value=uuid4())
@@ -241,6 +255,7 @@ class FakeTailoringRunRepository:
         self._by_id[run.id] = run
 
     async def save(self, run: TailoringRun) -> None:
+        self.save_calls.append(run.status)
         self._by_id[run.id] = run
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:
@@ -285,17 +300,30 @@ class FakeLlm:
     `RequestTailoringRun`'s tests (this port is never reached from there) but exists here rather than
     being bolted on later, so that `ExecuteTailoringRun`'s per-attempt and total-deadline timeout
     tests can drive this fake past a configured budget without a real network call.
+
+    `on_call`, added for T12's "`running` is committed before the LLM is called" test, is a
+    synchronous hook invoked the instant `tailor()` starts — before the delay, before the outcome is
+    produced or raised. A test wires it to snapshot `FakeTailoringRunRepository.save_calls` at that
+    exact moment, which is what turns "was the run already saved as `running` when the model was
+    asked?" into a plain list-equality assertion rather than a guess based on the end state.
     """
 
     def __init__(
-        self, outcome: TailoredDraft | TailoringFailed, *, delay_seconds: float = 0.0
+        self,
+        outcome: TailoredDraft | TailoringFailed,
+        *,
+        delay_seconds: float = 0.0,
+        on_call: Callable[[], None] | None = None,
     ) -> None:
         self._outcome = outcome
         self._delay_seconds = delay_seconds
+        self._on_call = on_call
         self.calls: list[tuple[ExtractedText, JobPostingText]] = []
 
     async def tailor(self, cv: ExtractedText, posting: JobPostingText) -> TailoredDraft:
         self.calls.append((cv, posting))
+        if self._on_call is not None:
+            self._on_call()
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
         if isinstance(self._outcome, TailoringFailed):
