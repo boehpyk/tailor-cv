@@ -1,17 +1,26 @@
 import { BaseCvUploadPanel } from './features/intake/components/BaseCvUploadPanel';
 import { JobPostingPanel } from './features/posting/components/JobPostingPanel';
+import { TailorPanel } from './features/tailoring/components/TailorPanel';
 import { SystemStatus } from './features/health/components/SystemStatus';
 
 /**
  * The application shell.
  *
- * Two product surfaces so far, both rendered as sections rather than behind routes: slice 1.1's
- * base-CV upload, and slice 1.2's job-posting intake below it. React Router is not installed until
- * 1.4, and the dual-tab workspace (CV | job posting) is that slice's design work — doing it badly
- * here means doing it twice.
+ * Three product surfaces, each rendered as a section rather than behind a route: slice 1.1's
+ * base-CV upload, slice 1.2's job-posting intake, and slice 1.3's tailoring panel. React Router is
+ * not installed until 1.4, and the dual-tab workspace (CV | cover letter) is that slice's design
+ * work — doing it badly here means doing it twice.
  *
- * The order is the order of the task: you tailor a CV *to* a posting, so the CV comes first and the
- * posting second, and 1.3's "tailor" action will sit below both because it needs them both.
+ * The order is the order of the task. You tailor a CV *to* a posting, so the CV comes first and the
+ * posting second, and tailoring sits below both because it needs them both. System status is
+ * diagnostic rather than part of the task, so it stays last.
+ *
+ * **The shell passes no props.** Each panel reads the server state it needs from TanStack Query,
+ * using the same query keys as its siblings. `TailorPanel` gets the CV and posting from the cache
+ * that `BaseCvUploadPanel` and `JobPostingPanel` fill, so there is still one request per list. It
+ * does not get them threaded through `App`, which would turn this shell into a relay for data it
+ * never uses. Each `<section aria-labelledby>` is the landmark, which is why the panels render no
+ * heading of their own.
  */
 export function App(): React.JSX.Element {
   return (
@@ -35,6 +44,13 @@ export function App(): React.JSX.Element {
           The job you are applying for
         </h2>
         <JobPostingPanel />
+      </section>
+
+      <section aria-labelledby="tailoring-heading" className="mb-10">
+        <h2 id="tailoring-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
+          Your tailored CV and cover letter
+        </h2>
+        <TailorPanel />
       </section>
 
       <section aria-labelledby="system-status-heading">
