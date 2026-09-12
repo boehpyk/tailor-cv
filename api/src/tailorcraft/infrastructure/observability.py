@@ -63,7 +63,28 @@ from tailorcraft.infrastructure.settings import Settings
 # anyway, because the sentence above says the library never gets to speak and that should be true
 # rather than true-today: httpcore's messages are debug-gated, and "nothing leaks as long as nobody
 # sets LOG_LEVEL=debug while chasing a stuck fetch" is not a guarantee, it is a hope.
-_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx", "httpx", "httpcore")
+#
+# `google_genai` and `google.genai` were added at slice 1.3's `/verify`, and they are two entries
+# because they are two unrelated names to `logging.getLogger` — the underscore is not a typo, and
+# neither covers the other. Measured by grepping the installed google-genai (2.23.0) for
+# `getLogger(`, not assumed: every SDK module logs under the `google_genai` parent (`models`,
+# `_api_client`, `_transformers`, `_common`, `types`, `chats`, `caches`, `batches`, `files`,
+# `tokens`, `tunings`, `operations`, `documents`, `live`, `live_music`, `local_tokenizer`,
+# `filesearchstores`). One generated module, `_gaos/utils/logger.py`, returns the DOTTED
+# `google.genai` logger instead, only when `GOOGLE_GENAI_DEBUG` is set — at which point it calls
+# `logging.basicConfig(level=DEBUG)` itself — and the same module defines `get_body_content`, which
+# renders a request's body; here that body is the prompt, which is the CV. Silencing the `google`
+# parent would have covered both, and every other `google.*` library with them, which is a
+# different decision from this one.
+#
+# T34 measured the non-streaming `generate_content` path this adapter uses and found it clean — two
+# static notices from `google_genai.models`, nothing interpolated — and that measurement was right.
+# It is not what this entry rests on. `google_genai._api_client` has a DEBUG line on both STREAMING
+# paths that interpolates `chunk_dump`, the raw JSON of a response chunk — the completion — into its
+# message. The adapter does not stream today; that is the `httpcore` argument above exactly: the
+# library never gets to speak, true rather than true-today. The spec's privacy item 4 won over T34's
+# "no change needed".
+_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx", "httpx", "httpcore", "google_genai", "google.genai")
 
 
 def configure_logging(settings: Settings) -> None:
