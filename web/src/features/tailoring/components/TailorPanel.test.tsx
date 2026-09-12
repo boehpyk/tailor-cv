@@ -843,16 +843,23 @@ describe('TailorPanel', () => {
     // `node_modules/@testing-library/react/dist/pure.js`), which Vitest never defines, so it would
     // wait on a real 5000ms timeout instead of the faked clock. A deterministic advance replaces it:
     // the first 1000ms tick (`POLL_INTERVAL_MS` in `useTailoringRun.ts`) is what sends the terminal
-    // request, and — observed empirically — the response's `.then` chain (fetch's body read, JSON
-    // parse, the query's state update and React's re-render) does not finish draining inside that
-    // same `act(async () => vi.advanceTimersByTimeAsync(...))` call; it settles during the *next*
-    // tick's microtask flush instead, with no further request issued in between (`callsAtTerminal`
-    // below stays at the count reached after the first tick). So two ticks, not one, is the smallest
-    // reliable advance.
+    // request. **T44 tightening (carried from the T41 correction):** the call count is captured
+    // *here*, right after that request has gone out, rather than after the response has drained —
+    // capturing it later would let an implementation that issues exactly one extra poll once the
+    // terminal response lands still pass, because that extra call would already be baked into the
+    // captured count. Continuous polling was always caught; only that one-extra-poll shape was not.
     await advance(1000);
+    const callsAtTerminal = countCallsTo(fetchMock, detailPath);
+
+    // Observed empirically: the response's `.then` chain (fetch's body read, JSON parse, the
+    // query's state update and React's re-render) does not finish draining inside the same
+    // `act(async () => vi.advanceTimersByTimeAsync(...))` call that sent it; it settles during the
+    // *next* tick's microtask flush instead, with no further request issued in between. So this
+    // second tick is where the terminal copy actually reaches the DOM — and the call count must
+    // still equal `callsAtTerminal`, proving that drain issued no request of its own.
     await advance(1000);
     expect(screen.getByText('final cv')).toBeInTheDocument();
-    const callsAtTerminal = countCallsTo(fetchMock, detailPath);
+    expect(countCallsTo(fetchMock, detailPath)).toBe(callsAtTerminal);
 
     await advance(10_000);
     expect(countCallsTo(fetchMock, detailPath)).toBe(callsAtTerminal);
@@ -893,15 +900,20 @@ describe('TailorPanel', () => {
     expect(screen.getByText(/Tailoring with Gemini/)).toBeInTheDocument();
     expect(countCallsTo(fetchMock, detailPath)).toBeGreaterThanOrEqual(1);
 
-    // See the sibling "…to succeeded" test above for why `getByText` after two deterministic
-    // `advance(1000)` ticks replaces `findByText` here (RTL's fake-timer detection never fires under
-    // Vitest, so `findByText` would wait on a real 5000ms timeout instead of the faked clock; the
-    // first tick sends the terminal request, the second is where its response finishes draining into
-    // the DOM, with no further request issued in between).
+    // See the sibling "…to succeeded" test above for the full reasoning. T44 tightening: the count
+    // is captured right after the first tick sends the terminal request — before its response has
+    // drained — so an implementation that sneaks in exactly one extra poll once the terminal status
+    // is known cannot hide inside an already-inflated captured count.
     await advance(1000);
+    const callsAtTerminal = countCallsTo(fetchMock, detailPath);
+
+    // The second tick is where the response finishes draining into the DOM, with no further
+    // request issued in between (RTL's fake-timer detection never fires under Vitest, so
+    // `findByText` would wait on a real 5000ms timeout instead of the faked clock — `getByText`
+    // after a deterministic advance replaces it).
     await advance(1000);
     expect(screen.getByText(COPY.llmTimedOut)).toBeInTheDocument();
-    const callsAtTerminal = countCallsTo(fetchMock, detailPath);
+    expect(countCallsTo(fetchMock, detailPath)).toBe(callsAtTerminal);
 
     await advance(10_000);
     expect(countCallsTo(fetchMock, detailPath)).toBe(callsAtTerminal);
@@ -947,6 +959,14 @@ describe('TailorPanel', () => {
 
     await advance(10_000); // must not keep polling a run that is gone
     expect(countCallsTo(fetchMock, detailPath)).toBe(callsAfter404);
+
+    // T44 gap (b): the two polling-stops-on-4xx tests asserted only that requests stop; nothing
+    // asserted what the user sees once they have. `runReadErrorCopy` (apiErrorCopy.ts) maps a 404
+    // `tailoring_run_not_found` to "We couldn't find that run." with `canCheckAgain: false` — the
+    // run is gone, not merely unreachable, so there is nothing to re-check. T42-chosen copy (the
+    // spec fixes only "run is gone" in the abstract, not this exact sentence).
+    expect(screen.getByRole('alert')).toHaveTextContent("We couldn't find that run.");
+    expect(screen.queryByRole('button', { name: /check again/i })).not.toBeInTheDocument();
   });
 
   it('decision (b): polling stops when a run 401s mid-poll (session expired)', async () => {
@@ -984,5 +1004,74 @@ describe('TailorPanel', () => {
 
     await advance(10_000);
     expect(countCallsTo(fetchMock, detailPath)).toBe(callsAfter401);
+
+    // T44 gap (b): `runReadErrorCopy` maps a 401 `guest_session_expired` mid-poll to the same
+    // sentence 1.1/1.2 use for an expired session, with `canCheckAgain: false` — asking again would
+    // fail the same way. Spec copy: the 401 sentence is pinned across the whole failure contract
+    // (G-4/G-5/G-31's "User sees" column), not chosen fresh for tailoring.
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'Your session has expired. Upload your CV again.',
+    );
+    expect(screen.queryByRole('button', { name: /check again/i })).not.toBeInTheDocument();
+  });
+
+  // ---------------------------------------------------------------------------------------------
+  // 10. T44 gap (b): network failures exhausting their retries — a different outcome from a 4xx
+  // ---------------------------------------------------------------------------------------------
+
+  it('gap (b): once transient network failures exhaust their retries mid-poll, the copy is honest about "still working" and offers Check again, never Try again', async () => {
+    vi.useFakeTimers();
+    const runId = 'run-network-blip-exhausts-retries';
+    const detailPath = `/api/tailoring-runs/${runId}`;
+    const fetchMock = stubFetch({
+      baseCvs: () => Promise.resolve(jsonResponse(200, { items: [makeExtractedCv()] })),
+      jobPostings: () => Promise.resolve(jsonResponse(200, { items: [makePostingSummary()] })),
+      runsList: () =>
+        Promise.resolve(
+          jsonResponse(200, { items: [makeRunSummary({ id: runId, status: 'running' })] }),
+        ),
+      runDetail: {
+        // Call 1 (the initial fetch) succeeds and shows the run as running; every call after that
+        // rejects the way a real network failure does — `fetch` itself throwing, never a response.
+        [runId]: (callNumber) =>
+          callNumber === 1
+            ? Promise.resolve(jsonResponse(200, makeRun({ id: runId, status: 'running' })))
+            : Promise.reject(new TypeError('Failed to fetch')),
+      },
+    });
+
+    renderWithQuery(<TailorPanel />);
+    await flushMicrotasks();
+    expect(screen.getByText(/Tailoring with Gemini/)).toBeInTheDocument();
+
+    // `useTailoringRun`'s `retry` keeps retrying a non-4xx failure up to `MAX_TRANSIENT_RETRIES`
+    // (3), with TanStack's default backoff (`1000 * 2 ** failureCount`, uncapped this low): the
+    // first poll tick sends the failing request, then backoffs of 1s, 2s and 4s exhaust the
+    // retries. Each `advance` is its own tick so the fake-timer clock processes the `setTimeout`
+    // backoff and its microtasks the same deterministic way the terminal-status tests above do.
+    await advance(1000); // POLL_INTERVAL_MS tick — the first failing request goes out
+    await advance(1000); // retry #1 backoff (failureCount 0 → 2**0 * 1000ms)
+    await advance(2000); // retry #2 backoff (failureCount 1 → 2**1 * 1000ms)
+    await advance(4000); // retry #3 backoff (failureCount 2 → 2**2 * 1000ms) — retries exhausted
+    await advance(1000); // drain the settled error state into the DOM
+
+    // T42-chosen copy, `runReadErrorCopy`'s non-`ApiError` / non-4xx branch: a transient failure
+    // does not mean the run failed, so the wording is deliberately not failure language, and the
+    // recovery offered is a free re-read rather than a control that implies paying again.
+    const alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent(
+      'We lost contact with your tailoring run. It may still be working.',
+    );
+    expect(alert).not.toHaveTextContent(/fail/i);
+    expect(alert).not.toHaveTextContent(/error/i);
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument();
+
+    // And, per AC-30's broader intent (carried into decision (b)), no further request follows once
+    // the query has settled — a "still working" story is not an excuse to keep polling forever
+    // either.
+    const callsAtExhaustion = countCallsTo(fetchMock, detailPath);
+    await advance(10_000);
+    expect(countCallsTo(fetchMock, detailPath)).toBe(callsAtExhaustion);
   });
 });
