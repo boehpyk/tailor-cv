@@ -8,9 +8,10 @@ import { JobPostingCard } from './JobPostingCard';
 import { JobPostingInput } from './JobPostingInput';
 import { useCreateJobPosting } from '../hooks/useCreateJobPosting';
 import { useJobPostings } from '../hooks/useJobPostings';
+import { latestPosting } from '../latestPosting';
 import { isFetchFailureCode } from '../types';
 
-import type { JobPostingSummary, PostingSource } from '../types';
+import type { PostingSource } from '../types';
 
 /**
  * UX-only mirror of the API's 30,000-character ceiling. It enforces nothing: the API measures the
@@ -22,16 +23,6 @@ import type { JobPostingSummary, PostingSource } from '../types';
  * server just accepted.
  */
 const MAX_POSTING_CHARACTERS = 30_000;
-
-/** The most recently captured posting. Compared by `created_at` rather than array position: the
- * list endpoint's ordering is not part of its contract, so reading `items[0]` as "latest" would be
- * trusting a guarantee the server never made. */
-function latestPosting(items: readonly JobPostingSummary[]): JobPostingSummary | null {
-  if (items.length === 0) {
-    return null;
-  }
-  return items.reduce((latest, item) => (item.created_at > latest.created_at ? item : latest));
-}
 
 /**
  * The job-posting surface — a **container**, wired to `useJobPostings` and `useCreateJobPosting`.

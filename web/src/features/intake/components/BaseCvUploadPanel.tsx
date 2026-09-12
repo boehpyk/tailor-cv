@@ -7,8 +7,7 @@ import { CvDropzone } from './CvDropzone';
 import { UploadErrorNotice } from './UploadErrorNotice';
 import { useBaseCvs } from '../hooks/useBaseCvs';
 import { useUploadBaseCv } from '../hooks/useUploadBaseCv';
-
-import type { BaseCv } from '../types';
+import { latestBaseCv } from '../latestBaseCv';
 
 /** UX-only mirror of the API's `max_upload_bytes` (10 MB). Saves a user a round trip for an
  * obviously-too-big file; it enforces nothing — the API measures the real bytes as they stream in
@@ -42,17 +41,6 @@ function preValidate(file: File): string | null {
     return 'That file is larger than 10 MB. Please choose a smaller file.';
   }
   return null;
-}
-
-/** The most recently uploaded `BaseCv`, or `null` for a session with none. Compared by
- * `uploaded_at` rather than array position — the list endpoint's ordering is not part of its
- * contract (technical-plan.md's API contract section says nothing about order), so reading
- * `items[0]` as "latest" would be trusting a guarantee the server never made. */
-function latestBaseCv(items: readonly BaseCv[]): BaseCv | null {
-  if (items.length === 0) {
-    return null;
-  }
-  return items.reduce((latest, item) => (item.uploaded_at > latest.uploaded_at ? item : latest));
 }
 
 /**
