@@ -877,6 +877,63 @@ async def test_broker_failure_after_commit_returns_503_and_records_failed_not_qu
 
 
 # ---------------------------------------------------------------------------------------------
+# G-14 floor (verify round 1): `_record_not_queued`'s second write catches only `SQLAlchemyError`.
+# A non-SQLAlchemyError there (a domain error from an already-decided run, a bare driver error) is
+# uncaught and escapes the handler whole, which FastAPI turns into a bare 500 — breaching G-14's
+# promise of 503 `queue_unavailable` for every way that second write can fail, not only the
+# SQLAlchemy-shaped ones.
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_second_write_failure_with_a_non_sqlalchemy_error_still_answers_503_queue_unavailable(
+    client: AsyncClient,
+    app: FastAPI,
+    session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The seam: `session.commit` backs both writes this handler makes — the step-3 commit that
+    persists the `queued` row, and `_record_not_queued`'s own commit recording `failed`/
+    `not_queued` once the broker refuses. A call counter lets the first succeed for real and the
+    second raise a plain `RuntimeError` carrying a sentinel message, which proves two things at
+    once: `_record_not_queued`'s `except SQLAlchemyError` does not catch it (so it must still answer
+    503, not just any 5xx), and AC-21's rule holds even for this exception shape — the type may be
+    logged, never the message that can quote whatever a driver decided to say.
+    """
+    _install_failing_queue(app)
+    base_cv_id, job_posting_id = await _ready_inputs(client)
+
+    sentinel = "QA_BREACH2_NON_SQLALCHEMY_SENTINEL_DO_NOT_LEAK"
+    real_commit = session.commit
+    call_count = 0
+
+    async def _second_commit_raises_a_plain_runtime_error() -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # The step-3 commit that persists the `queued` row — must still succeed for real, or
+            # the enqueue-fails branch this test means to exercise is never reached at all.
+            await real_commit()
+            return
+        raise RuntimeError(sentinel)
+
+    monkeypatch.setattr(session, "commit", _second_commit_raises_a_plain_runtime_error)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            "/api/tailoring-runs", json={"base_cv_id": base_cv_id, "job_posting_id": job_posting_id}
+        )
+
+    assert response.status_code == 503, response.text
+    assert _error_code(response) == "queue_unavailable"
+    assert "RuntimeError" in caplog.text, (
+        "expected the exception's type name to be logged, exactly as it already is for a "
+        "SQLAlchemyError on this same path"
+    )
+    assert sentinel not in caplog.text, "AC-21: never the exception's message, only its type"
+
+
+# ---------------------------------------------------------------------------------------------
 # G-15 — worker never picks up the task: the run stays `queued` and the GET is a 200
 # ---------------------------------------------------------------------------------------------
 

@@ -51,6 +51,8 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import delete
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRunOutcome
@@ -171,6 +173,25 @@ async def _ready_run(
 def _a_draft() -> TailoredDraft:
     return TailoredDraft(
         documents=TailoredDocuments(cv=TailoredCv("a" * 450), cover_letter=CoverLetter("b" * 250)),
+        metrics=LlmCallMetrics(
+            model=ModelName("gemini-test"),
+            prompt_version=PromptVersion("1"),
+            prompt_tokens=111,
+            completion_tokens=222,
+            duration_ms=1234,
+        ),
+    )
+
+
+def _a_draft_with_markers(cv_marker: str, letter_marker: str) -> TailoredDraft:
+    """`_a_draft`, with each document's text built around a unique marker — for a test that must
+    prove a specific fragment of text does or does not survive into an exception message or a log
+    line, rather than merely that *some* draft was saved."""
+    return TailoredDraft(
+        documents=TailoredDocuments(
+            cv=TailoredCv(f"{cv_marker} " + "a" * 450),
+            cover_letter=CoverLetter(f"{letter_marker} " + "b" * 250),
+        ),
         metrics=LlmCallMetrics(
             model=ModelName("gemini-test"),
             prompt_version=PromptVersion("1"),
@@ -370,3 +391,75 @@ async def test_an_already_decided_run_is_skipped_with_no_llm_call(
 
     assert outcome is ExecuteTailoringRunOutcome.SKIPPED
     assert second_fake_llm.calls == [], "G-27: an already-decided run must make no LLM call"
+
+
+# --- G-28 / AC-21 (verify round 1): a real database-side failure recording a succeeded run must ---
+# --- leak the tailored documents through neither the escaping exception's message nor the logs ----
+
+
+async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_text(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    session: AsyncSession,
+    clock: FixedClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """G-28: "Postgres unavailable inside the worker when recording a successful outcome" is left to
+    escape `run_tailoring` on purpose, so `task_acks_late` redelivers rather than silently losing the
+    run. AC-21 promises that escape carries no fragment of the tailored CV or cover letter — not in
+    the exception's own message, not in a log line.
+
+    A **real** database-side failure, not a hand-built exception: a `CHECK` constraint added to
+    `tailoring_run` for the life of this test rejects any `tailored_cv` containing this test's own
+    marker, so `CommittingTailoringRunRepository.save`'s `UPDATE` — step 7's second transaction —
+    fails at Postgres exactly the way a dropped connection or a real constraint violation would in
+    production, with the failing value bound as a parameter. That parameter rendering into the
+    exception's own `str()` is exactly what `hide_parameters=True` (or its absence,
+    `test_database_engine.py`'s finding) governs.
+
+    **Cleanup.** The constraint is added and dropped through this test's own `session`, which is
+    bound to the SAVEPOINT the outer `connection` fixture always rolls back at teardown
+    (`conftest.py`) — so it would disappear on its own even without the explicit `finally` below.
+    The `finally` stays anyway, per this agent's standing instruction that a trigger or constraint a
+    worker-path test creates must not be left for a second run to trip over: a `session.rollback()`
+    first, because the failed flush inside `_execute` leaves this session's own transaction unusable
+    for anything else until it is reset, and only then the `DROP CONSTRAINT`.
+    """
+    owner = await _persist_owner(session, clock, token_hash="4" * 64)
+    run = await _ready_run(session, owner.id, clock)
+
+    cv_marker = "QA_BREACH1_WORKER_CV_MARKER_7d1e9a"
+    letter_marker = "QA_BREACH1_WORKER_LETTER_MARKER_2c4f1b"
+    fake_llm = FakeLlm(_a_draft_with_markers(cv_marker, letter_marker))
+    _bind_task_to_this_sessions_worker(monkeypatch, settings, session, fake_llm)
+
+    constraint_name = "qa_breach1_worker_leak_guard"
+    await session.execute(
+        sql_text(
+            f"ALTER TABLE tailoring_run ADD CONSTRAINT {constraint_name} "
+            f"CHECK (tailored_cv IS NULL OR tailored_cv NOT LIKE '%{cv_marker}%')"
+        )
+    )
+    await session.commit()
+
+    try:
+        with caplog.at_level(logging.INFO), pytest.raises(DBAPIError) as exc_info:
+            await tailoring_task_module._execute(run.id)
+    finally:
+        await session.rollback()
+        await session.execute(
+            sql_text(f"ALTER TABLE tailoring_run DROP CONSTRAINT IF EXISTS {constraint_name}")
+        )
+        await session.commit()
+
+    # The positive proof the assertions below cannot pass vacuously: the save must actually have
+    # failed at the database, not merely returned without complaint.
+    exc = exc_info.value
+    assert isinstance(exc, DBAPIError)
+
+    assert cv_marker not in str(exc), "AC-21: the tailored CV leaked into the exception's message"
+    assert letter_marker not in str(exc), (
+        "AC-21: the cover letter leaked into the exception's message"
+    )
+    assert cv_marker not in caplog.text, "AC-21: the tailored CV leaked into a log line"
+    assert letter_marker not in caplog.text, "AC-21: the cover letter leaked into a log line"
