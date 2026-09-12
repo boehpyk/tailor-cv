@@ -837,11 +837,171 @@ savepoint, so the outer rollback still isolates the test.
 It cost twenty minutes and it will cost twenty more in some future slice, which is why it is written
 down here rather than in a comment in one test file.
 
+## Day seven: the first slice that spends money (the backend half)
+
+Every failure before this slice cost CPU and disk. Slice 1.3 changes that. A CV and a job posting
+go in, a tailored CV and a cover letter come out, and each request can now **cost real money**
+and take twelve seconds. Think of a restaurant that starts charging per order: from then on, an
+order lost in the kitchen is no longer a shrug, it is a refund.
+
+This chapter covers the backend: the domain, the use cases, persistence, the Gemini adapter, the
+queue and the HTTP contract. They are all committed and green, with 707 backend tests. The React
+surface, the first real evaluation against the API and the final review are still ahead.
+
+### The question that settled four questions
+
+The biggest decision was whether tailoring runs inside the HTTP request or on a queue the browser
+polls. A synchronous call fits the 15-second budget and would have deleted eight tasks. It lost
+on one scenario: **the user's connection drops at second eleven.** The model finishes, Google
+bills us, and the response goes nowhere. Nothing is recorded, which is exactly the outcome ADR-0004
+forbids. The result has to outlive the request that asked for it, so the work goes on a queue.
+That added a second rule to ADR-0005's "queue it when it is expensive": **queue it when its result
+must outlive the request.**
+
+The same slice exposed an apparent contradiction. In slice 1.1 a failed text extraction became a
+row with a failure status; in slice 1.2 a failed fetch left no row at all. Which one does
+tailoring copy? Neither. One question decides it: **was anything spent, and is there an artifact
+to own?** Before the job is queued, nothing has been spent, so a rejected request leaves no row.
+After it is queued, someone is waiting and money is about to be spent, so **every** outcome is a
+row, failures included. ADR-0014 records it, and the two earlier slices turn out to be two answers
+to the same question.
+
+### A constraint that compared a status to a conjunction
+
+The spec defined a database check: `(status = 'succeeded') = (tailored_cv IS NOT NULL AND
+cover_letter IS NOT NULL)`. It reads as "succeeded exactly when both documents exist", and it does
+not mean that. A failed run holding exactly **one** document makes both sides false, and
+`false = false` passes. Postgres accepted `UPDATE ... SET cover_letter = 'x'` on a failed run
+without complaint.
+
+Nobody found that by reading the SQL. The agent building the table tried the bad updates against a
+real database, one by one. It also did the more important thing: **it did not quietly strengthen
+the constraint.** It reported the gap and asked, because a table that disagrees with its own spec
+is worse than either version. The constraint is now written once per document column, and the
+feature spec, the technical plan and the task list were changed in the same commit, so the
+migration and the tests could not drift from it.
+
+The lesson generalises. **A guard whose only job is to stop hand-written SQL should be tested with
+hand-written SQL.**
+
+### The gate the spec asked for could not exist
+
+AC-6 required forbidding imports of `google.genai` outside the adapter, via import-linter.
+import-linter rejects that string before analysing any code: *"subpackages of external packages
+are not valid."* The string that works is `google`. The agent proved it by planting forbidden
+imports in both layers, using both spellings (`import google.genai` and
+`from google import genai`), and watching the contracts fail before removing them.
+
+A misconfigured forbidden-imports rule looks exactly like a working one in every passing build. **A
+gate you have never seen fail is a smoke detector whose test button nobody pressed.**
+
+### A worker running a virtualenv from two slices ago
+
+`make deps` synced dependencies into the `api` container only. `worker` and `beat` were still
+running a virtualenv from **slice 1.2**. Nobody noticed, because the only new library since then
+was used by code that runs in the API. The Gemini call runs in the worker, where this would have
+surfaced as a missing module in the one process nobody watches. It is the same failure as
+muzbar's worker running a stale image for four releases, one level down.
+
+### The worker had never configured its own logging
+
+The logging setup and the Sentry setup were hooked into FastAPI's startup and nowhere else. The
+worker, the process that holds a CV in memory for twelve seconds, **never ran either.** It had no
+silencing of noisy vendor loggers, and the Gemini SDK is built on `httpx`, the exact logger slice
+1.2 caught writing full URLs to the logs.
+
+Sentry also had a gap. `send_default_pii=False` was set, and so was the request-body limit, but
+`include_local_variables=False` was not. That third setting is the one that decides whether a
+function's local variables, such as a whole CV, reach Sentry. CLAUDE.md's footgun list already
+described this ("two settings that sound like they cover PII, one that decides it"), and the code
+had the two that sound right. Both gaps are fixed.
+
+### Three bugs the test suite could not see
+
+These are worth studying, because in each case tests were written and would have stayed green.
+
+**The exception that carried the whole document.** When the model returns invalid JSON,
+`json.JSONDecodeError`'s message is harmless (`Expecting ',' delimiter`), but the exception object
+keeps **the entire response** in its `.doc` attribute. Chain that into our own error and half a
+tailored CV rides along to Sentry. The privacy tests only check the error's message and repr, so
+they would pass either way. The fix is `raise ... from None`, and it came from reasoning about the
+exception object, not from a failing test.
+
+**The clock that would have zeroed the latency metric.** The worker reads the time when a run
+starts and again when it succeeds. Reusing the first reading for the second would make every
+production run report a duration of zero. Tests use a fixed clock, where both readings are
+identical anyway, so no test can tell the difference. It was caught while the line was being
+written.
+
+**The test override that never reached the worker.** The spec says no test calls the real Gemini
+API, and tests replace dependencies through FastAPI's `dependency_overrides`. No web route calls
+the LLM, though: the Celery task does, and it builds its own objects in the worker's composition
+root, which that override cannot reach. In CI, where no API key exists, this was safe by accident.
+On a laptop with a real key in `.env`, the suite would have spent money while reporting green. The
+tests now replace the LLM on the worker's path too, and **assert the fake was called** instead of
+assuming it was.
+
+### The comment that overstated its case
+
+The startup guard that refuses to boot production without an API key raises a custom exception
+instead of `ValueError`. The agent's justification was that a `ValueError` would print every secret
+in the settings. Measured, pydantic does include the settings in the error, but truncates them, and
+on the shape tested no secret got through.
+
+The decision was still right, because "no secret got through" depended on how many settings exist
+and in what order, and that changes whenever one is added. The comment was not right, though.
+**An overstated justification gets tested by the next reader, disproven, and thrown out along with
+the real reason.** It now says what was actually measured.
+
+### Tests that pass for the wrong reason
+
+Four of these, and the pattern matters more than any single one.
+
+- **A cause that was never set.** A test checked that "not found" and "not yours" were
+  distinguishable through the exception's `__cause__`. The positive check passes even if no cause
+  is ever set, so it needed a negative twin. That twin only works if the real repository raises
+  `from None`, which is now written into the repository's contract.
+- **A privacy test that proved nothing had been captured.** Its only evidence of capture was "at
+  least one log record exists", and any database log line satisfies that. It now requires both runs'
+  ids and events to appear before checking that no CV text does. It was then **mutation-checked**:
+  a temporary line logging CV text turned it red, and the line was removed.
+- **A red that could not test Redis.** The API skeleton failed before it reached the rate limiter,
+  so "the suite passes twice in a row" said nothing about leftover limiter state until the real
+  handlers existed.
+- **An ordering test that depended on random ids.** It created runs within the same second, so
+  their order came from UUID generation rather than the rule being tested. It now spaces them a
+  second apart.
+
+### When the tooling fails mid-task
+
+One test-writing agent hit a usage limit partway through and stopped. It left behind a file whose
+last test built a placeholder and then raised `AssertionError("unused")`, and nine of its ten tests
+passed on arrival. Before relaunching, two checks came first: nothing else was still writing to the
+file, and what did the file actually prove? The answer was nothing, so it was rewritten from the
+spec rather than extended. Half-finished work from a crashed process is untrusted input.
+
+### A trap waiting at the real API
+
+`gemini-2.5-flash` "thinks" before answering by default, and those thinking tokens count against
+the output cap of 4,096 tokens. The model could spend the whole budget thinking and return
+truncated JSON on every request, and nothing in `make check` would show it. You chose to disable
+thinking. The first evaluation against the real API will show whether output quality pays for that.
+
+### The common thread, a fourth time
+
+Day four's bugs needed running to find, day five's needed a review, and day six's needed
+measurement. **Day seven's worst bugs lived in the gap between two things that each looked
+right:** the spec and the import checker, the API's wiring and the worker's, an exception's message
+and the exception object, a passing red and a Redis counter that never moved. Every one was found
+the same way: ask what would be observably different if the claim were false, then make that
+difference happen.
+
 ## What's next
 
-Slice 1.3: the LLM. A CV and a job posting go in, a tailored CV comes out, and for the first time
-this application spends money per request and waits fifteen seconds for an answer it cannot verify.
-Everything learned about failure paths so far applies, plus one new category — output that parses
-cleanly and is wrong.
+The backend of slice 1.3 is complete and green. What remains: the React surface (a polling
+progress view whose "still working" wording can never be mistaken for a failure, because a user who
+can't tell them apart refreshes and pays twice); a production image that actually runs a tailoring
+task; the first evaluation against the real API, with a real bill, which must measure p50 and p95
+latency against the 15-second budget; and the final review.
 
 The specs die when the features ship. This file doesn't.
