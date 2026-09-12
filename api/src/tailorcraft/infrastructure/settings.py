@@ -208,6 +208,12 @@ class Settings(BaseSettings):
     # truncated, fails `parse_tailoring_response` as `not_json`, and is recorded `llm_output_invalid`.
     # That is the intended ordering (a cheap bound before an expensive one), but it means raising the
     # document ceilings without raising this would change nothing at all.
+    #
+    # This whole cap is the ANSWER's, because thinking is disabled (owner decision, 2026-09-11 —
+    # `build_generate_config` in `gemini.py`). `gemini-2.5-flash` thinks by default and thinking
+    # tokens are charged against this same number, so with thinking on, the arithmetic above would
+    # be wrong and a long thought could truncate every response. Re-enabling thinking (OQ-8, if
+    # `make eval` shows quality suffers) therefore means raising this cap in the same change.
     llm_max_output_tokens: int = 4096
     # The G-22 pre-flight refusal, checked in the adapter BEFORE any API call. ~6,000 tokens; with a
     # 30,000-character posting (~7,500) and the template, comfortably inside the window with room for

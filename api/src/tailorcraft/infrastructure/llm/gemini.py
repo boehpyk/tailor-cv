@@ -161,6 +161,41 @@ class _AttemptCounter:
         self.value = 0
 
 
+def build_generate_config(settings: Settings) -> genai_types.GenerateContentConfig:
+    """The request config every real `generate_content` call sends (technical plan, step 4).
+
+    A pure function, public and module-level, for the same reason `raw_completion_from_response`
+    is: the injected `GenerateFn` stub receives only the prompt string and never sees this object,
+    so a test that drives the stub proves nothing about what the real call asks the model for.
+    Building the config here is what lets T34 assert on it directly — no network, no client.
+    """
+    return genai_types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_RESPONSE_SCHEMA,
+        max_output_tokens=settings.llm_max_output_tokens,
+        # THINKING IS DISABLED — owner decision, 2026-09-11 (T25 finding; technical plan step 4,
+        # amended). `gemini-2.5-flash` thinks before answering by default, and thinking tokens count
+        # against `max_output_tokens`: at 4,096 the model could spend the whole cap thinking and
+        # return truncated JSON on EVERY run, which this adapter would faithfully record as
+        # `llm_output_invalid` and no test in `make check` could see (tests never call the API).
+        #
+        # Disabled rather than given a budget: the task is rewriting, not reasoning, and `0` is the
+        # fastest and cheapest setting and the best fit for the 15-second budget. A non-zero budget
+        # would have meant raising `llm_max_output_tokens` too and spending both against latency.
+        # Whether quality suffers is for `make eval` (T37) to show, and OQ-8's revisit trigger
+        # already covers that outcome — this line is a decision awaiting evidence, not a tuning
+        # constant to nudge.
+        #
+        # Verified against the installed google-genai (2.23.0), not recalled: the field's own doc
+        # says "0 is DISABLED. -1 is AUTOMATIC ... model dependent", and the real async path sends it
+        # as `generationConfig.thinkingConfig.thinking_budget = 0`. "Model dependent" is the warning
+        # for whoever changes `gemini_model`: a model that rejects a zero budget answers 400, which
+        # `_classify_api_error` leaves to the floor as `llm_error` on every run — revisit this line
+        # in the same commit as the swap.
+        thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+    )
+
+
 def raw_completion_from_response(response: genai_types.GenerateContentResponse) -> RawCompletion:
     """Translate one SDK response into a `RawCompletion`, or raise `LlmRefused`.
 
@@ -491,11 +526,7 @@ class GeminiLlm:
         response = await self._client.aio.models.generate_content(
             model=self._settings.gemini_model,
             contents=prompt,
-            config=genai_types.GenerateContentConfig(
-                response_mime_type="application/json",
-                response_schema=_RESPONSE_SCHEMA,
-                max_output_tokens=self._settings.llm_max_output_tokens,
-            ),
+            config=build_generate_config(self._settings),
         )
         return raw_completion_from_response(response)
 
