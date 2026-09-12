@@ -278,6 +278,28 @@ async def _record_not_queued(
             error_type=type(exc).__name__,
         )
         return
+    except Exception as exc:
+        # **THE FLOOR** under the handler above, and it has a concrete scenario rather than a
+        # hypothetical one: the publish that `queue.enqueue` reported as refused actually *reached*
+        # the broker (a timeout after the write — the residual this docstring already names), a
+        # worker picked the task up, and by the time `mark_failed` runs here the run is `running` or
+        # already decided, so the aggregate refuses the transition with a `DomainError`. That is not
+        # a `SQLAlchemyError`, and without this branch it escaped the handler as a bare 500 — breaking
+        # G-14's promise that every way this second write can fail still answers 503
+        # `queue_unavailable`. A driver error that is not wrapped in SQLAlchemy's tree lands here too.
+        #
+        # Same outcome as the branch above, and the same privacy rules: the fully-qualified TYPE,
+        # never `str(exc)` (a domain error is harmless, a driver's is not, and this branch cannot tell
+        # which it has) and never `exc_info`. Nothing is re-raised — the caller answers 503 either
+        # way — so there is no chain to cut with `from None`. `Exception`, never `BaseException`: a
+        # cancelled request must still cancel.
+        await db.rollback()
+        log.warning(
+            "tailoring.not_queued_unrecorded",
+            tailoring_run_id=str(run_id.value),
+            error_type=f"{type(exc).__module__}.{type(exc).__qualname__}",
+        )
+        return
 
     await events.publish(*run.release_events())
 

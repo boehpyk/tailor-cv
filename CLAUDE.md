@@ -366,6 +366,22 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `include_local_variables=True`, which is a separate setting that neither `send_default_pii` nor
   `max_request_body_size="never"` affects. Any exception escaping a function that holds a CV in a
   local ships that CV to Sentry. Two settings that sound like they cover PII, one that decides it.
+- **A failed database write carries its data out through three layers, and `hide_parameters=True`
+  covers one.** (1) SQLAlchemy renders `[parameters: (...)]` into every `DBAPIError` — the flag
+  removes that. (2) The **driver's own message** is copied in verbatim: asyncpg quotes a value it
+  cannot encode, and PostgreSQL's `DETAIL: Failing row contains (...)` on a CHECK violation is the
+  whole row, tailored CV included. (3) SQLAlchemy raises `from` the driver's exception, so
+  `traceback.format_exception` — what Celery logs — and Sentry's chain walker render every link, and
+  a clean `str(exc)` proves nothing. `include_local_variables=False` reaches none of the three; it
+  governs frame locals, not messages. The worker lets a failed save of a succeeded run escape on
+  purpose (G-28), so this is a real path, not a hypothetical. `persistence/database.py` keeps the
+  flag and adds a per-engine `handle_error` listener that withholds the driver's message, keeps
+  SQLSTATE and schema identifiers, and cuts the chain — with no setting to turn it off. Found at
+  slice 1.3's `/verify`, where the first fix was one flag and a test checking only `str(exc)`
+  certified it; the tests now assert on the rendered chain. **PostgreSQL's server log still holds
+  the failing row** at the default `log_error_verbosity` — that is the database container's config
+  (`terse`), outside the application's reach. Same trap as the bullet above: a setting that sounds
+  like it covers PII, and the layers it does not.
 - **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
   `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
   `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`
