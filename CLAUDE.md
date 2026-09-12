@@ -315,6 +315,19 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   posting fetch, which runs in the API. The Gemini call does not — it runs in the worker, which is
   where it would have surfaced as a `ModuleNotFoundError` in a process nobody is watching. This is
   the image-verification lesson one level down: same failure, a venv instead of an image.
+- **A startup refusal under `uvicorn --workers N` does not exit the container.** The production
+  guard (`MisconfiguredSettings` when `APP_ENV=production` has no `GEMINI_API_KEY`) fires at import in
+  every worker process, and uvicorn's multiprocess supervisor respawns the crashing import forever. The
+  container never becomes ready and never serves a request — **and never exits**, so
+  `restart: unless-stopped` never cycles it and nothing reads as a restart loop. On a real box it
+  presents as one traceback logged endlessly. Measured against the production image in slice 1.3 (T36).
+  When a release's readiness check never goes green, read the logs for a settings refusal before
+  suspecting the network.
+- **A dev box with a real `GEMINI_API_KEY` spends money from the UI.** There is no dev-mode fake: the
+  worker reads the key and makes a paid call for every tailoring run started at localhost. The test
+  suite never reaches it — it replaces the LLM on the worker's own composition-root path and asserts
+  the fake was called, because `dependency_overrides` cannot reach the worker — but a manual click does,
+  and so does `make eval`. Keep the key out of `.env` unless you mean to spend.
 - **`make db.dump` is not a backup of this product.** Restoring rows that point at uploaded files you
   did not restore gives you a broken application with a green restore. Back up the uploads volume
   alongside the database.
