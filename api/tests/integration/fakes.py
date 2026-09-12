@@ -306,6 +306,15 @@ class FakeLlm:
     produced or raised. A test wires it to snapshot `FakeTailoringRunRepository.save_calls` at that
     exact moment, which is what turns "was the run already saved as `running` when the model was
     asked?" into a plain list-equality assertion rather than a guess based on the end state.
+
+    `aclose` is a recording no-op, added at verify-round-1 (V4): `tasks/container.py::
+    tailoring_use_case` now closes whatever `GeminiLlm(settings)` produced in its own `finally`, and
+    every test that monkeypatches that factory to return a `FakeLlm` runs that same `finally` — so
+    the fake needs the method just to keep those tests from raising `AttributeError`, and recording
+    that it ran is what lets a test assert the container actually closed its adapter rather than
+    merely surviving the call. Not on `LlmPort` itself: adapter lifecycle is not domain language, and
+    a port that grew `aclose` would make every fake implement a lifecycle the business model has no
+    word for (`GeminiLlm.aclose`'s own docstring).
     """
 
     def __init__(
@@ -319,6 +328,7 @@ class FakeLlm:
         self._delay_seconds = delay_seconds
         self._on_call = on_call
         self.calls: list[tuple[ExtractedText, JobPostingText]] = []
+        self.closed = False
 
     async def tailor(self, cv: ExtractedText, posting: JobPostingText) -> TailoredDraft:
         self.calls.append((cv, posting))
@@ -329,6 +339,9 @@ class FakeLlm:
         if isinstance(self._outcome, TailoringFailed):
             raise self._outcome
         return self._outcome
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 class FakeTailoringQueue:

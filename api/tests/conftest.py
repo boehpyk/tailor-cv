@@ -39,12 +39,12 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
 )
 
 from tailorcraft.infrastructure.api.deps import get_session
 from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.clock import FixedClock
+from tailorcraft.infrastructure.persistence.database import create_engine
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import Settings, get_settings
@@ -100,7 +100,23 @@ def _migrated(settings: Settings) -> None:
 
 @pytest_asyncio.fixture(scope="session")
 async def engine(settings: Settings, _migrated: None) -> AsyncIterator[AsyncEngine]:
-    eng = create_async_engine(settings.test_database_url, poolclass=None)
+    """Built through the production `create_engine` factory, not a bare `create_async_engine` call.
+
+    That is a deliberate change (verify round 1, T41-style): a test asserting something about how
+    this engine reports a database-side failure — `hide_parameters`, and eventually the
+    error-sanitizing `handle_error` listener `create_engine` registers — can only guard the real
+    config if the connection under test was actually built by it. A bare `create_async_engine` call
+    here would let every such test pass or fail on a *different* engine than the one production
+    (and the worker's own per-task `tasks/container.py::tailoring_use_case`) actually uses.
+
+    Still session-scoped, still bound to pytest-asyncio's own session-scoped loop — unaffected by
+    the change, since `create_engine` builds an ordinary `AsyncEngine` and this fixture's lifetime
+    story doesn't change. The genuinely different case, where a *shared* engine would be wrong, is
+    the worker's own per-task engine: a fresh loop per Celery task means a fresh engine per task,
+    which is exactly what `tasks/container.py`'s own module docstring explains at length. Nothing
+    about that changes here.
+    """
+    eng = create_engine(settings)
     yield eng
     await eng.dispose()
 

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -265,6 +266,10 @@ def test_the_task_returns_none_and_does_not_raise_for_an_unknown_run_id(
     assert result is None, "AC-11: the task must return None regardless of the outcome"
     assert fake_llm.calls == [], "an unknown run id must never reach the model (G-26)"
     assert "tailoring.run_missing" in caplog.text
+    assert fake_llm.closed is True, (
+        "V4: tailoring_use_case must close the adapter it built for this task, even on the MISSING "
+        "path where the model was never called"
+    )
 
 
 # --- AC-11, closed: a run that SUCCEEDS must also return None through the real bridge -------------
@@ -345,6 +350,10 @@ def test_the_task_returns_none_on_a_run_that_succeeds(
     assert len(fake_llm.calls) == 1, (
         "the model must actually have been called — the success path, not a skip or a miss"
     )
+    assert fake_llm.closed is True, (
+        "V4: tailoring_use_case must close the adapter it built for this task, even on the "
+        "successful path"
+    )
 
 
 # --- AC-10: two invocations for one run make exactly one LLM call ----------------------------------
@@ -407,15 +416,33 @@ async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_
     """G-28: "Postgres unavailable inside the worker when recording a successful outcome" is left to
     escape `run_tailoring` on purpose, so `task_acks_late` redelivers rather than silently losing the
     run. AC-21 promises that escape carries no fragment of the tailored CV or cover letter — not in
-    the exception's own message, not in a log line.
+    the exception's own message, not in its rendered chain, not in a log line.
 
     A **real** database-side failure, not a hand-built exception: a `CHECK` constraint added to
     `tailoring_run` for the life of this test rejects any `tailored_cv` containing this test's own
     marker, so `CommittingTailoringRunRepository.save`'s `UPDATE` — step 7's second transaction —
     fails at Postgres exactly the way a dropped connection or a real constraint violation would in
-    production, with the failing value bound as a parameter. That parameter rendering into the
-    exception's own `str()` is exactly what `hide_parameters=True` (or its absence,
-    `test_database_engine.py`'s finding) governs.
+    production, with the failing value bound as a parameter.
+
+    **Through the production engine, not a bypass.** `session` descends from `conftest.py`'s
+    `connection` fixture, which as of verify-round-1 is opened on an `engine` built by
+    `tailorcraft.infrastructure.persistence.database.create_engine` rather than a bare
+    `create_async_engine` call — the same factory `tasks/container.py::tailoring_use_case` calls in
+    production. A test whose failing write ran through some *other* engine could not tell whether
+    `create_engine`'s own configuration was doing anything at all.
+
+    **Strengthened after api-dev's round-1 `hide_parameters=True` attempt turned out not to be
+    enough** (verify round 1): `hide_parameters=True` only deletes SQLAlchemy's own
+    `[parameters: (...)]` line. The chained, driver-native exception underneath (`exc.__cause__`) is
+    untouched and its own message still quotes the value — asyncpg's own text does this for a CHECK
+    violation exactly as it does for the simpler cast failure in `test_database_engine.py` — so a
+    test that only reads `str(exc)` can go green on a fix that leaves the real leak fully intact.
+    `traceback.format_exception(exc)` renders the whole chain, which is what Celery's "raised
+    unexpected: <exc>" line and Sentry's own capture actually walk.
+
+    **The constraint's own name must survive** — a positive guard against the opposite failure mode,
+    a sanitizer so aggressive it also destroys the one thing a person debugging a real production
+    incident needs: which constraint fired, on which table.
 
     **Cleanup.** The constraint is added and dropped through this test's own `session`, which is
     bound to the SAVEPOINT the outer `connection` fixture always rolls back at teardown
@@ -453,13 +480,32 @@ async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_
         await session.commit()
 
     # The positive proof the assertions below cannot pass vacuously: the save must actually have
-    # failed at the database, not merely returned without complaint.
+    # failed at the database, not merely returned without complaint. `isinstance`, not `type(...) is`
+    # — the router's own G-13/G-14 handlers catch `SQLAlchemyError`, so a sanitizer that rebuilt this
+    # as some unrelated type would silently turn those 503s into 500s, and this check would catch it.
     exc = exc_info.value
     assert isinstance(exc, DBAPIError)
+
+    # Celery's "raised unexpected: <exc>" and Sentry's own capture both walk more than `str(exc)` —
+    # `__cause__`/`__context__` too, which a bare `hide_parameters=True` leaves fully intact.
+    rendered_chain = "".join(traceback.format_exception(exc))
 
     assert cv_marker not in str(exc), "AC-21: the tailored CV leaked into the exception's message"
     assert letter_marker not in str(exc), (
         "AC-21: the cover letter leaked into the exception's message"
     )
+    assert cv_marker not in rendered_chain, (
+        "AC-21: the tailored CV leaked into the exception's rendered chain "
+        "(__cause__/__context__) — this is what Celery logs and what Sentry walks"
+    )
+    assert letter_marker not in rendered_chain, (
+        "AC-21: the cover letter leaked into the exception's rendered chain "
+        "(__cause__/__context__) — this is what Celery logs and what Sentry walks"
+    )
     assert cv_marker not in caplog.text, "AC-21: the tailored CV leaked into a log line"
     assert letter_marker not in caplog.text, "AC-21: the cover letter leaked into a log line"
+
+    assert constraint_name in str(exc), (
+        "debuggability regression: the constraint's own name must survive sanitizing, or a real "
+        "production incident becomes unattributable to the rule that actually fired"
+    )

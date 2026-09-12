@@ -54,6 +54,7 @@ from tailorcraft.infrastructure.llm.gemini import (
 )
 from tailorcraft.infrastructure.llm.parsing import KEY_COVER_LETTER, KEY_TAILORED_CV
 from tailorcraft.infrastructure.llm.prompt import PROMPT_VERSION
+from tailorcraft.infrastructure.observability import configure_logging
 from tailorcraft.infrastructure.settings import Settings
 
 # --- Fixture content ---------------------------------------------------------------------------------
@@ -441,6 +442,60 @@ async def test_an_empty_key_refuses_with_zero_calls_even_with_a_stub_injected(
     assert calls == []
 
 
+# --- V4: aclose() — the worker closes the adapter it built for every task, and this must be safe --
+
+
+async def test_aclose_is_a_safe_no_op_with_an_injected_generate_stub(settings: Settings) -> None:
+    """Every test in this file that injects a `generate` stub bypasses `_generate_with_sdk`
+    entirely, so `self._client` is never built — `aclose()` must find nothing to close and return
+    without raising, exactly as it does for every non-streaming test above that never touches it."""
+    stub, _calls = _recording_stub()
+    adapter = GeminiLlm(_settings(settings), generate=stub)
+
+    await adapter.tailor(_cv(), _posting())
+
+    await adapter.aclose()  # must not raise
+    assert adapter._client is None
+
+
+async def test_aclose_is_a_safe_no_op_with_no_key(settings: Settings) -> None:
+    """G-32's no-key refusal happens before `_generate_with_sdk` (and therefore before any client is
+    built), so `aclose()` on an adapter that was never given the chance to call the model must also
+    be a safe no-op — the worker's `finally` closes every adapter it built regardless of how the
+    task ended, including a run that failed before the first attempt."""
+    keyless = settings.model_copy(update={"gemini_api_key": ""})
+    adapter = GeminiLlm(keyless)
+
+    await adapter.aclose()  # must not raise
+    assert adapter._client is None
+
+
+async def test_aclose_is_idempotent_when_called_twice(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`aclose`'s own body clears the reference before closing
+    (`client, self._client = self._client, None`), so a second call finds nothing left to close.
+    Verified against a REAL (but never-connected — the constructor makes no network call) `genai.
+    Client`, matching this adapter's own "measured against the installed google-genai, not assumed"
+    standard rather than a hand-built stand-in.
+
+    `monkeypatch.setattr` rather than a direct `adapter._client = ...` assignment: mypy narrows a
+    plain attribute's type from a direct assignment and, in this version, does not reliably widen
+    that narrowing back across an intervening method call — so a direct assignment here makes mypy
+    treat the `assert adapter._client is None` below as statically unreachable, a false positive
+    about its own narrowing rather than a finding about this code. Going through `monkeypatch`
+    avoids feeding it an assignment statement to narrow on.
+    """
+    adapter = GeminiLlm(_settings(settings))
+    monkeypatch.setattr(adapter, "_client", genai.Client(api_key="placeholder-not-a-real-key"))
+
+    await adapter.aclose()
+    assert adapter._client is None
+
+    await adapter.aclose()  # must not raise the second time either, with nothing left to close
+    assert adapter._client is None
+
+
 # --- AC-24: the prompt carries the CV and the posting, and nothing else -----------------------------
 
 
@@ -574,36 +629,49 @@ class _GeminiStubServer:
         self._thread.join(timeout=5)
 
 
-async def test_the_real_sdk_client_logs_nothing_derived_from_the_prompt_or_the_response(
-    caplog: pytest.LogCaptureFixture,
+async def test_the_real_sdk_client_logs_nothing_now_that_google_genai_is_silenced(
+    settings: Settings, caplog: pytest.LogCaptureFixture
 ) -> None:
     """T34's mandated check: 1.2's `/verify` found `httpx` logging full URLs at INFO one frame below
     a clean adapter, invisible to a test that drove a fake — so this one drives the REAL
     `genai.Client` (not the injected `GenerateFn` stub every other test above uses) against a local
     stub server, and inspects what the vendor library itself puts in the log.
 
-    **Findings** (reported here rather than silenced, per this task's explicit instruction not to add
-    a logger unless it actually leaks something):
+    **T34's findings, and the reversal at slice 1.3's `/verify`.** T34 measured the non-streaming
+    `generate_content` path this adapter actually uses and found it clean on the surface:
 
-    - `google_genai.models` — the module the real async `generate_content` call runs through —
-      logs two lines on EVERY call, at INFO and WARNING: `"AFC is enabled with max remote calls: N."`
-      and a one-time notice steering callers toward `AsyncChat` for automatic function calling. Both
-      are static vendor text with no argument interpolated from the prompt, the config or the
-      response — confirmed by running the real call below and asserting the sentinels are absent.
-      Note the module name is `google_genai` (underscore), not `google.genai` (dot) — the two are
-      different strings to `logging.getLogger`, and only the underscore form is what the installed
-      SDK actually calls.
-    - `httpx` logs one INFO line per request (`"HTTP Request: POST <url> ... "<status>""`) — already
-      in `_SILENCED_VENDOR_LOGGERS` since slice 1.2. The URL carries the model name and API version,
-      never the API key (sent as a header, per the SDK) and never the prompt.
-    - `httpcore` logs at DEBUG only, and only connection/header lifecycle events (`connect_tcp.*`,
-      `send_request_headers.*`, …) — never a request or response body, at any level.
+    - `google_genai.models` — the module the real async `generate_content` call runs through — logs
+      two lines on EVERY call, at INFO and WARNING: `"AFC is enabled with max remote calls: N."` and
+      a one-time notice steering callers toward `AsyncChat`. Both are static vendor text with nothing
+      interpolated from the prompt, the config or the response.
+    - `httpx` logs one INFO line per request, already silenced since slice 1.2.
+    - `httpcore` logs at DEBUG only, connection/header lifecycle events, never a body.
 
-    **Conclusion: nothing here needs to be added to `_SILENCED_VENDOR_LOGGERS`.** `httpx` already
-    covers the one vendor logger that emits per-call operational noise close to the wire, and neither
-    it nor `google_genai.models` ever puts a fragment of the prompt or the completion in a log
-    record — verified directly, not assumed.
+    T34's conclusion from those three points — "nothing needs to be added to
+    `_SILENCED_VENDOR_LOGGERS`" — was **reversed at `/verify`**, and reading only the path this test
+    drives is exactly why it was wrong: `google_genai._api_client` (not `.models`, and not exercised
+    by the non-streaming call this test makes) has a DEBUG line on both of the SDK's STREAMING paths
+    that interpolates `chunk_dump` — the raw JSON of a response chunk, i.e. the completion — into its
+    message. This adapter does not stream *today*, which is precisely the `httpcore` argument above:
+    the library must never get to speak, true rather than true-today. A future edit that turns on
+    streaming (a token budget change, a UX want for incremental rendering) would silently reopen this
+    leak if `_SILENCED_VENDOR_LOGGERS` still trusted "the path we tested is clean" instead of
+    silencing the parent logger both paths share. `google_genai` and `google.genai` (the dotted form
+    a different generated module uses, only under `GOOGLE_GENAI_DEBUG`) were both added.
+
+    **What this test proves now that the SDK logger is silenced.** It can no longer assert "at least
+    one record", because a correctly silenced logger produces none — that assertion would now be
+    checking the opposite of privacy. Proving something instead requires two halves: the real call
+    still completes (so this is not a vacuous "nothing happened" pass), and the *mechanism* that
+    would have caught the streaming leak is actually armed — `google_genai`'s effective level is
+    above every level the SDK logs `chunk_dump`/AFC notices at, checked on the exact submodules named
+    above rather than assumed from the parent alone. `configure_logging` is called explicitly here
+    (with this test's own `settings`) rather than relied upon as an accidental side effect of
+    `conftest.py` importing `main.py` — a test whose assertion depends on *some other test having
+    run first* is not a test, it is a race.
     """
+    configure_logging(settings)
+
     cv_sentinel = "SDK-LOG-SENTINEL-employment-history-must-not-leak-771x"
     response_text = _valid_response_text()
     response_payload = json.dumps(
@@ -634,7 +702,25 @@ async def test_the_real_sdk_client_logs_nothing_derived_from_the_prompt_or_the_r
     finally:
         server.shutdown()
 
-    assert response.text == response_text  # the call actually completed, for the right reason
-    assert caplog.records, "expected the SDK to have produced at least one log record"
+    # Positive proof this is not a vacuous "the call never happened" pass.
+    assert response.text == response_text
+
+    # The mechanism itself: every name the installed SDK actually calls `getLogger` on for the
+    # streaming/`chunk_dump` and AFC-notice lines is silenced at every level those lines use —
+    # `WARNING` (the AFC notice) and `DEBUG` (`chunk_dump`) both, so raising `LOG_LEVEL` in
+    # production could never reopen this by itself.
+    for name in ("google_genai", "google_genai.models", "google_genai._api_client", "google.genai"):
+        logger = logging.getLogger(name)
+        assert not logger.isEnabledFor(logging.WARNING), (
+            f"{name} must be silenced at WARNING (the AFC-enabled notice) — configure_logging did "
+            "not reach it"
+        )
+        assert not logger.isEnabledFor(logging.DEBUG), (
+            f"{name} must be silenced at DEBUG (google_genai._api_client's chunk_dump line on the "
+            "streaming paths) — configure_logging did not reach it"
+        )
+
+    # Defense in depth: even with the mechanism proven armed above, the sentinels must still never
+    # reach a captured record from this call.
     assert cv_sentinel not in caplog.text, "the prompt reached a log line"
     assert response_text not in caplog.text, "the completion reached a log line"
