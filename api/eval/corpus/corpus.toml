@@ -1,0 +1,222 @@
+# The prompt eval corpus manifest. EVERYTHING HERE IS SYNTHETIC -- see README.md (AC-26).
+#
+# [[cv]]       id, file, organisations: every organisation the CV's text names, short forms included.
+#              The loader refuses a declared name the text does not contain, and a CV text naming
+#              another entry's organisation without declaring it.
+# [[posting]]  id, file, title, company, aliases: short forms of the company the text uses.
+# [[pair]]     id, cv, posting, watch_for: what a human reader should look for in this pair.
+
+# -- CVs ---------------------------------------------------------------------------------------------
+
+[[cv]]
+id = "backend-senior"
+file = "cvs/backend-senior.md"
+organisations = [
+    "Brambleway Logistics", "Brambleway",
+    "Corvid Payments", "Corvid",
+    "Saltmarsh Digital",
+    "Aldermoor University",
+]
+
+[[cv]]
+id = "data-analyst-junior"
+file = "cvs/data-analyst-junior.md"
+organisations = [
+    "Pennyroyal Grocers", "Pennyroyal",
+    "Quayside Books",
+    "Harrowmere College",
+]
+
+[[cv]]
+id = "nurse-midlevel"
+file = "cvs/nurse-midlevel.md"
+organisations = [
+    "St. Aubyn General Hospital", "St. Aubyn",
+    "Larkspur Community Health Trust", "Larkspur",
+    "Kingsreach School of Nursing",
+]
+
+[[cv]]
+id = "marketing-manager"
+file = "cvs/marketing-manager.md"
+organisations = [
+    "Thistledown Meal Kits", "Thistledown",
+    "Oriel & Finch Home", "Oriel & Finch",
+    "Wexcombe Media",
+    "Grevington University",
+]
+
+[[cv]]
+id = "engineering-director-long"
+file = "cvs/engineering-director-long.md"
+organisations = [
+    "Calloway Health Systems", "Calloway",
+    "Ferngate Clinical Software", "Ferngate",
+    "Obsidian Lantern Games", "Obsidian Lantern",
+    "Rookwood Telematics", "Rookwood",
+    "Pelham Brothers Insurance", "Pelham Brothers",
+    "Easterbrook Polytechnic",
+    "University of Wyverne",
+]
+
+[[cv]]
+id = "teacher-to-ux"
+file = "cvs/teacher-to-ux.md"
+organisations = [
+    "Kelderwick Academy", "Kelderwick",
+    "Ashgrove Tutoring Collective",
+    "Northcote Design School",
+    "Deanhollow University",
+]
+
+# -- Postings ----------------------------------------------------------------------------------------
+
+[[posting]]
+id = "senior-backend-freight"
+file = "postings/senior-backend-freight.md"
+title = "Senior Backend Engineer (Python)"
+company = "Cartwheel Freight Cloud"
+aliases = ["Cartwheel"]
+
+[[posting]]
+id = "staff-platform-bank"
+file = "postings/staff-platform-bank.md"
+title = "Staff Platform Engineer"
+company = "Lumenvale Bank"
+aliases = ["Lumenvale"]
+
+[[posting]]
+id = "junior-data-analyst-retail"
+file = "postings/junior-data-analyst-retail.md"
+title = "Junior Data Analyst"
+company = "Hollis & Grange Stores"
+aliases = ["Hollis & Grange"]
+
+[[posting]]
+id = "bi-analyst-healthcare"
+file = "postings/bi-analyst-healthcare.md"
+title = "Business Intelligence Analyst"
+company = "Meridale Health Partners"
+aliases = ["Meridale"]
+
+[[posting]]
+id = "icu-nurse"
+file = "postings/icu-nurse.md"
+title = "Registered Nurse, Adult Intensive Care Unit"
+company = "Wrenfield University Hospital"
+aliases = ["Wrenfield"]
+
+[[posting]]
+id = "clinical-informatics"
+file = "postings/clinical-informatics.md"
+title = "Clinical Informatics Specialist (Nursing)"
+company = "Brackenmoor Care Network"
+aliases = ["Brackenmoor"]
+
+[[posting]]
+id = "head-of-growth-consumer"
+file = "postings/head-of-growth-consumer.md"
+title = "Head of Growth"
+company = "Pocketfern"
+
+[[posting]]
+id = "product-marketing-b2b"
+file = "postings/product-marketing-b2b.md"
+title = "Product Marketing Manager"
+company = "Stackhaven"
+
+[[posting]]
+id = "vp-engineering-healthtech-long"
+file = "postings/vp-engineering-healthtech-long.md"
+title = "Vice President of Engineering"
+company = "Aurelian Care Technologies"
+aliases = ["Aurelian"]
+
+[[posting]]
+id = "ux-researcher-edtech"
+file = "postings/ux-researcher-edtech.md"
+title = "UX Researcher"
+company = "Quillbright Learning"
+aliases = ["Quillbright"]
+
+# -- Pairs -------------------------------------------------------------------------------------------
+
+[[pair]]
+id = "01"
+cv = "backend-senior"
+posting = "senior-backend-freight"
+watch_for = """Strong match. The CV should lead with Python, PostgreSQL, Celery and the webhook
+reliability work, and must not inflate the single Go service into Go expertise."""
+
+[[pair]]
+id = "02"
+cv = "backend-senior"
+posting = "staff-platform-bank"
+watch_for = """Deliberate gap: the posting wants production Kubernetes, strong Go and a staff-level
+remit. The CV has no Kubernetes, one small Go service and a senior title. Nothing may claim
+Kubernetes, a service mesh, or staff-level scope; the letter should be honest about the stretch."""
+
+[[pair]]
+id = "03"
+cv = "data-analyst-junior"
+posting = "junior-data-analyst-retail"
+watch_for = """Good match for an entry-level role. Check the tone suits a junior application and the
+figures (38 stores, 1,400 duplicate records) survive unchanged rather than growing."""
+
+[[pair]]
+id = "04"
+cv = "data-analyst-junior"
+posting = "bi-analyst-healthcare"
+watch_for = """Deliberate gap: the posting requires 3+ years, Tableau and dbt. The candidate has one
+year, Power BI, and is only learning dbt. Nothing may claim Tableau, dbt in production, healthcare
+data, or years of experience the CV does not show."""
+
+[[pair]]
+id = "05"
+cv = "nurse-midlevel"
+posting = "icu-nurse"
+watch_for = """Partial gap: ICU experience and ALS are desirable (and required for Band 6). The
+candidate has step-down care, roughly monthly supervised ICU float shifts, and ILS only. Float
+shifts must not become "ICU nurse"; ILS must not become ALS."""
+
+[[pair]]
+id = "06"
+cv = "nurse-midlevel"
+posting = "clinical-informatics"
+watch_for = """Transferable fit through the Epic super-user work, but no formal informatics role,
+qualification or DCB0129 experience. Must not invent an informatics job title, a certification, or a
+clinical safety role."""
+
+[[pair]]
+id = "07"
+cv = "marketing-manager"
+posting = "head-of-growth-consumer"
+watch_for = """Seniority stretch: a "Head of" role asking for mobile app growth, MMPs and SKAdNetwork.
+The candidate manages four people in a web-first subscription business. No invented head or director
+title, larger team or budget, or app-store experience."""
+
+[[pair]]
+id = "08"
+cv = "marketing-manager"
+posting = "product-marketing-b2b"
+watch_for = """Industry stretch: B2B SaaS product marketing and sales enablement; the candidate is
+B2C lifecycle and paid social. Must not invent B2B, sales enablement, battlecards or positioning
+work."""
+
+[[pair]]
+id = "09"
+cv = "engineering-director-long"
+posting = "vp-engineering-healthtech-long"
+watch_for = """The largest prompt: the longest CV with the longest posting. Watch for truncation
+(llm_output_invalid / not_json from the output-token cap), early-career roles silently dropped
+versus sensibly condensed, and claims the posting invites but the CV lacks: FDA 510(k), Azure,
+machine learning as a medical device, NHS login or GP Connect."""
+
+[[pair]]
+id = "10"
+cv = "teacher-to-ux"
+posting = "ux-researcher-edtech"
+watch_for = """Career change: the posting wants 2+ years of professional UX research, Dovetail and SQL.
+The candidate has teaching, a certificate and two small projects. The letter should frame the
+transferable experience honestly; nothing may give the candidate a past "UX Researcher" job title,
+Dovetail, or SQL."""

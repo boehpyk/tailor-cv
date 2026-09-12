@@ -133,11 +133,22 @@ class RawCompletion:
 
     `text` is the response verbatim — possibly fenced, possibly wrapped in prose, possibly truncated.
     It is **never logged and never put in an exception message** (Constitution §8): it is half a CV.
+
+    `thoughts_tokens` is the provider's `thoughts_token_count`, verbatim — `None` when the response
+    carried no such field, which is the expected shape with thinking disabled. **It stops at this
+    type.** `tailor()` never reads it and `LlmCallMetrics` does not carry it: the domain has no concept
+    of a model "thinking", and giving it one in order to record a setting we have switched off would
+    put a vendor's billing detail into the business model. It exists for one reader, the prompt eval
+    (`infrastructure/llm/evaluation/`, T37), which has to show on real calls that
+    `thinking_budget=0` is honoured — a claim no offline test can make, because the SDK documents the
+    setting as "model dependent". Defaulted, so the adapter tests' stubs, which have no opinion about
+    thinking, are not made to state one.
     """
 
     text: str
     prompt_tokens: int
     completion_tokens: int
+    thoughts_tokens: int | None = None
 
 
 # A prompt string in, raw text plus usage counts out. The narrowest signature that lets the whole of
@@ -236,9 +247,16 @@ def raw_completion_from_response(response: genai_types.GenerateContentResponse) 
     # for — stated here because the two diverge silently and `make eval`'s mean-token figures are
     # read as cost.
     completion_tokens = (usage.candidates_token_count or 0) if usage is not None else 0
+    # Kept as `None` rather than folded to 0 like the two counts above: "the provider reported no
+    # thoughts" and "the provider reported zero thoughts" are both a pass for the eval's thinking
+    # check, but they are different observations, and the eval prints which one it saw.
+    thoughts_tokens = usage.thoughts_token_count if usage is not None else None
 
     return RawCompletion(
-        text=text, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens
+        text=text,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        thoughts_tokens=thoughts_tokens,
     )
 
 
@@ -265,6 +283,19 @@ class GeminiLlm:
         # Built on first use, not here. With an empty key in dev the client is never constructed at
         # all, so nothing has to have an opinion about what `genai.Client(api_key="")` does.
         self._client: genai.Client | None = None
+
+    @property
+    def generate(self) -> GenerateFn:
+        """The generate function `tailor()` calls: the real SDK path unless one was injected.
+
+        Read-only, and public for one caller: the prompt eval wraps the REAL path in a recorder and
+        injects the recorder into a second adapter, so it can read each attempt's usage — thoughts
+        included — while every step of `tailor()` still runs. The alternative was reaching into
+        `_generate` from another module, which is how a private attribute becomes an undocumented
+        API. It grants nothing new: anyone holding the adapter could already call `tailor()`, which
+        calls exactly this.
+        """
+        return self._generate
 
     async def tailor(self, cv: ExtractedText, posting: JobPostingText) -> TailoredDraft:
         """One tailoring call: refuse early, assemble, attempt, parse, measure.
