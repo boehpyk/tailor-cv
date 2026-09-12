@@ -378,10 +378,15 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   flag and adds a per-engine `handle_error` listener that withholds the driver's message, keeps
   SQLSTATE and schema identifiers, and cuts the chain — with no setting to turn it off. Found at
   slice 1.3's `/verify`, where the first fix was one flag and a test checking only `str(exc)`
-  certified it; the tests now assert on the rendered chain. **PostgreSQL's server log still holds
-  the failing row** at the default `log_error_verbosity` — that is the database container's config
-  (`terse`), outside the application's reach. Same trap as the bullet above: a setting that sounds
-  like it covers PII, and the layers it does not.
+  certified it; the tests now assert on the rendered chain. **PostgreSQL's server log held the
+  failing row too**, outside the application's reach entirely: at Postgres's own default
+  `log_error_verbosity` (`default`), a CHECK violation on `tailoring_run` printed `DETAIL: Failing
+  row contains (...)` — tailored CV included — straight into the container's stdout. A later infra
+  pass pinned `log_error_verbosity=terse` in `docker-compose.yml`'s `postgres` command, the
+  database's own copy of this same fix; `terse` drops `DETAIL`/`HINT`/`QUERY`/`CONTEXT` and keeps the
+  `STATEMENT:` line, which stays safe because `log_parameter_max_length_on_error=0` is pinned there
+  too. Same trap as the bullet above: a setting that sounds like it covers PII, and the layer it does
+  not, until someone measures the running instance instead of assuming the default is safe.
 - **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
   `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
   `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`

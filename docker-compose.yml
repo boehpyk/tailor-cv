@@ -81,6 +81,15 @@ services:
     # Add `-Q` only to give one workload its own worker, and then check `create_celery()` first.
     command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "worker",
               "--loglevel=info", "--concurrency=2", "--max-tasks-per-child=50"]
+    # Docker's SIGKILL default is 10s. A tailoring call can run up to `llm_total_deadline_seconds`
+    # (25s, api/src/tailorcraft/infrastructure/settings.py) plus two database writes either side of
+    # it, so 10s SIGKILLs the worker mid-call on every `docker compose stop`/recreate — including a
+    # deploy. Celery's warm shutdown on SIGTERM waits for the in-flight task to finish; this is what
+    # gives it room to. A run killed instead of finished is stranded `running` with the money already
+    # spent — the stale-run sweep this slice adds can recover it, but a deploy manufacturing that case
+    # is the thing to avoid, not the thing to rely on the sweep for. 60s = 25s deadline + margin for
+    # the writes and Celery's own shutdown bookkeeping.
+    stop_grace_period: 60s
     volumes:
       - uploads:/var/lib/tailorcraft/uploads
     depends_on:
@@ -91,9 +100,12 @@ services:
     restart: unless-stopped
 
   beat:
-    # The scheduler. Today it runs exactly one job: the 24-hour guest purge (FR-6, ADR-0006).
-    # Deliberately a container and not host cron — host cron lives outside the deploy, so it runs
-    # whatever code was on the box last, and it is invisible to every check this stack has.
+    # The scheduler. No scheduled job yet as of this slice: `beat_schedule={}` in
+    # `infrastructure/tasks/app.py`, and `purge-guests`'s CLI entry point is a stub. The first job is
+    # the tailoring stale-run sweep landing in this slice (docs/specs/tailoring-generate-documents);
+    # the 24-hour guest purge (FR-6, ADR-0006) follows in slice 1.6. Deliberately a container and not
+    # host cron — host cron lives outside the deploy, so it runs whatever code was on the box last,
+    # and it is invisible to every check this stack has.
     image: ${TAILORCRAFT_API_IMAGE:-tailorcraft-api:local}
     build:
       context: .
@@ -107,6 +119,8 @@ services:
     # a volume rather than in the container: lose it on restart and a schedule can double-fire.
     command: ["celery", "-A", "tailorcraft.infrastructure.tasks.app", "beat", "--loglevel=info",
               "--schedule=/var/lib/tailorcraft/state/celerybeat-schedule"]
+    # No `stop_grace_period`, deliberately — unlike `worker`, beat holds no in-flight work to finish.
+    # It only decides when to enqueue; the task itself runs on `worker`, which is what needs the room.
     volumes:
       - beat_state:/var/lib/tailorcraft/state
     depends_on:
@@ -116,6 +130,15 @@ services:
 
   postgres:
     image: postgres:16-alpine
+    # The database's own copy of the leak `ee6638c`'s `handle_error` sanitizer closed on the
+    # application side. A constraint violation on `tailoring_run` fails with the tailored CV and
+    # cover letter still in the row, and Postgres's default server-log verbosity prints that row
+    # back in a `DETAIL:` line — confirmed against a real violation while wiring this. `terse` drops
+    # DETAIL/HINT/QUERY/CONTEXT from the log entirely; the `STATEMENT:` line survives with `$n`
+    # placeholders, never values, because `log_parameter_max_length_on_error=0` (already Postgres's
+    # default) is pinned here explicitly rather than left to whichever default the next major version
+    # ships.
+    command: ["postgres", "-c", "log_error_verbosity=terse", "-c", "log_parameter_max_length_on_error=0"]
     environment:
       POSTGRES_DB: ${DB_DATABASE}
       POSTGRES_USER: ${DB_USERNAME}
