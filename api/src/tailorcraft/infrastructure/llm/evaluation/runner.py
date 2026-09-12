@@ -24,6 +24,7 @@ from tailorcraft.infrastructure.llm.evaluation.checks import (
     experience_section,
     foreign_organisations,
     mentions,
+    missing_entries,
     unfamiliar_phrases,
 )
 from tailorcraft.infrastructure.llm.evaluation.corpus import (
@@ -67,6 +68,7 @@ _LENGTH_PROBLEMS: Final = frozenset({PROBLEM_DOCUMENT_TOO_SHORT, PROBLEM_DOCUMEN
 _CHECK_DOCUMENTS = "both documents present"
 _CHECK_LENGTHS = "lengths within the value objects' bounds"
 _CHECK_CV_EMPLOYERS = "tailored CV names no employer outside the base CV"
+_CHECK_CV_ENTRIES = "tailored CV keeps every employer and education entry"
 _CHECK_LETTER_EMPLOYERS = "cover letter names no other candidate's employer"
 _CHECK_CV_NAME = "tailored CV names the candidate as the base CV does"
 _CHECK_LETTER_NAME = "cover letter names the candidate as the base CV does"
@@ -157,6 +159,7 @@ async def evaluate_pair(
         _documents_present(draft, outcome, problem),
         _lengths_in_bounds(draft, problem),
         _cv_names_no_foreign_employer(pair, draft, corpus_organisations),
+        _cv_keeps_every_entry(pair, draft),
         _letter_names_no_other_candidates_employer(pair, draft, corpus_organisations),
         _cv_names_candidate(pair, draft),
         _letter_names_candidate(pair, draft),
@@ -322,6 +325,25 @@ def _cv_names_no_foreign_employer(
         else ""
     )
     return CheckResult(_CHECK_CV_EMPLOYERS, CheckStatus.PASS, f"none in the {where}{note}")
+
+
+def _cv_keeps_every_entry(pair: CorpusPair, draft: TailoredDraft | None) -> CheckResult:
+    """No employer or education entry deleted. Limits on `checks.missing_entries`: presence, not
+    placement, and nothing about titles or dates."""
+    if draft is None:
+        return CheckResult(_CHECK_CV_ENTRIES, CheckStatus.SKIP, "no documents")
+    missing = missing_entries(draft.documents.cv.value, pair.cv.must_keep)
+    if missing:
+        return CheckResult(
+            _CHECK_CV_ENTRIES,
+            CheckStatus.FAIL,
+            f"no accepted form of {', '.join(missing)} appears (whole phrase, any case) -- "
+            "deleted rather than cut to one line, or renamed; read the experience and education",
+        )
+    kept = ", ".join(forms[0] for forms in pair.cv.must_keep)
+    return CheckResult(
+        _CHECK_CV_ENTRIES, CheckStatus.PASS, f"all {len(pair.cv.must_keep)} named: {kept}"
+    )
 
 
 def _letter_names_no_other_candidates_employer(

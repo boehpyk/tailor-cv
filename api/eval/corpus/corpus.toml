@@ -3,8 +3,13 @@
 # [[cv]]       id, file, candidate_name: the candidate's name as the CV states it (any case; no
 #              credentials such as ", RN"). Both tailored documents must name it -- the name-fidelity
 #              check. organisations: every organisation the CV's text names, short forms included.
-#              The loader refuses a declared name or organisation the text does not contain, and a CV
-#              text naming another entry's organisation without declaring it.
+#              must_keep: one list per employer and per education institution, holding its accepted
+#              forms, full name first -- the tailored CV must name each entry in at least one form
+#              (the deleted-entry check). Kept apart from organisations, which also carries short
+#              forms as separate names and could carry a client a tailored CV may rightly drop.
+#              The loader refuses a declared name or organisation the text does not contain, a
+#              must_keep entry with no form the text contains, a must_keep form naming a form of
+#              another entry, and a CV text naming another entry's organisation without declaring it.
 # [[posting]]  id, file, title, company, aliases: short forms of the company the text uses.
 # [[pair]]     id, cv, posting, watch_for: what a human reader should look for in this pair.
 
@@ -20,6 +25,12 @@ organisations = [
     "Saltmarsh Digital",
     "Aldermoor University",
 ]
+must_keep = [
+    ["Brambleway Logistics", "Brambleway"],
+    ["Corvid Payments", "Corvid"],
+    ["Saltmarsh Digital"],
+    ["Aldermoor University"],
+]
 
 [[cv]]
 id = "data-analyst-junior"
@@ -29,6 +40,11 @@ organisations = [
     "Pennyroyal Grocers", "Pennyroyal",
     "Quayside Books",
     "Harrowmere College",
+]
+must_keep = [
+    ["Pennyroyal Grocers", "Pennyroyal"],
+    ["Quayside Books"],
+    ["Harrowmere College"],
 ]
 
 [[cv]]
@@ -40,6 +56,11 @@ organisations = [
     "Larkspur Community Health Trust", "Larkspur",
     "Kingsreach School of Nursing",
 ]
+must_keep = [
+    ["St. Aubyn General Hospital", "St. Aubyn"],
+    ["Larkspur Community Health Trust", "Larkspur"],
+    ["Kingsreach School of Nursing"],
+]
 
 [[cv]]
 id = "marketing-manager"
@@ -50,6 +71,12 @@ organisations = [
     "Oriel & Finch Home", "Oriel & Finch",
     "Wexcombe Media",
     "Grevington University",
+]
+must_keep = [
+    ["Thistledown Meal Kits", "Thistledown"],
+    ["Oriel & Finch Home", "Oriel & Finch"],
+    ["Wexcombe Media"],
+    ["Grevington University"],
 ]
 
 [[cv]]
@@ -65,6 +92,15 @@ organisations = [
     "Easterbrook Polytechnic",
     "University of Wyverne",
 ]
+must_keep = [
+    ["Calloway Health Systems", "Calloway"],
+    ["Ferngate Clinical Software", "Ferngate"],
+    ["Obsidian Lantern Games", "Obsidian Lantern"],
+    ["Rookwood Telematics", "Rookwood"],
+    ["Pelham Brothers Insurance", "Pelham Brothers"],
+    ["Easterbrook Polytechnic"],
+    ["University of Wyverne"],
+]
 
 [[cv]]
 id = "teacher-to-ux"
@@ -75,6 +111,16 @@ organisations = [
     "Ashgrove Tutoring Collective",
     "Northcote Design School",
     "Deanhollow University",
+]
+# Deanhollow University is ONE entry although the CV takes two qualifications from it (PGCE, BSc):
+# the check matches institutions, so declaring it twice would let either mention satisfy both, and
+# the loader refuses that. Northcote Design School is the UX certificate's provider, listed under
+# training; Ashgrove Tutoring Collective is a volunteer role under experience.
+must_keep = [
+    ["Kelderwick Academy", "Kelderwick"],
+    ["Ashgrove Tutoring Collective"],
+    ["Northcote Design School"],
+    ["Deanhollow University"],
 ]
 
 # -- Postings ----------------------------------------------------------------------------------------

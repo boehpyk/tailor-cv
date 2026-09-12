@@ -40,7 +40,11 @@ postings/*.md     synthetic job postings, as a company would publish them
 without credentials such as ", RN") and **every organisation its text names** (employers, schools,
 short forms such as "Brambleway" for "Brambleway Logistics"). The name is declared rather than read
 off the CV's first line because that line carries credentials and varies in shape from CV to CV.
-For each posting it declares the
+It also declares **the entries a tailored CV must keep** (`must_keep`): one list per employer and per
+education institution, holding its accepted forms with the full name first, such as
+`["Calloway Health Systems", "Calloway"]`. That is kept apart from `organisations` on purpose, because
+that list carries short forms as separate names and may carry a client named in a bullet, which a
+tailored CV is free to drop. For each posting it declares the
 company and any short forms. Each `[[pair]]` joins one CV to one posting and says what a reader
 should `watch_for`, which is usually the gap between what the posting asks for and what the CV
 contains. A CV may appear in several pairs.
@@ -60,6 +64,9 @@ It checks that:
 - every declared name actually appears in its own text. A typo would otherwise switch the employer
   check off without a sound, or turn the name check upside down (every correct document failing, a
   document repeating the typo passing);
+- every `must_keep` entry has at least one form its CV's text names (so a typo cannot make a faithful
+  tailored CV fail), and no form names a form of another entry (so a deleted entry cannot pass on its
+  neighbour's mention);
 - no CV names another entry's organisation without declaring it, and no declared name contains
   another entry's name. Either would make a faithful tailored CV look like a fabrication;
 - every email address and web address uses a reserved example domain.
@@ -101,6 +108,26 @@ phrase, any case, tolerant of line breaks and repeated spaces. "Tomasz Reyes" an
   right for this corpus. A candidate whose own CV uses initials would need the rule changed, not the
   declaration bent to fit.
 - A name split by Markdown markup ("**Tomasz** Reyes") is missed, as for employers.
+
+## The deleted-entry check, and what it cannot see
+
+The third paid eval (prompt v3) returned pair 09's tailored CV naming only Calloway Health Systems
+and Ferngate Clinical Software. Obsidian Lantern Games, Rookwood Telematics, Pelham Brothers Insurance
+and both universities were simply gone, at 486 words against an 800-word cap and a prompt rule saying
+older roles shrink to one line. An ad-hoc comparison found it, because no check looked. Now one does:
+**every `must_keep` entry must be named in the tailored CV in at least one of its accepted forms.**
+Matching is the other checks': whole phrase, any case, tolerant of line breaks. A FAIL lists every
+missing entry by its first form and counts toward the exit code. With no documents it is skipped.
+
+- **It proves each entry is present, not where.** It does not check that the entry sits in the
+  experience or education section. A mention inside another bullet satisfies it, so a role deleted
+  from the history but named in a career highlight still passes. Read the history.
+- **It says nothing about the entry's title, qualification or dates.** The right employer on a line
+  with the wrong year passes.
+- **It matches institutions, not qualifications.** Two degrees from one university are one entry
+  (Deanhollow University in `teacher-to-ux`), so dropping one of the two passes.
+- A form that is misspelled, shortened beyond its declared forms, or split by Markdown markup counts
+  as missing. That FAIL is worth reading, but it is not always a deletion.
 
 ## The pairs
 

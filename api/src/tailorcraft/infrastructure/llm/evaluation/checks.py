@@ -28,6 +28,11 @@ whole CV when no experience heading can be found).
 **The name-fidelity check** (`runner._names_candidate`) uses the same `mentions` against each CV's
 declared `candidate_name`, in both documents. Its limits — presence anywhere rather than in the header,
 blind to a nickname alongside the name, no rule for initials — are stated on that function.
+
+**The deleted-entry check** (`missing_entries`) is the employer check turned round: not "no name the
+base CV lacks" but "every employer and education entry the base CV declares (`must_keep`) is still
+named". Same `mentions`, any accepted form. Its limits — presence rather than placement, and nothing
+about the entry's title or dates — are stated on that function.
 """
 
 from __future__ import annotations
@@ -123,6 +128,35 @@ def foreign_organisations(
         name for name in candidates if name.casefold() not in permitted and mentions(document, name)
     }
     return tuple(sorted(found, key=str.casefold))
+
+
+def missing_entries(document: str, entries: Iterable[Sequence[str]]) -> tuple[str, ...]:
+    """The entries `document` never names, each reported by its first form, in declaration order.
+
+    An entry is a tuple of accepted forms (`CorpusCv.must_keep`); it counts as named when **any** form
+    appears, matched with `mentions`: whole phrase, any case, whitespace-tolerant. So "Calloway" alone
+    keeps "Calloway Health Systems", and a client named only in a bullet is never an entry and may be
+    dropped freely.
+
+    Found in the third paid eval by an ad-hoc comparison, not by a check: pair 09's tailored CV named
+    two of its five employers and neither education institution, at 486 words, against a prompt rule
+    saying older roles shrink to one line rather than vanish.
+
+    **What it cannot see, stated plainly:**
+
+    - It proves each entry is **named somewhere** in the document, not that it sits in the experience
+      or education section. A deleted role whose employer survives in a summary bullet ("shipped four
+      titles at Obsidian Lantern Games") passes.
+    - It says nothing about the entry's **job title, qualification or dates**. A one-line entry with the
+      right employer and a wrong year passes.
+    - It matches **institutions, not qualifications**: two degrees from one university are one entry,
+      so dropping one of them passes (the loader refuses declaring the same form twice).
+    - A form misspelled, abbreviated beyond its declared forms, or split by Markdown markup inside it
+      ("**Calloway** Health Systems") counts as missing — a FAIL to read, not always a deletion.
+    """
+    return tuple(
+        forms[0] for forms in entries if not any(mentions(document, form) for form in forms)
+    )
 
 
 def unfamiliar_phrases(document: str, base_text: str, *, limit: int = 20) -> tuple[str, ...]:

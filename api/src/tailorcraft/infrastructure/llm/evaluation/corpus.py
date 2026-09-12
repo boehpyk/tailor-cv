@@ -12,6 +12,10 @@ offline is checked here, and `eval-prompts --validate-only` runs exactly this an
 - **every CV's declared `candidate_name` actually appears in its own text** — the same guard for the
   name-fidelity check, where a typo is worse than blinding: a manifest saying "Tomaz" would make every
   correctly spelled document FAIL and a document repeating the typo PASS;
+- **every CV's `must_keep` entry has at least one accepted form its own text names, and no form names
+  a form of another entry** — the deleted-entry check's two ways to lie: a typo makes a faithful
+  tailored CV FAIL, and an overlap ("Calloway" declared beside "Calloway Health Systems") lets a
+  deleted entry PASS on its neighbour's mention;
 - **no CV's text names another entry's organisation or company without declaring it**, and no
   declared name contains another entry's name — either would make a faithful tailored CV look like a
   fabrication;
@@ -29,6 +33,7 @@ import re
 import tomllib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import permutations, product
 from pathlib import Path
 from typing import Final
 
@@ -74,6 +79,10 @@ class CorpusCv:
     # carries credentials (", RN") and its shape varies from CV to CV.
     candidate_name: str
     organisations: tuple[str, ...]
+    # One tuple of accepted forms per employer and per education institution, full name first (the
+    # form a FAIL line reports). Not derived from `organisations`: that list carries short forms as
+    # separate names, and may carry a client named in a bullet that a tailored CV may rightly drop.
+    must_keep: tuple[tuple[str, ...], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,6 +182,7 @@ def _load_cv(root: Path, table: dict[str, object], max_cv_characters: int) -> Co
         text=text,
         candidate_name=candidate_name,
         organisations=organisations,
+        must_keep=_must_keep(table, raw, where),
     )
 
 
@@ -300,6 +310,42 @@ def _require_named_in_text(names: tuple[str, ...], text: str, where: str, *, che
                 f"{where}: declares `{name}` but its text never names it — a typo here "
                 f"corrupts {check}"
             )
+
+
+def _must_keep(table: dict[str, object], raw: str, where: str) -> tuple[tuple[str, ...], ...]:
+    """`must_keep`: a non-empty list of entries, each a non-empty list of accepted forms.
+
+    At least one form of each entry must appear in the CV's own text, matched with `mentions`, so a
+    typo fails here rather than making a faithful tailored CV FAIL. Only one: a form the base CV never
+    uses may still be worth accepting. And no form may name a form of another entry, or a mention of
+    that other entry would satisfy this one and its deletion would PASS.
+    """
+    value = table.get("must_keep")
+    if not isinstance(value, list) or not value:
+        raise CorpusError(
+            f"{where}: `must_keep` must be a non-empty list of lists of accepted forms"
+        )
+    entries: list[tuple[str, ...]] = []
+    for position, item in enumerate(value, start=1):
+        if not isinstance(item, list) or not item:
+            raise CorpusError(f"{where}: `must_keep` entry {position} must be a non-empty list")
+        if not all(isinstance(form, str) and form.strip() for form in item):
+            raise CorpusError(f"{where}: `must_keep` entry {position} must hold non-empty strings")
+        forms = tuple(" ".join(form.split()) for form in item)
+        if not any(mentions(raw, form) for form in forms):
+            raise CorpusError(
+                f"{where}: `must_keep` entry {position} ({', '.join(forms)}) has no form its text "
+                "names — a typo here corrupts the deleted-entry check"
+            )
+        entries.append(forms)
+    for forms, other_forms in permutations(entries, 2):
+        for form, other in product(forms, other_forms):
+            if mentions(other, form):
+                raise CorpusError(
+                    f"{where}: `must_keep` form `{form}` is named by `{other}`, a form of another "
+                    "entry, so a mention of that entry would count as this one"
+                )
+    return tuple(entries)
 
 
 def _require_unique(kind: str, identifiers: list[str]) -> None:
