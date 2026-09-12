@@ -7,7 +7,7 @@ does is split the work honestly:
 
 - **Asserted, because it is cheap and objective** (`checks.py`): both documents present, lengths
   inside the value objects' own bounds, no known employer name in a tailored CV that the base CV does
-  not contain, and thinking actually off.
+  not contain, the candidate's declared name present in both documents, and thinking actually off.
 - **Measured** (`results.py`): `llm_duration_ms`, token counts and outcome per run; p50/p95 and mean
   tokens across runs, for AC-20(b); a loud verdict against Constitution §7's 15-second budget.
 - **Printed for a human** (`report.py`): each tailored document side by side with the text it came

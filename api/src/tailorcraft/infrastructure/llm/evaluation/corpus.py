@@ -9,6 +9,9 @@ offline is checked here, and `eval-prompts --validate-only` runs exactly this an
   before calling measures nothing); every posting passes `JobPostingText`;
 - **every declared organisation actually appears in its own text** — a typo in the manifest would
   otherwise blind the employer check without a sound;
+- **every CV's declared `candidate_name` actually appears in its own text** — the same guard for the
+  name-fidelity check, where a typo is worse than blinding: a manifest saying "Tomaz" would make every
+  correctly spelled document FAIL and a document repeating the typo PASS;
 - **no CV's text names another entry's organisation or company without declaring it**, and no
   declared name contains another entry's name — either would make a faithful tailored CV look like a
   fabrication;
@@ -67,6 +70,9 @@ class CorpusCv:
     raw_text: str
     # As the pipeline sees it: whitespace-collapsed, exactly as extraction from a PDF or DOCX yields.
     text: ExtractedText
+    # The candidate's name as the CV states it, declared rather than read off the first line: that line
+    # carries credentials (", RN") and its shape varies from CV to CV.
+    candidate_name: str
     organisations: tuple[str, ...]
 
 
@@ -157,9 +163,17 @@ def _load_cv(root: Path, table: dict[str, object], max_cv_characters: int) -> Co
             f"({max_cv_characters:,}); the adapter would refuse it before calling, so the pair "
             "would measure nothing"
         )
+    candidate_name = " ".join(_string(table, "candidate_name", where).split())
+    _require_named_in_text((candidate_name,), raw, where, check="the name-fidelity check")
     organisations = _strings(table, "organisations", where)
-    _require_named_in_text(organisations, raw, where)
-    return CorpusCv(id=cv_id, raw_text=raw, text=text, organisations=organisations)
+    _require_named_in_text(organisations, raw, where, check="the employer check")
+    return CorpusCv(
+        id=cv_id,
+        raw_text=raw,
+        text=text,
+        candidate_name=candidate_name,
+        organisations=organisations,
+    )
 
 
 def _load_posting(root: Path, table: dict[str, object]) -> CorpusPosting:
@@ -178,7 +192,7 @@ def _load_posting(root: Path, table: dict[str, object]) -> CorpusPosting:
         company=_string(table, "company", where),
         aliases=_strings(table, "aliases", where, required=False),
     )
-    _require_named_in_text(posting.names, raw, where)
+    _require_named_in_text(posting.names, raw, where, check="the employer check")
     return posting
 
 
@@ -277,12 +291,14 @@ def _require_unambiguous_names(
             )
 
 
-def _require_named_in_text(names: tuple[str, ...], text: str, where: str) -> None:
+def _require_named_in_text(names: tuple[str, ...], text: str, where: str, *, check: str) -> None:
+    """Matched with `mentions`, the same function the checks use, so "appears" means the same here as
+    it does when a tailored document is judged."""
     for name in names:
         if not mentions(text, name):
             raise CorpusError(
-                f"{where}: declares `{name}` but its text never names it — a typo here blinds "
-                "the employer check"
+                f"{where}: declares `{name}` but its text never names it — a typo here "
+                f"corrupts {check}"
             )
 
 

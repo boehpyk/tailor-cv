@@ -1,8 +1,10 @@
 # The prompt eval corpus manifest. EVERYTHING HERE IS SYNTHETIC -- see README.md (AC-26).
 #
-# [[cv]]       id, file, organisations: every organisation the CV's text names, short forms included.
-#              The loader refuses a declared name the text does not contain, and a CV text naming
-#              another entry's organisation without declaring it.
+# [[cv]]       id, file, candidate_name: the candidate's name as the CV states it (any case; no
+#              credentials such as ", RN"). Both tailored documents must name it -- the name-fidelity
+#              check. organisations: every organisation the CV's text names, short forms included.
+#              The loader refuses a declared name or organisation the text does not contain, and a CV
+#              text naming another entry's organisation without declaring it.
 # [[posting]]  id, file, title, company, aliases: short forms of the company the text uses.
 # [[pair]]     id, cv, posting, watch_for: what a human reader should look for in this pair.
 
@@ -11,6 +13,7 @@
 [[cv]]
 id = "backend-senior"
 file = "cvs/backend-senior.md"
+candidate_name = "Idris Achterberg"
 organisations = [
     "Brambleway Logistics", "Brambleway",
     "Corvid Payments", "Corvid",
@@ -21,6 +24,7 @@ organisations = [
 [[cv]]
 id = "data-analyst-junior"
 file = "cvs/data-analyst-junior.md"
+candidate_name = "Maya Oduya"
 organisations = [
     "Pennyroyal Grocers", "Pennyroyal",
     "Quayside Books",
@@ -30,6 +34,7 @@ organisations = [
 [[cv]]
 id = "nurse-midlevel"
 file = "cvs/nurse-midlevel.md"
+candidate_name = "Tomasz Reyes"
 organisations = [
     "St. Aubyn General Hospital", "St. Aubyn",
     "Larkspur Community Health Trust", "Larkspur",
@@ -39,6 +44,7 @@ organisations = [
 [[cv]]
 id = "marketing-manager"
 file = "cvs/marketing-manager.md"
+candidate_name = "Ngozi Castellane"
 organisations = [
     "Thistledown Meal Kits", "Thistledown",
     "Oriel & Finch Home", "Oriel & Finch",
@@ -49,6 +55,7 @@ organisations = [
 [[cv]]
 id = "engineering-director-long"
 file = "cvs/engineering-director-long.md"
+candidate_name = "Helena Marchetti-Vos"
 organisations = [
     "Calloway Health Systems", "Calloway",
     "Ferngate Clinical Software", "Ferngate",
@@ -62,6 +69,7 @@ organisations = [
 [[cv]]
 id = "teacher-to-ux"
 file = "cvs/teacher-to-ux.md"
+candidate_name = "Sam Brookfield"
 organisations = [
     "Kelderwick Academy", "Kelderwick",
     "Ashgrove Tutoring Collective",

@@ -24,6 +24,10 @@ whole CV when no experience heading can be found).
 - The experience section is found by Markdown ATX heading text (`## Experience`, `## Work History`, …).
   A model that marks sections with bold lines instead is searched as a whole CV — stricter, never
   looser.
+
+**The name-fidelity check** (`runner._names_candidate`) uses the same `mentions` against each CV's
+declared `candidate_name`, in both documents. Its limits — presence anywhere rather than in the header,
+blind to a nickname alongside the name, no rule for initials — are stated on that function.
 """
 
 from __future__ import annotations

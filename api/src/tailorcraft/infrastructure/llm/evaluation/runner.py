@@ -23,6 +23,7 @@ from tailorcraft.domain.tailoring.value_objects import TailoredDraft
 from tailorcraft.infrastructure.llm.evaluation.checks import (
     experience_section,
     foreign_organisations,
+    mentions,
     unfamiliar_phrases,
 )
 from tailorcraft.infrastructure.llm.evaluation.corpus import (
@@ -67,6 +68,8 @@ _CHECK_DOCUMENTS = "both documents present"
 _CHECK_LENGTHS = "lengths within the value objects' bounds"
 _CHECK_CV_EMPLOYERS = "tailored CV names no employer outside the base CV"
 _CHECK_LETTER_EMPLOYERS = "cover letter names no other candidate's employer"
+_CHECK_CV_NAME = "tailored CV names the candidate as the base CV does"
+_CHECK_LETTER_NAME = "cover letter names the candidate as the base CV does"
 _CHECK_THINKING = "thinking off (thoughts_token_count zero or absent)"
 
 
@@ -155,6 +158,8 @@ async def evaluate_pair(
         _lengths_in_bounds(draft, problem),
         _cv_names_no_foreign_employer(pair, draft, corpus_organisations),
         _letter_names_no_other_candidates_employer(pair, draft, corpus_organisations),
+        _cv_names_candidate(pair, draft),
+        _letter_names_candidate(pair, draft),
         _thinking_off(calls),
     )
     phrases = (
@@ -333,6 +338,61 @@ def _letter_names_no_other_candidates_employer(
     if found:
         return CheckResult(_CHECK_LETTER_EMPLOYERS, CheckStatus.FAIL, f"names {', '.join(found)}")
     return CheckResult(_CHECK_LETTER_EMPLOYERS, CheckStatus.PASS, "none")
+
+
+def _cv_names_candidate(pair: CorpusPair, draft: TailoredDraft | None) -> CheckResult:
+    if draft is None:
+        return CheckResult(_CHECK_CV_NAME, CheckStatus.SKIP, "no documents")
+    return _names_candidate(
+        _CHECK_CV_NAME, "the tailored CV", draft.documents.cv.value, pair.cv.candidate_name
+    )
+
+
+def _letter_names_candidate(pair: CorpusPair, draft: TailoredDraft | None) -> CheckResult:
+    """A letter signed with a misspelled name is as unsendable as a misspelled CV header."""
+    if draft is None:
+        return CheckResult(_CHECK_LETTER_NAME, CheckStatus.SKIP, "no documents")
+    return _names_candidate(
+        _CHECK_LETTER_NAME,
+        "the cover letter",
+        draft.documents.cover_letter.value,
+        pair.cv.candidate_name,
+    )
+
+
+def _names_candidate(check: str, document_label: str, document: str, name: str) -> CheckResult:
+    """Name fidelity: `document` contains the candidate's declared name (`corpus.toml`).
+
+    Found in pair 05 of the second paid eval, by a person reading: the tailored CV headed the
+    candidate "TOMAZ REYES, RN" where the base CV says "TOMASZ". The prompt already requires the name
+    exactly as the CV states it, so this was a model slip — and no cheap check looked at the name.
+
+    Matched with `mentions`, exactly as the employer check matches: whole phrase, case-insensitive,
+    tolerant of line breaks and repeated whitespace. "Tomasz Reyes" and "TOMASZ REYES" pass; "TOMAZ
+    REYES" fails. One check per document, so a FAIL line says which document lacks the name.
+
+    **What it cannot see, stated plainly:**
+
+    - It proves the name is **present somewhere** in the document, not that the header (or the
+      letter's sign-off) carries it. A misspelled header over a correctly spelled name further down
+      passes.
+    - It does **not** catch an added middle name or a nickname once the declared form appears anywhere
+      in the same document. "Tomasz J. Reyes" as the only form of the name fails (the phrase is
+      broken), but a letter that opens "I am Tomasz Reyes" and is signed "Tom", or a CV headed
+      "TOMASZ J. REYES" that names "Tomasz Reyes" further down, passes.
+    - A person referred to **only by initials** ("T. Reyes") fails here, correctly for this corpus,
+      but a candidate whose own CV uses initials would need a different rule, not a different
+      declaration.
+    - A name split by Markdown markup inside it ("**Tomasz** Reyes") is missed, as for employers.
+    """
+    if mentions(document, name):
+        return CheckResult(check, CheckStatus.PASS, f"names {name}")
+    return CheckResult(
+        check,
+        CheckStatus.FAIL,
+        f"{document_label} never names {name} as a whole phrase (any case) -- misspelled, "
+        "shortened or missing; read its header and sign-off",
+    )
 
 
 def _thinking_off(calls: Sequence[SdkCall]) -> CheckResult:

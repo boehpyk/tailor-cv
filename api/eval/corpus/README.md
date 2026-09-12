@@ -36,8 +36,11 @@ cvs/*.md          synthetic base CVs, as a person would write them
 postings/*.md     synthetic job postings, as a company would publish them
 ```
 
-`corpus.toml` declares, for each CV, **every organisation its text names** (employers, schools,
-short forms such as "Brambleway" for "Brambleway Logistics"). For each posting it declares the
+`corpus.toml` declares, for each CV, **the candidate's name** as the CV states it (`candidate_name`,
+without credentials such as ", RN") and **every organisation its text names** (employers, schools,
+short forms such as "Brambleway" for "Brambleway Logistics"). The name is declared rather than read
+off the CV's first line because that line carries credentials and varies in shape from CV to CV.
+For each posting it declares the
 company and any short forms. Each `[[pair]]` joins one CV to one posting and says what a reader
 should `watch_for`, which is usually the gap between what the posting asks for and what the CV
 contains. A CV may appear in several pairs.
@@ -55,7 +58,8 @@ It checks that:
 - every CV passes `ExtractedText` and fits `llm_max_cv_characters`;
 - every posting passes `JobPostingText`;
 - every declared name actually appears in its own text. A typo would otherwise switch the employer
-  check off without a sound;
+  check off without a sound, or turn the name check upside down (every correct document failing, a
+  document repeating the typo passing);
 - no CV names another entry's organisation without declaring it, and no declared name contains
   another entry's name. Either would make a faithful tailored CV look like a fabrication;
 - every email address and web address uses a reserved example domain.
@@ -77,6 +81,26 @@ company** or to **another corpus CV**, but not to the base CV.
 - **An employer the model invents from nothing is invisible to it.** The report lists capitalised
   phrases the base CV never uses to help you look, but that list is not a check. Reading the
   documents is.
+
+## The name check, and what it cannot see
+
+The second paid eval headed pair 05's tailored CV **"TOMAZ REYES, RN"**. The base CV says "TOMASZ".
+A person found it by reading, because no check looked at the name. Now two do: the declared
+`candidate_name` must appear in the **tailored CV** and in the **cover letter**, each reported as its
+own PASS or FAIL, so a FAIL says which document lacks it. Matching is the employer check's: whole
+phrase, any case, tolerant of line breaks and repeated spaces. "Tomasz Reyes" and "TOMASZ REYES" pass;
+"TOMAZ REYES" fails.
+
+- **It proves the name is present somewhere, not that the header carries it.** A misspelled header
+  above a correctly spelled name further down still passes. Read the header.
+- **It does not catch an added middle name or a nickname once the declared name appears anywhere in
+  the same document.** "Tomasz J. Reyes" as the only form of the name fails, because the phrase is
+  broken. But a letter that opens "I am Tomasz Reyes" and is signed "Tom" passes, and so does a CV
+  headed "TOMASZ J. REYES" that names "Tomasz Reyes" further down.
+- **A person referred to only by initials needs a different rule.** "T. Reyes" fails here, which is
+  right for this corpus. A candidate whose own CV uses initials would need the rule changed, not the
+  declaration bent to fit.
+- A name split by Markdown markup ("**Tomasz** Reyes") is missed, as for employers.
 
 ## The pairs
 
