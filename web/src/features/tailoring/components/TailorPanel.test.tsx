@@ -210,10 +210,21 @@ function stubFetch(stubs: Stubs): ReturnType<typeof vi.fn> {
   return fetchMock;
 }
 
-function countCallsTo(fetchMock: ReturnType<typeof vi.fn>, path: string): number {
-  return fetchMock.mock.calls.filter(([input]) => {
+/**
+ * Count calls to `path` by HTTP method (default `GET`, since that's what every list/detail read in
+ * this suite is). **This must stay method-aware**: `/api/tailoring-runs` is both the list `GET`
+ * (which trap 1 requires this panel to issue on every render) and the create `POST`, so counting the
+ * URL alone cannot tell "no request was issued" apart from "the list was loaded as usual".
+ */
+function countCallsTo(
+  fetchMock: ReturnType<typeof vi.fn>,
+  path: string,
+  method: 'GET' | 'POST' = 'GET',
+): number {
+  return fetchMock.mock.calls.filter(([input, init]) => {
     const url = typeof input === 'string' ? input : String(input);
-    return url === path;
+    const callMethod = (init as RequestInit | undefined)?.method ?? 'GET';
+    return url === path && callMethod === method;
   }).length;
 }
 
@@ -495,7 +506,7 @@ describe('TailorPanel', () => {
 
     await user.click(button);
 
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs')).toBe(0);
+    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
   });
 
   it('error A: no job posting — the control is disabled with a stated reason and no request is issued', async () => {
@@ -515,7 +526,7 @@ describe('TailorPanel', () => {
 
     await user.click(button);
 
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs')).toBe(0);
+    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
   });
 
   it('error A: the newest base CV is not yet extracted — the control is disabled and no request is issued', async () => {
@@ -536,7 +547,7 @@ describe('TailorPanel', () => {
 
     await user.click(button);
 
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs')).toBe(0);
+    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
   });
 
   // ---------------------------------------------------------------------------------------------
@@ -827,8 +838,20 @@ describe('TailorPanel', () => {
     expect(screen.getByText(/Tailoring with Gemini/)).toBeInTheDocument();
     expect(countCallsTo(fetchMock, detailPath)).toBeGreaterThanOrEqual(1);
 
+    // RTL's `findByText` cannot be used here: its `asyncWrapper` only advances fake timers when a
+    // global `jest` exists (`jestFakeTimersAreEnabled` in
+    // `node_modules/@testing-library/react/dist/pure.js`), which Vitest never defines, so it would
+    // wait on a real 5000ms timeout instead of the faked clock. A deterministic advance replaces it:
+    // the first 1000ms tick (`POLL_INTERVAL_MS` in `useTailoringRun.ts`) is what sends the terminal
+    // request, and — observed empirically — the response's `.then` chain (fetch's body read, JSON
+    // parse, the query's state update and React's re-render) does not finish draining inside that
+    // same `act(async () => vi.advanceTimersByTimeAsync(...))` call; it settles during the *next*
+    // tick's microtask flush instead, with no further request issued in between (`callsAtTerminal`
+    // below stays at the count reached after the first tick). So two ticks, not one, is the smallest
+    // reliable advance.
     await advance(1000);
-    expect(await screen.findByText('final cv')).toBeInTheDocument();
+    await advance(1000);
+    expect(screen.getByText('final cv')).toBeInTheDocument();
     const callsAtTerminal = countCallsTo(fetchMock, detailPath);
 
     await advance(10_000);
@@ -870,8 +893,14 @@ describe('TailorPanel', () => {
     expect(screen.getByText(/Tailoring with Gemini/)).toBeInTheDocument();
     expect(countCallsTo(fetchMock, detailPath)).toBeGreaterThanOrEqual(1);
 
+    // See the sibling "…to succeeded" test above for why `getByText` after two deterministic
+    // `advance(1000)` ticks replaces `findByText` here (RTL's fake-timer detection never fires under
+    // Vitest, so `findByText` would wait on a real 5000ms timeout instead of the faked clock; the
+    // first tick sends the terminal request, the second is where its response finishes draining into
+    // the DOM, with no further request issued in between).
     await advance(1000);
-    expect(await screen.findByText(COPY.llmTimedOut)).toBeInTheDocument();
+    await advance(1000);
+    expect(screen.getByText(COPY.llmTimedOut)).toBeInTheDocument();
     const callsAtTerminal = countCallsTo(fetchMock, detailPath);
 
     await advance(10_000);
