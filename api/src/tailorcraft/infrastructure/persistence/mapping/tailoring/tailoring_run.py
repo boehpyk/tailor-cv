@@ -61,6 +61,7 @@ from tailorcraft.infrastructure.persistence.types.tailoring import (
 )
 
 tailoring_run_table = Table(
+    # Not `tailoring_tailoring_run`: AC-27 names this table, and the repeated word adds nothing.
     "tailoring_run",
     metadata,
     # Application-assigned UUIDv7 from `TailoringRunRepository.next_identity()` (ADR-0007): the run
