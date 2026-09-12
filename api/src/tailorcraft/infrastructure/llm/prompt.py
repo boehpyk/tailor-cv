@@ -52,7 +52,13 @@ from tailorcraft.infrastructure.llm.parsing import KEY_COVER_LETTER, KEY_TAILORE
 # is every change except a typo in a comment. Persisted per run and logged per call, so a regression
 # has something to be correlated against. `PromptVersion`'s grammar (`[A-Za-z0-9._-]`, at most 16
 # characters) is what constrains the value a future bump may take.
-PROMPT_VERSION: Final = "1"
+#
+# History — one line per bump, saying what the model was expected to do differently:
+#   "1"  first version (slice 1.3).
+#   "2"  the eval's pair 05 CV header named the target employer and retitled the candidate as the
+#        target role; rule 4 now pins the header to the CV, and rule 3 forbids the retitle. Rule 4
+#        keeps an employer the CV already lists (a returning employee) rather than deleting a real job.
+PROMPT_VERSION: Final = "2"
 
 # The markers. Chosen to be uppercase, bracketed and unlikely to occur in a CV or a job posting, so
 # that the boundary between instruction and data stays legible to the model even when the posting is
@@ -72,6 +78,16 @@ _CV_END: Final = "===== END CANDIDATE CV ====="
 # document to a real company, under their own name, and the failure surfaces in an interview. It is
 # stated three ways on purpose (do not invent, reuse only what is below, omit rather than guess)
 # because a single negative instruction is the kind a model reads past.
+#
+# Rule 4 is the same rule applied to the header, and it is spelled out because rule 1 alone did not
+# hold there (version 2). The body of pair 05's CV was honest, but its header read "Registered Nurse —
+# Critical Care" above the *target* hospital's name, which a hiring manager reads as "already works
+# here". A header looks like formatting rather than a claim, so the model rewrote it freely. The rule
+# is again stated three ways: keep the CV's own title and location, add neither the role nor the
+# employer, and name that employer only in the letter. Rule 3 closes the same gap in the body. The
+# rule forbids *inventing* a link to the employer, not erasing one: an employer the CV already lists
+# stays as written. The eval corpus has no returning-employee pair, so that exception is reasoned
+# rather than measured.
 _ROLE_AND_CONSTRAINTS: Final = """\
 You are an expert CV and cover-letter writer helping one job seeker apply for one specific role.
 
@@ -94,11 +110,17 @@ Rules, all of them binding:
    claim it in the cover letter. Lead with what they do have that is closest, or say nothing about
    it. An omission is recoverable; a fabrication the candidate has to defend in an interview is not.
 3. Use the posting's own vocabulary where the candidate's real experience genuinely matches it —
-   that is the point of tailoring — but never let the vocabulary imply experience that is not in the
-   CV.
-4. Keep the candidate's own voice and their factual details (name, contact details, employment
-   dates) exactly as they appear in the CV. Do not invent contact details and do not invent a
-   recipient's name; address the letter to the hiring team if the posting names nobody.
+   that is the point of tailoring — but describe that experience in the candidate's own terms, drawn
+   from the CV: never let the vocabulary imply experience that is not there, and never retitle the
+   candidate to match the posting.
+4. NEVER PRESENT THE CANDIDATE AS ALREADY HOLDING THIS ROLE OR WORKING FOR THIS EMPLOYER. The CV's
+   header keeps the candidate's name, their own current job title(s), their own location and their
+   contact details exactly as the CV states them, and never swaps in or adds the posting's job title
+   or the posting's employer. Name the posting's employer in the cover letter only, never in the CV
+   — unless the CV already lists it, in which case keep that entry exactly as the CV states it (same
+   role, same dates, same wording) and add no other mention of it anywhere. Keep the candidate's own
+   voice and their employment dates as the CV states them. Do not invent contact details and do not
+   invent a recipient's name; address the letter to the hiring team if the posting names nobody.
 5. Write both documents in the language of the job posting.
 6. Write in Markdown. Use headings, bullet lists and emphasis as a human would in a CV; the cover
    letter is prose in paragraphs, not bullets, and no longer than one page.
