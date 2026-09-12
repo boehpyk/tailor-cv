@@ -58,7 +58,11 @@ from tailorcraft.infrastructure.llm.parsing import KEY_COVER_LETTER, KEY_TAILORE
 #   "2"  the eval's pair 05 CV header named the target employer and retitled the candidate as the
 #        target role; rule 4 now pins the header to the CV, and rule 3 forbids the retitle. Rule 4
 #        keeps an employer the CV already lists (a returning employee) rather than deleting a real job.
-PROMPT_VERSION: Final = "2"
+#   "3"  v2 made long CVs near-verbatim copies: pair 09 returned 14,648 of the base's 14,709
+#        characters, 3,595 completion tokens against v1's 1,430, and 14.5 s against 7.4 s (past the
+#        12 s attempt timeout). Rule 5 makes the CV a selection capped at 800 words and confines
+#        "exactly as the CV states" to identity facts, so bullets are condensed rather than copied.
+PROMPT_VERSION: Final = "3"
 
 # The markers. Chosen to be uppercase, bracketed and unlikely to occur in a CV or a job posting, so
 # that the boundary between instruction and data stays legible to the model even when the posting is
@@ -86,8 +90,27 @@ _CV_END: Final = "===== END CANDIDATE CV ====="
 # is again stated three ways: keep the CV's own title and location, add neither the role nor the
 # employer, and name that employer only in the letter. Rule 3 closes the same gap in the body. The
 # rule forbids *inventing* a link to the employer, not erasing one: an employer the CV already lists
-# stays as written. The eval corpus has no returning-employee pair, so that exception is reasoned
-# rather than measured.
+# keeps its employer name, title and dates. The eval corpus has no returning-employee pair, so that
+# exception is reasoned rather than measured.
+#
+# Rule 5 exists because rule 4 over-held (version 3). Version 2 said "exactly as the CV states" four
+# times, and the model applied it to every bullet rather than to the facts in the header: pair 09's
+# 14,709-character CV came back at 14,648. That is a product defect (a copy is not a tailored CV) with
+# a latency symptom, since output length is duration here (about 250 tokens/s). So "exactly" now
+# governs the identity facts only (name, job titles, employer names, dates, location, contact
+# details), and bullet wording is free to be condensed and rephrased. Rule 1 still binds that freedom:
+# condensing may drop a claim, never add or upgrade one, and rule 5 repeats it for that reason.
+# Older roles shrink to one line rather than vanish, because to a recruiter a gap in the dates reads
+# worse than a short line. It suggests something hidden, and the line costs about fifteen words.
+#
+# The number, 800 words, is a ceiling, not a target. Two dense CV pages run 700 to 900 words, and "two
+# pages" is not something a model can measure. At the corpus's ~6.8 characters per word it is about
+# 5,500 characters: under a third of `TailoredCv`'s 20,000 ceiling and far above its 400
+# non-whitespace floor. At pair 09's ~4.8 characters per completion token (an estimate, since that
+# count includes the letter), it is roughly 1,150 tokens. A one-page letter brings the total to about
+# 1,700, near v1's 1,430 for the same pair, well under the 4,096 output cap, and about 7 s at the
+# measured rate. Every other corpus CV is 289 to 539 words, so the cap does not touch them, and
+# "never padded" stops it from reading as a quota. Padding a thin CV is where invention starts.
 _ROLE_AND_CONSTRAINTS: Final = """\
 You are an expert CV and cover-letter writer helping one job seeker apply for one specific role.
 
@@ -117,14 +140,21 @@ Rules, all of them binding:
    header keeps the candidate's name, their own current job title(s), their own location and their
    contact details exactly as the CV states them, and never swaps in or adds the posting's job title
    or the posting's employer. Name the posting's employer in the cover letter only, never in the CV
-   — unless the CV already lists it, in which case keep that entry exactly as the CV states it (same
-   role, same dates, same wording) and add no other mention of it anywhere. Keep the candidate's own
-   voice and their employment dates as the CV states them. Do not invent contact details and do not
-   invent a recipient's name; address the letter to the hiring team if the posting names nobody.
-5. Write both documents in the language of the job posting.
-6. Write in Markdown. Use headings, bullet lists and emphasis as a human would in a CV; the cover
+   — unless the CV already lists it, in which case keep that entry's employer name, job title and
+   dates and add no other mention of it anywhere. Keep the candidate's own voice. Do not invent
+   contact details and do not invent a recipient's name; address the letter to the hiring team if
+   the posting names nobody.
+5. A TAILORED CV IS A SELECTION, NOT A COPY. Keep it to at most 800 words, about two pages; a
+   shorter CV stays short, never padded. Give the detail to the roles most relevant to this posting.
+   Cut older or unrelated roles to one line (employer, job title, dates) rather than deleting them,
+   so the work history has no gap. Only the name, job titles, employer names, dates, location and
+   contact details must stay exactly as the CV states them. Bullets and summaries you may condense,
+   merge, reorder and rephrase in the posting's vocabulary, provided every claim stays true to the
+   CV: condensing is never inventing, and never upgrades a skill or a certification.
+6. Write both documents in the language of the job posting.
+7. Write in Markdown. Use headings, bullet lists and emphasis as a human would in a CV; the cover
    letter is prose in paragraphs, not bullets, and no longer than one page.
-7. Produce a complete CV, not a fragment and not a commentary on what you changed. Do not explain
+8. Produce a finished CV, not a fragment and not a commentary on what you changed. Do not explain
    your choices, do not add notes to the candidate, and do not include placeholders such as
    [Your Name] or [Company Name] — if a detail is not in the CV, write around it."""
 
@@ -138,7 +168,7 @@ Return a single JSON object and nothing else. No prose before it, no prose after
 
 It must have exactly these two keys, both strings:
 
-  "{KEY_TAILORED_CV}"   - the complete rewritten CV, as Markdown.
+  "{KEY_TAILORED_CV}"   - the finished tailored CV, as Markdown.
   "{KEY_COVER_LETTER}" - the complete cover letter, as Markdown.
 
 Both keys are required. A response missing either one is discarded in full, so do not return one
