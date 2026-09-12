@@ -62,7 +62,11 @@ from tailorcraft.infrastructure.llm.parsing import KEY_COVER_LETTER, KEY_TAILORE
 #        characters, 3,595 completion tokens against v1's 1,430, and 14.5 s against 7.4 s (past the
 #        12 s attempt timeout). Rule 5 makes the CV a selection capped at 800 words and confines
 #        "exactly as the CV states" to identity facts, so bullets are condensed rather than copied.
-PROMPT_VERSION: Final = "3"
+#   "4"  v3 deleted entries: pair 09's CV dropped three of five employers and both education entries,
+#        at 486 words, so not forced by the cap. Rule 5 now keeps every employer and education entry
+#        as at least one line. "Tomasz" was re-spelled in two runs ("Tomaz" in run 2, "Tommasz" in
+#        run 3); rule 4 now requires the name letter for letter, in the header and the sign-off.
+PROMPT_VERSION: Final = "4"
 
 # The markers. Chosen to be uppercase, bracketed and unlikely to occur in a CV or a job posting, so
 # that the boundary between instruction and data stays legible to the model even when the posting is
@@ -103,6 +107,16 @@ _CV_END: Final = "===== END CANDIDATE CV ====="
 # Older roles shrink to one line rather than vanish, because to a recruiter a gap in the dates reads
 # worse than a short line. It suggests something hidden, and the line costs about fifteen words.
 #
+# Version 4 hardens two sentences that v3 already stated and the model did not keep. Rule 5's "rather
+# than deleting them" was a trailing clause after an instruction to cut, and pair 09's v3 CV kept two
+# of five employers and neither education institution at 486 words, so the cap did not force it: the
+# model read "a selection" as licence to select entries. The rule now carries it in its headline,
+# names education as well as roles, and says what a missing entry costs. Separately, runs 2 and 3
+# headed the nurse "TOMAZ" and then "TOMMASZ" where the CV says "TOMASZ": "exactly as the CV states"
+# does not stop a model correcting a spelling it finds unusual, so rule 4 names that failure
+# (correcting, anglicising, re-spelling) and extends it to the letter's sign-off, which the header rule
+# never covered. The eval checks both (`must_keep` and `candidate_name` in `corpus.toml`).
+#
 # The number, 800 words, is a ceiling, not a target. Two dense CV pages run 700 to 900 words, and "two
 # pages" is not something a model can measure. At the corpus's ~6.8 characters per word it is about
 # 5,500 characters: under a third of `TailoredCv`'s 20,000 ceiling and far above its 400
@@ -111,6 +125,8 @@ _CV_END: Final = "===== END CANDIDATE CV ====="
 # 1,700, near v1's 1,430 for the same pair, well under the 4,096 output cap, and about 7 s at the
 # measured rate. Every other corpus CV is 289 to 539 words, so the cap does not touch them, and
 # "never padded" stops it from reading as a quota. Padding a thin CV is where invention starts.
+# Rule 5's floor fits well under the cap: pair 09's seven entries (five employers, two institutions)
+# at about fifteen words a line are roughly 105 words, and v3 returned that CV at 486.
 _ROLE_AND_CONSTRAINTS: Final = """\
 You are an expert CV and cover-letter writer helping one job seeker apply for one specific role.
 
@@ -139,15 +155,19 @@ Rules, all of them binding:
 4. NEVER PRESENT THE CANDIDATE AS ALREADY HOLDING THIS ROLE OR WORKING FOR THIS EMPLOYER. The CV's
    header keeps the candidate's name, their own current job title(s), their own location and their
    contact details exactly as the CV states them, and never swaps in or adds the posting's job title
-   or the posting's employer. Name the posting's employer in the cover letter only, never in the CV
-   — unless the CV already lists it, in which case keep that entry's employer name, job title and
+   or the posting's employer. COPY THE CANDIDATE'S NAME LETTER FOR LETTER AS THE CV SPELLS IT, in
+   the CV's header and in the cover letter's sign-off, even when it looks unusual: never correct,
+   anglicise or re-spell a name. Name the posting's employer in the cover letter only, never in the
+   CV — unless the CV already lists it, in which case keep that entry's employer name, job title and
    dates and add no other mention of it anywhere. Keep the candidate's own voice. Do not invent
    contact details and do not invent a recipient's name; address the letter to the hiring team if
    the posting names nobody.
-5. A TAILORED CV IS A SELECTION, NOT A COPY. Keep it to at most 800 words, about two pages; a
-   shorter CV stays short, never padded. Give the detail to the roles most relevant to this posting.
-   Cut older or unrelated roles to one line (employer, job title, dates) rather than deleting them,
-   so the work history has no gap. Only the name, job titles, employer names, dates, location and
+5. A TAILORED CV IS A SELECTION, NOT A COPY, AND NO ENTRY IS EVER DELETED. Keep it to at most 800
+   words, about two pages; a shorter CV stays short, never padded. Give the detail to the roles most
+   relevant to this posting. Every employer and every education entry in the CV stays in the
+   tailored CV, at minimum as one line (employer or institution, job title or qualification, dates):
+   shorten by cutting detail, never by removing an entry, because a missing entry is a gap a
+   recruiter reads as something hidden. Only the name, job titles, employer names, dates, location and
    contact details must stay exactly as the CV states them. Bullets and summaries you may condense,
    merge, reorder and rephrase in the posting's vocabulary, provided every claim stays true to the
    CV: condensing is never inventing, and never upgrades a skill or a certification.
