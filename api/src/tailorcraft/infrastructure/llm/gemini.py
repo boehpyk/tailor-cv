@@ -561,6 +561,46 @@ class GeminiLlm:
         )
         return raw_completion_from_response(response)
 
+    async def aclose(self) -> None:
+        """Release the SDK client's connections, if a client was ever built.
+
+        **Adapter lifecycle, not domain language — which is why this is not on `LlmPort`.** The
+        domain asks for a tailored draft; whether that took a socket, a pool or a subprocess is the
+        adapter's business, and a port that grew `aclose` would make every fake implement a lifecycle
+        the business model has no word for. The composition root that *built* this adapter is the one
+        that closes it (`tasks/container.py::tailoring_use_case`).
+
+        **Why it has to be explicit.** The worker builds one adapter per task inside a loop that
+        `asyncio.run` closes on the way out. `genai.Client` builds its `httpx.AsyncClient` eagerly,
+        and its only fallback is a `__del__` that calls `asyncio.get_running_loop().create_task(
+        self.aclose())` — which, run by the garbage collector after that loop is gone, raises inside a
+        bare `except` and closes nothing. The result was one leaked async client, with its TLS
+        connections to Google, per task.
+
+        Measured against the installed google-genai (2.23.0), not recalled: `client.aio.aclose()`
+        closes only the async httpx client and says so ("it doesn't close the sync client"), and
+        `client.close()` closes only the sync one, so both are called. Both are idempotent (a second
+        call is a no-op) and neither makes a network request.
+
+        Safe on every construction path: with an injected `generate` stub, or with no key, the client
+        is never built and there is nothing to close. The reference is cleared **before** closing, so
+        a second `aclose` — or a `_generate_with_sdk` racing it — never touches a closed client.
+
+        **It never raises.** It runs in a `finally` after the run's outcome is already recorded, and a
+        vendor's close failing there must neither replace the exception in flight nor turn a
+        succeeded task into a failed one. So an `except Exception` floor logs the fully-qualified TYPE
+        (never the message, never `exc_info`) and returns. `Exception`, never `BaseException`: a
+        cancelled task still cancels.
+        """
+        client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            await client.aio.aclose()
+            client.close()
+        except Exception as exc:
+            log.warning("llm.client_close_failed", error_type=_qualified_type(exc))
+
     # -- logging ---------------------------------------------------------------------------------
 
     def _log_failure(

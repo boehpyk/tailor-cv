@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.tailoring.ports import TailoringRunRepository
+from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 from tailorcraft.infrastructure.clock import SystemClock
@@ -155,22 +155,34 @@ async def tailoring_use_case() -> AsyncIterator[tuple[ExecuteTailoringRun, Async
     configure_mappings()
 
     engine = create_engine(settings)
+    # Built here rather than inside `_build_use_case` because this function owns lifecycles and that
+    # one only binds ports: whoever builds a resource with a loop-bound connection closes it.
+    llm = GeminiLlm(settings)
     try:
         factory = create_session_factory(engine)
         async with factory() as session:
             try:
-                yield _build_use_case(settings, session), session
+                yield _build_use_case(settings, session, llm), session
             except Exception:
                 await session.rollback()
                 raise
     finally:
-        # Always, including on the error path: the loop is about to close under this engine, and an
-        # asyncpg pool left holding connections bound to a dead loop is how "got Future attached to
-        # a different loop" arrives one task later, blamed on the wrong code.
-        await engine.dispose()
+        try:
+            # Before the engine, and for the same reason: the SDK's `httpx.AsyncClient` is bound to
+            # this loop too, and its own `__del__` fallback cannot close it once `asyncio.run` has
+            # shut the loop — one leaked client, with its TLS connections, per task.
+            # `GeminiLlm.aclose` never raises, and the nested `finally` does not rely on that.
+            await llm.aclose()
+        finally:
+            # Always, including on the error path: the loop is about to close under this engine, and
+            # an asyncpg pool left holding connections bound to a dead loop is how "got Future
+            # attached to a different loop" arrives one task later, blamed on the wrong code.
+            await engine.dispose()
 
 
-def _build_use_case(settings: Settings, session: AsyncSession) -> ExecuteTailoringRun:
+def _build_use_case(
+    settings: Settings, session: AsyncSession, llm: LlmPort | None = None
+) -> ExecuteTailoringRun:
     """Bind every port `ExecuteTailoringRun` declares — six of them, and no more.
 
     Split out of the context manager so the bindings read as a list rather than as the middle of a
@@ -202,7 +214,9 @@ def _build_use_case(settings: Settings, session: AsyncSession) -> ExecuteTailori
         # strict default; the stub lives only in the adapter's own test module). `deps.get_llm`
         # makes the same binding, but this is the only process that ever *resolves* it: the API
         # never calls the model, which is the entire point of ADR-0014's queue.
-        llm=GeminiLlm(settings),
+        # `tailoring_use_case` passes the instance it will close; a caller that passes none gets a
+        # fresh one and owns its lifecycle.
+        llm=llm if llm is not None else GeminiLlm(settings),
         # `EventPublisherPort` -> `LoggingEventPublisher`, the same binding `deps.py` makes, and the
         # enforcement point for "an event carries no document body" (AC-22).
         events=LoggingEventPublisher(),
