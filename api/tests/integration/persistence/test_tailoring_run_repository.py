@@ -1035,8 +1035,31 @@ def test_migration_3d0b70b7837f_downgrade_removes_the_partial_index(settings: Se
     # The first call is a no-op today (current revision is already 3d0b70b7837f, this migration's own
     # revision) and starts pulling its future purpose the day a newer head exists: strip anything
     # newer than this migration before exercising ITS downgrade() specifically.
-    command.downgrade(config, "3d0b70b7837f")
-    command.downgrade(config, "33d8cf628221")
+    # downgrade() itself can raise (AC-2) rather than merely complete without dropping the index.
+    # A raise partway through a migration script leaves the schema in whatever state PostgreSQL's
+    # DDL transaction rolled back to, not necessarily matching alembic_version, so the same
+    # recovery the completes-but-does-not-drop path below performs (stamp forward if the index
+    # is still physically present, then upgrade to head) is run here too, before the original
+    # exception is re-raised — chained onto a recovery failure exactly as `assertion_error` is
+    # below, so a broken recovery is never mistaken for the regression that triggered it.
+    downgrade_error: Exception | None = None
+    try:
+        command.downgrade(config, "3d0b70b7837f")
+        command.downgrade(config, "33d8cf628221")
+    except Exception as exc:
+        downgrade_error = exc
+
+    if downgrade_error is not None:
+        try:
+            if asyncio.run(_index_exists()):
+                command.stamp(config, "3d0b70b7837f")
+            command.upgrade(config, "head")
+            assert asyncio.run(_index_exists()) is True, (
+                "the schema must be back at head before the next test in the session runs"
+            )
+        except Exception as recovery_exc:
+            raise downgrade_error from recovery_exc
+        raise downgrade_error
 
     # The assertion is captured rather than let propagate immediately, so that a failure recovering
     # the schema below (the `finally` this replaces) can never stand in for it in the report. Suppose

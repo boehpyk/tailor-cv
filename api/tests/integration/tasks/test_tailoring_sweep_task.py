@@ -60,6 +60,7 @@ from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
+    TailoringRunId,
     TailoringRunStatus,
 )
 from tailorcraft.infrastructure.clock import FixedClock
@@ -150,7 +151,7 @@ def _bind_sweep_to_this_sessions_worker(
     monkeypatch.setattr(sweep_task_module, "abandon_stale_runs_use_case", _fake_sweep_use_case)
 
 
-async def _reread(connection: AsyncConnection, run_id: Any) -> TailoringRun:
+async def _reread(connection: AsyncConnection, run_id: TailoringRunId) -> TailoringRun:
     """Read a run back through a *brand-new* `AsyncSession` bound to the same test connection —
     proving the sweep's writes are genuinely durable in this transaction, not merely visible through
     the writer's own identity map. Same `async_sessionmaker` construction as `conftest.py`'s own
@@ -438,7 +439,7 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     """
     monkeypatch.setattr(sweep_container, "get_settings", lambda: settings)
 
-    async def _seed_a_stale_run() -> tuple[GuestSessionId, Any]:
+    async def _seed_a_stale_run() -> tuple[GuestSessionId, TailoringRunId]:
         seeding_engine = create_async_engine(settings.test_database_url, poolclass=None)
         try:
             async with AsyncSession(seeding_engine, expire_on_commit=False) as seeding_session:
@@ -457,7 +458,7 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
         finally:
             await seeding_engine.dispose()
 
-    async def _reread_status(run_id: Any) -> TailoringRun:
+    async def _reread_status(run_id: TailoringRunId) -> TailoringRun:
         verify_engine = create_async_engine(settings.test_database_url, poolclass=None)
         try:
             async with AsyncSession(verify_engine, expire_on_commit=False) as verify_session:
