@@ -16,13 +16,24 @@ Used by:
 - `tests/integration/posting/test_capture_job_posting.py` (T9/T10 — `CaptureJobPosting`)
 - `tests/integration/posting/test_read_job_postings.py` (T12/T13 — `GetJobPostingForSession`,
   `ListJobPostingsForSession`)
+- `tests/integration/tailoring/test_request_tailoring_run.py` (T9/T10 — `RequestTailoringRun`).
+  `FakeLlm` and `FakeTailoringQueue` are added in this same commit even though this file does not
+  yet exercise them — T12 (`ExecuteTailoringRun`) and the T29 API tests need both, and a fake added
+  in the commit that first uses its sibling port is how this file avoids ever growing a second,
+  drifting copy of one.
+- `tests/integration/tailoring/test_execute_tailoring_run.py` (T12 — `ExecuteTailoringRun`).
+  `FakeTailoringRunRepository.save_calls` and `FakeLlm.on_call` are added in this commit: T12 needs
+  to observe the repository's state at the exact moment the LLM is invoked, to prove `running` is
+  saved before the call rather than after (technical-plan.md's "Step 4 — two commits").
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from tailorcraft.domain.identity.errors import GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
@@ -32,10 +43,31 @@ from tailorcraft.domain.intake.errors import BaseCvNotFound, CvExtractionFailed
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
 from tailorcraft.domain.posting.errors import JobPostingFetchFailed, JobPostingNotFound
 from tailorcraft.domain.posting.job_posting import JobPosting
-from tailorcraft.domain.posting.value_objects import FetchedPosting, JobPostingId, SourceUrl
+from tailorcraft.domain.posting.value_objects import (
+    FetchedPosting,
+    JobPostingId,
+    JobPostingText,
+    SourceUrl,
+)
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
+from tailorcraft.domain.tailoring.errors import (
+    TailoringFailed,
+    TailoringNotQueued,
+    TailoringRunNotFound,
+)
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
+from tailorcraft.domain.tailoring.value_objects import (
+    TailoredDraft,
+    TailoringRunId,
+    TailoringRunStatus,
+)
 from tailorcraft.infrastructure.clock import FixedClock
+
+# A `NULL`-`started_at` stand-in for `FakeTailoringRunRepository.list_stale_running`'s sort key:
+# older than any real instant, so a `None` sorts first exactly as `NULLS FIRST` would in SQL.
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
 
 # --- Fakes -------------------------------------------------------------------------------------
 
@@ -195,6 +227,178 @@ class FakeJobPostingFetcher:
         if isinstance(self._outcome, JobPostingFetchFailed):
             raise self._outcome
         return self._outcome
+
+
+class FakeTailoringRunRepository:
+    """In-memory `TailoringRunRepository`.
+
+    Same shape as `FakeBaseCvRepository` and `FakeJobPostingRepository` — `next_identity`, `add`,
+    `get`-raises, `list_for_session`, `count_for_session` — extended with the two methods this port
+    adds because `TailoringRun` is the codebase's first aggregate that is loaded, mutated and
+    persisted by a second process: `save` (an unconditional overwrite here, same as `add`, since an
+    in-memory dict has no concept of "the row already existed") and `find` (the worker's
+    `get`-returns-`None` counterpart, so a fake exercising `ExecuteTailoringRun` can hand back
+    `MISSING` for a purged id without raising).
+
+    `save_calls` records the `status` recorded by every `save()` call, in order — added for T12's
+    "`running` is committed before the LLM is called" test (technical-plan.md's "Step 4 — two
+    commits"). That test needs to observe the repository's state at the exact moment `LlmPort.tailor`
+    is invoked (via `FakeLlm.on_call`, below), and a plain end-state assertion cannot do that: by the
+    time the use case returns, `save` has already been called again with the terminal outcome, so
+    only a call log — not the current row — can prove `running` was saved *before* the model was
+    ever asked. A count alone would not do either, since `1` is consistent with "saved before the
+    call" and "saved after, coincidentally also once"; recording the status distinguishes them.
+
+    `list_stale_running`, added for V5b (the stale-run sweep, G-25'), is now a member of
+    `TailoringRunRepository` (`domain/tailoring/ports.py`, GREEN, V5c) — it landed on the Protocol
+    once every implementer had it, and this class was its first implementation, ahead of the SQL
+    adapter (`infrastructure/persistence/repositories/tailoring/tailoring_run.py`). The contract,
+    matching the SQL adapter's: `RUNNING` rows whose `started_at` is before `started_before`, **or**
+    `started_at is None` — the same fold `TailoringRun.is_stale` makes, expressed as a filter —
+    oldest first with a `NULL` counted as oldest (`NULLS FIRST`), ties on `started_at` broken by id,
+    at most `limit`, no locking.
+    """
+
+    def __init__(self) -> None:
+        self._by_id: dict[TailoringRunId, TailoringRun] = {}
+        self.save_calls: list[TailoringRunStatus] = []
+
+    def next_identity(self) -> TailoringRunId:
+        return TailoringRunId(value=uuid4())
+
+    async def add(self, run: TailoringRun) -> None:
+        self._by_id[run.id] = run
+
+    async def save(self, run: TailoringRun) -> None:
+        self.save_calls.append(run.status)
+        self._by_id[run.id] = run
+
+    async def get(self, run_id: TailoringRunId) -> TailoringRun:
+        try:
+            return self._by_id[run_id]
+        except KeyError:
+            raise TailoringRunNotFound(str(run_id)) from None
+
+    async def find(self, run_id: TailoringRunId) -> TailoringRun | None:
+        return self._by_id.get(run_id)
+
+    async def list_for_session(self, sid: GuestSessionId) -> Sequence[TailoringRun]:
+        runs = [run for run in self._by_id.values() if run.guest_session_id == sid]
+        return sorted(runs, key=lambda run: run.requested_at, reverse=True)
+
+    async def count_for_session(self, sid: GuestSessionId) -> int:
+        return len([run for run in self._by_id.values() if run.guest_session_id == sid])
+
+    async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
+        active_statuses = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
+        for run in self._by_id.values():
+            if run.guest_session_id == sid and run.status in active_statuses:
+                return run
+        return None
+
+    async def list_stale_running(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """`AbandonStaleTailoringRuns`' lookup (V5b, G-25'). See the class docstring for the
+        contract this implements — the same one `TailoringRunRepository.list_stale_running` now
+        states on the Protocol itself."""
+        candidates = [
+            run
+            for run in self._by_id.values()
+            if run.status is TailoringRunStatus.RUNNING
+            and (run.started_at is None or run.started_at < started_before)
+        ]
+
+        def _sort_key(run: TailoringRun) -> tuple[bool, datetime, UUID]:
+            # `started_at is None` sorts first (`False < True`); ties on `started_at` break on id.
+            return (run.started_at is not None, run.started_at or _EPOCH, run.id.value)
+
+        candidates.sort(key=_sort_key)
+        return candidates[:limit]
+
+    def all(self) -> list[TailoringRun]:
+        """Test-only inspection, not part of `TailoringRunRepository`."""
+        return list(self._by_id.values())
+
+
+class FakeLlm:
+    """`LlmPort` that either returns a fixed `TailoredDraft` or raises a fixed `TailoringFailed` —
+    one instance per test, configured with exactly the outcome that test is about. Same constructor
+    shape as `FakeExtractor` and `FakeJobPostingFetcher` on purpose, so all three fakes read alike.
+
+    `calls` records the exact `(cv, posting)` argument pairs `tailor` was invoked with, not merely a
+    count: that is what lets a test count attempts (AC-8/AC-10) and assert the port received the CV
+    text and the posting text **and nothing else** (AC-24) — a count alone could not distinguish
+    "called once with the right text" from "called once with someone else's".
+
+    `delay_seconds` sleeps before producing the configured outcome, on every call. It is not used by
+    `RequestTailoringRun`'s tests (this port is never reached from there) but exists here rather than
+    being bolted on later, so that `ExecuteTailoringRun`'s per-attempt and total-deadline timeout
+    tests can drive this fake past a configured budget without a real network call.
+
+    `on_call`, added for T12's "`running` is committed before the LLM is called" test, is a
+    synchronous hook invoked the instant `tailor()` starts — before the delay, before the outcome is
+    produced or raised. A test wires it to snapshot `FakeTailoringRunRepository.save_calls` at that
+    exact moment, which is what turns "was the run already saved as `running` when the model was
+    asked?" into a plain list-equality assertion rather than a guess based on the end state.
+
+    `aclose` is a recording no-op, added at verify-round-1 (V4): `tasks/container.py::
+    tailoring_use_case` now closes whatever `GeminiLlm(settings)` produced in its own `finally`, and
+    every test that monkeypatches that factory to return a `FakeLlm` runs that same `finally` — so
+    the fake needs the method just to keep those tests from raising `AttributeError`, and recording
+    that it ran is what lets a test assert the container actually closed its adapter rather than
+    merely surviving the call. Not on `LlmPort` itself: adapter lifecycle is not domain language, and
+    a port that grew `aclose` would make every fake implement a lifecycle the business model has no
+    word for (`GeminiLlm.aclose`'s own docstring).
+    """
+
+    def __init__(
+        self,
+        outcome: TailoredDraft | TailoringFailed,
+        *,
+        delay_seconds: float = 0.0,
+        on_call: Callable[[], None] | None = None,
+    ) -> None:
+        self._outcome = outcome
+        self._delay_seconds = delay_seconds
+        self._on_call = on_call
+        self.calls: list[tuple[ExtractedText, JobPostingText]] = []
+        self.closed = False
+
+    async def tailor(self, cv: ExtractedText, posting: JobPostingText) -> TailoredDraft:
+        self.calls.append((cv, posting))
+        if self._on_call is not None:
+            self._on_call()
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        if isinstance(self._outcome, TailoringFailed):
+            raise self._outcome
+        return self._outcome
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class FakeTailoringQueue:
+    """`TailoringQueuePort` that records every id it was asked to enqueue, or raises a fixed
+    `TailoringNotQueued` instead — one instance per test, configured with exactly the outcome that
+    test is about, mirroring `FakeExtractor`'s and `FakeJobPostingFetcher`'s shape. The default
+    (`outcome=None`) is the broker accepting the publish; passing a `TailoringNotQueued` instance is
+    G-14's broker-down variant.
+
+    Not exercised by `RequestTailoringRun`'s tests — that use case never enqueues, per its own
+    docstring — but added in this commit for the same reason `FakeLlm` is: T12 and the T29 API tests
+    need it, and this is where a fake belongs so it never grows a second copy.
+    """
+
+    def __init__(self, outcome: TailoringNotQueued | None = None) -> None:
+        self._outcome = outcome
+        self.enqueued: list[TailoringRunId] = []
+
+    async def enqueue(self, run_id: TailoringRunId) -> None:
+        if self._outcome is not None:
+            raise self._outcome
+        self.enqueued.append(run_id)
 
 
 class _HasAll(Protocol):

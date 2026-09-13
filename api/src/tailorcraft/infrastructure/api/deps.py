@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 
 import redis.asyncio as aioredis
+from celery import Celery
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -30,6 +31,9 @@ from tailorcraft.application.intake.upload_base_cv import UploadBaseCv
 from tailorcraft.application.posting.capture_job_posting import CaptureJobPosting
 from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
+from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
@@ -37,6 +41,11 @@ from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRe
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
+from tailorcraft.domain.tailoring.ports import (
+    LlmPort,
+    TailoringQueuePort,
+    TailoringRunRepository,
+)
 from tailorcraft.infrastructure.api.errors import GUEST_SESSION_EXPIRED_DETAIL
 from tailorcraft.infrastructure.api.guest_session import (
     hash_guest_token,
@@ -48,11 +57,13 @@ from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
+from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import Settings
+from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -75,6 +86,20 @@ def get_app_settings(request: Request) -> Settings:
 def get_engine(request: Request) -> AsyncEngine:
     engine: AsyncEngine = request.app.state.engine
     return engine
+
+
+def get_celery(request: Request) -> Celery:
+    """Off `app.state`, the same way `get_engine` is — deliberately not the module-level
+    `tasks.app.app` singleton this application's lifespan actually stores there.
+
+    A `Celery` object owns a broker connection pool, so it is a long-lived resource and belongs to
+    the *application*, not to a request. Reading it through `app.state` means the app under test and
+    the app in production each publish through the object their own composition wired
+    (`main.py`'s lifespan and `tests/conftest.py`'s `app` fixture both set `app.state.celery`), for
+    the same reason `get_app_settings` refuses the `lru_cache`d `get_settings()`.
+    """
+    celery: Celery = request.app.state.celery
+    return celery
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -103,6 +128,7 @@ SettingsDep = Annotated[Settings, Depends(get_app_settings)]
 EngineDep = Annotated[AsyncEngine, Depends(get_engine)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 ClockDep = Annotated[Clock, Depends(get_clock)]
+CeleryDep = Annotated[Celery, Depends(get_celery)]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -435,3 +461,156 @@ def get_list_job_postings(
 
 
 ListJobPostingsDep = Annotated[ListJobPostingsForSession, Depends(get_list_job_postings)]
+
+
+# ---------------------------------------------------------------------------------------------
+# tailoring — T32. Same rule as the two sections above: a port with no binding is a bug. It is
+# only *harder* to check here, because this slice is the first with a second composition root —
+# `infrastructure/tasks/container.py`, which the worker uses and which binds a deliberately
+# different subset (that module's docstring says which, and why). Neither file is the whole list;
+# technical-plan.md's port list is, and it is checked against both.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_tailoring_run_repository(session: SessionDep) -> TailoringRunRepository:
+    """Binds `TailoringRunRepository` -> `SqlAlchemyTailoringRunRepository` (ADR-0007).
+
+    Deferred import, for the same mapper-configuration reason `get_base_cv_repository` documents:
+    that module reads `TailoringRun._id` as a plain attribute at *import* time to build its
+    `InstrumentedAttribute` casts, and those only exist once `configure_mappings()` has run — which
+    in tests is a session-scoped fixture that runs long after `tests/conftest.py` has imported this
+    module. By request time, when this function is actually called, mappings are always configured.
+
+    The **bare** adapter, note — not `tasks/container.py`'s `CommittingTailoringRunRepository`. The
+    unit of work here is the request (`get_session` commits once, at the end); in the worker it is
+    the individual write, because `ExecuteTailoringRun` must make `running` visible to a polling
+    client before it spends twelve seconds on a model call. Same port, two boundaries, and the
+    difference between the two bindings *is* the boundary.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+        SqlAlchemyTailoringRunRepository,
+    )
+
+    return SqlAlchemyTailoringRunRepository(session)
+
+
+TailoringRunRepositoryDep = Annotated[TailoringRunRepository, Depends(get_tailoring_run_repository)]
+
+
+def get_llm(settings: SettingsDep) -> LlmPort:
+    """Binds `LlmPort` -> `GeminiLlm` (ADR-0004). **The real client is the strict default.**
+
+    `GeminiLlm.__init__` takes an optional `generate` seam whose default is the SDK call, and this
+    provider does not pass it. That is the rule ADR-0004 and `gemini.py`'s own docstring both state:
+    the stub lives in the test that injects it, never behind a setting and never as a fallback in
+    the composition root. A wiring that could quietly degrade to a fake is a wiring where "no test
+    calls the real Gemini API" and "production calls the real Gemini API" are the same line of code
+    disagreeing with itself.
+
+    **No route resolves this today, and that is expected rather than an oversight.** ADR-0014's
+    whole point is that the API never calls the model — it commits a `queued` run and publishes to
+    the queue, and the worker's composition root (`tasks/container.py::_build_use_case`) is where
+    the port is bound for the process that actually calls `tailor`. The binding exists here so that
+    the API's composition root answers "which adapter satisfies `LlmPort`?" without a reader having
+    to know which of the two roots to look in, and so that `app.dependency_overrides[deps.get_llm]`
+    is a key an API test can reach for — a belt-and-braces guarantee that no suite, present or
+    future, can reach Google through this application.
+    """
+    return GeminiLlm(settings)
+
+
+LlmDep = Annotated[LlmPort, Depends(get_llm)]
+
+
+def get_tailoring_queue(celery: CeleryDep, settings: SettingsDep) -> TailoringQueuePort:
+    """Binds `TailoringQueuePort` -> `CeleryTailoringQueue` (ADR-0005, ADR-0014 §5).
+
+    Both arguments are passed explicitly because the adapter's constructor has no defaults, which is
+    itself deliberate: `settings.tailoring_queue_name` is the single place the queue's name is
+    written, and the worker's consumed-queue list (`tasks/app.py`'s `task_queues`) is derived from
+    the same field. A producer publishing to `tailoring` while a worker consumes only `celery` is a
+    run that queues forever behind a green health check — the one failure mode this whole naming
+    arrangement exists to make impossible.
+    """
+    return CeleryTailoringQueue(celery, settings.tailoring_queue_name)
+
+
+TailoringQueueDep = Annotated[TailoringQueuePort, Depends(get_tailoring_queue)]
+
+
+def get_tailoring_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds runs per session and per client IP. **Fails closed** — `fail_open=False`.
+
+    This looks inconsistent beside `get_rate_limiter` and `get_posting_create_rate_limiter`, which
+    both fail open, so here is the reason at the point of the inconsistency. The rule the other
+    three limiters are all instances of: *fail open when the cost is ours and bounded; fail closed
+    when the cost is money or somebody else's infrastructure* (`rate_limit.py::__init__`, recorded
+    as 1.1's OQ-7 and generalized by 1.2's OQ-8). This is that spectrum's far end arriving. An
+    unauthenticated endpoint that spends money on every call, with its only backstop switched off
+    because Redis happens to be down, is a funded denial-of-wallet — and the first evidence of it
+    would be an invoice, which is the worst possible monitoring. Refusing with 503 while Redis is
+    unreachable costs a user a retry; failing open costs an amount nobody has bounded.
+
+    A rate limit bounds how *often* a run is requested, never whether one is: the per-session cap
+    (`max_tailoring_runs_per_session`), the single-active-run rule and the LLM's own total deadline
+    each bound a different quantity, and none of them substitutes for another.
+    """
+    return RedisFixedWindowRateLimiter(redis, namespace="tailoring:create", fail_open=False)
+
+
+TailoringRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_tailoring_rate_limiter)
+]
+
+
+def get_request_tailoring_run(
+    runs: TailoringRunRepositoryDep,
+    get_base_cv: GetBaseCvDep,
+    get_job_posting: GetJobPostingDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RequestTailoringRun:
+    """Note what the second and third arguments are: the two *use cases*, not their repositories.
+
+    `RequestTailoringRun` reads the base CV and the job posting through `GetBaseCvForSession` and
+    `GetJobPostingForSession` so that "what authorizes access is the link to the session" is
+    inherited from the slices that already own that rule, rather than written a third time here
+    (ADR-0008). Rebuilding those two from `BaseCvRepositoryDep`/`JobPostingRepositoryDep` would
+    compile, produce an identical object graph today, and quietly become a second copy of an
+    authorization rule the moment either use case grows a check — so the existing providers are
+    reused instead.
+    """
+    return RequestTailoringRun(
+        runs,
+        get_base_cv,
+        get_job_posting,
+        events,
+        clock,
+        max_per_session=settings.max_tailoring_runs_per_session,
+    )
+
+
+RequestTailoringRunDep = Annotated[RequestTailoringRun, Depends(get_request_tailoring_run)]
+
+
+def get_get_tailoring_run(
+    runs: TailoringRunRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    clock: ClockDep,
+) -> GetTailoringRunForSession:
+    return GetTailoringRunForSession(runs, sessions, clock)
+
+
+GetTailoringRunDep = Annotated[GetTailoringRunForSession, Depends(get_get_tailoring_run)]
+
+
+def get_list_tailoring_runs(
+    runs: TailoringRunRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    clock: ClockDep,
+) -> ListTailoringRunsForSession:
+    return ListTailoringRunsForSession(runs, sessions, clock)
+
+
+ListTailoringRunsDep = Annotated[ListTailoringRunsForSession, Depends(get_list_tailoring_runs)]

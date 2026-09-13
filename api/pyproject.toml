@@ -41,6 +41,21 @@ dependencies = [
     # .github/workflows/ci.yml, in the same commit — the WeasyPrint lesson, where the import
     # succeeds and the first *use* fails, in the container nobody is watching.
     "trafilatura>=2.0",
+    # The Google Gemini SDK — the first (and so far only) adapter behind `LlmPort`, added by the
+    # slice that first asks a model for anything. It is imported in exactly ONE file,
+    # `infrastructure/llm/gemini.py`; ADR-0004's "swapping providers is one adapter and one binding"
+    # is true only while that stays so, which is why `google` is in the forbidden lists of BOTH
+    # import-linter contracts below (see the note there) rather than left to code review.
+    #
+    # Wheels all the way down on cp313 — no apt package, nothing to mirror into
+    # docker/api/Dockerfile or .github/workflows/ci.yml. It does drag in `google-auth` (hence
+    # `cryptography`), `requests`, `tenacity` and `websockets`; none of those are ours to import
+    # either, and `requests` was already on both forbidden lists. Note the resolver DOWNGRADED
+    # `websockets` 17.1 -> 16.1.1 to satisfy `google-genai`'s `websockets<17.0` — it is a transitive
+    # dependency of `uvicorn[standard]`, which accepts the older version, so this is a real
+    # constraint on our web server picked up from an unrelated library. Worth remembering the next
+    # time a `uv lock` moves a package nobody named.
+    "google-genai>=2.23",
 ]
 
 [dependency-groups]
@@ -126,6 +141,13 @@ enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
 module = ["celery.*"]
 ignore_missing_imports = true
 
+# kombu is Celery's messaging layer and ships no py.typed either. One import, in
+# `infrastructure/tasks/app.py`: `Queue`, to declare the named queues the worker
+# consumes. Everything else that touches the broker goes through Celery's own API.
+[[tool.mypy.overrides]]
+module = ["kombu.*"]
+ignore_missing_imports = true
+
 # trafilatura ships no type information (no py.typed, no stubs on typeshed). The import is confined
 # to `infrastructure/posting/fetching.py`, which wraps every call in its own typed helper, so the
 # untyped surface stops at that module rather than spreading through the codebase.
@@ -162,6 +184,24 @@ markers = [
 # walks every import in `domain/` and rejects anything that is not the standard
 # library — that one needs no maintenance and catches a dependency added
 # tomorrow by someone who never read this file.
+#
+# `google` is the Gemini SDK entry, and it is deliberately the bare namespace
+# package rather than `google.genai` (AC-6). The narrower string does not work:
+# with `include_external_packages`, grimp squashes every external package into
+# its top-level module, so import-linter rejects the config outright —
+#
+#     Invalid forbidden module google.genai: subpackages of external packages
+#     are not valid.
+#
+# Verified empirically: with `import google.genai` planted in `domain/` and
+# `from google import genai` planted in `application/`, both contracts report
+# BROKEN with `-> google`, and both go back to KEPT when the imports are
+# removed. Both spellings are caught, which is the point — an SDK import
+# outside `infrastructure/llm/` is now a red gate, not a review note (ADR-0004).
+#
+# The breadth costs nothing here: `google` is a namespace package shared with
+# `google.auth` and `google.oauth2` (pulled in transitively by the SDK), and
+# neither `domain` nor `application` has any business importing those either.
 # ---------------------------------------------------------------------------
 [tool.importlinter]
 root_packages = ["tailorcraft"]
@@ -185,6 +225,7 @@ forbidden_modules = [
     "sqlalchemy", "alembic", "asyncpg",
     "celery", "redis", "kombu",
     "httpx", "requests", "structlog", "sentry_sdk",
+    "google",
 ]
 
 [[tool.importlinter.contracts]]
@@ -196,4 +237,5 @@ forbidden_modules = [
     "sqlalchemy", "alembic", "asyncpg",
     "celery", "redis", "kombu",
     "httpx", "requests", "sentry_sdk",
+    "google",
 ]

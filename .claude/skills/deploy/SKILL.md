@@ -49,7 +49,11 @@ four releases and the only symptom was behaviour not matching the source. Here t
 
 **The worker and beat stop across the migration**, not merely restart after it. They are the processes
 that keep executing application code while the schema changes underneath them. Celery finishes the
-task in flight on SIGTERM; queued tasks wait in Redis.
+task in flight on SIGTERM; queued tasks wait in Redis. `docker compose stop worker beat` above passes
+no `-t`, so it honours `worker`'s `stop_grace_period: 60s` (docker-compose.yml) rather than Docker's
+10s default — comfortably above the 25s LLM deadline plus its writes, so an in-flight tailoring run
+finishes instead of being SIGKILLed. **That also means a run in flight at deploy time can stretch the
+migration window by up to 60s.** `beat` gets no grace period; it holds no in-flight work to finish.
 
 ## Pre-deploy footgun checklist
 

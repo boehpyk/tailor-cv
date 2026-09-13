@@ -85,6 +85,16 @@ class RedisFixedWindowRateLimiter:
         self._namespace = namespace
         self._fail_open = fail_open
 
+    @property
+    def namespace(self) -> str:
+        """The key namespace this limiter counts under (`tailoring:create`, …).
+
+        Read-only and exposed so a router can name it in its own log line (G-11 logs `scope` and
+        `namespace`) without writing the literal a second time — the composition root in `deps.py`
+        stays the one place each namespace string exists.
+        """
+        return self._namespace
+
     async def check(self, scope: RateLimitScope, identifier: str, limit: int) -> RateLimitDecision:
         """Record one hit for `identifier` in the current hour's window and report whether it is
         within `limit`.

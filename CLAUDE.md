@@ -18,23 +18,47 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: two slices shipped (2026-09-10).** Phase 1 is under way and the architecture is
-> carrying weight rather than describing itself.
+> **Status: two slices shipped, and a third verified on its branch (2026-09-13).** Phase 1 is under
+> way. The architecture now carries a paid external call, a worker, and the codebase's first scheduled
+> job.
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
 > - **1.2 `posting-job-description-intake`** (PR #2) — paste a job description or hand over a link,
 >   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
+> - **1.3 `tailoring-generate-documents`** (verified on its branch; not yet pushed, no PR) — one
+>   button returns a tailored CV and a cover letter.
+>   - A run is queued, executed by a Celery worker behind `LlmPort` (Gemini), and polled by the client.
+>   - Every outcome that spent money is a row (ADR-0014, amended 2026-09-13).
+>   - Model output is re-validated on receipt.
+>   - A stale-run sweep on beat recovers runs that a dead worker left `running`.
+>   - Eval run 4: p95 `llm_duration_ms` 6.4 s on typical inputs.
 >
-> **473 backend and 66 frontend tests**, green twice in a row. Every gate verified by running it:
-> Ruff, mypy `--strict` (142 files), import-linter (3 contracts kept), pytest, `tsc --noEmit`,
-> ESLint, Prettier, Vitest, `vite build`, and a production API image that builds, boots as a
-> non-root user, and **runs the extractor inside itself** rather than merely importing it.
+> **817 backend and 151 frontend tests**, green twice in a row. Every gate was verified by running
+> it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, `tsc --noEmit`, ESLint,
+> Prettier, Vitest, `vite build`. The production image builds, runs as non-root, and registers both
+> Celery tasks and both routed queues. `make eval` measures prompt quality and latency against the
+> real API. It is not a test, and it costs money.
 >
-> **CI on GitHub is now verified** — Phase 0 listed it as unproven for want of a remote; `api` and
-> `web` both pass on `main`, which also proves the WeasyPrint system libraries and the
-> `trafilatura`/`lxml` wheels install there and not only in the dev container. The deploy's **build**
-> job passes and pushes images to GHCR.
+> **Carried out of 1.3, each with an owner and a trigger:**
+> - **Concurrent duplicate delivery.** Two in-flight deliveries of one run both read `queued` and both
+>   pay, because ADR-0014 §6's guarantee is sequential only. Close it before 1.4 ships editing, with
+>   optimistic versioning.
+> - **Startup refusals never exit under `uvicorn --workers N`.** The API-key guard and the
+>   stale-window guard both leave the API respawning. Owner: `devops`, before the deploy SSH secrets
+>   are set. Import the composition root once and exit non-zero before `exec uvicorn`.
+> - **Very long CVs** (about 14,000+ characters) can exceed the 12 s per-attempt timeout. They are
+>   recorded `llm_timed_out`, with two calls charged. Accepted; fix in a later slice, measured first.
+> - **Beat is invisible to `/health/ready`**, because `control.ping` reaches workers only. Slice 1.6's
+>   heartbeat covers it.
+> - **Before 1.4's first migration:**
+>   - Alembic autogenerate renders `TypeDecorator` columns as unimportable references; add the
+>     `render_item` hook.
+>   - `qa`: recover a *raising* downgrade in the index-migration test, and type the sweep-task tests'
+>     run ids.
+>
+> **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
+> passes and pushes images to GHCR.
 >
 > **The deploy path is still unproven, and one part of it is worse than unproven.** There is no VDS,
 > so `deploy` fails at the SSH sync — expected. But the `production` environment has **zero
@@ -290,6 +314,22 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   like a healthy system — the API answers, the database answers, and every export queues forever.
   This is a lesson imported from the previous project, where a crash-looping worker sat behind a
   green dashboard for an entire session.
+- **`task_acks_late=True` does not mean "a lost task comes back".** Celery redelivers only when the
+  worker's *main* process dies holding the message, and on Redis only after `visibility_timeout`. A
+  task that raises or hits the hard time limit is acked (`task_acks_on_failure_or_timeout=True`), and
+  so is one whose pool child is OOM-killed. `task_reject_on_worker_lost` is left unset on purpose,
+  because a prompt redelivery would find the run `running` and skip it. Slice 1.3's `/verify` found
+  runs stuck `running` for ever this way. The stale-run sweep on beat recovers them now, and **beat is
+  not a worker**, so `/health/ready` cannot see it stop.
+- **Fixing a Celery queue declaration does not undo the old one.** kombu *adds* a binding each time
+  a queue is declared and never removes one, and Redis keeps them. Slice 1.3 first declared both queues
+  without a routing key, so both bound key `celery`. One publish on that key would have reached both
+  queues: two deliveries of one run, and two paid calls. Correcting the keys and restarting left the
+  stale binding in place until someone ran `SREM _kombu.binding.celery` (the exact member is in
+  `infrastructure/tasks/app.py`'s comment). **A local mutation test of a queue declaration re-poisons
+  the dev broker too**, because `watchmedo` restarts the worker on the edited file. At `/verify` that
+  happened to an agent that already knew about this trap. After any change to `task_queues`, compare
+  `_kombu.binding.*` against the new declarations.
 - **Every container running application code appears in the deploy's `pull` list and in the
   image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
   neither and ran a stale image for four releases; the only symptom was behaviour not matching the
@@ -307,6 +347,30 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   reads it to render. Lose it on either and exports break in a way no health check sees. It is also
   the one assumption that must die first if this ever runs on two boxes — which is why every access
   goes through `FileStorePort`.
+- **`make deps` must sync every container running application code, not just `api`.** `api`,
+  `worker` and `beat` all mount the same source and run the same package, so a sync that reaches
+  only one of them leaves the others on a venv from whenever they were last built — with no error
+  and nothing in a log. Slice 1.3 found `worker` and `beat` still holding a venv from **slice 1.2**;
+  it had gone unnoticed because the only new dependency since then (`trafilatura`) is used by the
+  posting fetch, which runs in the API. The Gemini call does not — it runs in the worker, which is
+  where it would have surfaced as a `ModuleNotFoundError` in a process nobody is watching. This is
+  the image-verification lesson one level down: same failure, a venv instead of an image.
+- **A startup refusal under `uvicorn --workers N` does not exit the container.** The production
+  guard (`MisconfiguredSettings` when `APP_ENV=production` has no `GEMINI_API_KEY`) fires at import in
+  every worker process, and uvicorn's multiprocess supervisor respawns the crashing import forever. The
+  container never becomes ready and never serves a request — **and never exits**, so
+  `restart: unless-stopped` never cycles it and nothing reads as a restart loop. On a real box it
+  presents as one traceback logged endlessly. Measured against the production image in slice 1.3 (T36).
+  When a release's readiness check never goes green, read the logs for a settings refusal before
+  suspecting the network. Slice 1.3's `/verify` added a second refusal that behaves the same way.
+  `create_celery` refuses a `TAILORING_STALE_AFTER_SECONDS` at or below the 180 s hard time limit.
+  `infrastructure/api/main.py` imports the Celery app, so a bad value there also leaves the API
+  respawning for ever, while the worker and beat exit loudly.
+- **A dev box with a real `GEMINI_API_KEY` spends money from the UI.** There is no dev-mode fake: the
+  worker reads the key and makes a paid call for every tailoring run started at localhost. The test
+  suite never reaches it — it replaces the LLM on the worker's own composition-root path and asserts
+  the fake was called, because `dependency_overrides` cannot reach the worker — but a manual click does,
+  and so does `make eval`. Keep the key out of `.env` unless you mean to spend.
 - **`make db.dump` is not a backup of this product.** Restoring rows that point at uploaded files you
   did not restore gives you a broken application with a green restore. Back up the uploads volume
   alongside the database.
@@ -345,6 +409,19 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `include_local_variables=True`, which is a separate setting that neither `send_default_pii` nor
   `max_request_body_size="never"` affects. Any exception escaping a function that holds a CV in a
   local ships that CV to Sentry. Two settings that sound like they cover PII, one that decides it.
+- **A failed database write carries its data out through three layers, and `hide_parameters=True`
+  covers only one.**
+  1. SQLAlchemy's `[parameters: …]` line.
+  2. The driver's own message. asyncpg quotes values, and PostgreSQL's
+     `DETAIL: Failing row contains (…)` is the whole row.
+  3. The `raise … from` chain, which Celery and Sentry render.
+
+  `include_local_variables=False` reaches none of them, and the worker lets a failed save escape on
+  purpose (G-28). `persistence/database.py` keeps the flag and adds a per-engine `handle_error`
+  listener that withholds the driver's message and the bound parameters and cuts the chain. There is no
+  off switch. Postgres's **server log** holds a fourth copy, so `docker-compose.yml` pins
+  `log_error_verbosity=terse` and `log_parameter_max_length_on_error=0`. A test that checks only
+  `str(exc)` will pass a one-flag fix, so assert on `traceback.format_exception(exc)`.
 - **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
   `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
   `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`

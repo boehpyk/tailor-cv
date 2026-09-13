@@ -21,15 +21,40 @@ export class ApiError extends Error {
      * change wording without notice, `code` is the contract (schemas/intake.py's `ErrorDetail`).
      */
     readonly code: string | null,
+    /**
+     * Every key the error envelope carried **besides** `code` and `message` — `{}` when there were
+     * none, or when the body was not the envelope at all.
+     *
+     * Most rejections carry only a reason, but some carry a fact the client is meant to act on: a
+     * 409 `tailoring_already_running` names the run already in flight (`active_tailoring_run_id`,
+     * AC-17) so the UI can attach to it instead of paying for a second one. Keeping only `code` and
+     * `message` made that fact unreachable, and a spec that put the id in the body *so the client
+     * could use it* was quietly defeated one layer down.
+     *
+     * The values are `unknown`, not a typed shape, on purpose. The client does not know every
+     * code's extra keys, so the reader that knows what a key means narrows it at the point of use
+     * (`typeof id === 'string'`) rather than this class asserting a shape the server never promised.
+     *
+     * Defaulted, so every existing `new ApiError(status, message, code)` is unchanged.
+     */
+    readonly details: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
     this.name = 'ApiError';
   }
 }
 
-/** The `{"error": {"code": "...", "message": "..."}}` shape every TailorCraft error response uses. */
+/**
+ * The `{"error": {"code": "...", "message": "...", ...}}` shape every TailorCraft error response
+ * uses. `code` and `message` are always there; the index signature is the room for the extra keys a
+ * particular code adds (see `ApiError.details`).
+ */
 interface ErrorEnvelope {
-  readonly error: { readonly code: string; readonly message: string };
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly [key: string]: unknown;
+  };
 }
 
 function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
@@ -103,7 +128,10 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     // that shape; fall back to a synthesized message for endpoints that predate it (`/health/ready`)
     // or a transport-level failure with no parseable body at all.
     if (isErrorEnvelope(parsed)) {
-      throw new ApiError(response.status, parsed.error.message, parsed.error.code);
+      // The rest of the envelope is kept, not dropped: some codes carry a fact the caller acts on
+      // (a 409 `tailoring_already_running` names the active run). See `ApiError.details`.
+      const { code, message, ...details } = parsed.error;
+      throw new ApiError(response.status, message, code, details);
     }
     throw new ApiError(response.status, `${String(response.status)} for ${path}`, null);
   }

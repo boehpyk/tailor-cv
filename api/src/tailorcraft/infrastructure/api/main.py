@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
-from tailorcraft.infrastructure.api.routers import health, intake, posting
+from tailorcraft.infrastructure.api.routers import health, intake, posting, tailoring
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -209,6 +209,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(intake.router)
     app.include_router(posting.router)
+    app.include_router(tailoring.router)
 
     return app
 
