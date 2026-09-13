@@ -533,10 +533,12 @@ async def test_a_conflicting_save_is_counted_and_the_batch_continues_to_the_next
     assert result == AbandonStaleTailoringRunsResult(abandoned=2, skipped=0, conflicts=1)
 
     assert (await runs.get(oldest.id)).status is TailoringRunStatus.FAILED
-    unchanged_middle = await runs.get(middle.id)
-    assert (
-        unchanged_middle.status is TailoringRunStatus.RUNNING
-    )  # the conflicting write never landed
+    # The conflicting write never landed. Asserted on `saved`, not on `get(middle.id).status`: the
+    # fake hands back the same object the sweep mutated, so its status is `FAILED` in memory even
+    # though the save was refused — a real session would discard that object on rollback, and the
+    # row would hold whatever the winning writer wrote. `saved` is the fake's record of what
+    # actually reached the store, which is the fact AC-9 is about.
+    assert middle not in runs.saved
     assert (await runs.get(youngest.id)).status is TailoringRunStatus.FAILED
 
     failed_by_run = _failed_events_by_run(events)
