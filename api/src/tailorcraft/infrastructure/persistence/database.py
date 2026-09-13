@@ -47,10 +47,11 @@ def create_engine(settings: Settings) -> AsyncEngine:
     **A failing statement must not carry its data out of the process** (Constitution §8, AC-21). The
     values this application writes are a CV being inserted (1.1's `extracted_text`) and a tailored CV
     and cover letter being saved (1.3). In the worker, a failed save of a succeeded run is *allowed*
-    to escape `run_tailoring` (G-28, so `task_acks_late` can redeliver), and from there Celery's
-    "raised unexpected" line renders the exception with its whole traceback and Sentry ships every
-    exception in the chain. Measured at slice 1.3's `/verify`, the data leaks through **three
-    layers**, and each needs its own answer:
+    to escape `run_tailoring` (G-28). It is not redelivered: Celery acks a task that raises, and the
+    stale-run sweep records the run. It escapes so that it is seen. Celery's "raised unexpected" line
+    renders the exception with its whole traceback, and Sentry ships every exception in the chain.
+    That is also exactly how its data would leave the process. Measured at slice 1.3's `/verify`,
+    the data leaks through **three layers**, and each needs its own answer:
 
     1. **SQLAlchemy's own rendering** — a `[parameters: (...)]` line under the SQL in every
        `DBAPIError`'s `str()`. `hide_parameters=True` removes it. It is the layer SQLAlchemy owns,
@@ -100,8 +101,17 @@ def _withhold_driver_message(context: ExceptionContext) -> DBAPIError | None:
     `DBAPIError` and before it raises. What survives is what diagnosis needs and nothing that can be
     data: the driver exception's fully-qualified type, the SQLSTATE, the schema identifiers above,
     and the SQL text (with placeholders — every statement this codebase issues binds its values).
-    What goes is the driver's message: its primary line can quote a value
-    (`invalid input syntax for type uuid: "…"`), and its `DETAIL` can quote a row. An allow-list of
+    What goes is the driver's message, whose primary line can quote a value
+    (`invalid input syntax for type uuid: "…"`) and whose `DETAIL` can quote a row. **The bound
+    parameters go too:** the replacement is built with `params=None`.
+
+    That last point matters even though nothing renders `.params` today. `hide_parameters=True`
+    only keeps them out of `str()`; the values would still sit on the exception as an attribute,
+    which is data. Three ordinary things would carry it out:
+      - `DBAPIError.__reduce__` pickles `params`, for a result backend or a process boundary;
+      - anything walking `vars(exc)`, such as a Sentry `before_send` or an exception renderer;
+      - a future `log.warning(..., params=exc.params)` written by someone debugging a failed save.
+    With `None`, the claim above is true of the object, not only of its message. An allow-list of
     identifiers rather than a scrub of the message, because a scrub is a bet on every message format
     PostgreSQL and asyncpg will ever emit, and the extraction sweep already recorded losing that
     kind of bet.
@@ -154,7 +164,9 @@ def _withhold_driver_message(context: ExceptionContext) -> DBAPIError | None:
 
     return type(wrapped)(
         wrapped.statement,
-        wrapped.params,
+        # Not `wrapped.params`. A tailored CV is a bound value here, and a hidden attribute is still
+        # an attribute. The docstring lists the three ways it would otherwise leave the process.
+        None,
         driver_error,
         hide_parameters=True,
         connection_invalidated=wrapped.connection_invalidated,

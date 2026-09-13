@@ -202,9 +202,11 @@ tailoring_run_table = Table(
     # The two terminal statuses are exactly the two that carry a `completed_at`, so a run that is
     # still `queued` or `running` cannot have been completed and a decided one cannot lack the
     # moment it was decided. `started_at` gets **no** such constraint, and the omission is
-    # deliberate: `mark_failed` is legal from `queued` (a refused enqueue, G-14; a stale redelivery,
-    # G-25), so a `failed` run may legitimately have no `started_at` at all — a constraint tying the
-    # two would forbid the very state the aggregate documents at length.
+    # deliberate: `mark_failed` is legal from `queued`, so a `failed` run may legitimately have no
+    # `started_at` at all, and a constraint tying the two would forbid that state. Exactly one
+    # failure is recorded from `queued`: a refused enqueue, `not_queued` (G-14), before any worker has
+    # seen the run. `abandoned` (G-25') is not a second example, because it is recorded from
+    # `running`, and a running run already has its `started_at`.
     CheckConstraint(
         "(status IN ('succeeded','failed')) = (completed_at IS NOT NULL)",
         name="completed_at_matches_terminal_status",

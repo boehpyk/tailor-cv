@@ -241,11 +241,17 @@ class Settings(BaseSettings):
     # sweep (`AbandonStaleTailoringRuns`, run by beat every minute) applies this window, and so does
     # `ExecuteTailoringRun` step 3 when a redelivered message arrives late.
     #
-    # **Above Celery's `task_time_limit` (180) on purpose.** A live call is killed by the hard limit
-    # well before its run is old enough to be swept, so the sweep never relabels a task that is still
-    # running. The hard limit itself records nothing: the pool child is killed mid-call, the message
-    # is acked, and the run stays `running`. The sweep is what records it, at most this window plus
-    # one beat interval later.
+    # **Not a tuning knob. It must stay above Celery's hard `task_time_limit`** (180 s,
+    # `TASK_TIME_LIMIT_SECONDS` in `tasks/app.py`), **and `create_celery` refuses to start otherwise**,
+    # in every environment. Above the limit, a live call is killed before its run is old enough to
+    # sweep. At or below it, the sweep can record a call that is still running as `abandoned`. The
+    # worker's later success then fails on the table's CHECK, so the result is paid for and lost, and
+    # the user is invited to pay again. Shortening this to recover interrupted runs faster is exactly
+    # that mistake.
+    #
+    # The hard limit itself records nothing: the pool child is killed mid-call, the message is acked,
+    # and the run stays `running`. The sweep is what records it, at most this window plus one beat
+    # interval later.
     tailoring_stale_after_seconds: int = 300
     # A named queue from the first slice so 1.5's export tasks can land on a second one without a
     # long render starving a tailoring run. One line now; expensive to retrofit.

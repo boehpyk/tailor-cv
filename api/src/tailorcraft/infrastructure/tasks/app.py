@@ -28,7 +28,7 @@ from celery.signals import celeryd_init, worker_process_init
 from kombu import Queue
 
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
-from tailorcraft.infrastructure.settings import get_settings
+from tailorcraft.infrastructure.settings import MisconfiguredSettings, get_settings
 
 # The queue Celery publishes to when nothing says otherwise — Celery's own default name, written
 # down rather than left implicit, because `task_queues` below turns the set of consumed queues into
@@ -46,10 +46,51 @@ ABANDON_STALE_TAILORING_RUNS_TASK_NAME: Final = "tailorcraft.tailoring.abandon_s
 STALE_RUN_SWEEP_INTERVAL_SECONDS: Final = 60.0
 STALE_RUN_SWEEP_EXPIRES_SECONDS: Final = 55.0
 
+# The hard time limit: the pool child running a task is killed at this many seconds. Named because
+# two things read it, the config below and the stale-window check at the top of `create_celery`,
+# and a limit written twice is a limit that drifts from the check guarding it.
+TASK_TIME_LIMIT_SECONDS: Final = 180
+
 
 def create_celery() -> Celery:
-    """Build the Celery application from settings."""
+    """Build the Celery application from settings.
+
+    Raises:
+        MisconfiguredSettings: `tailoring_stale_after_seconds` is not above the hard time limit.
+    """
     settings = get_settings()
+
+    # **Refuse a stale window that is not above the hard time limit, in every environment.** Only
+    # this ordering keeps the sweep from deciding a live call. With a window at or below the limit,
+    # this sequence can happen:
+    #   1. The sweep records a run `abandoned` while its worker is still waiting on the model.
+    #   2. The worker's later `succeeded` save meets the row the sweep already decided, and the
+    #      table's CHECK constraints reject it.
+    #   3. The documents are lost after being paid for, and the user sees "That run was
+    #      interrupted", with **Try again** inviting them to pay a second time.
+    # Above the limit, the pool child is always killed before its run is old enough to sweep.
+    # Equality is refused too: a kill at second 180 and a sweep judging the same run at second 180
+    # is exactly the race this rules out.
+    #
+    # Checked here because this is the one place the setting and the limit meet. It is not
+    # production-only: the sweep acts on whatever `Settings` the worker holds, whatever `APP_ENV`
+    # says.
+    #
+    # **This runs at API import as well**, not only in the worker and beat:
+    # `infrastructure/api/main.py` imports `app` from this module to publish tasks. The refusal
+    # therefore inherits CLAUDE.md's `uvicorn --workers N` footgun. Under the production image's
+    # `--workers 2`, the supervisor respawns the failing import for ever, and the container never
+    # becomes ready and never exits. Worker and beat fail loudly by contrast: the celery CLI cannot
+    # load the app, so the process exits and `restart: unless-stopped` shows a restart loop. When a
+    # release's API never goes ready, read its log for this message. Not solved here.
+    if settings.tailoring_stale_after_seconds <= TASK_TIME_LIMIT_SECONDS:
+        raise MisconfiguredSettings(
+            "TAILORING_STALE_AFTER_SECONDS must be greater than Celery's task_time_limit: "
+            f"tailoring_stale_after_seconds={settings.tailoring_stale_after_seconds} is not above "
+            f"task_time_limit={TASK_TIME_LIMIT_SECONDS}. The stale-run sweep would record a call "
+            "that is still running as abandoned, and its paid-for result would be lost. Set it "
+            f"above {TASK_TIME_LIMIT_SECONDS} (the default is 300)."
+        )
 
     celery_app = Celery(
         "tailorcraft",
@@ -91,7 +132,7 @@ def create_celery() -> Celery:
         worker_prefetch_multiplier=1,
         # An export the user is waiting on must fail visibly rather than hang forever.
         task_soft_time_limit=120,
-        task_time_limit=180,
+        task_time_limit=TASK_TIME_LIMIT_SECONDS,
         result_expires=3600,
         # --- The Redis redelivery window (slice 1.3) --------------------------------------------
         #
