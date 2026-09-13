@@ -511,3 +511,15 @@ async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_
         "debuggability regression: the constraint's own name must survive sanitizing, or a real "
         "production incident becomes unattributable to the rule that actually fired"
     )
+
+    # (verify round 2) `_withhold_driver_message` (infrastructure/persistence/database.py) rebuilds
+    # the DBAPIError but still passes `wrapped.params` straight through, so the tailored CV and
+    # cover letter this test bound as parameters survive as DATA on the exception object even though
+    # every rendering checked above is clean. `DBAPIError.__reduce__` pickles `self.params`, and a
+    # future `log.warning(params=exc.params)` or a Sentry `before_send` walking `vars(exc)` would
+    # ship them regardless of str(exc) or the rendered chain.
+    assert exc.params is None, (
+        "no bound values may survive on the sanitized exception object — DBAPIError.__reduce__ "
+        "pickles exc.params, and a future log line or Sentry before_send reading it back would leak "
+        "the tailored CV or cover letter this test bound as parameters (G-28, AC-21)"
+    )

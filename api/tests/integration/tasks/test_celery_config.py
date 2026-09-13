@@ -19,7 +19,10 @@ file is not:
 
 from __future__ import annotations
 
-from tailorcraft.infrastructure.settings import Settings
+import pytest
+
+from tailorcraft.infrastructure.settings import MisconfiguredSettings, Settings
+from tailorcraft.infrastructure.tasks import app as tasks_app_module
 from tailorcraft.infrastructure.tasks.app import (
     ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
     STALE_RUN_SWEEP_EXPIRES_SECONDS,
@@ -136,29 +139,76 @@ def test_no_two_queues_in_task_queues_share_a_routing_key() -> None:
     )
 
 
-# --- The invariant that only a comment enforces (V5f brief): tailoring_stale_after_seconds ------
-# --- must stay above task_time_limit, or the sweep can abandon a call that is genuinely still ----
-# --- in flight -------------------------------------------------------------------------------------
+# --- RED (verify round 2): tailoring_stale_after_seconds must stay above task_time_limit, or the --
+# --- sweep can abandon a call that is genuinely still in flight — and only a COMMENT enforced -----
+# --- that before now -------------------------------------------------------------------------------
+#
+# Replaces `test_the_default_stale_window_stays_above_the_hard_task_time_limit` (removed here): that
+# test could only ever prove the shipped DEFAULTS happen to agree (300 > 180) — it could not catch a
+# deployment that sets `TAILORING_STALE_AFTER_SECONDS=100` in its environment, because neither
+# number is stored anywhere a test running in THIS process could read a future deployment's value
+# back from. Decided at /verify round 2: `create_celery` itself must refuse to build, with
+# `MisconfiguredSettings`, whenever the relationship does not hold — in every environment, not only
+# production, because the sweep runs against whatever `Settings` the worker holds regardless of
+# `app_env`. That turns the comment into something a bad deployment cannot silently violate.
+#
+# `create_celery` takes no argument and reads `get_settings()` itself (`tasks/app.py`); patched here
+# in this module's own namespace, `tasks_app_module`, the same seam-patching technique
+# `test_tailoring_sweep_task.py` uses for `container.get_settings`.
 
 
-def test_the_default_stale_window_stays_above_the_hard_task_time_limit(settings: Settings) -> None:
-    """Honestly scoped: `tailoring_stale_after_seconds` is a `Settings` field, overridable from the
-    environment (`TAILORING_STALE_AFTER_SECONDS`); `task_time_limit` is a bare constant inside
-    `create_celery` (`tasks/app.py`). Neither is stored on any one object in a form the other could
-    be read back from at runtime, so there is no way for a test in THIS process to see the value a
-    future deployment's environment actually sets — only the default `Settings()` builds absent any
-    override, which is the `settings` fixture's own value here (only `database_url`/`upload_dir`/
-    `app_env` are overridden from it; `tailoring_stale_after_seconds` is not).
+def test_create_celery_refuses_a_stale_window_not_safely_above_the_hard_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale window of 100s, well under `task_time_limit` (180): a live call killed by the hard
+    limit at 180s would have already been swept and recorded `abandoned` at 100s, while the worker
+    may still genuinely be holding it. Mirrors `test_settings.py`'s own guard-message shape: the
+    message must name the setting that failed and carry no secret from a sibling field, the same
+    property `MisconfiguredSettings` exists for (see that class's own docstring).
 
-    This is therefore a test of DEFAULTS, stated as such rather than dressed up as more: it proves
-    the relationship the comment above `broker_transport_options` in `tasks/app.py` assumes still
-    holds for the shipped default (300 > 180), and would catch a future edit to either number that
-    broke it — but it can NOT catch a production deployment that sets
-    `TAILORING_STALE_AFTER_SECONDS` below `task_time_limit` in its environment. That gap is outside
-    what any test running in this process can observe.
+    RED today on "DID NOT RAISE <MisconfiguredSettings>": `create_celery` builds unconditionally,
+    with nothing yet checking this relationship at all.
     """
-    assert settings.tailoring_stale_after_seconds > app.conf.task_time_limit, (
-        "the sweep's stale window must stay above the hard per-task time limit, or the sweep can "
-        "mark a call abandoned while its worker may genuinely still be holding it "
-        "(tasks/app.py's comment on broker_transport_options)"
-    )
+    settings = Settings(app_env="test", tailoring_stale_after_seconds=100)
+    monkeypatch.setattr(tasks_app_module, "get_settings", lambda: settings)
+
+    with pytest.raises(MisconfiguredSettings) as exc_info:
+        tasks_app_module.create_celery()
+
+    message = str(exc_info.value)
+    assert "tailoring_stale_after_seconds" in message
+    assert "task_time_limit" in message
+    for secret in (settings.database_url, settings.redis_url, settings.celery_broker_url):
+        assert secret not in message
+
+
+def test_create_celery_refuses_a_stale_window_exactly_equal_to_the_hard_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The boundary itself: a stale window EQUAL to `task_time_limit` (180) must still be refused.
+    Equality is not "safely above" — a call killed by the hard limit at second 180 and a sweep tick
+    judging the same run stale at that same instant is exactly the race this guard exists to rule
+    out, not a value that happens to be numerically fine.
+
+    RED today for the same reason as the test above: nothing yet checks this relationship.
+    """
+    settings = Settings(app_env="test", tailoring_stale_after_seconds=180)
+    monkeypatch.setattr(tasks_app_module, "get_settings", lambda: settings)
+
+    with pytest.raises(MisconfiguredSettings):
+        tasks_app_module.create_celery()
+
+
+def test_create_celery_accepts_a_stale_window_one_second_above_the_hard_time_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other side of the same boundary: 181 is the smallest value that must be ACCEPTED. Not
+    red today — `create_celery` already builds successfully for any value, including this one — but
+    stated here so the boundary is pinned from both directions in the same commit, rather than only
+    from the refusing side."""
+    settings = Settings(app_env="test", tailoring_stale_after_seconds=181)
+    monkeypatch.setattr(tasks_app_module, "get_settings", lambda: settings)
+
+    built = tasks_app_module.create_celery()
+
+    assert built.conf.task_time_limit == 180

@@ -94,3 +94,14 @@ async def test_a_statement_failing_at_the_database_never_renders_its_bound_param
         "this is what Celery logs and what Sentry walks, and hiding it from str(exc) alone does not "
         "reach it (G-28, AC-21)"
     )
+    # (verify round 2) `_withhold_driver_message` rebuilds the DBAPIError but still passes
+    # `wrapped.params` straight through — the bound parameter is gone from every rendered message
+    # above, but it survives as data on the exception OBJECT itself. `DBAPIError.__reduce__` pickles
+    # `self.params`, and a future `log.warning(params=exc.params)` or a Sentry `before_send` walking
+    # `vars(exc)` would ship the exact value this sanitizer exists to withhold, with neither
+    # `str(exc)` nor `traceback.format_exception` ever having to be consulted at all.
+    assert exc.params is None, (
+        "no bound values may survive on the sanitized exception object — DBAPIError.__reduce__ "
+        "pickles exc.params, and a future log line or Sentry before_send reading it back would leak "
+        "the value regardless of what the message or the rendered chain hide (G-28, AC-21)"
+    )
