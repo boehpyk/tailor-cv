@@ -21,6 +21,14 @@ being edited without the other. `intake` and `posting` made the same call for th
 3. **The list omits both document bodies** — half a megabyte of a stranger's PII per response
    otherwise.
 
+**Slice 1.4 (`workspace-progress-and-editor`, ADR-0015) changed what two fields mean and added a
+`ReviseDocumentRequest`.** `tailored_cv` and `cover_letter` are now the *current* document — the
+visitor's revision where one exists, else the model's draft — and `version`,
+`tailored_cv_edited_at` and `cover_letter_edited_at` ride on both the full shape and the summary,
+so the workspace's latest-run card and the run page agree on the version without a second read.
+The draft is **not** served: nothing in 1.4 reads it, and serving two bodies per document doubles
+the PII in every poll for a feature that is not built (ADR-0015 §4).
+
 `TailoringRunSummary` is **not** a subclass of `TailoringRunResponse` and `TailoringRunResponse` is
 not a subclass of it. Shared shape is not shared meaning (CLAUDE.md): one of these two is "the run
 you opened, in full" and the other is "one row of a list that must never carry a document", and a
@@ -65,17 +73,56 @@ class CreateTailoringRunRequest(BaseModel):
     job_posting_id: UUID
 
 
+class ReviseDocumentRequest(BaseModel):
+    """`{"content": "…markdown…", "expected_version": 7}` — the whole body of
+    `PUT /api/tailoring-runs/{id}/documents/{kind}`.
+
+    **Which** document is in the URL, not here: `kind` is a path segment typed
+    `TailoredDocumentKind`, so an unknown kind is FastAPI's own 422 `validation_error` before this
+    model is ever built (E-4). `extra="forbid"` for the same reason as the request above — a stray
+    field is a 422, never a silently ignored key (E-2).
+
+    **This model checks the shape and only the shape.** `content` is a `str` with no length bounds
+    here on purpose: the floor (400 / 200 non-whitespace characters), the ceiling (20,000 / 8,000)
+    and the character rules belong to the value object — `TailoredCv` or `CoverLetter`, chosen by
+    `kind` — which the router constructs and whose failure is the 422 `document_invalid` with a
+    `problem` label (E-10 … E-12). Bounding the string twice would put the business rule in a
+    second place, and the two ceilings differ by document, which a single field cannot say. The
+    transport's own bound is the 256 KiB JSON cap in the middleware (E-3), which is far above the
+    value object's and exists for a different reason.
+
+    `expected_version >= 1` because a run is born at version 1 (ADR-0015 §3): `0` can never be the
+    version the editor was shown, so it is a malformed request rather than a stale one — a 422 here,
+    not a 409 from the aggregate.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+    expected_version: int = Field(ge=1)
+
+
 class TailoringRunResponse(BaseModel):
     """One `TailoringRun`, in full, as the client sees it — including both tailored documents.
 
     **This carries the tailored CV and the cover letter, and that is the whole point of the
-    endpoint**: the 1.4 editor loads them into TipTap. It is also why both `GET`s answer
-    `Cache-Control: no-store` — this body is a person's rewritten employment history plus a letter
-    naming the employer they are applying to, which is *sharper* than the upload it came from.
+    endpoint**: the 1.4 editor loads them into TipTap. It is also why both `GET`s and the `PUT`
+    answer `Cache-Control: no-store` — this body is a person's rewritten employment history plus a
+    letter naming the employer they are applying to, which is *sharper* than the upload it came from.
+
+    **`tailored_cv` and `cover_letter` are the *current* document** (ADR-0015 §4): the visitor's
+    revision where one exists, else the model's draft. The two character counts are of that same
+    current text. A consumer that needs to know which it is reading has `tailored_cv_edited_at` /
+    `cover_letter_edited_at` — `null` means "the draft, untouched". The draft itself is never served
+    alongside a revision: nothing in 1.4 reads it, and two bodies per document would double the PII
+    in every poll for a feature that is not built.
 
     Every field after `retryable` is `None` while the run is `queued` or `running`, and that is the
     polling contract (AC-1): a 202 hands back this same shape with `tailored_cv`, `cover_letter`,
     `model` and `completed_at` all `null`, and the client re-reads it until `status` is terminal.
+    `version` is `1` and both `*_edited_at` are `null` on that same 202 — a run is born at version
+    1, and every named transition after that (the worker's as much as the visitor's) moves it, so
+    a `succeeded` run polled back is already past 1 before anyone has typed a character.
 
     **`prompt_tokens` and `completion_tokens` are deliberately absent.** They are recorded on the row
     and in the log line, because they are how the cost of this feature is watched — but they are cost
@@ -105,6 +152,7 @@ class TailoringRunResponse(BaseModel):
     # field when `status == "failed"`.
     retryable: bool
 
+    # The CURRENT document (revision if any, else draft) — see the class docstring.
     tailored_cv: str | None
     cover_letter: str | None
     tailored_cv_character_count: int | None
@@ -125,6 +173,21 @@ class TailoringRunResponse(BaseModel):
     # copy, exactly as `BaseCvResponse` and `JobPostingResponse` do.
     expires_at: datetime
 
+    # The optimistic-concurrency token (ADR-0015 §3): the client sends it back as
+    # `expected_version` on every `PUT`, and a stale one is a 409 `document_version_conflict`
+    # carrying `current_version`. Born at 1; every named transition on the aggregate — a revision
+    # included — increments it, so the number is the run's, not the document's, and both tabs share
+    # it. **Required, no default**: a response that could omit it would let an editor save against
+    # `undefined`, which the server would rightly reject and the user could not explain.
+    version: int
+
+    # When each document was last revised by the visitor — `null` means "still the model's draft".
+    # Whole-second, from the `Clock` port, like every other instant here. Required rather than
+    # defaulted for the same reason as `version`: "we don't know whether this is the draft" is not
+    # an answer this endpoint may give.
+    tailored_cv_edited_at: datetime | None
+    cover_letter_edited_at: datetime | None
+
 
 class TailoringRunSummary(BaseModel):
     """One `TailoringRun` as it appears in a list: everything above **except the two documents**.
@@ -138,6 +201,11 @@ class TailoringRunSummary(BaseModel):
     The same guard 1.2 put on `JobPostingSummary.preview`, with a bigger number behind it — and
     without even a preview here, because the first 280 characters of a tailored CV are someone's name
     and address.
+
+    `version` and the two `*_edited_at` instants are here as well as on the full shape (ADR-0015 §4):
+    the workspace's latest-run card and the run page must agree on the version without a second
+    read, and "edited" is a fact about the run a list may state without carrying a word of the
+    text. The character counts, as on the full shape, are of the *current* document.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -161,6 +229,11 @@ class TailoringRunSummary(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     expires_at: datetime
+
+    # Same three fields, same "required, no default" rule, as `TailoringRunResponse` — see there.
+    version: int
+    tailored_cv_edited_at: datetime | None
+    cover_letter_edited_at: datetime | None
 
 
 class TailoringRunListResponse(BaseModel):

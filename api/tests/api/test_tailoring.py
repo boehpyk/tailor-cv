@@ -1281,3 +1281,64 @@ async def test_a_full_successful_and_a_full_failed_run_never_log_cv_posting_or_d
         "the client IP must never reach a log line (Constitution §8) — a fortiori never paired with "
         "a tailoring_run_id"
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-11 (slice 1.4, ADR-0015) — the three new fields (`version`, `tailored_cv_edited_at`,
+# `cover_letter_edited_at`) ride on the 202, both GETs and the list summary. T12's skeleton changed
+# `_to_response`/`_to_summary` to require these three fields without yet supplying them
+# (`TailoringRunResponse(...)` is missing required kwargs), so today every one of these three tests
+# is expected to fail with a `pydantic.ValidationError` surfacing as a bare 500 — never an
+# `ImportError`, since the schema, the router and the fields all already exist. T14 is what makes
+# `_to_response`/`_to_summary` pass `version`/`tailored_cv_edited_at`/`cover_letter_edited_at` for
+# real.
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_post_response_carries_version_1_and_null_edited_at_fields(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    base_cv_id, job_posting_id = await _ready_inputs(client)
+    _install_queue(app)
+
+    response = await client.post(
+        "/api/tailoring-runs", json={"base_cv_id": base_cv_id, "job_posting_id": job_posting_id}
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    assert body["version"] == 1, "a run is born at version 1 (ADR-0015 §3)"
+    assert body["tailored_cv_edited_at"] is None
+    assert body["cover_letter_edited_at"] is None
+
+
+async def test_get_one_response_carries_version_and_edited_at_fields(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    run_id = await _create_queued_run(client, app)
+
+    response = await client.get(f"/api/tailoring-runs/{run_id}")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["version"] == 1, "no revision has happened yet"
+    assert body["tailored_cv_edited_at"] is None
+    assert body["cover_letter_edited_at"] is None
+
+
+async def test_get_list_summary_carries_version_and_edited_at_fields(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    await _create_queued_run(client, app)
+
+    response = await client.get("/api/tailoring-runs")
+
+    assert response.status_code == 200, response.text
+    items = response.json()["items"]
+    assert len(items) == 1
+    assert items[0]["version"] == 1, (
+        "the list summary must agree with the detail endpoint on the version (ADR-0015 §4) "
+        "without a second read"
+    )
+    assert items[0]["tailored_cv_edited_at"] is None
+    assert items[0]["cover_letter_edited_at"] is None
