@@ -116,7 +116,19 @@ class SqlAlchemyTailoringRunRepository:
         may see, translated here into the domain's name for it. The session is left in the failed
         state a failed flush leaves it in: rolling back is the caller's boundary, exactly as
         committing is.
+
+        **The id is read BEFORE the flush, and that line is load-bearing.** A failed flush rolls
+        its transaction back on the way out, and that rollback `_expire`s every instance the
+        session holds — `run` included, because it is the dirty one. The session's transaction is
+        then inactive until the caller rolls back, so touching `run.id` inside the `except` below
+        would try to re-load an expired attribute on a session that refuses to run a query, and the
+        `StaleDataError` this branch exists to translate would surface instead as a
+        `PendingRollbackError` — a `SQLAlchemyError` nothing above this layer maps, rendered as a
+        503 for what is a 409. Found by slice 1.4's AC-12(b) API test, the first thing to drive
+        this branch against a real database; a plain `TailoringRunId` value taken up front is
+        immune to the expiry.
         """
+        run_id = run.id
         self._session.add(run)
         try:
             await self._session.flush()
@@ -128,10 +140,10 @@ class SqlAlchemyTailoringRunRepository:
             # frame unreachable from any report of the domain error (E-9; Constitution §8).
             log.warning(
                 "tailoring.concurrent_modification",
-                tailoring_run_id=str(run.id.value),
+                tailoring_run_id=str(run_id.value),
                 error_type=type(exc).__name__,
             )
-            raise TailoringRunConcurrentlyModified(run.id) from None
+            raise TailoringRunConcurrentlyModified(run_id) from None
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:
         # The column stays on the left of `==` below (silencing ruff's SIM300 "Yoda condition"):
