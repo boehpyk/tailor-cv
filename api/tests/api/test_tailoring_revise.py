@@ -120,15 +120,21 @@ def _posting_body_text(marker: str = "QA_REVISE_FIXTURE_POSTING_TOKEN") -> str:
 
 
 def _tailored_cv_text(marker: str) -> str:
-    """Comfortably past `TailoredCv`'s 400-non-whitespace-character floor."""
+    """Comfortably past `TailoredCv`'s 400-non-whitespace-character floor.
+
+    `.rstrip()` because `TailoredCv` strips trailing spaces and tabs per line (1.3's normalisation,
+    unchanged — AC-16 holds the revision to the same rules as the draft), and AC-10 compares the
+    response's document to what was sent: the fixture must already be in stored form, or the test
+    would be asserting the value object away.
+    """
     filler = "Rewrote the platform reliability program end to end for this role. " * 8
-    return f"{marker} {filler}"
+    return f"{marker} {filler}".rstrip()
 
 
 def _cover_letter_text(marker: str) -> str:
-    """Comfortably past `CoverLetter`'s 200-non-whitespace-character floor."""
+    """Comfortably past `CoverLetter`'s 200-non-whitespace-character floor. `.rstrip()` as above."""
     filler = "I am applying because this role matches my reliability background. " * 6
-    return f"{marker} {filler}"
+    return f"{marker} {filler}".rstrip()
 
 
 # `TailoredCv`'s two bounds: floor 400 non-whitespace chars, ceiling 20,000 characters.
@@ -512,8 +518,14 @@ async def test_two_writers_racing_through_http_second_answers_409_with_null_curr
     # Pre-load the run into session2's identity map NOW, before the first writer moves the row on.
     # A later query for this same primary key inside `session2` returns this cached copy rather
     # than re-querying (SQLAlchemy's default identity-map behaviour) — the staleness a genuinely
-    # concurrent second request would also hold.
-    await repo2.get(run_uuid)
+    # concurrent second request would also hold. Two things make that hold, both measured:
+    # the identity map is *weakly* referencing, so the copy must be kept in a local for the
+    # duration or it is collected at once and the second request loads a fresh row (hitting the
+    # aggregate's E-8 compare with `current_version: 4`, never the repository's E-9); and the
+    # SAVEPOINT this load opened on the shared connection must be released *before* the winner
+    # writes, or it encloses the winner's write and the loser's rollback discards it.
+    stale_copy = await repo2.get(run_uuid)
+    await session2.commit()  # releases the SAVEPOINT; expire_on_commit=False keeps the copy stale
 
     app2 = create_app(settings)
     app2.dependency_overrides[get_session] = _committing_session_override(session2)
@@ -551,6 +563,7 @@ async def test_two_writers_racing_through_http_second_answers_409_with_null_curr
     assert edited_cv is not None
     assert "QA_RACE_WINNER" in edited_cv
     assert "QA_RACE_LOSER" not in edited_cv
+    del stale_copy  # held until here on purpose (see the pre-load comment)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1038,9 +1051,12 @@ async def test_revise_privacy_no_fragment_of_content_ever_logged(
     for marker in (success_marker, conflict_marker, invalid_marker):
         assert marker not in log_output, f"{marker!r} leaked into the logs"
 
-    # Every response, whatever its status today, must never carry the content either.
+    # The 200 body carries the saved document — that is AC-10's contract, and the first happy-path
+    # test asserts it — so the success response is checked only against the two markers that were
+    # never saved. Every error response must carry none of the three.
+    for marker in (conflict_marker, invalid_marker):
+        assert marker not in success.text, f"{marker!r} leaked into the success body"
     for response in (
-        success,
         not_editable,
         conflict,
         validation_error,
