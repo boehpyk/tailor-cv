@@ -123,7 +123,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    |---|---|---|
    | `intake` | uploaded base CVs and their extracted text | `BaseCv` |
    | `posting` | job descriptions, pasted or fetched from a URL | `JobPosting` |
-   | `tailoring` | the LLM run and its output documents | `TailoringRun`, `TailoredDocument` |
+   | `tailoring` | the LLM run and its output documents | `TailoringRun` — `TailoredDocument` is a value object on it, not an aggregate ([ADR-0014 §9](./adr/0014-tailoring-runs-on-a-queue-and-is-polled.md), [ADR-0015](./adr/0015-edits-are-a-revision-on-the-run-stored-as-markdown.md)) |
    | `export` | rendering a document to PDF/DOCX/MD/TXT | `ExportJob` |
    | `identity` | accounts, sessions, tokens | `User` |
    | `retention` | the guest 1-day purge (no aggregate — a policy + a port method) | — |
