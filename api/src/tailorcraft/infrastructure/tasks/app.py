@@ -5,9 +5,10 @@ application use case, and translates the outcome — exactly like an HTTP route,
 short as one. Business logic in a task is logic that can only be exercised by running a worker
 (ADR-0005).
 
-The beat schedule is empty in Phase 0. The guest-retention purge (FR-6) lands with slice 1.6, and
-the roadmap deliberately keeps it *off* until it has been rehearsed by hand on real data — it issues
-a `DELETE` against rows and unlinks files, and neither is reversible.
+The beat schedule holds one job: the stale-run sweep (slice 1.3, G-25'), which records a run whose
+worker was lost. The guest-retention purge (FR-6) lands with slice 1.6, and the roadmap deliberately
+keeps it *off* until it has been rehearsed by hand on real data. It issues a `DELETE` against rows and
+unlinks files, and neither is reversible.
 
 **The worker's observability is configured here, by Celery signal, and that is not decoration.**
 `create_app`'s lifespan calls `configure_logging` / `configure_sentry` for the API process; nothing
@@ -20,7 +21,7 @@ was closed in the API was wide open in the worker. See `_on_worker_start` below.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Final
 
 from celery import Celery
 from celery.signals import celeryd_init, worker_process_init
@@ -33,6 +34,17 @@ from tailorcraft.infrastructure.settings import get_settings
 # down rather than left implicit, because `task_queues` below turns the set of consumed queues into
 # something explicit and a default that is not in the list is a task that vanishes.
 DEFAULT_QUEUE_NAME = "celery"
+
+# The stale-run sweep's task name, written once. It lives here rather than beside the task because
+# `beat_schedule` below names it and `tasks/tailoring_sweep.py` imports this module: the other
+# direction is an import cycle. A schedule and a task that disagree about a name produce
+# `NotRegistered` on the worker, once a minute, in the log nobody reads.
+ABANDON_STALE_TAILORING_RUNS_TASK_NAME: Final = "tailorcraft.tailoring.abandon_stale_runs"
+
+# How often beat publishes the sweep, and how long each tick stays worth running. The expiry is
+# **below** the interval, so at most one live tick exists at any moment: see `beat_schedule`.
+STALE_RUN_SWEEP_INTERVAL_SECONDS: Final = 60.0
+STALE_RUN_SWEEP_EXPIRES_SECONDS: Final = 55.0
 
 
 def create_celery() -> Celery:
@@ -47,7 +59,10 @@ def create_celery() -> Celery:
         # registered, and a message for it is rejected as `NotRegistered` — a run that fails for a
         # reason that has nothing to do with tailoring. Strings, not imports: this module is
         # imported *by* `tasks/tailoring.py`, and Celery resolves these lazily at finalization.
-        include=["tailorcraft.infrastructure.tasks.tailoring"],
+        include=[
+            "tailorcraft.infrastructure.tasks.tailoring",
+            "tailorcraft.infrastructure.tasks.tailoring_sweep",
+        ],
     )
     celery_app.conf.update(
         task_serializer="json",
@@ -55,15 +70,55 @@ def create_celery() -> Celery:
         accept_content=["json"],
         timezone="UTC",
         enable_utc=True,
-        # Acknowledge AFTER the task completes, so a worker killed mid-render leaves the task on the
-        # queue rather than losing it. Safe only because tasks here are required to be idempotent —
-        # the pairing is the design, and dropping either half breaks the other.
+        # Acknowledge AFTER the task finishes rather than on receipt. **That buys less than it sounds
+        # like**, and slice 1.3's /verify found runs stuck `running` for ever in the gap. A message
+        # comes back only when the worker's *main* process dies holding it, and then only after
+        # `visibility_timeout` below. Everything else is acked:
+        #   * a task that raises, or hits `task_time_limit`: `task_acks_on_failure_or_timeout`
+        #     defaults to True;
+        #   * a pool child that is OOM-killed or SIGKILLed: `task_reject_on_worker_lost` is unset.
+        #
+        # **`task_reject_on_worker_lost` stays unset, deliberately.** Setting it would redeliver a
+        # killed child's message at once, straight into `ExecuteTailoringRun` step 3. Step 3 would
+        # find a `running` run inside the stale window and return SKIPPED, so the redelivery recovers
+        # nothing. For a message that kills its child every time, it also sets up a redelivery loop,
+        # a caveat Celery's own docs give. The stale-run sweep (`tasks/tailoring_sweep.py`) is the one
+        # recovery mechanism, for the reason there is one retry mechanism (ADR-0014 §6): two paths
+        # that overlap are harder to reason about than one that covers every case.
+        #
+        # Late acks still require idempotent tasks, and every task here is one.
         task_acks_late=True,
         worker_prefetch_multiplier=1,
         # An export the user is waiting on must fail visibly rather than hang forever.
         task_soft_time_limit=120,
         task_time_limit=180,
         result_expires=3600,
+        # --- The Redis redelivery window (slice 1.3) --------------------------------------------
+        #
+        # Redis has no broker-side acks. kombu parks each delivered-but-unacked message in a hash
+        # and puts it back on its queue once it is older than `visibility_timeout`, **whether or
+        # not the worker holding it is still alive**. So this one number means two things: how long
+        # a message stays lost after a worker's main process dies holding it, and how long a
+        # healthy task may stay unacked before a second copy is delivered.
+        #
+        # 600 s, against kombu's default of 3600:
+        #   * Well above `task_time_limit` (180), so a healthy task is never duplicated. With
+        #     `worker_prefetch_multiplier=1` a message stays unacked for little more than its own
+        #     run, and the hard limit caps that run.
+        #   * Above `tailoring_stale_after_seconds` (300). A restored message for a lost `running`
+        #     run therefore arrives after the sweep has recorded that run, and step 3 finds it
+        #     decided.
+        #   * A `queued` run whose message was lost with a SIGKILLed main process is delivered again
+        #     after ten minutes rather than an hour. **That is the only recovery a `queued` run
+        #     has**: the sweep looks only at `running` runs.
+        #
+        # **This also bounds any future `countdown`/`eta` task.** On Redis, a message scheduled
+        # further ahead than this is restored and delivered again every 600 s until it runs, which
+        # is Celery's documented caveat. Revisit this number before adding one.
+        #
+        # Set in the shared config so the API, which publishes, and the worker, which restores,
+        # agree on one value.
+        broker_transport_options={"visibility_timeout": 600},
         # --- The named queues (slice 1.3) ------------------------------------------------------
         #
         # Tailoring gets its **own** named queue from the first slice that needs one. One line now,
@@ -91,8 +146,36 @@ def create_celery() -> Celery:
             Queue(DEFAULT_QUEUE_NAME),
             Queue(settings.tailoring_queue_name),
         ),
-        # Empty until slice 1.6. See the module docstring.
-        beat_schedule={},
+        # --- The beat schedule --------------------------------------------------------------------
+        #
+        # One job until slice 1.6: the stale-run sweep (G-25'). See the module docstring.
+        beat_schedule={
+            "abandon-stale-tailoring-runs": {
+                "task": ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
+                "schedule": STALE_RUN_SWEEP_INTERVAL_SECONDS,
+                "options": {
+                    # **The default `celery` queue, not `tailoring`.** The sweep recovers runs the
+                    # tailoring workload lost, and queueing it behind a backlog of paid runs would
+                    # make recovery wait on the very workload that failed.
+                    #
+                    # Today one worker consumes both queues, so this separates the messages, not the
+                    # capacity: a sweep still needs a free slot. It becomes separate capacity the
+                    # day tailoring gets its own worker (`-Q`, a compose change), and this line is
+                    # already right for that day.
+                    "queue": DEFAULT_QUEUE_NAME,
+                    # **Expires before the next tick is published.** Beat keeps publishing while the
+                    # worker is down. Without an expiry, a worker back after an hour would find sixty
+                    # identical sweeps, each one after the first finding nothing, all of them queued
+                    # ahead of real work. A tick is worth nothing once a newer one exists, so the
+                    # worker discards an expired one unrun.
+                    #
+                    # Under sustained load that keeps every slot busy past 55 s, ticks can expire
+                    # unrun as well. That delays recovery and never loses it: a stale run stays
+                    # listed until a tick finds a free slot.
+                    "expires": STALE_RUN_SWEEP_EXPIRES_SECONDS,
+                },
+            },
+        },
     )
     return celery_app
 

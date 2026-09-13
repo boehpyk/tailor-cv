@@ -45,10 +45,10 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
@@ -60,23 +60,6 @@ from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.settings import Settings, get_settings
-
-
-class _StaleSweepingTailoringRunRepository(TailoringRunRepository, Protocol):
-    """`TailoringRunRepository` plus `list_stale_running`. **Transitional: delete it once the port
-    has the member.**
-
-    It exists only because of an ordering constraint (task-list.md, V5, "Order changed at V5a").
-    Every implementer gains `list_stale_running` before the port does, so that adding the Protocol
-    member in V5c breaks nothing. Until then, `CommittingTailoringRunRepository` has to call the
-    method through its `inner`, and an `inner` typed as the bare port has no such method as far as
-    mypy knows. Once `domain/tailoring/ports.py` declares it, this Protocol says nothing the port does
-    not, and `inner` goes back to being a `TailoringRunRepository`.
-    """
-
-    async def list_stale_running(
-        self, started_before: datetime, limit: int
-    ) -> Sequence[TailoringRun]: ...
 
 
 class CommittingTailoringRunRepository:
@@ -103,7 +86,7 @@ class CommittingTailoringRunRepository:
     keeps them from drifting.
     """
 
-    def __init__(self, inner: _StaleSweepingTailoringRunRepository, session: AsyncSession) -> None:
+    def __init__(self, inner: TailoringRunRepository, session: AsyncSession) -> None:
         self._inner = inner
         self._session = session
 
@@ -250,4 +233,71 @@ def _build_use_case(
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007).
         clock=SystemClock(),
         stale_after_seconds=settings.tailoring_stale_after_seconds,
+    )
+
+
+@asynccontextmanager
+async def abandon_stale_runs_use_case() -> AsyncIterator[
+    tuple[AbandonStaleTailoringRuns, AsyncSession]
+]:
+    """Build what one tick of the stale-run sweep needs, yield it, and tear it down (G-25').
+
+    The same shape as `tailoring_use_case`, for the same reasons: mappings configured first, **one
+    engine per invocation**, built inside the loop `asyncio.run` opened and disposed before that loop
+    closes, and the session yielded so the task commits inside its own error boundary.
+
+    **No LLM, and that is the point rather than an economy.** The sweep records that a call was lost.
+    It never makes one, so `GeminiLlm` is not built, no SDK client is opened, and nothing here can
+    spend money. `tailoring_use_case`'s `llm.aclose()` has no counterpart for the same reason.
+    """
+    settings = get_settings()
+    # See `tailoring_use_case`: beat publishes this task to a worker that may never have run a
+    # tailoring task, so nothing else is guaranteed to have imported the mappings.
+    configure_mappings()
+
+    engine = create_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            try:
+                yield _build_sweep_use_case(settings, session), session
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        # Always, including on G-35's path, for the loop-binding reason in the module docstring.
+        await engine.dispose()
+
+
+def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonStaleTailoringRuns:
+    """Bind the three ports `AbandonStaleTailoringRuns` declares, and no more.
+
+    Split out for the reason `_build_use_case` is, and it is the seam a task test binds to its own
+    session. The repository import is deferred for the mapper-configuration reason given there.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+        SqlAlchemyTailoringRunRepository,
+    )
+
+    return AbandonStaleTailoringRuns(
+        # `TailoringRunRepository` -> the committing wrapper, **one commit per abandoned run**, and
+        # both halves of the failure contract depend on it. A database failure part-way through a
+        # batch keeps every run already recorded (G-35), so the next tick lists only the rest. And a
+        # run another process decided first (G-36) is skipped without taking the batch's earlier
+        # writes back with it. One transaction per tick would make one bad row cost the whole batch.
+        runs=CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session),
+        # `EventPublisherPort` -> `LoggingEventPublisher`: each abandonment's `TailoringRunFailed`
+        # is the per-run log line G-25' asks for (`tailoring_run_id`, `reason=abandoned`).
+        events=LoggingEventPublisher(),
+        # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007). Read once per batch by the
+        # use case, so every `completed_at` written in one tick is the same instant.
+        clock=SystemClock(),
+        # The same setting `_build_use_case` passes to `ExecuteTailoringRun` step 3. One window, both
+        # recovery paths.
+        stale_after_seconds=settings.tailoring_stale_after_seconds,
+        # `batch_size` is left at the use case's default of 100, and **not made a setting**. A run
+        # is only `running` while a worker slot holds it, so one lost worker strands at most
+        # `--concurrency` runs (2 in production). A backlog of 100 would take fifty lost workers
+        # inside a single five-minute window, and even then the next tick takes the rest a minute
+        # later. A knob nobody has a reason to turn is a knob somebody will turn wrongly.
     )

@@ -237,10 +237,15 @@ class Settings(BaseSettings):
     # A cross-aggregate cap enforced in `RequestTailoringRun`, not on `TailoringRun` — the rule spans
     # every run a session owns, which no single run can know.
     max_tailoring_runs_per_session: int = 20
-    # When a redelivered `running` run is old enough to be called `abandoned`. **Above Celery's
-    # `task_time_limit` (180) on purpose**, so on a genuinely hung task the hard limit fires first and
-    # the worker dies with a recorded outcome, rather than this threshold quietly relabelling a task
-    # that is still running.
+    # How long a run may stay `running` before it is recorded `failed` / `abandoned`. The stale-run
+    # sweep (`AbandonStaleTailoringRuns`, run by beat every minute) applies this window, and so does
+    # `ExecuteTailoringRun` step 3 when a redelivered message arrives late.
+    #
+    # **Above Celery's `task_time_limit` (180) on purpose.** A live call is killed by the hard limit
+    # well before its run is old enough to be swept, so the sweep never relabels a task that is still
+    # running. The hard limit itself records nothing: the pool child is killed mid-call, the message
+    # is acked, and the run stays `running`. The sweep is what records it, at most this window plus
+    # one beat interval later.
     tailoring_stale_after_seconds: int = 300
     # A named queue from the first slice so 1.5's export tasks can land on a second one without a
     # long render starving a tailoring run. One line now; expensive to retrofit.

@@ -290,6 +290,13 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   like a healthy system — the API answers, the database answers, and every export queues forever.
   This is a lesson imported from the previous project, where a crash-looping worker sat behind a
   green dashboard for an entire session.
+- **`task_acks_late=True` does not mean "a lost task comes back".** Celery redelivers only when the
+  worker's *main* process dies holding the message, and on Redis only after `visibility_timeout`. A
+  task that raises or hits the hard time limit is acked (`task_acks_on_failure_or_timeout=True`), and
+  so is one whose pool child is OOM-killed. `task_reject_on_worker_lost` is left unset on purpose,
+  because a prompt redelivery would find the run `running` and skip it. Slice 1.3's `/verify` found
+  runs stuck `running` for ever this way. The stale-run sweep on beat recovers them now, and **beat is
+  not a worker**, so `/health/ready` cannot see it stop.
 - **Every container running application code appears in the deploy's `pull` list and in the
   image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
   neither and ran a stale image for four releases; the only symptom was behaviour not matching the

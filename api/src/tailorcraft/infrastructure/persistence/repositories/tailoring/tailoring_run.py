@@ -207,38 +207,26 @@ class SqlAlchemyTailoringRunRepository:
     async def list_stale_running(
         self, started_before: datetime, limit: int
     ) -> Sequence[TailoringRun]:
-        """`AbandonStaleTailoringRuns`' lookup (G-25'): `running` runs that started before
-        `started_before`, **or never recorded a start at all**, oldest first, at most `limit`.
-
-        The contract is the one written out in the use case's docstring, and
-        `FakeTailoringRunRepository.list_stale_running` implements the same one. The two must agree,
-        because the fake is what the sweep's tests run against. It will become the port's docstring
-        once `TailoringRunRepository` declares the member (V5c).
-
-        **`started_at IS NULL` is in the filter because `TailoringRun.is_stale` folds `None` to
-        stale.** It is not a state this codebase ever writes: `mark_started` sets both fields
-        together. But the query and the aggregate's rule are two expressions of one judgement, and
-        if the query excluded a row the rule calls stale, the use case's re-check could never see
-        it. That row would stay `running` for ever, which is exactly the failure this sweep exists
-        to end.
-
-        **`NULLS FIRST`, then `id`.** A run running since an unknown time is the most suspect, so it
-        goes first. A `NULL` would sort *last* by default in an ascending Postgres sort, so the
-        order is spelled out. The `id` tiebreak exists for the same reason `list_for_session`
-        gives: whole-second timestamps make ties ordinary. With the tiebreak the order is total, and
-        a batch bound cuts at the same place on every run.
+        """The contract is `TailoringRunRepository.list_stale_running`'s docstring: which runs, the
+        `NULL` fold, the total order, the bound, no locking. It is not restated here, so there is one
+        copy to keep true. `FakeTailoringRunRepository` implements the same contract. What follows
+        is only what this adapter adds.
 
         **The status reaches Postgres as a literal (`literal_execute=True`), not a bound
         parameter.** `ix_tailoring_run_running_started_at` is a partial index, and the planner uses
         one only when it can prove the query's `WHERE` implies the index's. A generic prepared plan
         holding `status = $1` proves nothing, so on a table big enough to matter the sweep could
-        fall back to a sequential scan with nothing reporting it. The value is still rendered
-        through `TailoringRunStatusType`, so the literal is the decorator's, not a second spelling of
-        the enum.
+        fall back to a sequential scan with nothing reporting it. That was measured, not reasoned:
+        `EXPLAIN (GENERIC_PLAN)` gave a Seq Scan for `status = $3` and an Index Scan for
+        `status = 'running'`. The value is still rendered through `TailoringRunStatusType`, so the
+        literal is the decorator's, not a second spelling of the enum.
 
-        No locking, and nothing about transactions, as with `save`. A run decided by another process
-        between this read and the sweep's write is G-36. That race is benign by construction, and
-        the use case's docstring records why.
+        **`NULLS FIRST` is spelled out** because an ascending Postgres sort puts `NULL` *last*, the
+        opposite of what the port promises.
+
+        **The index serves the `WHERE`, not the `ORDER BY`.** It is on `started_at` alone, so
+        Postgres sorts the handful of `running` rows it returns. The mapping module records why that
+        is enough, and why the index is partial at all.
         """
         running = literal(
             TailoringRunStatus.RUNNING, TailoringRunStatusType(), literal_execute=True

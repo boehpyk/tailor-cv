@@ -94,11 +94,14 @@ def run_tailoring(tailoring_run_id: str) -> None:
     default 3 retries is 8 paid calls for one button press, every one after the first re-entering a
     run the aggregate has already recorded as failed.
 
-    The only exceptions that escape are infrastructure ones — Postgres unreachable while recording an
-    outcome (G-28). Those are left to escape on purpose: `task_acks_late=True` redelivers, and the
-    redelivery either finishes the run or, past `tailoring_stale_after_seconds`, records it
-    `failed` / `abandoned` (G-25). Every *business* failure is already a recorded state of the
-    aggregate by the time this function sees it (ADR-0004), never an exception.
+    The only exceptions that escape are infrastructure ones: Postgres unreachable while recording an
+    outcome (G-28). Those escape on purpose, so Celery marks the task failed and Sentry sees it.
+    **They are not redelivered.** A late-acked task that raises is still acked, because
+    `task_acks_on_failure_or_timeout` defaults to True (`tasks/app.py`, at `task_acks_late`). The run
+    stays `running`, and the stale-run sweep (`tasks/tailoring_sweep.py`) records it `failed` /
+    `abandoned` once it is past `tailoring_stale_after_seconds` (G-25'). Every *business* failure is
+    already a recorded state of the aggregate by the time this function sees it (ADR-0004), never an
+    exception.
     """
     started_at = time.monotonic()
 
