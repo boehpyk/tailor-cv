@@ -115,8 +115,8 @@ class TailoringNotRunning(DomainError):
     A run goes `queued → running → succeeded`; there is no path from `queued` straight to two
     documents, because documents come from a call and a call is what `running` records. `mark_failed`
     is deliberately *not* subject to this rule — it is legal from `queued` too, because the enqueue
-    can fail after the row is committed (G-14) and a redelivered task can find an abandoned run
-    (G-25), and both must be recordable without pretending the run ever started.
+    can fail after the row is committed (G-14), and that failure must be recordable without
+    pretending the run ever started.
     """
 
 

@@ -119,7 +119,7 @@ class ExecuteTailoringRun:
        ordinary branch in the worker (see `TailoringRunRepository.find`). One log line at the task.
     2. ``run.status`` terminal → return `SKIPPED` (G-27). **No LLM call is made** — this is AC-10,
        and it is the aggregate's TR-3 doing the work: a redelivery cannot buy a second call.
-    3. ``run.status is RUNNING``: if ``now - run.started_at > stale_after_seconds``, then
+    3. ``run.status is RUNNING``: if ``run.is_stale(now, stale_after)``, then
        ``run.mark_failed(ABANDONED, now)``, save, publish, return `ABANDONED` (G-25); otherwise
        return `SKIPPED`. The stale window is what tells "a worker is mid-call right now" apart from
        "a worker died holding this run and nobody is coming back for it".
@@ -220,15 +220,13 @@ class ExecuteTailoringRun:
         # client polling forever).
         if run.status is TailoringRunStatus.RUNNING:
             now = self._clock.now()
-            started_at = run.started_at
             stale_after = timedelta(seconds=self._stale_after_seconds)
-            # `started_at` cannot be `None` while the status is `RUNNING` — `mark_started` sets both
-            # in one breath and nothing else writes either — but `mypy --strict` cannot see that, so
-            # the narrowing is a real branch. It is folded into the stale side deliberately: a run
-            # that claims to be running and cannot say since when is precisely "nobody is coming
-            # back for it", and the alternative (treat it as fresh) would leave it `RUNNING` for
-            # ever, which is the one outcome this window exists to prevent.
-            if started_at is None or now - started_at > stale_after:
+            # The rule lives on the aggregate, not here: `TailoringRun.is_stale` is its one home,
+            # shared with the beat sweep (`AbandonStaleTailoringRuns`), so the two can never
+            # disagree about which runs are dead. That includes the `started_at is None` fold —
+            # a run that claims to be running and cannot say since when counts as stale, for the
+            # reason `is_stale`'s docstring gives.
+            if run.is_stale(now, stale_after):
                 await self._record_failure(run, TailoringFailureReason.ABANDONED, now)
                 return ExecuteTailoringRunOutcome.ABANDONED
             return ExecuteTailoringRunOutcome.SKIPPED

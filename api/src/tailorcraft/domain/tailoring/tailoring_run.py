@@ -80,15 +80,19 @@ class TailoringRun(RecordsEvents):
     | `failed` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` |
 
     **The one cell a reader will question is `mark_failed` from `queued`, and it is legal on
-    purpose.** A run can fail before it ever starts, twice over (ADR-0014 §5). First: the row is
-    committed and *then* the task is published, so a broker that refuses the publish leaves a
-    committed run that can never run — the router records it `failed`/`not_queued` and answers 503
-    (G-14), because leaving it `queued` forever is a run the client polls until it gives up. Second:
-    a redelivered task can find a run that has been `running` past the stale window and that nobody
-    is coming back for — the worker records it `failed`/`abandoned` (G-25). Neither may be recorded
-    by first pretending the run started: `started_at` means *a worker began a call*, and a
-    `started_at` invented to satisfy a state machine is a timestamp that lies to every latency
-    measurement built on it.
+    purpose.** A run can fail before it ever starts: the row is committed and *then* the task is
+    published, so a broker that refuses the publish leaves a committed run that can never run — the
+    router records it `failed`/`not_queued` and answers 503 (G-14), because leaving it `queued`
+    forever is a run the client polls until it gives up. That failure may not be recorded by first
+    pretending the run started: `started_at` means *a worker began a call*, and a `started_at`
+    invented to satisfy a state machine is a timestamp that lies to every latency measurement built
+    on it.
+
+    `abandoned` is **not** a second example of this cell, although it too is recorded without any
+    call failing. It is recorded from `running`, on a run whose `started_at` is real, once
+    `is_stale` says no worker can still be on it — by a redelivered task past the stale window
+    (G-25), or by the beat sweep that exists because redelivery alone does not bring a lost run back
+    (G-25').
 
     Invariants (technical-plan.md):
 
@@ -391,9 +395,9 @@ class TailoringRun(RecordsEvents):
         """Record that the run ended without documents: sets `status = FAILED`,
         `failure_reason = reason`, `completed_at = at`, and records `TailoringRunFailed`.
 
-        Legal from **`QUEUED` as well as `RUNNING`** — see the class docstring for the two ways a run
-        fails before it starts (a refused enqueue, G-14; a stale redelivery, G-25) and why neither
-        may be recorded by pretending it started. Raises `TailoringAlreadyDecided` from either
+        Legal from **`QUEUED` as well as `RUNNING`** — see the class docstring for how a run fails
+        before it starts (a refused enqueue, G-14), why that may not be recorded by pretending it
+        started, and why `abandoned` belongs to the `RUNNING` cell instead. Raises `TailoringAlreadyDecided` from either
         terminal status, and `InvariantViolated` if `at < started_at` when `started_at` is set, or
         `at < requested_at` when it is not (TR-4).
 
@@ -460,7 +464,12 @@ class TailoringRun(RecordsEvents):
         seen: the window must sit above the task's hard time limit, so that a call still in flight
         can never be judged stale (G-36). This method cannot know that limit and does not pretend to.
         """
-        raise NotImplementedError
+        if self._status is not TailoringRunStatus.RUNNING:
+            return False
+        # The fold, on the stale side for the reason in the docstring above.
+        if self._started_at is None:
+            return True
+        return now - self._started_at > stale_after
 
     @property
     def id(self) -> TailoringRunId:

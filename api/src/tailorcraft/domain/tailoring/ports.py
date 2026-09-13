@@ -19,6 +19,7 @@ thing to inspect is written out in its own docstring.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Protocol
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -50,6 +51,9 @@ class TailoringRunRepository(Protocol):
       identity map to notice the mutation at commit time — would make the moment state becomes
       durable invisible at the call site, which is the same objection that keeps the ownership check
       out of `get` below. Invisible rules are the ones a second entry point forgets.
+
+    A third, `list_stale_running`, came later and for a third process: the beat sweep that records
+    a run whose worker was lost (see its own docstring).
     """
 
     def next_identity(self) -> TailoringRunId:
@@ -138,6 +142,34 @@ class TailoringRunRepository(Protocol):
 
         Returns the run rather than a bool for that second job: the 409 body carries the active run's
         id so the client can attach to the run already in flight instead of paying for another.
+        """
+        ...
+
+    async def list_stale_running(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """`RUNNING` runs that no worker can still be working on, for `AbandonStaleTailoringRuns` —
+        the beat sweep that records a run whose worker was lost (G-25').
+
+        **Which runs.** Status `RUNNING`, and either `started_at < started_before` **or no
+        `started_at` at all**. That is `TailoringRun.is_stale` expressed as a filter, fold included:
+        the caller passes `now - stale_after`, and `started_at < now - stale_after` is the same claim
+        as `now - started_at > stale_after`. The `None` half is not a state this codebase writes —
+        `mark_started` sets both fields together — but a filter that left out a row the rule calls
+        stale would hide it from the caller's re-check, and that row would stay `RUNNING` for ever.
+
+        **Bounded, and in a total order.** At most `limit` runs, oldest `started_at` first, a run with
+        no `started_at` counting as the oldest of all (`NULLS FIRST` in SQL terms, where an ascending
+        sort would otherwise put it last), ties broken by id. The bound is the caller's decision: a
+        backlog after an outage must not load every row in one tick. The total order is what makes the
+        bound cut in the same place every time, since whole-second timestamps make ties ordinary.
+
+        **A listed run may already be decided by the time the caller reaches it.** No lock is taken:
+        a redelivered `ExecuteTailoringRun` can record the same run between this read and the
+        caller's write (G-36). The caller re-checks `is_stale` on each run and owns that race; its
+        docstring records why the outcome is benign.
+
+        Says nothing about transactions, exactly as `save` does not.
         """
         ...
 

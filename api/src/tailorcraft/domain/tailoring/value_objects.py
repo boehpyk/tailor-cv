@@ -387,8 +387,9 @@ class TailoringFailureReason(StrEnum):
     Nothing *raises* them, because nothing outside this process produces them: they are recorded by
     our own orchestration. `NOT_QUEUED` is written by the router when the row committed and the
     broker then refused the enqueue (G-14) — the run can never run, and saying so is more honest than
-    leaving it `queued` forever. `ABANDONED` is written by the worker when a redelivered task finds a
-    run that has been `running` past the stale window (G-25) — nobody is coming back for it. Both are
+    leaving it `queued` forever. `ABANDONED` is written when a run has been `running` past the stale
+    window: by the worker, when a redelivered task finds it (G-25), and by the beat sweep, because
+    redelivery alone does not bring a lost run back (G-25') — nobody is coming back for it. Both are
     facts about our own plumbing, and inventing a `TailoringNotQueuedFailure(TailoringFailed)` for
     them would be an exception type that no `raise` statement ever mentions. This is the mirror image
     of `FetchFailureReason.FETCHER_ERROR`'s asymmetry: there, one reason with no *specific* cause;

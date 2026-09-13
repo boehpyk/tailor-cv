@@ -12,10 +12,12 @@ for ever behind a UI that says "still working. Don't refresh." (G-25').
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
+from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,18 +52,14 @@ class AbandonStaleTailoringRuns:
     its two bounds — the window and the batch size — are configuration fixed at construction. A
     zero-field command would be a contract with nothing in it.
 
-    Flow (GREEN, V5c, implements it):
+    Flow:
 
     1. ``now = clock.now()``; ``stale_after = timedelta(seconds=stale_after_seconds)``. **One instant
        for the whole batch**, so the listing, the re-check and every `completed_at` written this tick
        agree about when "now" was.
     2. ``candidates = await runs.list_stale_running(started_before=now - stale_after,
-       limit=batch_size)``. The repository's contract: runs whose status is `RUNNING` and whose
-       `started_at < started_before` **or `started_at IS NULL`** — the same fold
-       `TailoringRun.is_stale` makes, expressed as a query (`started_at < now - stale_after` is the
-       same claim as `now - started_at > stale_after`). **At most `limit`, oldest first**, a
-       `NULL` `started_at` counting as oldest and ties broken by id, so the order is total. The
-       repository does not lock, and says nothing about transactions — the same as `save`.
+       limit=batch_size)`` — which runs, in what order and with what guarantees is that port
+       method's docstring (`TailoringRunRepository.list_stale_running`).
     3. For each candidate, in order:
 
        - ``if not run.is_stale(now, stale_after)``: count it `skipped` and move on — no mark, no
@@ -142,4 +140,28 @@ class AbandonStaleTailoringRuns:
         self._batch_size = batch_size
 
     async def __call__(self) -> AbandonStaleTailoringRunsResult:
-        raise NotImplementedError
+        # Step 1. Read once: the listing, every re-check and every `completed_at` share this instant.
+        now = self._clock.now()
+        stale_after = timedelta(seconds=self._stale_after_seconds)
+
+        # Step 2. Bounded and oldest first, by the port's contract; the next tick takes the rest.
+        candidates = await self._runs.list_stale_running(
+            started_before=now - stale_after, limit=self._batch_size
+        )
+
+        abandoned = 0
+        skipped = 0
+        for run in candidates:
+            # Step 3. The aggregate decides, not the query. `is_stale` is `False` for a decided run
+            # too, and nothing is awaited between this check and `mark_failed`, which is why there
+            # is no `except TailoringAlreadyDecided` below (see the class docstring, G-36).
+            if not run.is_stale(now, stale_after):
+                skipped += 1
+                continue
+            run.mark_failed(TailoringFailureReason.ABANDONED, now)
+            # Save strictly before publish, as in `ExecuteTailoringRun._record_failure`.
+            await self._runs.save(run)
+            await self._events.publish(*run.release_events())
+            abandoned += 1
+
+        return AbandonStaleTailoringRunsResult(abandoned=abandoned, skipped=skipped)
