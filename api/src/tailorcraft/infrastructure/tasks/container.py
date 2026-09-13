@@ -44,6 +44,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,6 +60,23 @@ from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.settings import Settings, get_settings
+
+
+class _StaleSweepingTailoringRunRepository(TailoringRunRepository, Protocol):
+    """`TailoringRunRepository` plus `list_stale_running`. **Transitional: delete it once the port
+    has the member.**
+
+    It exists only because of an ordering constraint (task-list.md, V5, "Order changed at V5a").
+    Every implementer gains `list_stale_running` before the port does, so that adding the Protocol
+    member in V5c breaks nothing. Until then, `CommittingTailoringRunRepository` has to call the
+    method through its `inner`, and an `inner` typed as the bare port has no such method as far as
+    mypy knows. Once `domain/tailoring/ports.py` declares it, this Protocol says nothing the port does
+    not, and `inner` goes back to being a `TailoringRunRepository`.
+    """
+
+    async def list_stale_running(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]: ...
 
 
 class CommittingTailoringRunRepository:
@@ -79,12 +98,12 @@ class CommittingTailoringRunRepository:
     `configure_mappings()` has run — so it cannot be imported at this module's top level, and a
     `class X(SqlAlchemyTailoringRunRepository)` statement is a top-level import by another name.
     `deps.py` solves the same problem by deferring its imports into the provider functions; a class
-    statement has no equivalent, so the relationship becomes composition. The seven pass-throughs are
+    statement has no equivalent, so the relationship becomes composition. The eight pass-throughs are
     the price; `mypy --strict` checking this against the `TailoringRunRepository` Protocol is what
     keeps them from drifting.
     """
 
-    def __init__(self, inner: TailoringRunRepository, session: AsyncSession) -> None:
+    def __init__(self, inner: _StaleSweepingTailoringRunRepository, session: AsyncSession) -> None:
         self._inner = inner
         self._session = session
 
@@ -121,6 +140,14 @@ class CommittingTailoringRunRepository:
 
     async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
         return await self._inner.find_active_for_session(sid)
+
+    async def list_stale_running(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """A read, so **no commit**, like the other read pass-throughs. The sweep's writes go through
+        `save`, which commits one abandoned run at a time. A failure part-way through a batch then
+        keeps every run already recorded, and the next tick lists only the rest."""
+        return await self._inner.list_stale_running(started_before, limit)
 
 
 @asynccontextmanager

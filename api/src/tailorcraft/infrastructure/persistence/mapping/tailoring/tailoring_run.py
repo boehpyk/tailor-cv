@@ -39,7 +39,7 @@ it is one `if run.documents is not None`.
 
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Column, ForeignKey, Integer, Table
+from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, Table, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
@@ -208,6 +208,37 @@ tailoring_run_table = Table(
     CheckConstraint(
         "(status IN ('succeeded','failed')) = (completed_at IS NOT NULL)",
         name="completed_at_matches_terminal_status",
+    ),
+    # **A partial index for the stale-run sweep (G-25'), and it contradicts the "no partial index"
+    # note on `guest_session_id` above on purpose.** The two queries differ in what bounds them.
+    # `find_active_for_session` is bounded by its session: twenty runs at most, found through
+    # `ix_tailoring_run_guest_session_id`, then filtered. `list_stale_running` names no session.
+    # Without this index it has only the table to scan, and it runs **every minute, forever**,
+    # against a table that keeps every run ever made, document bodies included.
+    #
+    # Partial because the `running` set is tiny whatever the table's size. A row is only in it
+    # while a worker holds a call, so the index has a handful of entries on a busy day and zero on a
+    # quiet one. The terminal rows, which are nearly the whole table, are never in it and cost it
+    # nothing to write.
+    #
+    # On `started_at` alone, in the default order. It does **not** match the query's
+    # `ORDER BY started_at NULLS FIRST, id`, and that is not an oversight. The index serves the
+    # `WHERE`, and sorting the handful of rows it returns is trivial. Matching the sort would
+    # buy nothing but a wider index.
+    #
+    # Named explicitly. Left unnamed, the `ix` convention in `registry.py` would render it
+    # `ix_tailoring_run_started_at`, which reads as a full index on the column. The predicate belongs
+    # in the name.
+    #
+    # The predicate is a `text()` literal, as the CHECKs above are. **The query must state
+    # `'running'` as a constant as well, or the planner may ignore this index.** A partial index is
+    # usable only when the planner can prove the query's `WHERE` implies the index's, and a generic
+    # prepared plan holding `status = $1` proves nothing. So `list_stale_running` renders the status
+    # with `literal_execute=True` rather than as a bound parameter.
+    Index(
+        "ix_tailoring_run_running_started_at",
+        "started_at",
+        postgresql_where=text("status = 'running'"),
     ),
 )
 
