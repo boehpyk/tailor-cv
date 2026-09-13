@@ -1,0 +1,142 @@
+"""Tests for the Celery application's configuration (`infrastructure/tasks/app.py`), V5f, /verify
+round 1, test-after.
+
+No broker, no database — every assertion here inspects the module-level `app` object `create_celery`
+built at import time, the same object both the worker and beat actually run with. Three things this
+file is not:
+
+- **Not the sweep's own behaviour** — that is `test_tailoring_sweep_task.py`.
+- **Not the queue routing keys' behaviour either** — those are a *sibling* concern to
+  `task_queues`'s mere existence, and get their own section below (V5d-3, `95ca5bc`) because they
+  were the one thing measured wrong at /verify round 1: two `Queue`s declared with no `routing_key`
+  both bind the `celery` exchange under the SAME key, so a publish to either queue's name reaches
+  BOTH of them (`tasks/app.py`'s own comment on `task_queues`).
+- **Not a claim about what a deployed worker's `Settings` will actually hold** — the one item below
+  that touches `tailoring_stale_after_seconds` says explicitly where it stops being able to prove
+  anything, because that field is overridable from the environment and no object in this process can
+  see a value chosen by a future deployment.
+"""
+
+from __future__ import annotations
+
+from tailorcraft.infrastructure.settings import Settings
+from tailorcraft.infrastructure.tasks.app import (
+    ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
+    STALE_RUN_SWEEP_EXPIRES_SECONDS,
+    STALE_RUN_SWEEP_INTERVAL_SECONDS,
+    app,
+)
+
+# --- The beat schedule -----------------------------------------------------------------------------
+
+
+def test_beat_schedule_registers_the_sweep_every_60_seconds_with_an_expiry_under_60() -> None:
+    entry = app.conf.beat_schedule["abandon-stale-tailoring-runs"]
+
+    assert entry["task"] == ABANDON_STALE_TAILORING_RUNS_TASK_NAME, (
+        "a schedule and a task that disagree about the name produce NotRegistered on the worker, "
+        "once a minute, in a log nobody reads (tasks/app.py's own comment)"
+    )
+    assert entry["schedule"] == STALE_RUN_SWEEP_INTERVAL_SECONDS == 60.0
+    assert entry["options"]["expires"] == STALE_RUN_SWEEP_EXPIRES_SECONDS
+    assert entry["options"]["expires"] < entry["schedule"], (
+        "the expiry must sit below the interval so at most one live tick exists at any moment — "
+        "otherwise a worker back after an outage finds every missed tick still queued ahead of real "
+        "work (tasks/app.py's own comment)"
+    )
+
+
+# --- The Redis redelivery window ---------------------------------------------------------------
+
+
+def test_broker_visibility_timeout_exceeds_the_hard_task_time_limit() -> None:
+    assert app.conf.broker_transport_options["visibility_timeout"] > app.conf.task_time_limit, (
+        "a visibility timeout below the hard time limit would let Redis redeliver a HEALTHY task's "
+        "message while it is still legitimately running, duplicating it (tasks/app.py's own comment "
+        "on broker_transport_options)"
+    )
+
+
+def test_task_reject_on_worker_lost_is_unset_so_the_sweep_is_the_one_recovery_mechanism() -> None:
+    assert not app.conf.task_reject_on_worker_lost, (
+        "task_reject_on_worker_lost must stay unset/falsy: setting it would redeliver a killed "
+        "worker's message straight into ExecuteTailoringRun step 3, which finds the run still "
+        "RUNNING and inside the stale window and returns SKIPPED — recovering nothing — while also "
+        "risking a redelivery loop for a message that reliably kills its child. The stale-run sweep "
+        "is meant to be the ONE recovery mechanism for a lost worker (tasks/app.py's own comment on "
+        "task_acks_late)"
+    )
+
+
+# --- The sweep is published to a queue a worker actually consumes ------------------------------
+
+
+def test_the_sweep_routes_to_a_queue_declared_in_task_queues() -> None:
+    entry = app.conf.beat_schedule["abandon-stale-tailoring-runs"]
+    routed_queue_name = entry["options"]["queue"]
+    declared_queue_names = {queue.name for queue in app.conf.task_queues}
+
+    assert routed_queue_name in declared_queue_names, (
+        "a task published to a queue no worker consumes queues forever behind a system that looks "
+        "entirely healthy: the API answers, Redis is up, the worker reports itself idle, and nothing "
+        "anywhere logs an error (tasks/app.py's own comment on task_queues). Discriminates by "
+        "renaming the beat entry's 'queue' option locally without adding a matching Queue()."
+    )
+
+
+# --- V5d-3: every queue's own routing key ------------------------------------------------------
+
+
+def test_every_queue_in_task_queues_has_a_routing_key_equal_to_its_own_name() -> None:
+    """A `Queue` declared with no explicit `routing_key` falls back to `task_default_routing_key`
+    ('celery'), so before V5d-3 (`95ca5bc`) both queues bound the `celery` exchange under the SAME
+    key — kombu's lookup for `exchange='celery', routing_key='celery'` returned `['celery',
+    'tailoring']`, measured at /verify round 1 — and a publish made with that pair landed a message
+    in BOTH queues: two deliveries of one tailoring run, and a read-then-write idempotency race that
+    could pay for the model twice. Proven to discriminate by dropping `routing_key=...` from either
+    `Queue(...)` call in `tasks/app.py` locally, which falls the dropped queue's `routing_key` back
+    to `'celery'` and turns this assertion red for that queue (and the next one red too).
+    """
+    for queue in app.conf.task_queues:
+        assert queue.routing_key == queue.name, (
+            f"queue {queue.name!r} has routing_key {queue.routing_key!r} — every queue here must "
+            "route on its own name, never kombu's default routing key ('celery'), or a publish can "
+            "land in more than the one queue it named (measured at /verify round 1)"
+        )
+
+
+def test_no_two_queues_in_task_queues_share_a_routing_key() -> None:
+    routing_keys = [queue.routing_key for queue in app.conf.task_queues]
+
+    assert len(routing_keys) == len(set(routing_keys)), (
+        "two queues sharing a routing key both receive any publish made with that key — exactly the "
+        "double-delivery V5d-3 fixes (tasks/app.py's own comment on task_queues)"
+    )
+
+
+# --- The invariant that only a comment enforces (V5f brief): tailoring_stale_after_seconds ------
+# --- must stay above task_time_limit, or the sweep can abandon a call that is genuinely still ----
+# --- in flight -------------------------------------------------------------------------------------
+
+
+def test_the_default_stale_window_stays_above_the_hard_task_time_limit(settings: Settings) -> None:
+    """Honestly scoped: `tailoring_stale_after_seconds` is a `Settings` field, overridable from the
+    environment (`TAILORING_STALE_AFTER_SECONDS`); `task_time_limit` is a bare constant inside
+    `create_celery` (`tasks/app.py`). Neither is stored on any one object in a form the other could
+    be read back from at runtime, so there is no way for a test in THIS process to see the value a
+    future deployment's environment actually sets — only the default `Settings()` builds absent any
+    override, which is the `settings` fixture's own value here (only `database_url`/`upload_dir`/
+    `app_env` are overridden from it; `tailoring_stale_after_seconds` is not).
+
+    This is therefore a test of DEFAULTS, stated as such rather than dressed up as more: it proves
+    the relationship the comment above `broker_transport_options` in `tasks/app.py` assumes still
+    holds for the shipped default (300 > 180), and would catch a future edit to either number that
+    broke it — but it can NOT catch a production deployment that sets
+    `TAILORING_STALE_AFTER_SECONDS` below `task_time_limit` in its environment. That gap is outside
+    what any test running in this process can observe.
+    """
+    assert settings.tailoring_stale_after_seconds > app.conf.task_time_limit, (
+        "the sweep's stale window must stay above the hard per-task time limit, or the sweep can "
+        "mark a call abandoned while its worker may genuinely still be holding it "
+        "(tasks/app.py's comment on broker_transport_options)"
+    )

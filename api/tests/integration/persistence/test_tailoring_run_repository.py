@@ -21,20 +21,38 @@ aggregate and have no analogue in either sibling file:
   has no tiebreak at all, and T15's own ordering test advances the clock deliberately, so nothing
   before this file exercises either.
 
-Every assertion below states what technical-plan.md's "Persistence" section and
-`domain/tailoring/tailoring_run.py`'s invariants (TR-1...TR-7) say should happen, never what a first
-run of the code produced.
+**`list_stale_running` (V5f, /verify round 1, test-after)** — the stale-run sweep's query, added at
+V5d-1 against `ix_tailoring_run_running_started_at`. The contract is `TailoringRunRepository.
+list_stale_running`'s docstring; every test below states what that contract says should happen, not
+what a first run of the query produced. Two things about it have no analogue anywhere else in this
+file:
+
+- **`started_at IS NULL` while `status = 'running'`** is a state the aggregate cannot build (only raw
+  SQL, `_raw_insert`, reaches it — the same technique the CHECK-constraint tests above already use),
+  and it must sort **first**, ahead of every run that has a timestamp — the query's `NULLS FIRST`
+  fold, matching `TailoringRun.is_stale`'s.
+- **The literal `'running'`**, not a bound parameter — measured at /verify round 1 with
+  `EXPLAIN (GENERIC_PLAN)` and `enable_seqscan=off`: a bound `status = $1` proves nothing to the
+  planner about `ix_tailoring_run_running_started_at`'s partial predicate and falls back to a
+  sequential scan; `status = 'running'` lets it prove the `WHERE` implies the index and use an Index
+  Scan. No row-level assertion can see this — the query returns the same rows either way — so the
+  test intercepts the actual SQL text the adapter sends to Postgres for this call (the same
+  `before_cursor_execute` hook SQLAlchemy itself uses) rather than reconstructing the statement by
+  hand, per this agent's own instruction to prefer testing the real statement over a copy of it.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import event, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -72,6 +90,7 @@ from tailorcraft.infrastructure.persistence.repositories.identity.guest_session 
 from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
     SqlAlchemyTailoringRunRepository,
 )
+from tailorcraft.infrastructure.settings import Settings
 
 # --- Test helpers --------------------------------------------------------------------------------
 
@@ -660,3 +679,362 @@ async def test_find_active_for_session_with_two_active_runs_returns_the_newest_w
 
     assert found is not None
     assert found.id == newer_active.id
+
+
+# --- list_stale_running (V5f, /verify round 1): the stale-run sweep's query --------------------------
+
+
+def _running_at(
+    runs: SqlAlchemyTailoringRunRepository,
+    owner_id: GuestSessionId,
+    *,
+    requested_at: datetime,
+    started_at: datetime,
+) -> TailoringRun:
+    """A `RUNNING` run with explicit, independent `requested_at`/`started_at` instants.
+
+    Unlike `_running` above (which always starts a run at `clock.now()`), `list_stale_running`'s own
+    tests need `started_at` placed at an arbitrary point in the past relative to a chosen cutoff, not
+    "now" — the sweep's whole premise is a run whose worker vanished a while ago.
+    """
+    run = TailoringRun.request(
+        id=runs.next_identity(),
+        guest_session_id=owner_id,
+        base_cv_id=BaseCvId(value=uuid4()),
+        job_posting_id=JobPostingId(value=uuid4()),
+        requested_at=requested_at,
+    )
+    run.mark_started(started_at)
+    return run
+
+
+async def test_list_stale_running_selects_a_running_run_started_before_the_cutoff(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    owner = await _persist_owner(session, clock, token_hash="21" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    stale = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=clock.now() - timedelta(seconds=400),
+    )
+    await runs.add(stale)
+
+    result = await runs.list_stale_running(
+        started_before=clock.now() - timedelta(seconds=300), limit=10
+    )
+
+    assert [run.id for run in result] == [stale.id]
+
+
+async def test_list_stale_running_excludes_a_running_run_started_after_the_cutoff(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """A decoy fresh `RUNNING` run must not be selected — and a genuinely stale run in the same call
+    proves `list_stale_running` actually ran rather than merely returning an empty list by accident."""
+    owner = await _persist_owner(session, clock, token_hash="22" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    fresh = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=10),
+        started_at=clock.now() - timedelta(seconds=5),
+    )
+    stale = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=clock.now() - timedelta(seconds=400),
+    )
+    await runs.add(fresh)
+    await runs.add(stale)
+
+    result = await runs.list_stale_running(
+        started_before=clock.now() - timedelta(seconds=300), limit=10
+    )
+
+    assert [run.id for run in result] == [stale.id]
+
+
+async def test_list_stale_running_excludes_a_run_started_exactly_at_the_cutoff(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """Strict `<`, matching `TailoringRun.is_stale`'s strict `>`: a run started exactly at the
+    boundary the caller passes is still fresh and must not be listed at all."""
+    owner = await _persist_owner(session, clock, token_hash="23" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    cutoff = clock.now() - timedelta(seconds=300)
+    boundary = _running_at(
+        runs, owner.id, requested_at=clock.now() - timedelta(seconds=1_000), started_at=cutoff
+    )
+    stale = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=clock.now() - timedelta(seconds=400),
+    )
+    await runs.add(boundary)
+    await runs.add(stale)
+
+    result = await runs.list_stale_running(started_before=cutoff, limit=10)
+
+    assert [run.id for run in result] == [stale.id]
+
+
+async def test_list_stale_running_excludes_queued_and_terminal_runs_however_old(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """A `queued` run, a `succeeded` run and a `failed` run — every one of them old enough to be
+    stale if status were ignored — must all be excluded. A genuinely stale `running` run in the same
+    call proves the query ran."""
+    owner = await _persist_owner(session, clock, token_hash="24" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    very_old = clock.now() - timedelta(days=1)
+    queued = TailoringRun.request(
+        id=runs.next_identity(),
+        guest_session_id=owner.id,
+        base_cv_id=BaseCvId(value=uuid4()),
+        job_posting_id=JobPostingId(value=uuid4()),
+        requested_at=very_old,
+    )
+    succeeded = _running_at(runs, owner.id, requested_at=very_old, started_at=very_old)
+    succeeded.mark_succeeded(_documents(), _metrics(), very_old + timedelta(seconds=1))
+    failed = _running_at(runs, owner.id, requested_at=very_old, started_at=very_old)
+    failed.mark_failed(TailoringFailureReason.LLM_ERROR, very_old + timedelta(seconds=1))
+    stale = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=clock.now() - timedelta(seconds=400),
+    )
+    for run in (queued, succeeded, failed, stale):
+        await runs.add(run)
+
+    result = await runs.list_stale_running(
+        started_before=clock.now() - timedelta(seconds=300), limit=10
+    )
+
+    assert [run.id for run in result] == [stale.id]
+
+
+async def test_list_stale_running_orders_oldest_started_at_first_with_an_id_tiebreak(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """Oldest `started_at` first; two runs sharing the same whole second break the tie on `id` —
+    ordinary under the `Clock`'s whole-second contract, matching `list_for_session`'s own tiebreak
+    test above."""
+    owner = await _persist_owner(session, clock, token_hash="25" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    same_second = clock.now() - timedelta(seconds=400)
+    older = _running_at(
+        runs, owner.id, requested_at=clock.now() - timedelta(seconds=1_000), started_at=same_second
+    )
+    await runs.add(older)
+    await asyncio.sleep(
+        0.002
+    )  # cross a millisecond boundary so the newer id is unambiguously greater
+    newer = _running_at(
+        runs, owner.id, requested_at=clock.now() - timedelta(seconds=1_000), started_at=same_second
+    )
+    await runs.add(newer)
+    oldest = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=2_000),
+        started_at=clock.now() - timedelta(seconds=900),
+    )
+    await runs.add(oldest)
+
+    assert older.started_at == newer.started_at, (
+        "the tiebreak only means something on a shared second"
+    )
+    assert newer.id.value > older.id.value, "sanity: uuid7 time-ordering held for this pair"
+
+    result = await runs.list_stale_running(
+        started_before=clock.now() - timedelta(seconds=300), limit=10
+    )
+
+    assert [run.id for run in result] == [oldest.id, older.id, newer.id]
+
+
+async def test_list_stale_running_respects_the_limit(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    owner = await _persist_owner(session, clock, token_hash="26" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    oldest = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=2_000),
+        started_at=clock.now() - timedelta(seconds=900),
+    )
+    middle = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_500),
+        started_at=clock.now() - timedelta(seconds=700),
+    )
+    newest = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=clock.now() - timedelta(seconds=400),
+    )
+    for run in (newest, oldest, middle):  # added out of order on purpose
+        await runs.add(run)
+
+    result = await runs.list_stale_running(
+        started_before=clock.now() - timedelta(seconds=300), limit=2
+    )
+
+    assert [run.id for run in result] == [oldest.id, middle.id]
+
+
+async def test_list_stale_running_selects_a_null_started_at_running_row_first(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """`started_at IS NULL` while `status = 'running'` is a state the aggregate cannot build — the
+    public API always sets both together (`mark_started`) — so the only way to reach it is a raw
+    `INSERT`, exactly as the CHECK-constraint tests above reach their own unconstructable states. The
+    repository's own docstring folds this to "stale, and the most suspect row of all": a run that
+    cannot say when it started sorts **first**, ahead of a run that merely started a while ago.
+    """
+    owner = await _persist_owner(session, clock, token_hash="27" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    with_timestamp = _running_at(
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=clock.now() - timedelta(seconds=400),
+    )
+    await runs.add(with_timestamp)
+    null_started_at_id = uuid4()
+    await _raw_insert(
+        session,
+        owner.id,
+        clock,
+        id=null_started_at_id,
+        status="running",
+        started_at=None,
+    )
+
+    result = await runs.list_stale_running(
+        started_before=clock.now() - timedelta(seconds=300), limit=10
+    )
+
+    assert [run.id.value for run in result] == [null_started_at_id, with_timestamp.id.value]
+    assert result[0].started_at is None
+
+
+async def test_list_stale_running_sends_status_to_postgres_as_a_literal_not_a_bound_parameter(
+    engine: AsyncEngine, session: AsyncSession, clock: FixedClock
+) -> None:
+    """Pins the adapter's own comment: `status` must reach Postgres as the literal `'running'`
+    (`literal_execute=True`), never as a bound parameter, or the planner cannot prove the query's
+    `WHERE` implies `ix_tailoring_run_running_started_at`'s partial predicate and silently falls back
+    to a sequential scan on a table that keeps every run ever made (measured with
+    `EXPLAIN (GENERIC_PLAN)` / `enable_seqscan=off`, per the mapping module's own docstring). No
+    returned row can tell the two apart — this intercepts the actual SQL text the adapter sends to
+    Postgres for this call, the real statement rather than a hand-rebuilt copy of it.
+
+    **Proven to discriminate**: removing `literal_execute=True` from `list_stale_running` locally (so
+    the comparison reads `_TAILORING_RUN_STATUS == running.value` or similar) replaces the literal
+    with a bound placeholder and turns this assertion red — reported alongside this file's other
+    guards.
+    """
+    owner = await _persist_owner(session, clock, token_hash="28" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    await runs.add(
+        _running_at(
+            runs,
+            owner.id,
+            requested_at=clock.now() - timedelta(seconds=1_000),
+            started_at=clock.now() - timedelta(seconds=400),
+        )
+    )
+
+    captured_statements: list[str] = []
+
+    def _capture(conn: object, cursor: object, statement: str, *_args: object) -> None:
+        captured_statements.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _capture)
+    try:
+        await runs.list_stale_running(started_before=clock.now() - timedelta(seconds=300), limit=10)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", _capture)
+
+    matching = [s for s in captured_statements if "tailoring_run" in s and "started_at" in s]
+    assert matching, "list_stale_running's SELECT never reached the database"
+    assert "'running'" in matching[-1], (
+        "the status must be rendered as the literal 'running', not a bound parameter — see this "
+        "test's own docstring"
+    )
+
+
+async def test_ix_tailoring_run_running_started_at_exists_with_its_partial_predicate(
+    session: AsyncSession,
+) -> None:
+    """Mirrors `test_guest_session_id_index_exists_on_tailoring_run` above, for the partial index
+    the sweep depends on (migration `3d0b70b7837f`)."""
+    result = await session.execute(
+        text(
+            "SELECT indexdef FROM pg_indexes WHERE tablename = 'tailoring_run' "
+            "AND indexname = 'ix_tailoring_run_running_started_at'"
+        )
+    )
+    indexdef = result.scalar_one_or_none()
+    assert indexdef is not None
+    assert "started_at" in indexdef
+    assert "WHERE" in indexdef
+    assert "running" in indexdef
+
+
+def test_migration_3d0b70b7837f_downgrade_removes_the_partial_index(settings: Settings) -> None:
+    """Run as a plain `def test_...`, not `async def` — exactly the reason
+    `test_tailoring_task.py`'s two literal-bridge tests are plain `def`s: `alembic/env.py`'s
+    `run_migrations_online` wraps every online migration in its own `asyncio.run(
+    run_async_migrations())`, and `asyncio.run` refuses to start a second loop on top of one already
+    running. pytest-asyncio's session-scoped loop is only ever *running* while an `async def` test's
+    own body executes — idle here, which is where Alembic's own fresh `asyncio.run()` may open one.
+
+    Downgrades then re-upgrades within this one test, in a `finally`: this suite has ONE test
+    database, migrated to head ONCE per session (`conftest.py`'s `_migrated`), so leaving the schema
+    at `-1` would silently break every test that runs after this one — in this file and beyond, since
+    `_migrated` never runs a second time. Requests no `session`/`connection` fixture: those bind to a
+    SAVEPOINT held open on the same shared connection for the rest of the test, and Alembic's own DDL
+    needs to run outside of any such transaction rather than risk lock contention with it.
+    """
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", settings.test_database_url)
+
+    async def _index_exists() -> bool:
+        verify_engine = create_async_engine(settings.test_database_url, poolclass=None)
+        try:
+            async with verify_engine.connect() as conn:
+                result = await conn.execute(
+                    text(
+                        "SELECT indexname FROM pg_indexes WHERE tablename = 'tailoring_run' "
+                        "AND indexname = 'ix_tailoring_run_running_started_at'"
+                    )
+                )
+                return result.scalar_one_or_none() is not None
+        finally:
+            await verify_engine.dispose()
+
+    assert asyncio.run(_index_exists()) is True, (
+        "the index must exist at head before this test runs"
+    )
+
+    command.downgrade(config, "-1")
+    try:
+        assert asyncio.run(_index_exists()) is False, (
+            "downgrade() must drop ix_tailoring_run_running_started_at — proven to discriminate by "
+            "commenting out the op.drop_index() call in the migration's downgrade() locally"
+        )
+    finally:
+        command.upgrade(config, "head")
+        assert asyncio.run(_index_exists()) is True, (
+            "the schema must be back at head before the next test in the session runs"
+        )

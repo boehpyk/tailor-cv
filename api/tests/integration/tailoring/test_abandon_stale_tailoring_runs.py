@@ -10,11 +10,11 @@ use case is tested against the one port it depends on, `TailoringRunRepository`,
 `FakeTailoringRunRepository` (`tests/integration/fakes.py`), plus `RecordingEventPublisher` and
 `FixedClock`.
 
-**`list_stale_running` is not yet on `TailoringRunRepository`** (`domain/tailoring/ports.py`) — the
-V5a skeleton commit measured that adding it now breaks mypy in six files this layer does not own.
-It is added to `FakeTailoringRunRepository` in this same commit instead, ahead of the Protocol
-gaining the member in GREEN; structural typing makes that order safe, since every test here calls
-the method on the concrete fake, never through the Protocol type.
+**`list_stale_running` is now a member of `TailoringRunRepository`** (`domain/tailoring/ports.py`,
+added at GREEN, V5c) — it was added to `FakeTailoringRunRepository` first, in the V5b commit this
+file's tests were originally written against, ahead of the Protocol gaining the member; structural
+typing made that order safe, since every test here calls the method on the concrete fake, never
+through the Protocol type. Nothing below changed when the Protocol caught up.
 
 Every assertion below states what `AbandonStaleTailoringRuns.__call__` **should** do per its own
 skeleton docstring's "Flow (GREEN, V5c, implements it)" section and the amended feature-spec rows

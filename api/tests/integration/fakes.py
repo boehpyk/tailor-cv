@@ -249,14 +249,14 @@ class FakeTailoringRunRepository:
     ever asked. A count alone would not do either, since `1` is consistent with "saved before the
     call" and "saved after, coincidentally also once"; recording the status distinguishes them.
 
-    `list_stale_running`, added for V5b (the stale-run sweep, G-25'), is **not yet a member of
-    `TailoringRunRepository`** — the skeleton commit measured that adding it breaks mypy in six
-    files this layer may not touch, so it lands on the Protocol only once every implementer already
-    has it. Structural typing makes that order safe: this class satisfies the port either way. The
-    contract, matching the SQL adapter's once it exists: `RUNNING` rows whose `started_at` is before
-    `started_before`, **or** `started_at is None` — the same fold `TailoringRun.is_stale` makes,
-    expressed as a filter — oldest first with a `NULL` counted as oldest (`NULLS FIRST`), ties on
-    `started_at` broken by id, at most `limit`, no locking.
+    `list_stale_running`, added for V5b (the stale-run sweep, G-25'), is now a member of
+    `TailoringRunRepository` (`domain/tailoring/ports.py`, GREEN, V5c) — it landed on the Protocol
+    once every implementer had it, and this class was its first implementation, ahead of the SQL
+    adapter (`infrastructure/persistence/repositories/tailoring/tailoring_run.py`). The contract,
+    matching the SQL adapter's: `RUNNING` rows whose `started_at` is before `started_before`, **or**
+    `started_at is None` — the same fold `TailoringRun.is_stale` makes, expressed as a filter —
+    oldest first with a `NULL` counted as oldest (`NULLS FIRST`), ties on `started_at` broken by id,
+    at most `limit`, no locking.
     """
 
     def __init__(self) -> None:
@@ -300,7 +300,8 @@ class FakeTailoringRunRepository:
         self, started_before: datetime, limit: int
     ) -> Sequence[TailoringRun]:
         """`AbandonStaleTailoringRuns`' lookup (V5b, G-25'). See the class docstring for the
-        contract this implements ahead of the Protocol gaining the member."""
+        contract this implements — the same one `TailoringRunRepository.list_stale_running` now
+        states on the Protocol itself."""
         candidates = [
             run
             for run in self._by_id.values()
