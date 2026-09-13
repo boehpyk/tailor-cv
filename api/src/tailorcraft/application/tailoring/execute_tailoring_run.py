@@ -18,7 +18,7 @@ from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.posting.ports import JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.tailoring.errors import TailoringFailed
+from tailorcraft.domain.tailoring.errors import TailoringFailed, TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
@@ -78,11 +78,19 @@ class ExecuteTailoringRunOutcome(StrEnum):
     did, and the run's status describes where the *run* stands. `SKIPPED` and `MISSING` have no
     status counterpart at all, and a `FAILED` outcome and a `failed` status are only incidentally
     spelled alike — the outcome is the worker's report, the status is the recorded fact.
+
+    `SKIPPED` carries a second meaning since slice 1.4 (ADR-0014 amendment §6; ADR-0015 §3): a
+    delivery that read the run `queued`, marked it started, and then **lost the version check on
+    save** to another delivery in flight at the same time. It is the same word on purpose rather
+    than a sixth member — from the worker's side both are "someone else has this run; nothing was
+    spent here" — and the evidence that it was the race rather than an ordinary skip is the
+    repository's `tailoring.concurrent_modification` log line, emitted with the run id at the
+    translation site, which is where the fact is known.
     """
 
     SUCCEEDED = "succeeded"
     FAILED = "failed"
-    SKIPPED = "skipped"  # already decided, or already running and not yet stale
+    SKIPPED = "skipped"  # already decided, running and not yet stale, or lost the race to start
     MISSING = "missing"  # the run is gone (its session was purged)
     ABANDONED = "abandoned"  # redelivered after the stale window
 
@@ -123,7 +131,9 @@ class ExecuteTailoringRun:
        ``run.mark_failed(ABANDONED, now)``, save, publish, return `ABANDONED` (G-25); otherwise
        return `SKIPPED`. The stale window is what tells "a worker is mid-call right now" apart from
        "a worker died holding this run and nobody is coming back for it".
-    4. ``run.mark_started(clock.now())``; ``await runs.save(run)`` **and commit**.
+    4. ``run.mark_started(clock.now())``; ``await runs.save(run)`` **and commit** — with
+       `TailoringRunConcurrentlyModified` **caught** → return `SKIPPED` before the model is called
+       (AC-8). Nothing is published on that path: the start did not happen.
     5. ``cv = await base_cvs.get(run.base_cv_id)``; ``posting = await job_postings.get(...)``.
     6. ``draft = await llm.tailor(cv.extracted_text, posting.text)``, with `TailoringFailed`
        **caught**.
@@ -145,6 +155,17 @@ class ExecuteTailoringRun:
     one commit in it, so the worker gets its own composition root (`infrastructure/tasks/`), and
     `TailoringRunRepository.save` deliberately says nothing about transactions so that the boundary
     stays the caller's.
+
+    **Step 4, the other half — the version check is what closes the duplicate-delivery gap.** 1.3's
+    `/verify` carried out a race that the aggregate cannot see: two deliveries of one run, both
+    reading `queued`, both succeeding at `mark_started` against their own in-memory copy, and both
+    paying. TR-3 (`TailoringAlreadyDecided`) covers a *sequential* redelivery — a worker finished and
+    then asked again — and only the repository's version check (ADR-0015 §3, `version_id_col`)
+    covers two deliveries in flight at once. So the save that records `RUNNING` is the one place in
+    this use case that catches `TailoringRunConcurrentlyModified`, and it returns `SKIPPED` **before**
+    step 6 rather than after it. The contrast with `ReviseTailoredDocument`, which lets the same
+    error propagate, is stated in that class's docstring: this one has an outcome vocabulary and a
+    task that must not raise for a business outcome; that one has a status code to answer.
 
     **Step 6 — `TailoringFailed` is caught here, and that is the deliberate opposite of
     `CaptureJobPosting`**, which lets `JobPostingFetchFailed` propagate to the boundary and records
@@ -241,7 +262,18 @@ class ExecuteTailoringRun:
         # composition root closes this one here. An application test snapshots `save_calls` at the
         # instant `tailor()` starts, so moving this below the call turns it red.
         run.mark_started(self._clock.now())
-        await self._runs.save(run)
+        try:
+            await self._runs.save(run)
+        except TailoringRunConcurrentlyModified:
+            # Another delivery of this run started it first. Return before paying — this is the
+            # ADR-0014 amendment §6 fix: the aggregate's TR-3 covers a *sequential* redelivery,
+            # and only the version check covers two deliveries in flight at once. `SKIPPED`, not a
+            # sixth outcome: the evidence that the race fired is the repository's
+            # `tailoring.concurrent_modification` log line. The `TailoringRunStarted` that
+            # `mark_started` recorded stays in the buffer, unpublished — the start did not happen,
+            # and this in-memory copy is discarded with the task. `ReviseTailoredDocument` lets the
+            # same error propagate, and says why at its step 3.
+            return ExecuteTailoringRunOutcome.SKIPPED
         # Published after the save that made it durable, never before — and released per
         # transaction, so `TailoringRunStarted` goes out with the state it describes rather than
         # arriving at the end bundled with the outcome.

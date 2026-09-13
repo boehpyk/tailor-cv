@@ -17,6 +17,7 @@ from datetime import timedelta
 
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
+from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
 from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason
 
@@ -39,16 +40,17 @@ class AbandonStaleTailoringRunsResult:
       it nor aborts the batch — the sweep counts it and moves on to the next run.
 
     Counts rather than the runs themselves: a caller that wanted per-run detail already has it,
-    because each abandonment publishes `TailoringRunFailed` carrying the run's id.
+    because each abandonment publishes `TailoringRunFailed` carrying the run's id — and a conflict
+    publishes nothing, because its save never landed and there is no fact to announce.
 
-    `conflicts` defaults to `0` because it was added in slice 1.4 and 1.3's tests construct the
-    result by keyword with two fields; the production construction site passes it explicitly and
-    the default exists only so the field lands without a test edit in the same commit.
+    All three fields are required, `conflicts` included: it was added in slice 1.4 and briefly
+    carried a default so it could land ahead of the tests, but a default on a count is a way for a
+    construction site to forget one, and every site now names all three.
     """
 
     abandoned: int
     skipped: int
-    conflicts: int = 0
+    conflicts: int
 
 
 class AbandonStaleTailoringRuns:
@@ -80,6 +82,11 @@ class AbandonStaleTailoringRuns:
          before publish**: a publish that ran first would announce a fact a failed save is about to
          un-happen. `ExecuteTailoringRun._record_failure` performs the same three steps in the same
          order.
+       - ``except TailoringRunConcurrentlyModified``: count it `conflicts` and move on (E-20;
+         ADR-0015 §3). A worker or a redelivery decided this run between the sweep's read and its
+         write; whichever wrote first stands, and that is the correct outcome. The sweep neither
+         overwrites it nor aborts the batch over it: the next run in the batch is still stale and
+         still waiting for its answer.
 
     4. Return ``AbandonStaleTailoringRunsResult(abandoned=..., skipped=..., conflicts=...)``.
 
@@ -92,13 +99,15 @@ class AbandonStaleTailoringRuns:
 
     What neither guard can see is a decision written **by another process** straight to the database:
     a redelivered `ExecuteTailoringRun` reaching step 3 for the same run. The object this sweep loaded
-    still says `RUNNING`, so the sweep marks and saves it, and whichever write lands second wins. That
-    is G-36 and it is benign by construction: the only other writer that can act on a run past the
-    window is step 3, which records the same `abandoned` reason, so the row ends in the same state
-    with a `completed_at` a moment apart, and two `TailoringRunFailed` lines are logged instead of
-    one. A *live* worker cannot be that other writer, because the window sits above the task's hard
-    time limit and the pool child is killed before it could write — holding that inequality is the
-    composition root's job, not this class's.
+    still says `RUNNING`, so the sweep marks it and tries to save it. Since slice 1.4 the repository's
+    version check (ADR-0015 §3) is what settles that race: the write that lands first stands, the
+    second is refused as `TailoringRunConcurrentlyModified`, and the sweep counts it as a conflict
+    and carries on (E-20). In 1.3 the second write simply won, and that was benign by construction —
+    the only other writer that can act on a run past the window is step 3, which records the same
+    `abandoned` reason — so the version check buys correctness in the count, not in the row: one
+    `TailoringRunFailed` per run instead of two. A *live* worker cannot be that other writer,
+    because the window sits above the task's hard time limit and the pool child is killed before it
+    could write — holding that inequality is the composition root's job, not this class's.
 
     **Why not re-enqueue each stale run through `ExecuteTailoringRun` instead?** Because redelivery is
     the mechanism that just failed. A re-enqueued message would travel through the same broker and
@@ -117,9 +126,10 @@ class AbandonStaleTailoringRuns:
 
     **Transactions and failure (G-35).** This use case does not commit, exactly as
     `ExecuteTailoringRun` does not: the beat task's composition root decides the transaction
-    boundary. Any failure other than the skip above propagates — a database that is down makes
-    `list_stale_running` or `save` raise, the task raises, nothing further is recorded this tick, and
-    the next tick tries again. That retry is safe because the sweep is idempotent by the aggregate's
+    boundary, and its committing repository rolls back a refused save so the session stays usable
+    for the next run in the batch. Any failure other than the skip and the conflict above propagates
+    — a database that is down makes `list_stale_running` or `save` raise, the task raises, nothing
+    further is recorded this tick, and the next tick tries again. That retry is safe because the sweep is idempotent by the aggregate's
     own rules: an abandoned run is no longer `RUNNING`, so it is never listed twice.
 
     **This layer does not log** (see `execute_tailoring_run.py`'s module comment). The per-run line
@@ -161,6 +171,7 @@ class AbandonStaleTailoringRuns:
 
         abandoned = 0
         skipped = 0
+        conflicts = 0
         for run in candidates:
             # Step 3. The aggregate decides, not the query. `is_stale` is `False` for a decided run
             # too, and nothing is awaited between this check and `mark_failed`, which is why there
@@ -170,8 +181,18 @@ class AbandonStaleTailoringRuns:
                 continue
             run.mark_failed(TailoringFailureReason.ABANDONED, now)
             # Save strictly before publish, as in `ExecuteTailoringRun._record_failure`.
-            await self._runs.save(run)
+            try:
+                await self._runs.save(run)
+            except TailoringRunConcurrentlyModified:
+                # A worker or a redelivery decided this run between the read and this write (E-20).
+                # Whichever wrote first stands: neither overwrite it nor abort the batch over it.
+                # Nothing is published — the save never landed, so there is no fact to announce —
+                # and the in-memory copy, `mark_failed` and all, is dropped with the loop variable.
+                conflicts += 1
+                continue
             await self._events.publish(*run.release_events())
             abandoned += 1
 
-        return AbandonStaleTailoringRunsResult(abandoned=abandoned, skipped=skipped, conflicts=0)
+        return AbandonStaleTailoringRunsResult(
+            abandoned=abandoned, skipped=skipped, conflicts=conflicts
+        )

@@ -16,6 +16,7 @@ module runs.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -131,7 +132,48 @@ class ReviseTailoredDocument:
         self._clock = clock
 
     async def __call__(self, cmd: ReviseTailoredDocumentCommand) -> TailoringRun:
-        raise NotImplementedError
+        # Step 1. The composed read carries the authorization rule and the 404 collapse, so
+        # `GuestSessionExpired` (E-5) and `TailoringRunNotFound` (E-6, absent *and* not mine)
+        # propagate from here without this use case ever seeing a session or a foreign run.
+        run = await self._get_run(cmd.tailoring_run_id, cmd.guest_session_id)
+
+        # Step 2. The arms differ in the *type* of `cmd.content` (see the module docstring), and
+        # each calls the aggregate method whose signature accepts exactly that type.
+        # `TailoringRunNotEditable` (E-7) and `TailoredDocumentVersionConflict` (E-8) propagate:
+        # the aggregate refuses before it mutates, so there is nothing to record and nothing to
+        # undo — the run is exactly as it was loaded.
+        match cmd:
+            case ReviseCvCommand():
+                run.revise_cv(
+                    cmd.content, expected_version=cmd.expected_version, at=self._clock.now()
+                )
+            case ReviseCoverLetterCommand():
+                run.revise_cover_letter(
+                    cmd.content, expected_version=cmd.expected_version, at=self._clock.now()
+                )
+            case _:  # pragma: no cover — unreachable while the union has exactly two members
+                # As in `CaptureJobPosting`: mypy narrows `cmd` to `Never` here only if the cases
+                # above are exhaustive, so a third command added to the union without an arm is a
+                # type error naming it rather than a silently unrevised run.
+                assert_never(cmd)
+
+        # Step 3. `TailoringRunConcurrentlyModified` (E-9) **propagates** — deliberately the
+        # opposite of `ExecuteTailoringRun` step 4, which catches the same error from the same
+        # repository translation and returns `SKIPPED`. The worker has an outcome vocabulary and a
+        # task that must not raise for a business outcome; this use case has an HTTP request with
+        # a status code to answer (409), and the caller is a person with a tab open who must act
+        # (reload and compare, E-15b). Catching it here would invent a result type to say "did not
+        # happen" for a router that has nothing to do with it but raise again. The aggregate this
+        # use case holds is now the stale copy, and nothing below runs: the row is untouched and
+        # the recorded `TailoredDocumentRevised` stays in the buffer, never published.
+        await self._runs.save(run)
+
+        # Step 4. After the save, never before — a publish that ran first would announce a
+        # revision a failed save is about to un-happen.
+        await self._events.publish(*run.release_events())
+
+        # Step 5. The run at its new version; the router serializes it exactly as the `GET` does.
+        return run
 
 
 __all__ = [
