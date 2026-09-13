@@ -25,6 +25,7 @@ from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.tailoring.events import (
+    TailoredDocumentRevised,
     TailoringRunFailed,
     TailoringRunRequested,
     TailoringRunStarted,
@@ -279,18 +280,43 @@ def test_tailoring_run_failed_field_set_is_exactly_the_agreed_fields() -> None:
     assert field_names == {"tailoring_run_id", "reason", "occurred_at"}
 
 
+def test_tailored_document_revised_field_set_is_exactly_the_agreed_fields() -> None:
+    """AC-20, slice 1.4: no text, no previous text, no diff — `character_count` is the size and
+    `version` is the number *after* the bump, and neither of those is the string it was measured
+    from. Green on arrival, exactly like the four tests above it: `events.py` is pure data, written
+    whole at the T1 skeleton stage, so there is no behaviour here a `NotImplementedError` could have
+    failed."""
+    field_names = {field.name for field in dataclasses.fields(TailoredDocumentRevised)}
+
+    assert field_names == {
+        "tailoring_run_id",
+        "kind",
+        "version",
+        "character_count",
+        "occurred_at",
+    }
+
+
 @pytest.mark.parametrize(
     "event_type",
-    [TailoringRunRequested, TailoringRunStarted, TailoringRunSucceeded, TailoringRunFailed],
-    ids=["Requested", "Started", "Succeeded", "Failed"],
+    [
+        TailoringRunRequested,
+        TailoringRunStarted,
+        TailoringRunSucceeded,
+        TailoringRunFailed,
+        TailoredDocumentRevised,
+    ],
+    ids=["Requested", "Started", "Succeeded", "Failed", "Revised"],
 )
 def test_no_event_field_set_contains_a_document_body_or_free_text_field(
     event_type: type[DomainEvent],
 ) -> None:
-    """The disjointness form, on top of the four exact-set assertions above — the same pairing
+    """The disjointness form, on top of the five exact-set assertions above — the same pairing
     `tests/unit/intake/test_events.py` uses for the same reason: the exact-set assertions catch *any*
     new field, and this one names, for a human reading this file, exactly which strings would be the
-    disaster if one showed up."""
+    disaster if one showed up. `previous_text` and `diff` are `TailoredDocumentRevised`'s own
+    additions to the list (AC-20): the temptation a revision event invites that the four 1.3 events
+    never did."""
     field_names = {field.name for field in dataclasses.fields(event_type)}
 
     forbidden_names = {
@@ -301,6 +327,8 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
         "extracted_text",
         "posting_text",
         "job_posting_text",
+        "previous_text",
+        "diff",
         "prompt",
         "completion",
         "response",
