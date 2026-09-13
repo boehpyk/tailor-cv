@@ -10,8 +10,9 @@ aggregate carries a comment saying so.
 `TailoringRun` composes `RecordsEvents`, which gives every instance a `_recorded_events` buffer
 (`domain/shared/events.py`). That attribute is deliberately **absent** from both the table and
 `properties=`: it is not a persisted fact about the run, it is an in-memory outbox that the use case
-drains via `release_events()` before the transaction commits. Naming only the sixteen mapped
-attributes below is what keeps SQLAlchemy from ever trying to instrument it.
+drains via `release_events()` before the transaction commits. Naming only the twenty-one mapped
+attributes below (sixteen from 1.3, five from 1.4's revision and version — ADR-0015) is what keeps
+SQLAlchemy from ever trying to instrument it.
 
 **Never `class TailoringRun(Base)`, never `mapped_column` on the domain class.** That is the
 tutorial path and it ends the design: the aggregate would import SQLAlchemy and `domain/` would stop
@@ -154,6 +155,26 @@ tailoring_run_table = Table(
     Column("requested_at", TIMESTAMP(timezone=True, precision=0), nullable=False),
     Column("started_at", TIMESTAMP(timezone=True, precision=0), nullable=True),
     Column("completed_at", TIMESTAMP(timezone=True, precision=0), nullable=True),
+    # Slice 1.4 (ADR-0015): the optimistic-concurrency counter and the user's revisions.
+    #
+    # `version` is declared as the mapper's `version_id_col` below (TR-8). `server_default="1"` is
+    # **not** for the application — `TailoringRun.request` sets 1 explicitly and every transition
+    # bumps it — it is for the two-version deploy window, where the *previous* application version
+    # still inserts rows that know nothing of this column, and for hand-written `INSERT`s. Postgres
+    # 11+ adds a constant default without a table rewrite, so the `ALTER` is instant on a live table.
+    # The default stays after the deploy; there is no contract step.
+    Column("version", Integer, nullable=False, server_default=text("1")),
+    # The user's revision of each document, beside — never over — the model's draft in
+    # `tailored_cv` / `cover_letter` (TR-11). **Both are PII** exactly as the two draft columns are.
+    # The *same* `TypeDecorator`s are reused, no new one is added, which is what guarantees the draft
+    # and the revision can never be validated by different rules (ADR-0015 §2).
+    Column("edited_cv", TailoredCvType, nullable=True),
+    Column("edited_cover_letter", CoverLetterType, nullable=True),
+    # Whole-second `TIMESTAMP(timezone=True, precision=0)`, declared exactly as the three instants
+    # above, for the same `Clock`-contract reason. Each is set together with its revision or not at
+    # all (TR-10); the pairing CHECKs below hold that where Python cannot reach.
+    Column("cv_edited_at", TIMESTAMP(timezone=True, precision=0), nullable=True),
+    Column("cover_letter_edited_at", TIMESTAMP(timezone=True, precision=0), nullable=True),
     # The three constraints below are TR-2 and TR-5 expressed where Python cannot reach. The
     # aggregate already makes every bad pairing unrepresentable — three named transitions, one
     # `TailoredDocuments` that requires both fields, no setters — but three methods do not bind a
@@ -211,6 +232,33 @@ tailoring_run_table = Table(
         "(status IN ('succeeded','failed')) = (completed_at IS NOT NULL)",
         name="completed_at_matches_terminal_status",
     ),
+    # Slice 1.4's three CHECKs — TR-10 and TR-9 where Python cannot reach, declared in the same
+    # shape as 1.3's three above (the `name=` is the `constraint_name` slot only; the convention in
+    # `registry.py` renders them `ck_tailoring_run_cv_revision_pairs` and friends). 1.3's three are
+    # untouched: they speak about the draft columns, which this slice never writes, and that is the
+    # concrete payoff of an *additive* revision.
+    #
+    # The two pairing constraints are, like `documents_match_status`, an equality between two
+    # predicates rather than an implication, so each rejects **both** bad pairings in one
+    # expression: a revision without its instant, and an instant without its revision. `revise_cv`
+    # and `revise_cover_letter` write the pair in one statement (TR-10); a hand-written `UPDATE`
+    # need not, and this is what binds it.
+    CheckConstraint(
+        "(edited_cv IS NULL) = (cv_edited_at IS NULL)",
+        name="cv_revision_pairs",
+    ),
+    CheckConstraint(
+        "(edited_cover_letter IS NULL) = (cover_letter_edited_at IS NULL)",
+        name="cover_letter_revision_pairs",
+    ),
+    # TR-9: a revision is legal only from `succeeded`. Written as an implication and not as an
+    # equality on purpose — a succeeded run with **no** revision is the normal state of every run
+    # the user never edited, so `(status = 'succeeded') = (edited_cv IS NOT NULL)` would be wrong.
+    # `_guard_revisable` is the first line; this is the one that binds a `psql` session.
+    CheckConstraint(
+        "(edited_cv IS NULL AND edited_cover_letter IS NULL) OR status = 'succeeded'",
+        name="revision_requires_success",
+    ),
     # **A partial index for the stale-run sweep (G-25'), and it contradicts the "no partial index"
     # note on `guest_session_id` above on purpose.** The two queries differ in what bounds them.
     # `find_active_for_session` is bounded by its session: twenty runs at most, found through
@@ -266,5 +314,39 @@ mapper_registry.map_imperatively(
         "_requested_at": tailoring_run_table.c.requested_at,
         "_started_at": tailoring_run_table.c.started_at,
         "_completed_at": tailoring_run_table.c.completed_at,
+        # Slice 1.4 (ADR-0015): the counter and the four revision scalars. `_edited_cv` and
+        # `_edited_cover_letter` are two more nullable scalars behind an assembling property
+        # (`TailoringRun.current_documents`), for the same OQ-5 reason as the seven above.
+        "_version": tailoring_run_table.c.version,
+        "_edited_cv": tailoring_run_table.c.edited_cv,
+        "_edited_cover_letter": tailoring_run_table.c.edited_cover_letter,
+        "_cv_edited_at": tailoring_run_table.c.cv_edited_at,
+        "_cover_letter_edited_at": tailoring_run_table.c.cover_letter_edited_at,
     },
+    # **The optimistic-concurrency seam (ADR-0015 §3), and what each half of it buys and costs.**
+    #
+    # `version_id_col` is what it *buys*: on every flush of a dirty run SQLAlchemy emits
+    # `UPDATE tailoring_run SET … WHERE id = :id AND version = :loaded` and raises `StaleDataError`
+    # when zero rows match — that is, when another process committed a newer version between this
+    # one's load and its flush. The repository translates that into the domain's
+    # `TailoringRunConcurrentlyModified`. One column closes two races: the stale edit (a `PUT` whose
+    # `expected_version` matched in memory but lost at the row) and ADR-0014 amendment §6's
+    # duplicate delivery (two in-flight deliveries both read `queued`; the second `save` matches no
+    # row and `ExecuteTailoringRun` returns `SKIPPED` **before** paying).
+    #
+    # `version_id_generator=False` is what keeps the number **the domain's**: SQLAlchemy would
+    # otherwise increment the column itself on every flush, making `version` a value the aggregate
+    # never set — the edit contract would then be checked in the use case against a number the
+    # domain could not see, and every domain test of `revise_*` would need a database. With the
+    # generator off, `TailoringRun` does the `+= 1` in each transition (TR-8) and the mapper only
+    # *checks*.
+    #
+    # And what that *costs*: with the generator off, the `WHERE version = :loaded` only detects a
+    # race that the aggregate bumped past. A transition that forgets its `+= 1` writes
+    # `WHERE version = :loaded` with the same number it loaded, matches its own row, and has **no
+    # concurrency protection at all** — silently. That is why "every transition increments" is
+    # invariant TR-8 with a table-driven test over every legal path, rather than a convention, and
+    # why each transition in `domain/tailoring/tailoring_run.py` carries the same one-line comment.
+    version_id_col=tailoring_run_table.c.version,
+    version_id_generator=False,
 )

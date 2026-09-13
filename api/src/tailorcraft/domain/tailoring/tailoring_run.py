@@ -31,11 +31,14 @@ from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 from tailorcraft.domain.tailoring.errors import (
+    TailoredDocumentVersionConflict,
     TailoringAlreadyDecided,
     TailoringAlreadyStarted,
     TailoringNotRunning,
+    TailoringRunNotEditable,
 )
 from tailorcraft.domain.tailoring.events import (
+    TailoredDocumentRevised,
     TailoringRunFailed,
     TailoringRunRequested,
     TailoringRunStarted,
@@ -47,6 +50,7 @@ from tailorcraft.domain.tailoring.value_objects import (
     ModelName,
     PromptVersion,
     TailoredCv,
+    TailoredDocumentKind,
     TailoredDocuments,
     TailoringFailureReason,
     TailoringRunId,
@@ -69,15 +73,20 @@ class TailoringRun(RecordsEvents):
     """One attempt to tailor a base CV to a job posting: who asked, from which two inputs, where it
     stands, and — once decided — the two documents and what the call cost, or the reason it failed.
 
-    **The legal-transition table.** This is the aggregate's whole behaviour and AC-3 tests all
-    sixteen cells:
+    **The legal-transition table.** This is the aggregate's whole behaviour. 1.3's AC-3 tests the
+    twelve cells of the first three columns; 1.4's AC-5 and AC-6 test the eight of the last two
+    (ADR-0015 §1):
 
-    | From \\ call | `mark_started` | `mark_succeeded` | `mark_failed` |
-    |---|---|---|---|
-    | `queued` | → `running` | `TailoringNotRunning` | → `failed` |
-    | `running` | `TailoringAlreadyStarted` | → `succeeded` | → `failed` |
-    | `succeeded` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` |
-    | `failed` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` |
+    | From \\ call | `mark_started` | `mark_succeeded` | `mark_failed` | `revise_cv` | `revise_cover_letter` |
+    |---|---|---|---|---|---|
+    | `queued` | → `running` | `TailoringNotRunning` | → `failed` | `TailoringRunNotEditable` | `TailoringRunNotEditable` |
+    | `running` | `TailoringAlreadyStarted` | → `succeeded` | → `failed` | `TailoringRunNotEditable` | `TailoringRunNotEditable` |
+    | `succeeded` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | → `succeeded`, `version + 1` | → `succeeded`, `version + 1` |
+    | `failed` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | `TailoringAlreadyDecided` | `TailoringRunNotEditable` | `TailoringRunNotEditable` |
+
+    The two revision columns are the only cells that leave the status where it was: a revision is a
+    state change (it bumps `version`, TR-8) that is not a status change. `succeeded` is a terminal
+    *outcome* and stays one (TR-3); it is simply the one outcome with something to edit.
 
     **The one cell a reader will question is `mark_failed` from `queued`, and it is legal on
     purpose.** A run can fail before it ever starts: the row is committed and *then* the task is
@@ -133,8 +142,37 @@ class TailoringRun(RecordsEvents):
       parameter rather than as a check. Without it, ADR-0004's "record duration and token counts on
       every run" is a promise the schema does not keep and Constitution §7's 15-second budget has no
       evidence behind it — a budget you cannot measure is a budget you no longer have.
+    - **TR-8** — `version` is 1 at request and **every** state change increments it by exactly one;
+      nothing else writes it. Each transition's `+= 1`; no setter; the table-driven walk (AC-4). The
+      database default `1` exists for the deploy window and hand-written `INSERT`s only. **This is
+      the invariant the concurrency control rests on** (ADR-0015 §3): the mapping declares the
+      column as `version_id_col` with `version_id_generator=False`, so SQLAlchemy's `WHERE version
+      = :loaded` only *detects* a race the application bumped past — a transition that forgets to
+      bump has no concurrency protection at all. That is why every transition carries the same
+      one-line comment and why this row has a test rather than a convention.
+    - **TR-9** — A revision is legal only from `succeeded` and only against the current version.
+      `_guard_revisable` and the explicit compare (AC-5, AC-6). Mirrored by the `CHECK`
+      `edited_* IS NULL OR status = 'succeeded'`.
+    - **TR-10** — A document's revision and its instant are set together or not at all. Written in
+      one statement; mirrored by two `CHECK`s (AC-21).
+    - **TR-11** — The draft is never overwritten by a revision. `_tailored_cv` / `_cover_letter` are
+      written by `mark_succeeded` only; the revision has its own attributes (`_edited_cv`,
+      `_edited_cover_letter`). A test asserts `documents` is unchanged after a `revise_*`.
 
     **Deliberately not invariants of `TailoringRun`:**
+
+    - The autosave debounce and the per-session save rate limit (slice 1.4). The first is a fact
+      about the client; the second spans every save a session makes, which — as with the run cap
+      below — no single instance can see. The aggregate accepts every legal revision it is handed,
+      however many arrive.
+    - The Markdown grammar (ADR-0015 §2). It is a fact about the editor and the bridge, not about
+      the text: `TailoredCv` and `CoverLetter` accept any Markdown the model could have written,
+      including none, and the user's revision is held to exactly those bounds and no others.
+    - The concurrent-modification race. Two processes that each loaded this run at the same
+      `version` both pass the compare in `_guard_revisable`, because the aggregate cannot see
+      another process. The **repository** reports that race as `TailoringRunConcurrentlyModified`
+      (ADR-0015 §3); this class's whole contribution is TR-8's bump, which is what makes the
+      database's check able to detect it.
 
     - The per-session run cap and the "at most one active run per session" rule (G-9, G-10). Both
       span every run a session owns, which is a fact no single instance has access to — reaching for
@@ -355,6 +393,9 @@ class TailoringRun(RecordsEvents):
 
         self._status = TailoringRunStatus.RUNNING
         self._started_at = at
+        # TR-8: with the generator off, the row's version check only detects a race this bump moved
+        # past — a transition that forgets this line has no concurrency protection (ADR-0015 §3).
+        self._version += 1
 
         self.record(TailoringRunStarted(tailoring_run_id=self._id, occurred_at=at))
 
@@ -395,6 +436,9 @@ class TailoringRun(RecordsEvents):
         self._llm_duration_ms = metrics.duration_ms
         self._status = TailoringRunStatus.SUCCEEDED
         self._completed_at = at
+        # TR-8: with the generator off, the row's version check only detects a race this bump moved
+        # past — a transition that forgets this line has no concurrency protection (ADR-0015 §3).
+        self._version += 1
 
         self.record(
             TailoringRunSucceeded(
@@ -441,38 +485,120 @@ class TailoringRun(RecordsEvents):
         self._status = TailoringRunStatus.FAILED
         self._failure_reason = reason
         self._completed_at = at
+        # TR-8: with the generator off, the row's version check only detects a race this bump moved
+        # past — a transition that forgets this line has no concurrency protection (ADR-0015 §3).
+        self._version += 1
 
         self.record(TailoringRunFailed(tailoring_run_id=self._id, reason=reason, occurred_at=at))
 
     # Slice 1.4's two transitions (ADR-0015 §1): the user revises one of a succeeded run's two
-    # documents. Skeleton (T1) — real signatures, no behaviour — so that `qa`'s T2 tests fail on
-    # their assertions and not on an `ImportError`; the bodies land at T3 GREEN against those
-    # recorded reds, exactly as the three transitions above did in 1.3.
+    # documents. Written in two steps like the three above: a T1 skeleton of real signatures with
+    # `NotImplementedError` bodies, so that `qa`'s T2 tests failed on their assertions and not on an
+    # `ImportError`, and then T3 GREEN — these bodies — against those recorded reds. Nothing in the
+    # tests was touched to get here.
+
+    def _guard_revisable(self, expected_version: int, at: datetime) -> None:
+        """The three checks both revisions share, in the one order that matters, written once
+        rather than twice (the same call `_guard_outcome_not_yet_decided` makes for TR-3):
+
+        1. **Editable** — `status is SUCCEEDED`, else `TailoringRunNotEditable(status)` (TR-9).
+           Checked **before** the version, so a client that is both stale and wrong about the
+           status learns the more fundamental fact: a version conflict on a run that is not even
+           editable would send it off to re-fetch and retry an edit that can never be accepted.
+        2. **Version** — `expected_version == version`, else `TailoredDocumentVersionConflict`
+           carrying both numbers (TR-9, AC-6). Either direction of mismatch is a conflict: a client
+           *ahead* of the run is as wrong about what it was shown as one behind it.
+        3. **Instant** — `at >= completed_at`, else `InvariantViolated` (TR-4, extended to the
+           revision instants). A revision recorded before the run that produced its draft completed
+           is the same backwards timeline TR-4 refuses for `started_at` and `completed_at`.
+
+        `completed_at` cannot be `None` while the status is `SUCCEEDED` — `mark_succeeded` writes
+        both in one breath — but the type cannot say so, and a hand-written `UPDATE` can make it
+        true. The fold lands on the refusing side, as `is_stale`'s does: a run that claims to have
+        succeeded and cannot say when has no floor to measure a revision against, and refusing the
+        edit is cheaper than recording an instant nothing can be compared with.
+
+        Only step 1 is a status rule; the other two would hold a stale or backwards call on any
+        status. They live together because a revision that passes one and fails another must leave
+        the run exactly as it found it (AC-5, AC-6), which is easiest to guarantee when every check
+        runs before any write.
+        """
+        if self._status is not TailoringRunStatus.SUCCEEDED:
+            raise TailoringRunNotEditable(self._status)
+        if expected_version != self._version:
+            raise TailoredDocumentVersionConflict(expected_version, self._version)
+        if self._completed_at is None or at < self._completed_at:
+            raise InvariantViolated("a revision instant must be >= completed_at (TR-4)")
 
     def revise_cv(self, cv: TailoredCv, *, expected_version: int, at: datetime) -> None:
         """Replace the current CV with the user's revision: writes `_edited_cv` and `_cv_edited_at`
-        together, bumps `version`, and records `TailoredDocumentRevised(kind=CV)`.
+        together (TR-10), bumps `version` (TR-8), and records `TailoredDocumentRevised(kind=CV)`.
 
         Legal **only** from `SUCCEEDED` (TR-9), and only when `expected_version` is the version the
-        client was shown. Takes a `TailoredCv` and not a `str`, and the type is the whole point of
-        the two-method shape: the signature refuses a letter where a CV was meant, and this method
-        constructs nothing — the value object arrives already valid from the boundary, held to the
-        same bounds as the model's draft (ADR-0015 §2).
+        client was shown — `_guard_revisable` holds the three checks and their order. Takes a
+        `TailoredCv` and not a `str`, and the type is the whole point of the two-method shape: the
+        signature refuses a letter where a CV was meant, and this method constructs nothing — the
+        value object arrives already valid from the boundary, held to the same bounds as the model's
+        draft (ADR-0015 §2).
+
+        **A revision whose content equals the current document is still a revision**: it bumps the
+        version and sets the instant like any other. The honest client never sends one (dirty
+        tracking, AC-29), but the aggregate does not get to assume the caller is honest, and
+        treating "same text" as a no-op would make the version check lie about what the client was
+        shown — a second tab that read the un-bumped number would then overwrite an edit the first
+        tab believed it had saved.
+
+        The draft in `_tailored_cv` is untouched, on this path and every other (TR-11): the
+        revision has its own attribute, and `documents` keeps answering with what the model wrote.
         """
-        raise NotImplementedError
+        self._guard_revisable(expected_version, at)
+
+        # TR-10: the revision and its instant, in one place, after every guard has passed.
+        self._edited_cv = cv
+        self._cv_edited_at = at
+        # TR-8: with the generator off, the row's version check only detects a race this bump moved
+        # past — a transition that forgets this line has no concurrency protection (ADR-0015 §3).
+        self._version += 1
+
+        self.record(
+            TailoredDocumentRevised(
+                tailoring_run_id=self._id,
+                kind=TailoredDocumentKind.CV,
+                version=self._version,
+                character_count=cv.character_count,
+                occurred_at=at,
+            )
+        )
 
     def revise_cover_letter(
         self, letter: CoverLetter, *, expected_version: int, at: datetime
     ) -> None:
         """Replace the current cover letter with the user's revision: writes `_edited_cover_letter`
-        and `_cover_letter_edited_at` together, bumps `version`, and records
+        and `_cover_letter_edited_at` together (TR-10), bumps `version` (TR-8), and records
         `TailoredDocumentRevised(kind=COVER_LETTER)`.
 
         Legal **only** from `SUCCEEDED` (TR-9), and only when `expected_version` is the version the
         client was shown. See `revise_cv` for why there are two methods rather than one
-        `revise(kind, text)`.
+        `revise(kind, text)`, and for why a same-content revision still bumps the version.
         """
-        raise NotImplementedError
+        self._guard_revisable(expected_version, at)
+
+        # TR-10: the revision and its instant, in one place, after every guard has passed.
+        self._edited_cover_letter = letter
+        self._cover_letter_edited_at = at
+        # TR-8: with the generator off, the row's version check only detects a race this bump moved
+        # past — a transition that forgets this line has no concurrency protection (ADR-0015 §3).
+        self._version += 1
+
+        self.record(
+            TailoredDocumentRevised(
+                tailoring_run_id=self._id,
+                kind=TailoredDocumentKind.COVER_LETTER,
+                version=self._version,
+                character_count=letter.character_count,
+                occurred_at=at,
+            )
+        )
 
     def is_stale(self, now: datetime, stale_after: timedelta) -> bool:
         """Whether this run claims to be `RUNNING` but no worker can still be working on it — a
@@ -552,12 +678,20 @@ class TailoringRun(RecordsEvents):
         the mapping as `version_id_col`. There is no setter; nothing outside the transitions writes
         it.
         """
-        raise NotImplementedError
+        return self._version
 
     @property
     def documents(self) -> TailoredDocuments | None:
         """The pair the model produced, assembled from the two private scalars — `None` until the run
         succeeds.
+
+        **This is the draft, and it stays the draft after the user edits (TR-11).** Since slice 1.4
+        there are two pairs on a succeeded run, and this property keeps its 1.3 meaning — what the
+        model wrote — because `mark_succeeded`, the four 1.3 events and `make eval` all speak about
+        what the model produced, and an eval that measured the user's edits would be measuring the
+        wrong author. What the user currently sees is `current_documents`, the next property down;
+        the response schema serializes that one and 1.5 exports it. A reader tempted to rename
+        either should find the two docstrings pointing at each other.
 
         **This property assembles rather than returns, and so does `metrics`. That is the one
         asymmetry in this aggregate and it is deliberate (OQ-5).** SQLAlchemy's obvious answer for a
@@ -589,8 +723,23 @@ class TailoringRun(RecordsEvents):
         This is the pair the response schema serializes and the one 1.5 exports. `documents`, one
         property up, keeps its 1.3 meaning — the model's draft, never overwritten (TR-11) — because
         `mark_succeeded`, the events and the eval all speak about what the model produced.
+
+        Assembled per document rather than per pair: a run with one revision serves that revision
+        beside the other document's draft, so the two choices below are independent. Like
+        `documents`, this is assembled on read and is not a mapped attribute (OQ-5, ADR-0007) — the
+        mapping targets `_edited_cv` and `_edited_cover_letter` as two more nullable scalars.
         """
-        raise NotImplementedError
+        draft = self.documents
+        if draft is None:
+            return None
+        return TailoredDocuments(
+            cv=draft.cv if self._edited_cv is None else self._edited_cv,
+            cover_letter=(
+                draft.cover_letter
+                if self._edited_cover_letter is None
+                else self._edited_cover_letter
+            ),
+        )
 
     @property
     def metrics(self) -> LlmCallMetrics | None:
@@ -631,3 +780,16 @@ class TailoringRun(RecordsEvents):
     @property
     def completed_at(self) -> datetime | None:
         return self._completed_at
+
+    # The two revision instants, read by the response schema as `tailored_cv_edited_at` and
+    # `cover_letter_edited_at` (AC-10, AC-11). `None` until that document is revised; set only by
+    # its `revise_*`, together with the revision itself (TR-10), so "edited at X" and "edited" are
+    # never two different facts.
+
+    @property
+    def cv_edited_at(self) -> datetime | None:
+        return self._cv_edited_at
+
+    @property
+    def cover_letter_edited_at(self) -> datetime | None:
+        return self._cover_letter_edited_at
