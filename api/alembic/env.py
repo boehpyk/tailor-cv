@@ -9,6 +9,13 @@ Two things here are specific to this codebase and worth reading before changing:
 2. **The URL comes from settings**, not from alembic.ini, so there is exactly one place that reads
    the environment.
 
+3. **Every `TypeDecorator` column renders as its `impl`** (`render_item`, in both `configure`
+   calls below). Without it, autogenerate names the decorator class — `TailoringRunStatusType()` —
+   which a migration module cannot import, and the draft `NameError`s at load. It did, in every
+   revision before slice 1.4, and was hand-fixed each time. The hook and the reasoning live in
+   `infrastructure/persistence/alembic_render.py`, because this file runs a migration at import and
+   so cannot be unit-tested.
+
 And the standing rule from ADR-0007: **autogenerate output is a draft.** Read every line.
 """
 
@@ -21,6 +28,7 @@ from alembic import context
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from tailorcraft.infrastructure.persistence.alembic_render import render_item
 from tailorcraft.infrastructure.persistence.registry import configure_mappings, metadata
 from tailorcraft.infrastructure.settings import get_settings
 
@@ -67,6 +75,7 @@ def run_migrations_offline() -> None:
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
         compare_type=True,
+        render_item=render_item,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -79,6 +88,7 @@ def do_run_migrations(connection: Connection) -> None:
         # Without this, a column whose type changed is silently ignored by autogenerate.
         compare_type=True,
         compare_server_default=True,
+        render_item=render_item,
     )
     with context.begin_transaction():
         context.run_migrations()
