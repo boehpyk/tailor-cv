@@ -75,11 +75,16 @@ def abandon_stale_tailoring_runs() -> None:
     # `/health/ready` cannot see it (it pings workers, and beat is not one). A gap in these lines is
     # how a stopped beat shows up. `skipped_count` is a third field beyond the two G-25' names, on
     # purpose: the use case's result docstring calls a non-zero skip with no concurrent writer the
-    # signature of adapter drift, and a count nobody logs is a signature nobody sees.
+    # signature of adapter drift, and a count nobody logs is a signature nobody sees. `conflicts`
+    # is the fourth (E-20; ADR-0015 §3): runs a worker or a redelivery decided between the sweep's
+    # read and its write. Whichever wrote first stands, so a conflict is neither an error nor an
+    # abandonment — but a steady non-zero count says the sweep and the workers are racing, which is
+    # worth a look at `TAILORING_STALE_AFTER_SECONDS` against the hard time limit.
     log.info(
         _EVENT_SWEPT,
         swept_count=result.abandoned,
         skipped_count=result.skipped,
+        conflicts=result.conflicts,
         duration_ms=_elapsed_ms(started_at),
     )
 

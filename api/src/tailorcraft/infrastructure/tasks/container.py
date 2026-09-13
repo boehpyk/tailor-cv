@@ -51,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
@@ -105,8 +106,20 @@ class CommittingTailoringRunRepository:
         commit would expire every attribute of `run`, and the *next* attribute access — step 6's
         `run.mark_failed`, say — would trigger a lazy refresh, which an async session raises on
         rather than quietly issuing SQL. Loud, but only once you hit it, and only in the worker.
+
+        A conflict rolls back **here**, before it is re-raised. The inner repository leaves the
+        session in the state a failed flush leaves it in — unusable until a rollback — and in this
+        process nothing else would roll it back: the `ExecuteTailoringRun` task returns `SKIPPED`
+        and its closing commit would raise a second, unrelated error over the first, and the
+        stale-run sweep counts the conflict and moves on to the next run in the same batch, whose
+        own save would then fail for a reason that has nothing to do with that run. Rolling back is
+        the caller's boundary (port docstring), and in the worker this class is the caller.
         """
-        await self._inner.save(run)
+        try:
+            await self._inner.save(run)
+        except TailoringRunConcurrentlyModified:
+            await self._session.rollback()
+            raise
         await self._session.commit()
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:
