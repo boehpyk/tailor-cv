@@ -234,6 +234,14 @@ class Settings(BaseSettings):
     # Per client IP, because a guest can always mint a new session — the per-session limit alone
     # bounds nothing.
     tailoring_rate_limit_per_ip_per_hour: int = 30
+    # Saving an edited document (slice 1.4, `PUT …/documents/{kind}`), per session, and this one
+    # fails OPEN — the rule applied a third time: a save is one `UPDATE` of one document, at most
+    # 20,000 characters, bounded by the value object, and Redis being down must not stop a person
+    # saving their CV. 600/hour is ten a minute sustained: above any human typing rate through the
+    # client's 1.5 s debounce, below what a script hammering a PII row should get. Chosen, not
+    # measured (OQ-7). No per-IP scope on purpose — a save is always bound to a session that already
+    # owns the run, so a fresh session buys nothing.
+    tailoring_revise_rate_limit_per_hour: int = 600
     # A cross-aggregate cap enforced in `RequestTailoringRun`, not on `TailoringRun` — the rule spans
     # every run a session owns, which no single run can know.
     max_tailoring_runs_per_session: int = 20
