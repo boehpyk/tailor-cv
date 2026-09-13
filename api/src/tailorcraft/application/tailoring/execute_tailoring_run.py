@@ -314,6 +314,8 @@ class ExecuteTailoringRun:
         differ only in the reason and in the instant, so the save/publish ordering is written once.
         Publishing strictly **after** the save is the rule `RequestTailoringRun` step 7 states: a
         publish that ran first would announce a fact a failed save is about to un-happen.
+        `AbandonStaleTailoringRuns` performs the same three steps per run, in the same order, and
+        its docstring says why the two do not share a helper.
 
         The five metric scalars are deliberately not touched. `mark_failed` already guarantees they
         stay `None` on every path, and a partially-filled metrics row would show up in a token-spend

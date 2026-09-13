@@ -23,7 +23,7 @@ to get here.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
@@ -420,6 +420,47 @@ class TailoringRun(RecordsEvents):
         self._completed_at = at
 
         self.record(TailoringRunFailed(tailoring_run_id=self._id, reason=reason, occurred_at=at))
+
+    def is_stale(self, now: datetime, stale_after: timedelta) -> bool:
+        """Whether this run claims to be `RUNNING` but no worker can still be working on it — a
+        pure query that changes nothing and records no event.
+
+        **This is the one home for the staleness rule.** Two callers ask it and neither holds a copy:
+        `ExecuteTailoringRun` step 3, when a redelivered task finds its run already `RUNNING`, and
+        `AbandonStaleTailoringRuns`, the beat sweep that exists because redelivery alone does not
+        bring a lost run back (G-25'). They do different things with the answer — the worker returns
+        `SKIPPED` on a `False`, the sweep counts it — which is why this is a query and not an
+        `abandon_if_stale` command: the part they share is the judgement, not what follows it.
+
+        The rule, cell by cell:
+
+        - `QUEUED` → `False`. A queued run has no worker to have lost. How long it waits for one is
+          the broker's concern, and abandoning it here would fail a run that is merely behind a
+          backlog.
+        - `SUCCEEDED` / `FAILED` → `False`. Decided once (TR-3); a decided run is not stale, it is
+          over.
+        - `RUNNING` → `True` when `started_at is None`, or when `now - started_at > stale_after`.
+
+        **Strict `>`.** A run exactly `stale_after` old is still fresh; it goes stale the second
+        after. The clock is whole-second by contract (`domain/shared/clock.py`), so that edge is a
+        single, testable instant rather than a race.
+
+        **The `None` fold, and why it lands on the stale side.** `started_at` cannot be `None` while
+        the status is `RUNNING` — `mark_started` writes both in one breath and nothing else writes
+        either — but the type cannot say so, and a hand-written `UPDATE` can make it true. A run that
+        claims to be running and cannot say since when is precisely "nobody is coming back for it".
+        Folding it to fresh instead would leave it `RUNNING` for ever, which is the one outcome this
+        rule exists to prevent. The repository's stale-run query expresses the same fold as
+        `started_at IS NULL`.
+
+        `now` is an argument because the domain has no clock, exactly as `at` is for the three
+        transitions. `stale_after` is an argument rather than a constant because it is configuration
+        (`tailoring_stale_after_seconds`), and the domain does not read settings — see "Deliberately
+        not invariants" above. Its one hard constraint lives outside this method, where it can be
+        seen: the window must sit above the task's hard time limit, so that a call still in flight
+        can never be judged stale (G-36). This method cannot know that limit and does not pretend to.
+        """
+        raise NotImplementedError
 
     @property
     def id(self) -> TailoringRunId:
