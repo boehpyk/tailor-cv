@@ -141,10 +141,28 @@ def create_celery() -> Celery:
         # A worker started with no `-Q` consumes exactly `task_queues`, so both entries below are
         # live. `-Q` on the command line still overrides this, which is what makes "give tailoring
         # its own worker" a compose change and not a code change.
+        #
+        # **Each queue names its own routing key, and the key is load-bearing.** A `Queue` declared
+        # without one gets `task_default_routing_key`, which is `celery`. Both queues were therefore
+        # bound to the `celery` exchange under the *same* key: kombu's lookup for
+        # `exchange='celery', routing_key='celery'` returned `['celery', 'tailoring']`, measured at
+        # /verify round 1. A message published that way lands in both queues. For a tailoring run
+        # that means two deliveries of one run, and `ExecuteTailoringRun`'s idempotency is
+        # read-then-write, so two workers can both read `queued` and both pay for the call. Nothing
+        # would log it as an error.
+        #
+        # Today's publishers were unaffected. `send_task(queue=...)`, used by
+        # `CeleryTailoringQueue` and by beat's `options={"queue": ...}`, publishes to the anonymous
+        # exchange with the queue's name as the key, and that reaches exactly one queue. The shared
+        # key was a trap set for the first `task_routes` entry or explicit `exchange=` publish.
+        #
+        # **Redis remembers bindings.** kombu adds one when a queue is declared and never removes
+        # one. Any broker that ran the old declaration keeps the stale binding until someone deletes
+        # it: `SREM _kombu.binding.celery "celery\x06\x16\x06\x16tailoring"`.
         task_default_queue=DEFAULT_QUEUE_NAME,
         task_queues=(
-            Queue(DEFAULT_QUEUE_NAME),
-            Queue(settings.tailoring_queue_name),
+            Queue(DEFAULT_QUEUE_NAME, routing_key=DEFAULT_QUEUE_NAME),
+            Queue(settings.tailoring_queue_name, routing_key=settings.tailoring_queue_name),
         ),
         # --- The beat schedule --------------------------------------------------------------------
         #
