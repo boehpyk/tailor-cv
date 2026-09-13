@@ -100,12 +100,14 @@ services:
     restart: unless-stopped
 
   beat:
-    # The scheduler. No scheduled job yet as of this slice: `beat_schedule={}` in
-    # `infrastructure/tasks/app.py`, and `purge-guests`'s CLI entry point is a stub. The first job is
-    # the tailoring stale-run sweep landing in this slice (docs/specs/tailoring-generate-documents);
-    # the 24-hour guest purge (FR-6, ADR-0006) follows in slice 1.6. Deliberately a container and not
-    # host cron — host cron lives outside the deploy, so it runs whatever code was on the box last,
-    # and it is invisible to every check this stack has.
+    # The scheduler. It runs one job today: the tailoring stale-run sweep, every 60 s
+    # (`beat_schedule` in `infrastructure/tasks/app.py`, G-25'). The sweep marks runs a dead worker
+    # left `running` as `failed`/`abandoned`. The 24-hour guest purge (FR-6, ADR-0006) joins it in
+    # slice 1.6. **`/health/ready` cannot see this container.** Its Celery probe uses `control.ping`,
+    # and only workers answer that, so a stopped beat still reads as ready. A dead beat shows only as
+    # missing `tailoring.stale_runs_swept` lines in the worker log, one per tick, including ticks that
+    # sweep nothing. Deliberately a container and not host cron: host cron lives outside the deploy, so
+    # it runs whatever code was on the box last, and it is invisible to every check this stack has.
     image: ${TAILORCRAFT_API_IMAGE:-tailorcraft-api:local}
     build:
       context: .

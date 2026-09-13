@@ -102,10 +102,13 @@ class BaseCvNotReadyForTailoring(DomainError):
 class TailoringAlreadyStarted(DomainError):
     """`mark_started` was called on a run that is already `running`.
 
-    The redelivery case, not a bug in the caller: Celery runs with `task_acks_late`, so a task whose
-    worker died mid-call is redelivered and the second attempt finds its own run already started.
-    Refusing here is what makes idempotency a property of the *aggregate* rather than a flag in a
-    task (TR-3, AC-10).
+    The redelivery case, not a bug in the caller. A message the broker restores after its worker's
+    main process was lost (`visibility_timeout`) can find its own run already started. A task that
+    *raises*, or whose pool child dies, is acked instead and never comes back; the stale-run sweep
+    records that run (G-25'). Refusing here is what makes **sequential** idempotency a property of the
+    *aggregate* rather than a flag in a task (TR-3, AC-10). Two deliveries in flight at the same
+    moment both read `queued`, and this check does not stop them. ADR-0014's amendment names that
+    residual, which must be closed before 1.4 ships editing.
     """
 
 

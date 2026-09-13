@@ -164,7 +164,8 @@ stays `queued`, which is the recoverable survivor again.
 
 This is also why `mark_failed` is legal from `queued` as well as from `running`. A run can fail
 before it ever starts, twice over: a failed enqueue, and a redelivery that arrives after the run went
-stale. Neither may be recorded by pretending the run started.
+stale. Neither may be recorded by pretending the run started. *(Corrected in the Amendment below: only
+a failed enqueue, `not_queued`, fails a run from `queued`. `abandoned` is recorded from `running`.)*
 
 ### 6. One retry mechanism, in the adapter, never Celery `autoretry_for`
 
@@ -188,7 +189,10 @@ Idempotency is what makes a redelivery safe, and it is delivered by the **aggreg
 in the task: `mark_started` is legal only from `queued`, so a redelivered task cannot make a second
 call; `mark_succeeded` / `mark_failed` are legal only once, so a redelivery cannot overwrite a
 recorded outcome. `task_acks_late = True` makes redelivery real rather than theoretical, which is
-exactly why this is a domain property and not a comment.
+exactly why this is a domain property and not a comment. *(Corrected in the Amendment below. This
+guarantee covers a **sequential** redelivery only: two deliveries in flight at once both read `queued`.
+And `task_acks_late` redelivers only a message whose worker's main process was lost. A task that raises,
+or whose pool child dies, is acked instead.)*
 
 ### 7. The Celery result backend must never carry a document
 
@@ -300,7 +304,111 @@ as a value object, which is the ordinary relationship between a language and a m
   worker at the moment a successful outcome is recorded, **the documents are lost and the money is
   spent**. Persisting the draft "first" is the same single write, so no ordering buys it back. The
   run is eventually marked `abandoned` by a redelivery past the stale window, and the user is told it
-  was interrupted.
+  was interrupted. *(Corrected in the Amendment below. The escaping exception is acked, not
+  redelivered. The stale-run sweep is what marks the run `abandoned`.)*
 - **This ADR is consumed by 1.4 and 1.5, so changing it is not a local edit.** 1.4 renders the polled
   status; 1.5 copies the queue-port shape, the commit-then-enqueue ordering and the
   no-document-in-the-result-backend rule verbatim.
+
+## Amendment: 2026-09-13, from the /verify of slice 1.3
+
+This records an amendment rather than a rewrite. Slices 1.4 and 1.5 consume this ADR, so a reader has to be
+able to see what changed and why. Sentences above that are now wrong keep their original text and carry an
+inline *(Corrected in the Amendment below)* pointer.
+
+### What was found
+
+§5 and the accepted residual under "Consequences" both assumed two things: that `task_acks_late=True`
+redelivers a task whose worker died, and that a redelivery arriving after the stale window records the run
+`abandoned`. Both were measured on the running worker (Celery 5.6.3), and neither holds:
+
+- **A killed pool child is acked.** `task_reject_on_worker_lost` defaults to `None`, so a child that is
+  OOM-killed, or killed by the hard time limit, has its message acked.
+- **A task that raises is acked too.** `task_acks_on_failure_or_timeout` defaults to `True`, so G-28 (a
+  database failure while recording the outcome) is not redelivered.
+- **A lost main process redelivered only after an hour.** The Redis transport's `visibility_timeout` was
+  kombu's default of 3600 s.
+- **A prompt redelivery would not have helped anyway.** It finds a fresh `running` run and returns `SKIPPED`.
+
+Each of these left a run `running` indefinitely, while the client said "still working. Don't refresh." That
+contradicts AC-12, and ADR-0004's promise that a failed run is a recorded state.
+
+### What was decided
+
+1. **A stale-run sweep is the one recovery mechanism for `running` runs.**
+   - `AbandonStaleTailoringRuns` runs on Celery beat every 60 s, on the default queue, with `expires` 55 s.
+   - It marks `failed` / `abandoned` any `running` run older than `tailoring_stale_after_seconds` (300 s), in
+     a bounded batch, oldest first.
+   - It is the codebase's first beat job, and slice 1.6's purge inherits the schedule wiring.
+   - The staleness rule lives once, on the aggregate (`TailoringRun.is_stale`), and `ExecuteTailoringRun`'s
+     stale branch uses the same rule.
+2. **`task_reject_on_worker_lost` stays unset, on purpose.** It would redeliver straight into a fresh
+   `running` run that returns `SKIPPED`, a code path that recovers nothing. It would also risk a loop on a
+   message that kills its child every time. This is §6's "one retry mechanism" argument again: one recovery
+   mechanism.
+3. **`visibility_timeout` is 600 s.**
+   - It is above `task_time_limit` (180 s), so a healthy task is never duplicated.
+   - It is above the stale window.
+   - A lost prefetched `queued` run comes back in ten minutes, not an hour. For a `queued` run, that
+     redelivery is the only recovery there is.
+4. **The worker's `stop_grace_period` is 60 s.** That is above `llm_total_deadline_seconds` (25 s) plus the
+   two writes, so a deploy lets an in-flight paid call finish instead of stranding it.
+5. **Each Celery queue declares an explicit routing key equal to its name.**
+   - Declared without one, both queues bound the default key `celery`.
+   - A publish on that key would have delivered a tailoring run to both queues, which means two concurrent
+     deliveries and a potential double paid call.
+   - kombu never removes a binding, so a broker that ran the old declarations keeps the stale binding until
+     it is removed by hand.
+
+### What §5, §6 and the residual now mean
+
+- **§5: `mark_failed` from `queued`.**
+  - A run fails from `queued` in exactly one way: a failed enqueue (`not_queued`, G-14).
+  - `abandoned` is recorded from `running`, on a run whose `started_at` is real, by the sweep or by a
+    redelivery that happens to arrive after the window.
+  - The "twice over" sentence is wrong on its second count.
+- **§6: idempotency is sequential, not concurrent.**
+  - "`mark_started` is legal only from `queued`, so a redelivered task cannot make a second call" holds for a
+    redelivery that arrives *after* the first delivery saved `running`.
+  - It does not hold for two deliveries in flight at once: both read `queued` with no row lock, both
+    `mark_started` in memory, and both call the model. The aggregate cannot prevent that race.
+  - Configuration now closes the two sources this system itself could produce: explicit per-queue routing
+    keys, and `visibility_timeout` above `task_time_limit`.
+  - What remains is the broker's own at-least-once delivery, a rare duplicate with no configuration answer.
+    This is an **accepted residual for slice 1.3 only**, and it **must be closed before slice 1.4 ships
+    editing**. Otherwise a second worker's draft would overwrite a draft the user has already edited, a lost
+    update the user can see.
+  - The planned fix is optimistic versioning:
+    - a `version_id_col` on the imperative mapping;
+    - the repository translates SQLAlchemy's `StaleDataError` into a domain concurrency error;
+    - `ExecuteTailoringRun` step 4 returns `SKIPPED` before paying.
+
+    This also closes G-36's lost update. `SELECT … FOR UPDATE SKIP LOCKED` in `find` was rejected: it would
+    make a locked run look `MISSING`.
+  - Likewise, "`task_acks_late = True` makes redelivery real" holds only for a message whose worker's main
+    process was lost.
+- **The accepted residual (G-28).**
+  - The substance is unchanged: if Postgres is unavailable when a successful outcome is recorded, the
+    documents are lost and the money is spent.
+  - What changed is who records the outcome. The escaping exception is acked, and the sweep marks the run
+    `abandoned` within the stale window plus one tick.
+
+### Invariants this amendment introduces
+
+- **`tailoring_stale_after_seconds` must stay above the hard time limit**, or the sweep can mark a live call
+  `abandoned`.
+  - It is enforced at startup. `create_celery` refuses, in every environment, with `MisconfiguredSettings`
+    naming the setting and both values, when `tailoring_stale_after_seconds` is at or below
+    `TASK_TIME_LIMIT_SECONDS` (180). A single constant feeds both the check and the Celery config.
+  - It is tested at the boundary: 180 is refused and 181 accepted.
+  - One consequence: `infrastructure/api/main.py` imports the Celery app, so a bad value also leaves the API
+    under `uvicorn --workers N` respawning its failing import for ever rather than exiting. That is the same
+    shape as the existing production API-key guard (see CLAUDE.md). The worker and beat exit loudly.
+- **`visibility_timeout` must stay above `task_time_limit`**, and above any future `countdown` / `eta`.
+
+### Known gap, deliberately not closed here
+
+`/health/ready` cannot see beat: its Celery probe uses `control.ping`, and only workers answer that. With beat
+stopped, readiness reported `ready: true`. A dead beat shows only as missing `tailoring.stale_runs_swept` log
+lines, which are logged every tick, including ticks that sweep nothing. A scheduler heartbeat belongs to slice
+1.6, where a dead beat would also become a retention failure.

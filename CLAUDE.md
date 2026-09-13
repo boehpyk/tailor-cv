@@ -297,6 +297,15 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   because a prompt redelivery would find the run `running` and skip it. Slice 1.3's `/verify` found
   runs stuck `running` for ever this way. The stale-run sweep on beat recovers them now, and **beat is
   not a worker**, so `/health/ready` cannot see it stop.
+- **Fixing a Celery queue declaration does not undo the old one.** kombu *adds* a binding each time
+  a queue is declared and never removes one, and Redis keeps them. Slice 1.3 first declared both queues
+  without a routing key, so both bound key `celery`. One publish on that key would have reached both
+  queues: two deliveries of one run, and two paid calls. Correcting the keys and restarting left the
+  stale binding in place until someone ran `SREM _kombu.binding.celery` (the exact member is in
+  `infrastructure/tasks/app.py`'s comment). **A local mutation test of a queue declaration re-poisons
+  the dev broker too**, because `watchmedo` restarts the worker on the edited file. At `/verify` that
+  happened to an agent that already knew about this trap. After any change to `task_queues`, compare
+  `_kombu.binding.*` against the new declarations.
 - **Every container running application code appears in the deploy's `pull` list and in the
   image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
   neither and ran a stale image for four releases; the only symptom was behaviour not matching the
@@ -329,7 +338,10 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `restart: unless-stopped` never cycles it and nothing reads as a restart loop. On a real box it
   presents as one traceback logged endlessly. Measured against the production image in slice 1.3 (T36).
   When a release's readiness check never goes green, read the logs for a settings refusal before
-  suspecting the network.
+  suspecting the network. Slice 1.3's `/verify` added a second refusal that behaves the same way.
+  `create_celery` refuses a `TAILORING_STALE_AFTER_SECONDS` at or below the 180 s hard time limit.
+  `infrastructure/api/main.py` imports the Celery app, so a bad value there also leaves the API
+  respawning for ever, while the worker and beat exit loudly.
 - **A dev box with a real `GEMINI_API_KEY` spends money from the UI.** There is no dev-mode fake: the
   worker reads the key and makes a paid call for every tailoring run started at localhost. The test
   suite never reaches it — it replaces the LLM on the worker's own composition-root path and asserts
@@ -374,26 +386,18 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `max_request_body_size="never"` affects. Any exception escaping a function that holds a CV in a
   local ships that CV to Sentry. Two settings that sound like they cover PII, one that decides it.
 - **A failed database write carries its data out through three layers, and `hide_parameters=True`
-  covers one.** (1) SQLAlchemy renders `[parameters: (...)]` into every `DBAPIError` — the flag
-  removes that. (2) The **driver's own message** is copied in verbatim: asyncpg quotes a value it
-  cannot encode, and PostgreSQL's `DETAIL: Failing row contains (...)` on a CHECK violation is the
-  whole row, tailored CV included. (3) SQLAlchemy raises `from` the driver's exception, so
-  `traceback.format_exception` — what Celery logs — and Sentry's chain walker render every link, and
-  a clean `str(exc)` proves nothing. `include_local_variables=False` reaches none of the three; it
-  governs frame locals, not messages. The worker lets a failed save of a succeeded run escape on
-  purpose (G-28), so this is a real path, not a hypothetical. `persistence/database.py` keeps the
-  flag and adds a per-engine `handle_error` listener that withholds the driver's message, keeps
-  SQLSTATE and schema identifiers, and cuts the chain — with no setting to turn it off. Found at
-  slice 1.3's `/verify`, where the first fix was one flag and a test checking only `str(exc)`
-  certified it; the tests now assert on the rendered chain. **PostgreSQL's server log held the
-  failing row too**, outside the application's reach entirely: at Postgres's own default
-  `log_error_verbosity` (`default`), a CHECK violation on `tailoring_run` printed `DETAIL: Failing
-  row contains (...)` — tailored CV included — straight into the container's stdout. A later infra
-  pass pinned `log_error_verbosity=terse` in `docker-compose.yml`'s `postgres` command, the
-  database's own copy of this same fix; `terse` drops `DETAIL`/`HINT`/`QUERY`/`CONTEXT` and keeps the
-  `STATEMENT:` line, which stays safe because `log_parameter_max_length_on_error=0` is pinned there
-  too. Same trap as the bullet above: a setting that sounds like it covers PII, and the layer it does
-  not, until someone measures the running instance instead of assuming the default is safe.
+  covers only one.**
+  1. SQLAlchemy's `[parameters: …]` line.
+  2. The driver's own message. asyncpg quotes values, and PostgreSQL's
+     `DETAIL: Failing row contains (…)` is the whole row.
+  3. The `raise … from` chain, which Celery and Sentry render.
+
+  `include_local_variables=False` reaches none of them, and the worker lets a failed save escape on
+  purpose (G-28). `persistence/database.py` keeps the flag and adds a per-engine `handle_error`
+  listener that withholds the driver's message and the bound parameters and cuts the chain. There is no
+  off switch. Postgres's **server log** holds a fourth copy, so `docker-compose.yml` pins
+  `log_error_verbosity=terse` and `log_parameter_max_length_on_error=0`. A test that checks only
+  `str(exc)` will pass a one-flag fix, so assert on `traceback.format_exception(exc)`.
 - **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
   `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
   `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`
