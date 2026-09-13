@@ -154,8 +154,9 @@ class TailoringRun(RecordsEvents):
     # Class-level annotations only (no assignment): the `__init__` below sets nothing, so this is how
     # `mypy --strict` learns the types of the attributes `request` and the three transitions set
     # directly on the instance and the properties below read back. SQLAlchemy's imperative mapping
-    # targets these exact names — sixteen mapped attributes, and `_recorded_events` deliberately not
-    # among them (it is an in-memory outbox, not a persisted fact).
+    # targets these exact names — twenty-one mapped attributes (sixteen from 1.3, five from 1.4's
+    # revision and version), and `_recorded_events` deliberately not among them (it is an in-memory
+    # outbox, not a persisted fact).
     _id: TailoringRunId
     _guest_session_id: GuestSessionId
     _base_cv_id: BaseCvId
@@ -172,6 +173,15 @@ class TailoringRun(RecordsEvents):
     _requested_at: datetime
     _started_at: datetime | None
     _completed_at: datetime | None
+    # Slice 1.4 (ADR-0015). `_version` is the optimistic-concurrency counter the mapping declares as
+    # `version_id_col` (TR-8); the four below hold the user's revision of each document and the
+    # instant it was made, beside — never over — the model's draft in `_tailored_cv` and
+    # `_cover_letter` (TR-11).
+    _version: int
+    _edited_cv: TailoredCv | None
+    _edited_cover_letter: CoverLetter | None
+    _cv_edited_at: datetime | None
+    _cover_letter_edited_at: datetime | None
 
     def __init__(self) -> None:
         """Takes nothing and does nothing. Build a `TailoringRun` with `request`.
@@ -199,7 +209,7 @@ class TailoringRun(RecordsEvents):
         thing that does. `map_imperatively` leaves a user-defined constructor alone, so the mapper's
         kwargs-accepting one is never installed, and any argument — public property name or private
         mapped name — is now a `TypeError` from Python's own signature check. The body stays empty
-        because there is genuinely nothing to initialise: `request` assigns all sixteen attributes
+        because there is genuinely nothing to initialise: `request` assigns all twenty-one attributes
         itself, and `RecordsEvents.record` creates its buffer lazily.
 
         Three things this deliberately does **not** do, each rejected for a reason:
@@ -270,6 +280,12 @@ class TailoringRun(RecordsEvents):
         run._requested_at = requested_at
         run._started_at = None
         run._completed_at = None
+        # TR-8: `version` is 1 at request; every transition after this bumps it by exactly one.
+        run._version = 1
+        run._edited_cv = None
+        run._edited_cover_letter = None
+        run._cv_edited_at = None
+        run._cover_letter_edited_at = None
 
         run.record(
             TailoringRunRequested(
@@ -428,6 +444,36 @@ class TailoringRun(RecordsEvents):
 
         self.record(TailoringRunFailed(tailoring_run_id=self._id, reason=reason, occurred_at=at))
 
+    # Slice 1.4's two transitions (ADR-0015 §1): the user revises one of a succeeded run's two
+    # documents. Skeleton (T1) — real signatures, no behaviour — so that `qa`'s T2 tests fail on
+    # their assertions and not on an `ImportError`; the bodies land at T3 GREEN against those
+    # recorded reds, exactly as the three transitions above did in 1.3.
+
+    def revise_cv(self, cv: TailoredCv, *, expected_version: int, at: datetime) -> None:
+        """Replace the current CV with the user's revision: writes `_edited_cv` and `_cv_edited_at`
+        together, bumps `version`, and records `TailoredDocumentRevised(kind=CV)`.
+
+        Legal **only** from `SUCCEEDED` (TR-9), and only when `expected_version` is the version the
+        client was shown. Takes a `TailoredCv` and not a `str`, and the type is the whole point of
+        the two-method shape: the signature refuses a letter where a CV was meant, and this method
+        constructs nothing — the value object arrives already valid from the boundary, held to the
+        same bounds as the model's draft (ADR-0015 §2).
+        """
+        raise NotImplementedError
+
+    def revise_cover_letter(
+        self, letter: CoverLetter, *, expected_version: int, at: datetime
+    ) -> None:
+        """Replace the current cover letter with the user's revision: writes `_edited_cover_letter`
+        and `_cover_letter_edited_at` together, bumps `version`, and records
+        `TailoredDocumentRevised(kind=COVER_LETTER)`.
+
+        Legal **only** from `SUCCEEDED` (TR-9), and only when `expected_version` is the version the
+        client was shown. See `revise_cv` for why there are two methods rather than one
+        `revise(kind, text)`.
+        """
+        raise NotImplementedError
+
     def is_stale(self, now: datetime, stale_after: timedelta) -> bool:
         """Whether this run claims to be `RUNNING` but no worker can still be working on it — a
         pure query that changes nothing and records no event.
@@ -499,6 +545,16 @@ class TailoringRun(RecordsEvents):
         return self._failure_reason
 
     @property
+    def version(self) -> int:
+        """The optimistic-concurrency counter: 1 at request, plus one per state change (TR-8).
+
+        Read by the response schema so the client can send it back as `expected_version`, and by
+        the mapping as `version_id_col`. There is no setter; nothing outside the transitions writes
+        it.
+        """
+        raise NotImplementedError
+
+    @property
     def documents(self) -> TailoredDocuments | None:
         """The pair the model produced, assembled from the two private scalars — `None` until the run
         succeeds.
@@ -525,6 +581,16 @@ class TailoringRun(RecordsEvents):
         if self._tailored_cv is None or self._cover_letter is None:
             return None
         return TailoredDocuments(cv=self._tailored_cv, cover_letter=self._cover_letter)
+
+    @property
+    def current_documents(self) -> TailoredDocuments | None:
+        """Each document's revision if it has one, else its draft; `None` until succeeded.
+
+        This is the pair the response schema serializes and the one 1.5 exports. `documents`, one
+        property up, keeps its 1.3 meaning — the model's draft, never overwritten (TR-11) — because
+        `mark_succeeded`, the events and the eval all speak about what the model produced.
+        """
+        raise NotImplementedError
 
     @property
     def metrics(self) -> LlmCallMetrics | None:

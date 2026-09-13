@@ -17,7 +17,11 @@ from __future__ import annotations
 
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.shared.errors import DomainError
-from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason, TailoringRunId
+from tailorcraft.domain.tailoring.value_objects import (
+    TailoringFailureReason,
+    TailoringRunId,
+    TailoringRunStatus,
+)
 
 
 class TailoringRunNotFound(DomainError):
@@ -133,6 +137,83 @@ class TailoringAlreadyDecided(DomainError):
     There is deliberately no `retry()` and no `rerun()` anywhere near this. "Try again" creates a new
     run, so that what a run cost and what a run produced stay one immutable fact (TR-6).
     """
+
+
+class TailoringRunNotEditable(DomainError):
+    """`revise_cv` or `revise_cover_letter` was called on a run that is not `succeeded` (E-7, TR-9).
+
+    Carries the status the run was actually in, so the router can give the two honest answers apart
+    — "still working, keep polling" (`queued` / `running`) and "there is nothing to edit" (`failed`)
+    — without re-reading the aggregate. There is no revision of a draft that does not exist, and no
+    revision of a run whose outcome was a failure reason.
+
+    Checked **before** the version, deliberately: a client that is both stale and wrong about the
+    status learns the more fundamental fact first. A `TailoredDocumentVersionConflict` on a run that
+    is not even editable would send the client off to re-fetch and retry an edit that can never be
+    accepted.
+
+    This is a separate type from `TailoringAlreadyDecided` even though both say "the status forbids
+    this call", because they point in opposite directions: `TailoringAlreadyDecided` refuses a
+    *transition* on a run whose outcome is settled, and this refuses a *revision* on a run whose
+    outcome is **not** settled as `succeeded`. One name for both would leave the transition table's
+    two new columns reading as the old three.
+    """
+
+    def __init__(self, status: TailoringRunStatus) -> None:
+        super().__init__(f"a tailoring run that is {status.value} cannot be edited")
+        self.status = status
+
+
+class TailoredDocumentVersionConflict(DomainError):
+    """A revision was made against a `version` the run has already moved past (E-8, TR-9).
+
+    Carries **both** numbers. `expected_version` is what the client believed it was editing;
+    `current_version` is what the aggregate holds, and the router puts it in the 409 body so the
+    client can re-fetch and re-apply rather than merely being told "no" — the same reason
+    `TailoringAlreadyRunning` carries the active run's id. The user's own text is never carried, on
+    this error or any other in this module.
+
+    Raised by the **aggregate**, from its own in-memory compare of `expected_version` against
+    `_version`. It closes the *stale edit*: one browser tab that read version 7 must not overwrite
+    the version 8 another tab has since written. It does **not** close the database-level race
+    between two writers who both read the same version and both pass this compare — that is
+    `TailoringRunConcurrentlyModified`, raised by the repository, and the two are kept as two types
+    because they are found in two different places by two different mechanisms (ADR-0015 §3).
+    """
+
+    def __init__(self, expected_version: int, current_version: int) -> None:
+        super().__init__(
+            f"revision expected version {expected_version}, but the run is at {current_version}"
+        )
+        self.expected_version = expected_version
+        self.current_version = current_version
+
+
+class TailoringRunConcurrentlyModified(DomainError):
+    """The row for this run changed between loading the aggregate and saving it: another process
+    committed a newer `version` first (E-9, E-18, E-20; ADR-0015 §3).
+
+    **Raised by the repository, never by the aggregate.** A reader looking for the `raise` in
+    `tailoring_run.py` will not find one, and that is the point of this docstring: the aggregate
+    cannot see another process. It bumps `_version` on every transition (TR-8) and that is the whole
+    of its contribution; the imperative mapping declares the column as `version_id_col`, SQLAlchemy
+    emits `UPDATE … WHERE id = :id AND version = :loaded`, and on zero rows it raises its own
+    `StaleDataError`, which the repository translates into this. Domain-defined and adapter-raised,
+    exactly as `TailoringNotQueued` is raised by the queue adapter and `TailoringFailed` by the LLM
+    adapter — the port names the failure in the domain's language and the adapter translates
+    whatever the vendor throws.
+
+    Carries the run's id and nothing else. Three callers catch it and each answers differently, and
+    none of those answers is this error's business: `ExecuteTailoringRun` returns `SKIPPED` before
+    paying (the concurrent duplicate delivery ADR-0014's amendment left open — closed here), the
+    stale-run sweep counts it and continues, and the API answers 409 `document_version_conflict`
+    with `current_version: null`, because the aggregate it holds is the stale one and the true
+    number lives in a row it has just been told it does not have.
+    """
+
+    def __init__(self, run_id: TailoringRunId) -> None:
+        super().__init__(f"tailoring run {run_id.value} was modified concurrently")
+        self.run_id = run_id
 
 
 class EmptyTailoredDocument(DomainError):
