@@ -31,8 +31,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
 from typing import Protocol
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from tailorcraft.domain.identity.errors import GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
@@ -62,6 +63,11 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoringRunStatus,
 )
 from tailorcraft.infrastructure.clock import FixedClock
+
+# A `NULL`-`started_at` stand-in for `FakeTailoringRunRepository.list_stale_running`'s sort key:
+# older than any real instant, so a `None` sorts first exactly as `NULLS FIRST` would in SQL.
+_EPOCH = datetime.min.replace(tzinfo=UTC)
+
 
 # --- Fakes -------------------------------------------------------------------------------------
 
@@ -242,6 +248,15 @@ class FakeTailoringRunRepository:
     only a call log — not the current row — can prove `running` was saved *before* the model was
     ever asked. A count alone would not do either, since `1` is consistent with "saved before the
     call" and "saved after, coincidentally also once"; recording the status distinguishes them.
+
+    `list_stale_running`, added for V5b (the stale-run sweep, G-25'), is **not yet a member of
+    `TailoringRunRepository`** — the skeleton commit measured that adding it breaks mypy in six
+    files this layer may not touch, so it lands on the Protocol only once every implementer already
+    has it. Structural typing makes that order safe: this class satisfies the port either way. The
+    contract, matching the SQL adapter's once it exists: `RUNNING` rows whose `started_at` is before
+    `started_before`, **or** `started_at is None` — the same fold `TailoringRun.is_stale` makes,
+    expressed as a filter — oldest first with a `NULL` counted as oldest (`NULLS FIRST`), ties on
+    `started_at` broken by id, at most `limit`, no locking.
     """
 
     def __init__(self) -> None:
@@ -280,6 +295,25 @@ class FakeTailoringRunRepository:
             if run.guest_session_id == sid and run.status in active_statuses:
                 return run
         return None
+
+    async def list_stale_running(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """`AbandonStaleTailoringRuns`' lookup (V5b, G-25'). See the class docstring for the
+        contract this implements ahead of the Protocol gaining the member."""
+        candidates = [
+            run
+            for run in self._by_id.values()
+            if run.status is TailoringRunStatus.RUNNING
+            and (run.started_at is None or run.started_at < started_before)
+        ]
+
+        def _sort_key(run: TailoringRun) -> tuple[bool, datetime, UUID]:
+            # `started_at is None` sorts first (`False < True`); ties on `started_at` break on id.
+            return (run.started_at is not None, run.started_at or _EPOCH, run.id.value)
+
+        candidates.sort(key=_sort_key)
+        return candidates[:limit]
 
     def all(self) -> list[TailoringRun]:
         """Test-only inspection, not part of `TailoringRunRepository`."""

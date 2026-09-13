@@ -428,3 +428,54 @@ def test_tailoring_run_cannot_be_constructed_via_the_mapped_attribute_names() ->
     `__init__` from being deleted as dead code."""
     with pytest.raises(TypeError):
         TailoringRun(_status=TailoringRunStatus.SUCCEEDED)  # type: ignore[call-arg]
+
+
+# --- is_stale (G-25', V5b): the rule shared by ExecuteTailoringRun step 3 and the beat sweep,
+# AbandonStaleTailoringRuns ---------------------------------------------------------------------
+#
+# `started_at is None` while `status is RUNNING` is folded to "stale" by the aggregate's own
+# docstring, but that cell is not reachable through the public API: `mark_started` sets `status`
+# and `started_at` together and nothing else ever writes either, so there is no legal path to a
+# `RUNNING` run with no `started_at`. Recorded here rather than tested by reaching into
+# `run._started_at` directly, which would violate the same TR-1/TR-6 guarantee every other builder
+# in this file respects. See the RED commit body for the same note.
+
+_STALE_AFTER = timedelta(seconds=300)
+
+
+def test_running_run_started_longer_ago_than_the_window_is_stale() -> None:
+    run = _running(started_at=_STARTED_AT)
+    now = _STARTED_AT + _STALE_AFTER + timedelta(seconds=1)
+
+    assert run.is_stale(now, _STALE_AFTER) is True
+
+
+def test_running_run_started_exactly_at_the_window_is_not_stale() -> None:
+    """Strict `>`: a run exactly `stale_after` old is still fresh. This is the same comparison
+    `ExecuteTailoringRun` step 3 already makes (see `test_execute_tailoring_run.py`'s
+    `test_running_run_past_the_stale_window_is_recorded_abandoned`, which advances 301 seconds past
+    a 300-second window for the identical reason)."""
+    run = _running(started_at=_STARTED_AT)
+    now = _STARTED_AT + _STALE_AFTER
+
+    assert run.is_stale(now, _STALE_AFTER) is False
+
+
+def test_running_run_started_more_recently_than_the_window_is_not_stale() -> None:
+    run = _running(started_at=_STARTED_AT)
+    now = _STARTED_AT + timedelta(seconds=1)
+
+    assert run.is_stale(now, _STALE_AFTER) is False
+
+
+@pytest.mark.parametrize(
+    "status",
+    [TailoringRunStatus.QUEUED, TailoringRunStatus.SUCCEEDED, TailoringRunStatus.FAILED],
+)
+def test_non_running_run_is_never_stale_however_old(status: TailoringRunStatus) -> None:
+    """`QUEUED` has no worker to have lost; `SUCCEEDED`/`FAILED` are decided once (TR-3) and a
+    decided run is not stale, it is over — however long ago it was requested or completed."""
+    run = _run_in_status(status)
+    long_after = _COMPLETED_AT + timedelta(days=365)
+
+    assert run.is_stale(long_after, _STALE_AFTER) is False
