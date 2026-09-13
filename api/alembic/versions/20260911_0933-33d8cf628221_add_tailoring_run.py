@@ -127,9 +127,9 @@ def upgrade() -> None:
             name=op.f("ck_tailoring_run_failure_reason_matches_status"),
         ),
         # The two terminal statuses are exactly the two that carry a `completed_at`. `started_at`
-        # gets **no** such constraint, deliberately: `mark_failed` is legal from `queued` (a refused
-        # enqueue, G-14; a stale redelivery, G-25), so a failed run may legitimately never have
-        # started, and a constraint tying the two would forbid a state the aggregate documents.
+        # gets **no** such constraint, deliberately. `mark_failed` is legal from `queued`, and a
+        # refused enqueue (G-14) is the one way that happens, so a failed run may legitimately never
+        # have started. A constraint tying the two would forbid a state the aggregate documents.
         sa.CheckConstraint(
             "(status IN ('succeeded','failed')) = (completed_at IS NOT NULL)",
             name=op.f("ck_tailoring_run_completed_at_matches_terminal_status"),

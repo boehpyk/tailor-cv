@@ -302,8 +302,11 @@ class Settings(BaseSettings):
 
         `MisconfiguredSettings` rather than a `ValueError` — see that class for why a `ValueError`
         here would print every secret this object holds into the crash log. It is raised from
-        `get_settings()` during import of the composition root, which is as loud as a startup failure
-        gets: uvicorn and the Celery worker both die on it with the setting's name in the traceback.
+        `get_settings()` during import of the composition root, with the setting's name in the
+        traceback. The Celery worker and beat exit on it. uvicorn under `--workers N` does **not**:
+        its supervisor respawns the failing import for ever, and the container never becomes ready.
+        This was measured at T36 (see CLAUDE.md). The fix is carried to `devops`, due before the
+        deploy SSH secrets are set.
 
         A whitespace-only key counts as empty. `" "` in a hand-edited `.env` on the box is the
         plausible typo, and "we have a key" is a claim that should not be satisfiable by a space.

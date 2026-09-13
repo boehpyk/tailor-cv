@@ -999,10 +999,12 @@ def test_migration_3d0b70b7837f_downgrade_removes_the_partial_index(settings: Se
     running. pytest-asyncio's session-scoped loop is only ever *running* while an `async def` test's
     own body executes — idle here, which is where Alembic's own fresh `asyncio.run()` may open one.
 
-    Downgrades then re-upgrades within this one test, in a `finally`: this suite has ONE test
-    database, migrated to head ONCE per session (`conftest.py`'s `_migrated`), so leaving the schema
-    at `-1` would silently break every test that runs after this one — in this file and beyond, since
-    `_migrated` never runs a second time. Requests no `session`/`connection` fixture: those bind to a
+    Downgrades to explicit revisions, then restores head within this one test. This suite has ONE
+    test database, migrated to head ONCE per session (`conftest.py`'s `_migrated`), so a schema left
+    behind head would silently break every test that runs after this one, in this file and beyond,
+    because `_migrated` never runs a second time. When the index is still physically present, recovery
+    stamps before upgrading, so a downgrade that completes without dropping the index cannot leave
+    `alembic_version` stuck. A downgrade that *raises* is not yet covered by recovery (carried, R3-3). Requests no `session`/`connection` fixture: those bind to a
     SAVEPOINT held open on the same shared connection for the rest of the test, and Alembic's own DDL
     needs to run outside of any such transaction rather than risk lock contention with it.
     """

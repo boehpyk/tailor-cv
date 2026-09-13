@@ -68,7 +68,9 @@ def create_celery() -> Celery:
     #      table's CHECK constraints reject it.
     #   3. The documents are lost after being paid for, and the user sees "That run was
     #      interrupted", with **Try again** inviting them to pay a second time.
-    # Above the limit, the pool child is always killed before its run is old enough to sweep.
+    # Above the limit, the pool child is killed before its run is old enough to sweep. At the 181 s
+    # boundary the margin is about a second (whole-second `started_at`, strict `>`), and it holds
+    # only while the worker's timer fires on time. At the 300 s default the margin is wide.
     # Equality is refused too: a kill at second 180 and a sweep judging the same run at second 180
     # is exactly the race this rules out.
     #

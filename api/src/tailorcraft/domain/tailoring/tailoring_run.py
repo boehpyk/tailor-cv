@@ -323,10 +323,13 @@ class TailoringRun(RecordsEvents):
         `TailoringAlreadyDecided` from either terminal status, and `InvariantViolated` if
         `at < requested_at` (TR-4).
 
-        The refusal from `RUNNING` is not a defence against a caller bug — it is the redelivery case
-        (TR-3): `task_acks_late` means a task whose worker died mid-call comes back, and the second
-        attempt finds its own run already started. Refusing here is exactly what stops a second paid
-        call to Gemini for one button press (AC-10).
+        The refusal from `RUNNING` is not a defence against a caller bug. It is the redelivery case
+        (TR-3): a message that the broker restores after its worker's *main* process was lost
+        (`visibility_timeout`) finds its own run already started. A task that raises, or whose pool
+        child dies, is acked and never comes back; the stale-run sweep records that run (G-25').
+        Refusing here stops a second paid call for one button press when the redelivery is
+        **sequential** (AC-10). It does not stop two deliveries in flight at the same time, because
+        both read `queued` (ADR-0014's amendment).
         """
         self._guard_outcome_not_yet_decided()
         if self._status is TailoringRunStatus.RUNNING:

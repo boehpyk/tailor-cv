@@ -239,12 +239,13 @@ def test_mark_failed_is_legal_from_queued() -> None:
     """The one cell in the table a future reader is most likely to "tidy" into an error, so it gets
     its own named test rather than living only inside the parametrized table above.
 
-    Legal on purpose: a run can fail before it ever starts, two different ways. First, the row is
-    committed and *then* the task is published, so a broker that refuses the publish leaves a
-    committed run that can never run — the router records it `failed`/`not_queued` (G-14) rather than
-    leaving it `queued` forever, which would be a run the client polls until it gives up. Second, a
-    redelivered task can find a run that has been abandoned before a worker ever picked it up (G-25).
-    Neither may be recorded by first calling `mark_started` to satisfy the state machine, because
+    Legal on purpose: a run can fail before it ever starts, and there is exactly one way. The row is
+    committed and *then* the task is published, so a broker that refuses the publish leaves a committed
+    run that can never run. The router records it `failed`/`not_queued` (G-14) rather than leaving it
+    `queued` forever, where the client would poll it until it gave up. `abandoned` is not a second
+    way: it is recorded from `running`, by the stale-run sweep or by a late redelivery (see ADR-0014's
+    amendment). This failure must not be recorded by first calling `mark_started` to satisfy the
+    state machine, because
     `started_at` means "a worker began a call", and a `started_at` invented to get past a guard is a
     timestamp that lies to every latency measurement built on it. Asserting `started_at is None`
     below is the proof that this path never manufactures one.

@@ -4,7 +4,8 @@ Read it next to `execute_tailoring_run.ExecuteTailoringRun` step 3, which record
 for the same reason from the other side — a redelivered task that happens to arrive past the window.
 The sweep exists because that path alone does not deliver AC-12 (feature-spec.md, "Amended at
 /verify round 1"): a pool child killed mid-call has its message **acked**, a SIGKILLed main process
-redelivers only after the broker's hour-long visibility timeout, and a redelivery that does arrive
+redelivers only after the broker's visibility timeout (an hour by kombu's default, 600 s now), and a
+redelivery that does arrive
 promptly finds a fresh `running` run and returns `SKIPPED`. Each of those leaves a run `running`
 for ever behind a UI that says "still working. Don't refresh." (G-25').
 """

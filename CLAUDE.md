@@ -18,23 +18,47 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: two slices shipped (2026-09-10).** Phase 1 is under way and the architecture is
-> carrying weight rather than describing itself.
+> **Status: two slices shipped, and a third verified on its branch (2026-09-13).** Phase 1 is under
+> way. The architecture now carries a paid external call, a worker, and the codebase's first scheduled
+> job.
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
 > - **1.2 `posting-job-description-intake`** (PR #2) — paste a job description or hand over a link,
 >   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
+> - **1.3 `tailoring-generate-documents`** (verified on its branch; not yet pushed, no PR) — one
+>   button returns a tailored CV and a cover letter.
+>   - A run is queued, executed by a Celery worker behind `LlmPort` (Gemini), and polled by the client.
+>   - Every outcome that spent money is a row (ADR-0014, amended 2026-09-13).
+>   - Model output is re-validated on receipt.
+>   - A stale-run sweep on beat recovers runs that a dead worker left `running`.
+>   - Eval run 4: p95 `llm_duration_ms` 6.4 s on typical inputs.
 >
-> **473 backend and 66 frontend tests**, green twice in a row. Every gate verified by running it:
-> Ruff, mypy `--strict` (142 files), import-linter (3 contracts kept), pytest, `tsc --noEmit`,
-> ESLint, Prettier, Vitest, `vite build`, and a production API image that builds, boots as a
-> non-root user, and **runs the extractor inside itself** rather than merely importing it.
+> **817 backend and 151 frontend tests**, green twice in a row. Every gate was verified by running
+> it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, `tsc --noEmit`, ESLint,
+> Prettier, Vitest, `vite build`. The production image builds, runs as non-root, and registers both
+> Celery tasks and both routed queues. `make eval` measures prompt quality and latency against the
+> real API. It is not a test, and it costs money.
 >
-> **CI on GitHub is now verified** — Phase 0 listed it as unproven for want of a remote; `api` and
-> `web` both pass on `main`, which also proves the WeasyPrint system libraries and the
-> `trafilatura`/`lxml` wheels install there and not only in the dev container. The deploy's **build**
-> job passes and pushes images to GHCR.
+> **Carried out of 1.3, each with an owner and a trigger:**
+> - **Concurrent duplicate delivery.** Two in-flight deliveries of one run both read `queued` and both
+>   pay, because ADR-0014 §6's guarantee is sequential only. Close it before 1.4 ships editing, with
+>   optimistic versioning.
+> - **Startup refusals never exit under `uvicorn --workers N`.** The API-key guard and the
+>   stale-window guard both leave the API respawning. Owner: `devops`, before the deploy SSH secrets
+>   are set. Import the composition root once and exit non-zero before `exec uvicorn`.
+> - **Very long CVs** (about 14,000+ characters) can exceed the 12 s per-attempt timeout. They are
+>   recorded `llm_timed_out`, with two calls charged. Accepted; fix in a later slice, measured first.
+> - **Beat is invisible to `/health/ready`**, because `control.ping` reaches workers only. Slice 1.6's
+>   heartbeat covers it.
+> - **Before 1.4's first migration:**
+>   - Alembic autogenerate renders `TypeDecorator` columns as unimportable references; add the
+>     `render_item` hook.
+>   - `qa`: recover a *raising* downgrade in the index-migration test, and type the sweep-task tests'
+>     run ids.
+>
+> **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
+> passes and pushes images to GHCR.
 >
 > **The deploy path is still unproven, and one part of it is worse than unproven.** There is no VDS,
 > so `deploy` fails at the SSH sync — expected. But the `production` environment has **zero
