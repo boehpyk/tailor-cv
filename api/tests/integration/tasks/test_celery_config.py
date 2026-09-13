@@ -26,6 +26,7 @@ from tailorcraft.infrastructure.tasks.app import (
     STALE_RUN_SWEEP_INTERVAL_SECONDS,
     app,
 )
+from tailorcraft.infrastructure.tasks.tailoring_sweep import abandon_stale_tailoring_runs
 
 # --- The beat schedule -----------------------------------------------------------------------------
 
@@ -43,6 +44,27 @@ def test_beat_schedule_registers_the_sweep_every_60_seconds_with_an_expiry_under
         "the expiry must sit below the interval so at most one live tick exists at any moment — "
         "otherwise a worker back after an outage finds every missed tick still queued ahead of real "
         "work (tasks/app.py's own comment)"
+    )
+
+
+def test_the_sweep_tasks_own_registered_name_matches_the_shared_constant() -> None:
+    """(verify round 2) The test above only reads `beat_schedule`'s OWN copy of the name back and
+    compares it to the same constant it was built from — it cannot tell a correctly-named
+    `@app.task(name=...)` from one that silently drifted to some other literal, because both sides
+    of that comparison would still be the schedule's copy against the shared constant. This test
+    reads the DECORATOR's own result instead — `abandon_stale_tailoring_runs.name`, what a real
+    dispatch actually looks up — and that the worker's own `app.tasks` registry holds an entry under
+    that name, not merely under whatever `beat_schedule` claims.
+
+    Proven to discriminate by locally changing `tasks/tailoring_sweep.py`'s
+    `@app.task(name=ABANDON_STALE_TAILORING_RUNS_TASK_NAME, ...)` to a typo'd string literal: this
+    test's first assertion goes red (the decorator's name no longer equals the constant), which the
+    schedule-comparison test above cannot catch because nothing here touches `beat_schedule` at all.
+    """
+    assert abandon_stale_tailoring_runs.name == ABANDON_STALE_TAILORING_RUNS_TASK_NAME
+    assert ABANDON_STALE_TAILORING_RUNS_TASK_NAME in app.tasks, (
+        "a task name absent from the worker's own registry is NotRegistered on every dispatch, "
+        "beat's included — the exact failure mode this constant exists to prevent"
     )
 
 

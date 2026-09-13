@@ -414,9 +414,11 @@ async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """G-28: "Postgres unavailable inside the worker when recording a successful outcome" is left to
-    escape `run_tailoring` on purpose, so `task_acks_late` redelivers rather than silently losing the
-    run. AC-21 promises that escape carries no fragment of the tailored CV or cover letter — not in
-    the exception's own message, not in its rendered chain, not in a log line.
+    escape `run_tailoring` on purpose. Celery 5.6.3 ACKs a task that raises
+    (`task_acks_on_failure_or_timeout=True`), so nothing redelivers this message; the run is left
+    `running`, and the stale-run sweep (G-25', `tasks/tailoring_sweep.py`) is the one recovery for
+    it, a beat tick later. AC-21 promises that escape carries no fragment of the tailored CV or
+    cover letter — not in the exception's own message, not in its rendered chain, not in a log line.
 
     A **real** database-side failure, not a hand-built exception: a `CHECK` constraint added to
     `tailoring_run` for the life of this test rejects any `tailored_cv` containing this test's own

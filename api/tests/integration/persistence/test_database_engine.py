@@ -23,8 +23,10 @@ flag can express, which is what this test now checks for rather than assumes.
 Why this is more than a formatting nit: in the worker, `ExecuteTailoringRun` step 7 saves a
 succeeded run's `tailored_cv` and `cover_letter` through `CommittingTailoringRunRepository`
 (`infrastructure/tasks/container.py`). If that `UPDATE` fails at the database — a dropped
-connection, a CHECK violation — the exception is left to escape `run_tailoring` on purpose (G-28: so
-`task_acks_late` can redeliver). Celery logs "raised unexpected: <exc>" (which renders the full
+connection, a CHECK violation — the exception is left to escape `run_tailoring` on purpose (G-28).
+Celery 5.6.3 ACKs a task that raises (`task_acks_on_failure_or_timeout=True`), so nothing redelivers
+it; the run is left `running`, and the stale-run sweep (G-25', `tasks/tailoring_sweep.py`) is what
+recovers it a beat tick later. Celery logs "raised unexpected: <exc>" (which renders the full
 chain, not merely `str(exc)`) and Sentry walks the same chain when it captures the exception, so
 either one can carry the tailored document itself unless the chain is actually cut, not merely
 `str()`-quiet. `include_local_variables=False` (Sentry) does not help here — the leak is in the

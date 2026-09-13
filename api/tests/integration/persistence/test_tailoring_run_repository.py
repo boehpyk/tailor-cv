@@ -1027,14 +1027,49 @@ def test_migration_3d0b70b7837f_downgrade_removes_the_partial_index(settings: Se
         "the index must exist at head before this test runs"
     )
 
-    command.downgrade(config, "-1")
+    # Explicit targets, never "-1". A relative step downgrades whatever the current head happens to
+    # be, not this migration in particular — the moment 1.4 lands a migration on top of this one,
+    # "-1" would downgrade THAT one and this test would go red for a regression that does not exist.
+    # The first call is a no-op today (current revision is already 3d0b70b7837f, this migration's own
+    # revision) and starts pulling its future purpose the day a newer head exists: strip anything
+    # newer than this migration before exercising ITS downgrade() specifically.
+    command.downgrade(config, "3d0b70b7837f")
+    command.downgrade(config, "33d8cf628221")
+
+    # The assertion is captured rather than let propagate immediately, so that a failure recovering
+    # the schema below (the `finally` this replaces) can never stand in for it in the report. Suppose
+    # downgrade() regresses and stops dropping the index — exactly the regression this test exists to
+    # catch: `alembic_version` now claims `33d8cf628221` while the index (this migration's own DDL)
+    # is still physically present. A plain `upgrade(config, "head")` from there would try to
+    # `CREATE INDEX` a second time, fail with "relation already exists", and roll back — leaving
+    # `alembic_version` stuck behind the physical schema for every later session's `_migrated`
+    # fixture, and burying the real `AssertionError` under that unrelated one.
+    assertion_error: AssertionError | None = None
     try:
         assert asyncio.run(_index_exists()) is False, (
             "downgrade() must drop ix_tailoring_run_running_started_at — proven to discriminate by "
             "commenting out the op.drop_index() call in the migration's downgrade() locally"
         )
-    finally:
+    except AssertionError as exc:
+        assertion_error = exc
+
+    try:
+        if asyncio.run(_index_exists()):
+            # downgrade() failed to drop the index (the regression above): stamp the recorded
+            # revision forward to match what the schema actually holds before upgrading, so
+            # upgrade(head) is a no-op rather than a duplicate CREATE INDEX that would fail and
+            # strand alembic_version behind the schema.
+            command.stamp(config, "3d0b70b7837f")
         command.upgrade(config, "head")
         assert asyncio.run(_index_exists()) is True, (
             "the schema must be back at head before the next test in the session runs"
         )
+    except Exception as recovery_exc:
+        # A failure recovering the schema must never replace the real assertion in the report — but
+        # it must not be silently lost either, so it is chained as the cause.
+        if assertion_error is not None:
+            raise assertion_error from recovery_exc
+        raise
+
+    if assertion_error is not None:
+        raise assertion_error

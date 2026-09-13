@@ -216,7 +216,14 @@ async def test_a_stale_running_run_is_abandoned_and_a_fresh_one_is_untouched(
 
     result = await sweep_task_module._sweep()
 
-    assert result.abandoned == 1
+    # `>=`, not `==`: `list_stale_running` sees every genuinely committed `running` row in
+    # `tailorcraft_test`, not only this test's own two. A leftover row committed by an earlier,
+    # interrupted run of `test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_
+    # only` below (which commits through its own separate engine, outside any transactional
+    # rollback) would push this count above 1 and break an exact equality on every later run — the
+    # id-scoped checks just below are what actually proves THIS test's own stale run was the one
+    # abandoned.
+    assert result.abandoned >= 1
     assert result.skipped == 0
 
     reloaded_stale = await _reread(connection, stale.id)
@@ -330,10 +337,85 @@ async def test_the_sweep_never_constructs_an_llm_adapter(
     monkeypatch.setattr(sweep_container, "GeminiLlm", _fail_if_constructed)
     _bind_sweep_to_this_sessions_worker(monkeypatch, settings, session)
 
-    result = await sweep_task_module._sweep()
+    # No count assertion here on purpose: this test seeds no rows of its own, so `result.abandoned`
+    # reflects EVERY genuinely committed stale `running` row visible in `tailorcraft_test` — a
+    # leftover from an interrupted run elsewhere in this file would make an exact `== 0` fragile for
+    # a reason that has nothing to do with what this test actually checks. The behaviour under test
+    # is `_fail_if_constructed` never firing, which `pytest.fail` above already proves on its own:
+    # a call to `_sweep()` that completes at all, with no exception raised, is the whole proof.
+    await sweep_task_module._sweep()
 
-    assert result.abandoned == 0
-    assert result.skipped == 0
+
+# --- G-35 (verify round 2): the task's OWN error branch, exercised only by calling the real task ---
+
+
+class _SweepDatabaseFailure(RuntimeError):
+    """A distinctively-named exception so `error_type=type(exc).__name__` in the sweep's failure log
+    line can be told apart from any other `RuntimeError`-shaped thing already in this suite's
+    caplog."""
+
+
+_SWEEP_FAILURE_LOG_LEAK_SENTINEL = "QA_V5F_SWEEP_FAILURE_LOG_LEAK_SENTINEL_8a1c3d"
+
+
+def test_a_database_failure_through_the_real_task_logs_the_exceptions_type_and_reraises(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every other test in this file calls `_sweep()` directly, so none of them ever runs
+    `abandon_stale_tailoring_runs`'s OWN `except Exception:` branch (`tasks/tailoring_sweep.py:62-
+    68`) — only the real task function's body wraps `asyncio.run(_sweep())` in a `try`, so only a
+    literal call to `abandon_stale_tailoring_runs()` itself can exercise it, the same distinction
+    `test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_only` below draws for
+    the success path.
+
+    `abandon_stale_runs_use_case` is patched (in this MODULE's namespace, `sweep_task_module`, the
+    same technique `_bind_sweep_to_this_sessions_worker` uses one call site over) with a fake whose
+    `__aenter__` itself raises — never a mocked repository, but there is no real-database failure
+    left to reuse here either: `_sweep`'s only two lines are opening the use case and calling it, and
+    the DB-failure shape (a constraint violation on `save`) is already exercised end to end by
+    `test_a_real_database_failure_on_a_later_run_leaves_an_earlier_run_durably_abandoned` above. What
+    this test adds is new is the TASK's own translation of whatever escapes `_sweep()` into one log
+    line, which that other test cannot see because it calls `_sweep()` directly and never reaches
+    the task body at all.
+
+    Proven to discriminate by locally changing `error_type=type(exc).__name__` to
+    `error=str(exc)` in `tasks/tailoring_sweep.py`: every other test in this suite still passes,
+    because none of them goes through this branch, and this test's sentinel assertion goes red.
+    """
+
+    class _RaisingSweepUseCase:
+        """A plain async context manager, not `@asynccontextmanager`: a generator function whose
+        body unconditionally raises before its `yield` leaves that `yield` statically unreachable,
+        which mypy `--strict` correctly flags — there is no generator shape to preserve here, since
+        `_sweep`'s `async with abandon_stale_runs_use_case() as (sweep, session):` only ever needs
+        `__aenter__` to raise."""
+
+        async def __aenter__(self) -> tuple[Any, AsyncSession]:
+            raise _SweepDatabaseFailure(
+                f"simulated database failure carrying {_SWEEP_FAILURE_LOG_LEAK_SENTINEL}"
+            )
+
+        async def __aexit__(self, *exc_info: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        sweep_task_module, "abandon_stale_runs_use_case", lambda: _RaisingSweepUseCase()
+    )
+
+    with caplog.at_level(logging.INFO), pytest.raises(_SweepDatabaseFailure):
+        abandon_stale_tailoring_runs()
+
+    assert "tailoring.stale_run_sweep_failed" in caplog.text
+    assert _SweepDatabaseFailure.__name__ in caplog.text, (
+        "the failure line must carry the exception's type — logging its message instead is exactly "
+        "the change this test exists to catch"
+    )
+    assert re.search(r'"?duration_ms"?\s*[:=]', caplog.text), caplog.text
+    assert _SWEEP_FAILURE_LOG_LEAK_SENTINEL not in caplog.text, (
+        "G-35/Constitution §8: the failure line logs the exception's TYPE only, never its message — "
+        "a database error's message can quote a row"
+    )
 
 
 # --- One log line, real end to end through the task's own asyncio.run() bridge ------------------
@@ -356,7 +438,7 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     """
     monkeypatch.setattr(sweep_container, "get_settings", lambda: settings)
 
-    async def _seed_a_stale_run() -> GuestSessionId:
+    async def _seed_a_stale_run() -> tuple[GuestSessionId, Any]:
         seeding_engine = create_async_engine(settings.test_database_url, poolclass=None)
         try:
             async with AsyncSession(seeding_engine, expire_on_commit=False) as seeding_session:
@@ -371,9 +453,17 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
                 )
                 await runs.add(stale)
                 await seeding_session.commit()
-                return owner.id
+                return owner.id, stale.id
         finally:
             await seeding_engine.dispose()
+
+    async def _reread_status(run_id: Any) -> TailoringRun:
+        verify_engine = create_async_engine(settings.test_database_url, poolclass=None)
+        try:
+            async with AsyncSession(verify_engine, expire_on_commit=False) as verify_session:
+                return await SqlAlchemyTailoringRunRepository(verify_session).get(run_id)
+        finally:
+            await verify_engine.dispose()
 
     async def _forget(owner_id: GuestSessionId) -> None:
         cleanup_engine = create_async_engine(settings.test_database_url, poolclass=None)
@@ -386,26 +476,44 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
         finally:
             await cleanup_engine.dispose()
 
-    owner_id = asyncio.run(_seed_a_stale_run())
+    owner_id, stale_run_id = asyncio.run(_seed_a_stale_run())
     try:
         with caplog.at_level(logging.INFO):
             result = abandon_stale_tailoring_runs()
+        reloaded_stale = asyncio.run(_reread_status(stale_run_id))
     finally:
         asyncio.run(_forget(owner_id))
 
     assert result is None, "ignore_result=True: the task must return None regardless of the outcome"
+    # The id-scoped check that makes the loosened count assertion below meaningful: THIS test's own
+    # stale run must actually be the one the sweep recorded, not merely "some count went up".
+    assert reloaded_stale.status is TailoringRunStatus.FAILED
+    assert reloaded_stale.failure_reason is TailoringFailureReason.ABANDONED
+
     assert "tailoring.stale_runs_swept" in caplog.text
     # structlog's renderer here is process-wide and picked once by whichever test configures it
     # first (`configure_logging`, `infrastructure/observability.py`) — console-formatted
     # (`swept_count=1`) if this file runs alone, JSON (`"swept_count": 1`) inside the full suite. The
     # regexes below match either rendering rather than assuming one, so this test does not depend on
     # what ran before it.
-    assert re.search(r'"?swept_count"?\s*[:=]\s*1\b', caplog.text), caplog.text
+    #
+    # `>= 1`, not `== 1`: this task call sweeps EVERY genuinely committed stale `running` row in
+    # `tailorcraft_test`, so a leftover from an earlier interrupted run of this same test (this test
+    # commits for real, through its own engine, outside any transactional rollback) would push the
+    # logged count above 1 and break an exact equality forever after. The reread above is what
+    # actually proves this test's own run was swept; this regex only proves the count is consistent
+    # with that having happened.
+    swept_match = re.search(r'"?swept_count"?\s*[:=]\s*(\d+)', caplog.text)
+    assert swept_match, caplog.text
+    assert int(swept_match.group(1)) >= 1, caplog.text
     assert re.search(r'"?skipped_count"?\s*[:=]\s*0\b', caplog.text), caplog.text
     assert re.search(r'"?duration_ms"?\s*[:=]', caplog.text), caplog.text
-    # Constitution §8: no run content, ever — there is none to leak on this path (RUNNING rows never
-    # carry a document), but the owner's own id is the closest stand-in for "identifying detail" this
-    # task ever touches, and it appears nowhere in the sweep's own log line.
-    assert str(owner_id.value) not in caplog.text
-    assert "tailored_cv" not in caplog.text
-    assert "cover_letter" not in caplog.text
+    # Constitution §8: no run content, ever. `owner_id`/`tailored_cv`/`cover_letter` checks were
+    # removed from here (verify round 2): every one of them was vacuously true regardless of what
+    # this code logs — `abandon_stale_tailoring_runs`' success line names only `swept_count`,
+    # `skipped_count` and `duration_ms` (this file's own module docstring; `RUNNING` rows never carry
+    # a document, per the mapping's own CHECK), so none of those three strings has any path into
+    # `caplog.text` for this assertion to actually guard. The real guard against a document leaking
+    # through this task is `test_a_database_failure_through_the_real_task_logs_the_exceptions_type_
+    # and_reraises` above, which drives a genuine failure with a sentinel in the exception's message
+    # and asserts the sentinel never reaches a log line.
