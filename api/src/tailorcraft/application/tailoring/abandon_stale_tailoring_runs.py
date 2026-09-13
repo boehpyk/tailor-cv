@@ -33,13 +33,22 @@ class AbandonStaleTailoringRunsResult:
       never stale at all, which means the stale-run query and the aggregate's rule disagree. Neither
       is an error and neither aborts the batch. A non-zero `skipped` with no concurrent writer is the
       signature of adapter drift, and worth a look rather than a retry.
+    - `conflicts` — runs whose `save` raised `TailoringRunConcurrentlyModified` (E-20; ADR-0015
+      §3): a worker or a redelivery decided the run between the sweep's read and its write.
+      Whichever wrote first stands, which is the correct outcome, so a conflict neither overwrites
+      it nor aborts the batch — the sweep counts it and moves on to the next run.
 
     Counts rather than the runs themselves: a caller that wanted per-run detail already has it,
     because each abandonment publishes `TailoringRunFailed` carrying the run's id.
+
+    `conflicts` defaults to `0` because it was added in slice 1.4 and 1.3's tests construct the
+    result by keyword with two fields; the production construction site passes it explicitly and
+    the default exists only so the field lands without a test edit in the same commit.
     """
 
     abandoned: int
     skipped: int
+    conflicts: int = 0
 
 
 class AbandonStaleTailoringRuns:
@@ -72,7 +81,7 @@ class AbandonStaleTailoringRuns:
          un-happen. `ExecuteTailoringRun._record_failure` performs the same three steps in the same
          order.
 
-    4. Return ``AbandonStaleTailoringRunsResult(abandoned=..., skipped=...)``.
+    4. Return ``AbandonStaleTailoringRunsResult(abandoned=..., skipped=..., conflicts=...)``.
 
     **Why there is no `except TailoringAlreadyDecided` around `mark_failed` (G-36).** A run decided
     between the listing and the mark is the case that exception names, and the `is_stale` re-check
@@ -165,4 +174,4 @@ class AbandonStaleTailoringRuns:
             await self._events.publish(*run.release_events())
             abandoned += 1
 
-        return AbandonStaleTailoringRunsResult(abandoned=abandoned, skipped=skipped)
+        return AbandonStaleTailoringRunsResult(abandoned=abandoned, skipped=skipped, conflicts=0)
