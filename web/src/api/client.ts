@@ -101,19 +101,17 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   // boundary at all: the server can see the request is multipart but can never find where one part
   // ends and the next begins, so parsing fails on every upload. Leaving `headers` and `body` alone
   // for `FormData` lets the browser set its own `Content-Type: multipart/form-data; boundary=...`.
+  // Spread rather than `headers: undefined`: under `exactOptionalPropertyTypes` an optional
+  // `RequestInit` field may be absent but not explicitly `undefined`.
   const response = await fetch(path, {
     method: options.method ?? 'GET',
     credentials: 'include',
-    headers:
-      options.body === undefined || options.body instanceof FormData
-        ? undefined
-        : { 'Content-Type': 'application/json' },
-    body:
-      options.body === undefined
-        ? undefined
-        : options.body instanceof FormData
-          ? options.body
-          : JSON.stringify(options.body),
+    ...(options.body === undefined || options.body instanceof FormData
+      ? {}
+      : { headers: { 'Content-Type': 'application/json' } }),
+    ...(options.body === undefined
+      ? {}
+      : { body: options.body instanceof FormData ? options.body : JSON.stringify(options.body) }),
     ...(options.signal ? { signal: options.signal } : {}),
   });
 

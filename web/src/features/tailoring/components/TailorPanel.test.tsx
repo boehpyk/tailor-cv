@@ -201,7 +201,7 @@ function stubFetch(stubs: Stubs): ReturnType<typeof vi.fn> {
     }
     const detailMatch = /^\/api\/tailoring-runs\/(.+)$/.exec(url);
     if (detailMatch) {
-      const id = decodeURIComponent(detailMatch[1]);
+      const id = decodeURIComponent(detailMatch[1] ?? '');
       const handler = stubs.runDetail?.[id];
       if (handler === undefined) {
         return Promise.reject(new Error(`unexpected GET ${url} in this test`));

@@ -152,7 +152,7 @@ export function stubWorkspaceFetch(stubs: WorkspaceStubs): ReturnType<typeof vi.
     }
     const detailMatch = /^\/api\/tailoring-runs\/([^/]+)$/.exec(url);
     if (detailMatch) {
-      const id = decodeURIComponent(detailMatch[1]);
+      const id = decodeURIComponent(detailMatch[1] ?? '');
       const handler = stubs.runDetail?.[id];
       if (handler === undefined) {
         return Promise.reject(new Error(`unexpected GET ${url} in this test`));
@@ -177,7 +177,10 @@ export function countCallsTo(
   path: string,
   method: 'GET' | 'POST' | 'PUT' = 'GET',
 ): number {
-  return fetchMock.mock.calls.filter(([input, init]: [string | URL, RequestInit | undefined]) => {
+  // `vi.fn()`'s calls are `any[][]`; narrow each tuple by hand rather than annotating the
+  // parameter, which tsc rejects as a tuple that "may have fewer" elements.
+  return fetchMock.mock.calls.filter((call) => {
+    const [input, init] = call as [unknown, RequestInit | undefined];
     const url = typeof input === 'string' ? input : String(input);
     const callMethod = init?.method ?? 'GET';
     return url === path && callMethod === method;

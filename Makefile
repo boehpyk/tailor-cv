@@ -106,7 +106,10 @@ test.twice: ## Run the suite twice. A second run that fails means state leaked (
 # Quality gates — frontend
 #-----------------------------------------------------------
 web.types: ## TypeScript check
-	$(WEB) npx tsc --noEmit
+	# `-b` is load-bearing: web/tsconfig.json is solution-style (`files: []` + references), and a bare
+	# `tsc --noEmit` on it type-checks ZERO files. It passed a deliberate `const x: number = "nope"`
+	# for four slices (found at 1.4's F8). A gate that checks nothing also supplies confidence.
+	$(WEB) npx tsc -b --noEmit
 
 web.lint: ## ESLint
 	$(WEB) npm run lint

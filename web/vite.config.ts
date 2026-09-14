@@ -1,9 +1,11 @@
-/// <reference types="vitest/config" />
 import { fileURLToPath, URL } from 'node:url';
 
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { defineConfig } from 'vite';
+// `vitest/config`, not `vite`: its `defineConfig` knows the `test` block. The triple-slash
+// reference this file used to carry did not augment the type, which went unnoticed while the
+// tsc gate checked zero files.
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
