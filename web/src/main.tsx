@@ -1,8 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { RouterProvider } from 'react-router';
 
-import { App } from './App';
+import { router } from './router';
 import './index.css';
 
 /**
@@ -29,10 +30,13 @@ if (!container) {
   throw new Error('#root is missing from index.html');
 }
 
+// The router sits INSIDE the query provider: every page is a route element, and every page reads
+// the cache. Loaders (the `/runs/:runId` redirect) run before any element renders, which is fine —
+// no loader here touches the API; the pages fetch through hooks, not loaders (ADR-0001).
 createRoot(container).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App />
+      <RouterProvider router={router} />
     </QueryClientProvider>
   </StrictMode>,
 );

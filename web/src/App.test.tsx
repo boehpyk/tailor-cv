@@ -1,9 +1,23 @@
 import { screen } from '@testing-library/react';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithQuery } from '@/test/render';
 
-import { App } from './App';
+import { routes } from './router';
+
+/**
+ * Since F3 `App` is the layout route — header, `<Outlet />`, `SystemStatus` — and the three
+ * sections these tests pair up live in the `/` route's element. Mounting the real route table on a
+ * memory router at `/` keeps the assertions about what a visitor to `/` sees, which is what they
+ * were always about; rendering `<App />` alone would now find an empty outlet. `renderWithRouter`
+ * (F5b) generalises this for other paths.
+ */
+function renderApp(): void {
+  renderWithQuery(
+    <RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />,
+  );
+}
 
 /**
  * T44 — structure and markup coverage for `App.tsx`'s landmark and heading wiring (task-list T44,
@@ -30,7 +44,7 @@ describe('App', () => {
   });
 
   it('gives the tailoring section a landmark labelled by its own heading', () => {
-    renderWithQuery(<App />);
+    renderApp();
 
     const heading = screen.getByRole('heading', {
       level: 2,
@@ -44,7 +58,7 @@ describe('App', () => {
   });
 
   it('places the tailoring section after both the base-CV and job-posting sections', () => {
-    renderWithQuery(<App />);
+    renderApp();
 
     const cvHeading = screen.getByRole('heading', { name: 'Your base CV' });
     const postingHeading = screen.getByRole('heading', { name: 'The job you are applying for' });
@@ -64,7 +78,7 @@ describe('App', () => {
   });
 
   it('renders the tailoring landmark as a section distinct from the base-CV and job-posting landmarks', () => {
-    renderWithQuery(<App />);
+    renderApp();
 
     // Three named regions, not one merged landmark a screen-reader user would have to page through
     // as a single block.
