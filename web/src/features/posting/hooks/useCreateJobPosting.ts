@@ -7,6 +7,13 @@ import { jobPostingsQueryKey } from './useJobPostings';
 import type { JobPosting, NewJobPosting } from '../types';
 
 /**
+ * The mutation's key — observable from outside the panel through `useIsMutating({ mutationKey })`,
+ * for the reason `uploadBaseCvMutationKey` gives: the workspace's stepper marks stage 2 active
+ * while a paste or a fetch is on the wire, and the panel keeps its mutation to itself.
+ */
+export const createJobPostingMutationKey = ['posting', 'createJobPosting'] as const;
+
+/**
  * Capture a job posting and refresh the list.
  *
  * `onSuccess` invalidating `jobPostingsQueryKey` is the **only** write path into that cache — no
@@ -26,6 +33,7 @@ export function useCreateJobPosting(): ReturnType<
   const queryClient = useQueryClient();
 
   return useMutation({
+    mutationKey: createJobPostingMutationKey,
     mutationFn: (input: NewJobPosting) => createJobPosting(input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: jobPostingsQueryKey }),
   });

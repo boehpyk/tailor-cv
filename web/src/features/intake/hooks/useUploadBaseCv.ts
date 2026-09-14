@@ -7,6 +7,15 @@ import { baseCvsQueryKey } from './useBaseCvs';
 import type { BaseCv } from '../types';
 
 /**
+ * The mutation's key. A mutation with a key is visible to the rest of the app through the
+ * mutation cache (`useIsMutating({ mutationKey })`), which is how the workspace's stepper knows an
+ * upload is on the wire without the panel lifting its `isPending` out through a prop or a context.
+ * Keyed like the query keys, `[context, thing]`, and never matched by prefix against them: the
+ * query cache and the mutation cache are separate stores.
+ */
+export const uploadBaseCvMutationKey = ['intake', 'uploadBaseCv'] as const;
+
+/**
  * Upload a base CV and refresh the list.
  *
  * `onSuccess` invalidating `baseCvsQueryKey` is the **only** write path into that cache (CLAUDE.md,
@@ -24,6 +33,7 @@ export function useUploadBaseCv(): ReturnType<typeof useMutation<BaseCv, Error, 
   const queryClient = useQueryClient();
 
   return useMutation({
+    mutationKey: uploadBaseCvMutationKey,
     mutationFn: (file: File) => uploadBaseCv(file),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: baseCvsQueryKey }),
   });
