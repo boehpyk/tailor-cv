@@ -1,22 +1,20 @@
 import { screen } from '@testing-library/react';
-import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderWithQuery } from '@/test/render';
-
-import { routes } from './router';
+import { renderWithRouter } from '@/test/render';
 
 /**
  * Since F3 `App` is the layout route — header, `<Outlet />`, `SystemStatus` — and the three
  * sections these tests pair up live in the `/` route's element. Mounting the real route table on a
  * memory router at `/` keeps the assertions about what a visitor to `/` sees, which is what they
- * were always about; rendering `<App />` alone would now find an empty outlet. `renderWithRouter`
- * (F5b) generalises this for other paths.
+ * were always about; rendering `<App />` alone would now find an empty outlet.
+ *
+ * **F5b:** this used to build its own `createMemoryRouter` + `RouterProvider` inline; that is now
+ * `renderWithRouter` (`@/test/render`), generalised for any path so every other test file (the
+ * workspace, the run page) shares one implementation instead of reinventing it.
  */
 function renderApp(): void {
-  renderWithQuery(
-    <RouterProvider router={createMemoryRouter(routes, { initialEntries: ['/'] })} />,
-  );
+  renderWithRouter('/');
 }
 
 /**
