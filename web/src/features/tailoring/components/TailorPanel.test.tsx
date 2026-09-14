@@ -128,6 +128,9 @@ function makeRunSummary(overrides: Partial<TailoringRunSummary> = {}): Tailoring
     started_at: null,
     completed_at: null,
     expires_at: '2026-09-13T10:00:00Z',
+    version: 1,
+    tailored_cv_edited_at: null,
+    cover_letter_edited_at: null,
     ...overrides,
   };
 }
@@ -151,6 +154,9 @@ function makeRun(overrides: Partial<TailoringRun> = {}): TailoringRun {
     started_at: null,
     completed_at: null,
     expires_at: '2026-09-13T10:00:00Z',
+    version: 1,
+    tailored_cv_edited_at: null,
+    cover_letter_edited_at: null,
     ...overrides,
   };
 }

@@ -2,18 +2,22 @@ import { request } from './client';
 
 import type {
   NewTailoringRun,
+  ReviseDocumentBody,
+  TailoredDocumentKind,
   TailoringRun,
   TailoringRunListResponse,
 } from '@/features/tailoring/types';
 
 /**
- * The tailoring-run endpoints. No change to `client.ts` was needed: all three are plain JSON.
+ * The tailoring-run endpoints. All four are plain JSON; the only change `client.ts` ever needed
+ * for them was `PUT` in its method union.
  *
- * **Unlike the base-CV and job-posting POSTs, all three of these answer 401
- * `guest_session_expired` for a missing, unknown or expired cookie — the POST included.** The API
- * mints no session here (AC-16): a run names a base CV and a posting the session must already own,
- * so a request without a valid session has nothing to tailor. Each function throws that 401 as an
- * `ApiError` like any other failure; what it *means* for the UI is decided one layer up.
+ * **Unlike the base-CV and job-posting POSTs, all four of these answer 401
+ * `guest_session_expired` for a missing, unknown or expired cookie — the writes included.** The
+ * API mints no session here (AC-16, AC-15): a run names a base CV and a posting the session must
+ * already own, so a request without a valid session has nothing to tailor and nothing to edit.
+ * Each function throws that 401 as an `ApiError` like any other failure; what it *means* for the
+ * UI is decided one layer up.
  */
 
 /**
@@ -59,4 +63,41 @@ export function createTailoringRun(
     body: input,
     ...(signal ? { signal } : {}),
   });
+}
+
+/**
+ * Replace the current text of one of a run's documents, in full — `PUT`, because that is what it
+ * is (ADR-0015 §1: no revision history to post into). `kind` is a path segment, and it is typed
+ * so an unknown one cannot be written.
+ *
+ * **The response is the whole run, not an acknowledgement**, and that is the point: the caller
+ * writes it straight into the query cache under `['tailoring', 'tailoringRun', runId]` — the same
+ * shape the poller reads — so `version`, both character counts and `*_edited_at` are current the
+ * moment the save lands, with no second read and no client-side arithmetic on the version number.
+ *
+ * Rejections arrive as `ApiError`s keyed by `code`, and two of them carry a fact in `details` the
+ * caller acts on (narrow it with `typeof` at the point of use, as `activeTailoringRunId` does):
+ * 401 `guest_session_expired`; 404 `tailoring_run_not_found`; 409 `document_version_conflict`
+ * (`current_version: number | null` — `DocumentVersionConflictDetails`) or
+ * `tailoring_run_not_editable` (`status` — `TailoringRunNotEditableDetails`); 413
+ * `request_too_large`; 422 `validation_error` or `document_invalid` (`problem` —
+ * `DocumentInvalidDetails`); 429 `rate_limited`; 503 `service_unavailable`.
+ *
+ * `content` is a person's rewritten employment history. It goes in the body and nowhere else — not
+ * in the URL, not in a log line, not in an error thrown from here.
+ */
+export function reviseTailoredDocument(
+  runId: string,
+  kind: TailoredDocumentKind,
+  body: ReviseDocumentBody,
+  signal?: AbortSignal,
+): Promise<TailoringRun> {
+  return request<TailoringRun>(
+    `/api/tailoring-runs/${encodeURIComponent(runId)}/documents/${kind}`,
+    {
+      method: 'PUT',
+      body,
+      ...(signal ? { signal } : {}),
+    },
+  );
 }

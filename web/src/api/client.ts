@@ -73,7 +73,7 @@ function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
 
 interface RequestOptions {
   readonly signal?: AbortSignal;
-  readonly method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   readonly body?: unknown;
   /**
    * Statuses that carry a meaningful body and must NOT be turned into a thrown error.
