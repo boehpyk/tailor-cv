@@ -1,9 +1,23 @@
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router';
 import { describe, expect, it } from 'vitest';
 
 import { makeRunSummary } from '@/test/fixtures';
 
 import { LatestRunCard } from './LatestRunCard';
+
+import type { ReactElement } from 'react';
+
+/**
+ * `LatestRunCard` renders a react-router `<Link>` for its active/succeeded states (an `<a href>`
+ * would be a full reload that empties the query cache — see `NotFoundPage.tsx`'s reasoning), and
+ * `Link` throws when mounted outside a router context. A bare `MemoryRouter` is enough here — this
+ * is a presentational-component test, not a navigation test, so the real route table
+ * (`renderWithRouter`) would be more than this file needs.
+ */
+function renderWithMemoryRouter(ui: ReactElement): ReturnType<typeof render> {
+  return render(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 /**
  * F6 RED — `LatestRunCard`'s three sentences (feature-spec AC-25; technical-plan "Frontend"
@@ -32,7 +46,7 @@ describe('LatestRunCard', () => {
     'an active (%s) run shows "In progress" and a View link to the run',
     (status) => {
       const run = makeRunSummary({ id: 'run-active-1', status });
-      render(<LatestRunCard run={run} />);
+      renderWithMemoryRouter(<LatestRunCard run={run} />);
 
       expect(screen.getByText(/in progress/i)).toBeInTheDocument();
       const link = screen.getByRole('link', { name: /view/i });
@@ -47,7 +61,7 @@ describe('LatestRunCard', () => {
       tailored_cv_character_count: 500,
       cover_letter_character_count: 200,
     });
-    render(<LatestRunCard run={run} />);
+    renderWithMemoryRouter(<LatestRunCard run={run} />);
 
     const link = screen.getByRole('link', { name: /open your tailored documents/i });
     expect(link.getAttribute('href')).toMatch(/^\/runs\/run-succeeded-1(\/|$)/);

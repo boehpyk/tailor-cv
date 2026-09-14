@@ -106,9 +106,16 @@ describe('WorkspacePage — tab selection (AC-23)', () => {
     // only re-reads the textarea's value afterwards would pass even if the click did nothing at all,
     // because nothing would ever have unmounted it either way.
     expect(screen.getByRole('tabpanel', { name: 'Base CV' })).not.toHaveAttribute('hidden');
-    expect(screen.getByRole('tabpanel', { name: 'Job posting', hidden: true })).toHaveAttribute(
-      'hidden',
-    );
+    // Not `getByRole('tabpanel', { name: 'Job posting', hidden: true })`: `dom-accessibility-api`'s
+    // accname algorithm (step 2A) returns `""` for any root carrying the `hidden` attribute before
+    // it ever consults `aria-labelledby`, so a hidden panel can never be found by name — proven on a
+    // bare `<div role="tabpanel" aria-labelledby hidden>`, where that same query is `null`. Go
+    // through the tab's `aria-controls`, which is unaffected by the panel's own hidden state.
+    const jobPostingTab = screen.getByRole('tab', { name: 'Job posting' });
+    const jobPostingPanelId = jobPostingTab.getAttribute('aria-controls');
+    expect(jobPostingPanelId).not.toBeNull();
+    const jobPostingPanel = document.getElementById(jobPostingPanelId as string);
+    expect(jobPostingPanel).toHaveAttribute('hidden');
 
     await user.click(screen.getByRole('tab', { name: 'Job posting' }));
 

@@ -30,6 +30,28 @@ import type { WorkspaceTab } from '../hooks/useWorkspaceTab';
  * textarea, is `WorkspacePage.test.tsx`'s job instead.
  */
 
+/**
+ * Locates a tabpanel through the ARIA wiring (`aria-controls` on the corresponding tab) rather than
+ * through RTL's accessible-name role query. `getByRole('tabpanel', { name, hidden: true })` can
+ * never match a hidden panel: `dom-accessibility-api`'s accname algorithm (step 2A) returns `""` for
+ * any root carrying the `hidden` attribute, before it ever looks at `aria-labelledby` — proven on a
+ * bare `<div role="tabpanel" aria-labelledby hidden>`, where `queryByRole` with `{ name, hidden:
+ * true }` is `null` regardless of what the label says. The tab -> `aria-controls` -> panel `id` path
+ * is unaffected by the panel's own hidden state.
+ */
+function panelControlledBy(tabName: string): HTMLElement {
+  const tab = screen.getByRole('tab', { name: tabName });
+  const panelId = tab.getAttribute('aria-controls');
+  if (panelId === null) {
+    throw new Error(`tab "${tabName}" has no aria-controls`);
+  }
+  const panel = document.getElementById(panelId);
+  if (panel === null) {
+    throw new Error(`no element with id "${panelId}" for tab "${tabName}"`);
+  }
+  return panel;
+}
+
 function StatefulInputTabs({
   initial = 'base-cv',
 }: { initial?: WorkspaceTab } = {}): React.JSX.Element {
@@ -65,7 +87,9 @@ describe('InputTabs', () => {
     );
 
     const basePanel = screen.getByRole('tabpanel', { name: 'Base CV' });
-    const postingPanel = screen.getByRole('tabpanel', { name: 'Job posting', hidden: true });
+    // `getByRole('tabpanel', { name, hidden: true })` can never find this panel — see
+    // `panelControlledBy`'s docstring — so locate it via the tab's `aria-controls` instead.
+    const postingPanel = panelControlledBy('Job posting');
     expect(basePanel).toBeInTheDocument();
     expect(postingPanel).toBeInTheDocument();
     expect(postingPanel).toHaveAttribute('hidden');
@@ -80,9 +104,9 @@ describe('InputTabs', () => {
       'true',
     );
     expect(screen.getByRole('tab', { name: 'Base CV' })).toHaveAttribute('aria-selected', 'false');
-    expect(screen.getByRole('tabpanel', { name: 'Base CV', hidden: true })).toHaveAttribute(
-      'hidden',
-    );
+    // Same reasoning as above — the hidden panel is unreachable by name, so go through
+    // `aria-controls` (see `panelControlledBy`'s docstring).
+    expect(panelControlledBy('Base CV')).toHaveAttribute('hidden');
     expect(screen.getByRole('tabpanel', { name: 'Job posting' })).not.toHaveAttribute('hidden');
   });
 

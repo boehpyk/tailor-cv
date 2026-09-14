@@ -1,8 +1,24 @@
-import { screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { act, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { renderWithRouter } from '@/test/render';
 import { jsonResponse, makeRun, stubWorkspaceFetch } from '@/test/fixtures';
+
+/**
+ * Flush pending microtasks under fake timers without waiting on a real clock — same helper as
+ * `TailorPanel.test.tsx`'s (T44's own test for the transient-network-failure state).
+ */
+async function flushMicrotasks(): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
 
 /**
  * F6 RED — the run page's four states plus the three error kinds (feature-spec AC-26;
@@ -25,6 +41,10 @@ function renderRunPage(document: 'cv' | 'cover_letter' = 'cv') {
 }
 
 describe('RunPage', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('shows the loading copy while the run has not answered yet', () => {
     stubWorkspaceFetch({ runDetail: { [RUN_ID]: () => new Promise<Response>(() => undefined) } });
 
@@ -180,6 +200,15 @@ describe('RunPage', () => {
   });
 
   it("a network failure shows 1.3's unreadable copy with Check again", async () => {
+    // `useTailoringRun`'s own `retry` (its docstring: it overrides the test client's `retry:
+    // false`) retries a non-4xx failure up to `MAX_TRANSIENT_RETRIES` (3) with TanStack's default
+    // backoff (1000 * 2 ** failureCount): 1s, 2s, 4s — about 7s before the query settles into its
+    // error state. `findByText`'s default real-timer wait gives up at 1s, long before that, so this
+    // drives a faked clock forward by hand instead, the same way `TailorPanel.test.tsx`'s
+    // transient-network-retry-exhaustion test (T44 gap (b)) does. Unlike that test, the very first
+    // fetch here is the one that rejects — there is no prior successful poll to wait
+    // `POLL_INTERVAL_MS` for — so only the three backoffs need advancing.
+    vi.useFakeTimers();
     stubWorkspaceFetch({
       runDetail: {
         [RUN_ID]: () => Promise.reject(new TypeError('Failed to fetch')),
@@ -187,9 +216,15 @@ describe('RunPage', () => {
     });
 
     renderRunPage();
+    await flushMicrotasks();
+
+    await advance(1000); // retry #1 backoff (failureCount 0 -> 2**0 * 1000ms)
+    await advance(2000); // retry #2 backoff (failureCount 1 -> 2**1 * 1000ms)
+    await advance(4000); // retry #3 backoff (failureCount 2 -> 2**2 * 1000ms) - retries exhausted
+    await advance(1000); // drain the settled error state into the DOM
 
     expect(
-      await screen.findByText('We lost contact with your tailoring run. It may still be working.'),
+      screen.getByText('We lost contact with your tailoring run. It may still be working.'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /check again/i })).toBeInTheDocument();
   });
@@ -242,11 +277,31 @@ describe('RunPage', () => {
       },
     ];
 
+    const networkFailureText = 'We lost contact with your tailoring run. It may still be working.';
+
     for (const { stub, expectedText } of cases) {
       stubWorkspaceFetch({ runDetail: { [RUN_ID]: stub } });
-      const { unmount, findByText } = renderRunPage();
-      expect(await findByText(expectedText, { exact: false })).toBeInTheDocument();
-      unmount();
+
+      if (expectedText === networkFailureText) {
+        // This one case can't use `findByText` with real timers: `useTailoringRun`'s retry takes
+        // ~7s of backoff (1s/2s/4s) to settle a non-4xx failure, well past `findByText`'s default
+        // 1s wait. Same fake-timer drive as the dedicated network-failure test above and
+        // `TailorPanel.test.tsx`'s T44 gap (b) test.
+        vi.useFakeTimers();
+        const { unmount } = renderRunPage();
+        await flushMicrotasks();
+        await advance(1000); // retry #1 backoff
+        await advance(2000); // retry #2 backoff
+        await advance(4000); // retry #3 backoff - retries exhausted
+        await advance(1000); // drain the settled error state into the DOM
+        expect(screen.getByText(expectedText, { exact: false })).toBeInTheDocument();
+        unmount();
+        vi.useRealTimers();
+      } else {
+        const { unmount, findByText } = renderRunPage();
+        expect(await findByText(expectedText, { exact: false })).toBeInTheDocument();
+        unmount();
+      }
     }
 
     const distinct = new Set(cases.map((c) => c.expectedText));
