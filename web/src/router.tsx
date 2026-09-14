@@ -2,8 +2,8 @@ import { Navigate, createBrowserRouter } from 'react-router';
 
 import { App } from './App';
 import { NotFoundPage } from './features/tailoring/components/NotFoundPage';
-import { RunPagePlaceholder } from './features/tailoring/components/RunPagePlaceholder';
-import { InterimWorkspace } from './features/workspace/components/InterimWorkspace';
+import { RunPage } from './features/tailoring/components/RunPage';
+import { WorkspacePage } from './features/workspace/components/WorkspacePage';
 
 import type { RouteObject } from 'react-router';
 
@@ -12,12 +12,12 @@ import type { RouteObject } from 'react-router';
  * in the tree keeps a `chosenRunId` in state any more: a deep link, a refresh and the back button
  * all read the same source.
  *
- * | Route                     | Renders                                   |
- * |---------------------------|-------------------------------------------|
- * | `/`                       | `InterimWorkspace` → `WorkspacePage` (F5) |
- * | `/runs/:runId`            | redirect → `/runs/:runId/cv`              |
- * | `/runs/:runId/:document`  | `RunPagePlaceholder` → `RunPage` (F5)     |
- * | `*`                       | `NotFoundPage` (E-28)                     |
+ * | Route                     | Renders                       |
+ * |---------------------------|-------------------------------|
+ * | `/`                       | `WorkspacePage`               |
+ * | `/runs/:runId`            | redirect → `/runs/:runId/cv`  |
+ * | `/runs/:runId/:document`  | `RunPage`                     |
+ * | `*`                       | `NotFoundPage` (E-28)         |
  *
  * `App` is the layout route: every page renders through its `<Outlet />`, between the header and
  * the system status.
@@ -36,12 +36,12 @@ export const routes: RouteObject[] = [
     path: '/',
     element: <App />,
     children: [
-      { index: true, element: <InterimWorkspace /> },
+      { index: true, element: <WorkspacePage /> },
       {
         path: 'runs/:runId',
         children: [
           { index: true, element: <Navigate to="cv" replace /> },
-          { path: ':document', element: <RunPagePlaceholder /> },
+          { path: ':document', element: <RunPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },
