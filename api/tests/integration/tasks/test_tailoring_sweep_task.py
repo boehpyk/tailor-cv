@@ -508,6 +508,9 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     assert swept_match, caplog.text
     assert int(swept_match.group(1)) >= 1, caplog.text
     assert re.search(r'"?skipped_count"?\s*[:=]\s*0\b', caplog.text), caplog.text
+    # T16: `conflicts` is the log line's fourth field (E-20; ADR-0015 §3) — this tick has no
+    # concurrent writer, so it must be logged as 0 rather than merely present.
+    assert re.search(r'"?conflicts"?\s*[:=]\s*0\b', caplog.text), caplog.text
     assert re.search(r'"?duration_ms"?\s*[:=]', caplog.text), caplog.text
     # Constitution §8: no run content, ever. `owner_id`/`tailored_cv`/`cover_letter` checks were
     # removed from here (verify round 2): every one of them was vacuously true regardless of what

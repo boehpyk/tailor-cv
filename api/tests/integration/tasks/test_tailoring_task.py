@@ -54,7 +54,12 @@ import pytest
 from sqlalchemy import delete
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRunOutcome
 from tailorcraft.domain.identity.guest_session import GuestSession
@@ -64,6 +69,7 @@ from tailorcraft.domain.intake.value_objects import CvContentType, ExtractedText
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingText
 from tailorcraft.domain.shared.files import FileRef
+from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     CoverLetter,
@@ -74,6 +80,7 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoredDocuments,
     TailoredDraft,
     TailoringRunId,
+    TailoringRunStatus,
 )
 from tailorcraft.infrastructure.clock import FixedClock
 
@@ -523,3 +530,129 @@ async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_
         "pickles exc.params, and a future log line or Sentry before_send reading it back would leak "
         "the tailored CV or cover letter this test bound as parameters (G-28, AC-21)"
     )
+
+
+# --- T16: `CommittingTailoringRunRepository.save` rolls back its own session on a conflict, and ----
+# --- the session stays usable afterward -------------------------------------------------------------
+
+
+async def test_the_committing_repositorys_save_rolls_back_on_a_conflict_and_the_session_stays_usable(
+    settings: Settings,
+    session: AsyncSession,
+    connection: AsyncConnection,
+    clock: FixedClock,
+) -> None:
+    """`CommittingTailoringRunRepository.save` (`tasks/container.py`) is the worker's own wrapper
+    around `SqlAlchemyTailoringRunRepository`: every write commits, and its own docstring promises
+    that a conflict rolls back the session **before** re-raising, because "nothing else would roll
+    it back" in the worker — the task returns `SKIPPED` and its own closing commit would otherwise
+    raise a second, unrelated error over the first.
+
+    Driven with the identical two-`AsyncSession`-on-one-connection technique
+    `test_tailoring_run_repository.py`'s own AC-7 test uses: `session2`'s copy is pre-loaded into
+    its identity map *before* the winner (`session`) writes, so it is provably stale when the loser
+    tries to save it through its own `CommittingTailoringRunRepository`.
+
+    Two things are asserted beyond "it raises": that the SESSION `session2` is still usable
+    afterward (a plain `get()` on it succeeds rather than raising `PendingRollbackError`, which is
+    exactly what an un-rolled-back failed flush would do next), and that the row a fresh read sees
+    is the WINNER's — the loser's `mark_started` never landed.
+    """
+    owner = await _persist_owner(session, clock, token_hash="9a" * 32)
+    run = await _ready_run(session, owner.id, clock)  # queued, committed
+
+    second_factory = async_sessionmaker(
+        bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    session2 = second_factory()
+    repo2 = SqlAlchemyTailoringRunRepository(session2)
+    # Pre-loaded into session2's identity map NOW, before the winner's write below — the same
+    # technique (and the same reason) as the AC-7 persistence-level race test.
+    stale_copy = await repo2.get(run.id)
+    await session2.commit()  # releases the SAVEPOINT; expire_on_commit=False keeps the copy stale
+
+    committing1 = tailoring_container.CommittingTailoringRunRepository(
+        SqlAlchemyTailoringRunRepository(session), session
+    )
+    run.mark_started(clock.now())
+    await committing1.save(run)
+
+    committing2 = tailoring_container.CommittingTailoringRunRepository(repo2, session2)
+    stale_copy.mark_started(clock.now())
+    with pytest.raises(TailoringRunConcurrentlyModified):
+        await committing2.save(stale_copy)
+
+    # The session stays usable: a plain query on it succeeds rather than raising
+    # `PendingRollbackError`, which is what a failed flush left un-rolled-back would do next.
+    reread = await repo2.get(run.id)
+    assert reread.status is TailoringRunStatus.RUNNING
+    assert reread.started_at == run.started_at, "the row holds the WINNER's write, not the loser's"
+
+    await session2.close()
+    del stale_copy  # held until here on purpose (see the pre-load comment)
+
+
+# --- T16: the task-level mirror of AC-8 — two deliveries of one queued run in flight at once -------
+
+
+async def test_two_in_flight_deliveries_of_one_queued_run_through_the_task_function_make_one_llm_call(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    session: AsyncSession,
+    connection: AsyncConnection,
+    clock: FixedClock,
+) -> None:
+    """The task-level mirror of AC-8 (E-18): two deliveries of one `queued` run **in flight at the
+    same time**, driven through `_execute` — the exact coroutine `run_tailoring`'s own
+    `asyncio.run()` bridge awaits — rather than through the application-layer fakes
+    (`test_execute_tailoring_run.py::test_two_concurrent_deliveries_the_loser_is_skipped_with_
+    one_llm_call`, which drives the identical scenario against `FakeTailoringRunRepository`'s
+    `conflict_on_save` switch instead of a real database).
+
+    **Why this simulates rather than literally running two concurrent `asyncio.run()` calls, and
+    why the simulation is not a weaker proof.** `run_tailoring` bridges into async code with a
+    fresh `asyncio.run()` per invocation (`tasks/tailoring.py`'s own module docstring), and
+    `asyncio.run()` is synchronous and blocking — two literal calls from one test cannot be in
+    flight at the same time without two real OS threads, each spinning its own event loop and its
+    own Postgres connection, which would prove only that two threads overlapped in wall-clock time.
+    The actual race AC-8 describes is narrower and does not need threads to reproduce: two sessions
+    each holding a `queued` copy of the same row before either writes. That is exactly what
+    `test_tailoring_run_repository.py`'s own AC-7 persistence test reproduces without threads, by
+    pre-loading a second session's copy into its identity map *before* the first session's write —
+    the identical technique is used here, one layer up. `session2`'s copy is pre-loaded via a raw
+    `repo2.get(run.id)` *before* the winner's `_execute` call; when the loser's own `_execute` call
+    later does its internal `get()` (through a freshly-built `CommittingTailoringRunRepository`
+    bound to the SAME `session2`), SQLAlchemy's identity map hands back the pre-loaded, stale object
+    rather than re-querying — from the loser's point of view the winner's completed run never
+    happened, which is precisely what two truly concurrent deliveries would each see.
+
+    Per E-18's transition table the conflict fires at step 4 (recording `running`), **before** the
+    model is ever called for the losing delivery — so the fake's total call count is 1, never 0 or
+    2, and the loser's outcome is `SKIPPED`.
+    """
+    owner = await _persist_owner(session, clock, token_hash="9b" * 32)
+    run = await _ready_run(session, owner.id, clock)
+    fake_llm = FakeLlm(_a_draft())
+
+    second_factory = async_sessionmaker(
+        bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    session2 = second_factory()
+    repo2 = SqlAlchemyTailoringRunRepository(session2)
+    # Pre-loaded into session2's identity map NOW, before the winner's delivery below ever writes.
+    stale_copy = await repo2.get(run.id)
+    await session2.commit()  # releases the SAVEPOINT; expire_on_commit=False keeps the copy stale
+
+    _bind_task_to_this_sessions_worker(monkeypatch, settings, session, fake_llm)
+    winner_outcome = await tailoring_task_module._execute(run.id)
+    assert winner_outcome is ExecuteTailoringRunOutcome.SUCCEEDED
+    assert len(fake_llm.calls) == 1
+
+    _bind_task_to_this_sessions_worker(monkeypatch, settings, session2, fake_llm)
+    loser_outcome = await tailoring_task_module._execute(run.id)
+
+    assert loser_outcome is ExecuteTailoringRunOutcome.SKIPPED
+    assert len(fake_llm.calls) == 1, "AC-8: the loser's delivery must never reach the model"
+
+    await session2.close()
+    del stale_copy  # held until here on purpose (see the pre-load comment)
