@@ -114,10 +114,17 @@ router, because it *is* the validation boundary.
 
 Markdown → tokens (`markdown-it`, `html: false`) → ProseMirror nodes → `toDOM()`. **No HTML string
 ever exists on the client**, so there is nothing for a sanitizer library to sanitize: text nodes
-become DOM text nodes, and the only attributes rendered are `level` on a heading, `start` on an
-ordered list, and `href` on a link. The first two are integers. **The third is the whole residual
-risk**, and it is closed by the Link extension's protocol allow-list (`http`, `https`, `mailto`),
-`openOnClick: false`, `autolink: false`, and a `javascript:` fixture in the tests.
+become DOM text nodes, and the attributes the schema can carry are few and inventoried in the
+schema module (measured at `/verify`, TipTap 3.31.3): `level` on a heading (`1 | 2 | 3`, chooses
+the tag, never a DOM attribute), `start` and `type` on an ordered list (an integer and a closed
+marker set), and five on a link — `href`, `title`, `target`, `rel`, `class`. Only `level`,
+`start`, `href` and `title` survive the Markdown round trip; the bridge writes nothing else.
+**`href` is the whole residual risk**, and it is closed by a three-scheme allow-list (`http`,
+`https`, `mailto`) applied at both entrances — markdown-it's `validateLink` on the way in and
+the Link mark's `isAllowedUri` on the way out (`protocols` alone was measured to be additive) —
+plus `openOnClick: false`, `autolink: false`, and a `javascript:` fixture in the tests. `title`
+is the one free-form attribute on the wire: it reaches the DOM through `setAttribute` as a value,
+never parsed as markup, so it is tooltip text and not an injection path.
 
 **The invariant this argument rests on, written in the schema module:** no node or mark other
 than `link` may carry a URL-valued or free-form attribute. An image node, a `data-*` attribute or
