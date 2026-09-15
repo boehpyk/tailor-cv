@@ -11,8 +11,9 @@ import type { AutosaveAction, AutosaveState } from './useDocumentAutosave';
  * ("Exported so it can be pinned in a pure test: every rule above is decidable from a state and an
  * action").
  *
- * The rules pinned here, read off `useDocumentAutosave.ts`'s `reduce` and its docstring
- * (lines 72-98):
+ * The rules pinned here, read off `useDocumentAutosave.ts`'s exported `reduce` function and the
+ * doc-comment directly above its definition (the one beginning "`expired` is terminal: nothing
+ * after a 401 can change it..."):
  *
  * 1. `expired` is terminal — every action, of every type, leaves it `expired`.
  * 2. `changed` is a no-op in `conflict`, `saving` and `paused` — a keystroke is not a choice

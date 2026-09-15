@@ -703,3 +703,299 @@ describe('the failure contract beyond the happy path', () => {
     expect(result.current.kind).toBe('expired');
   });
 });
+
+/**
+ * /verify slice 1.4 round 3 pinned three findings against `useDocumentAutosave.ts` before the
+ * owner's re-model into one state machine (MAJOR: resend-on-200 was untested; MINOR: the unmount
+ * flush compares against the wrong baseline; MINOR: the 409-then-debounce guard's timing). These
+ * three `describe` blocks exist to survive that refactor as a spec, independent of the hook's
+ * current shape — each one says, in its own docblock, what it protects and whether it is red
+ * against the code as it stands today.
+ */
+
+describe('/verify slice 1.4 round 3 — MAJOR: resend-on-200 must not silently vanish', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Regression guard for `onSuccess`'s tail in `useDocumentAutosave.ts` — the
+   * `if (wanted !== null && (wanted.content ?? handle.serialize()) !== lastSavedRef.current) {
+   * submit(wanted); }` block, currently around lines 299-301. Both tests in this block **pass
+   * today**: the branch exists, so there is nothing to observe failing. Their value is the
+   * opposite direction — round 3's actual MAJOR was that deleting that block left every existing
+   * test green, i.e. nothing in the suite could tell the branch was gone. `qa` does not edit
+   * production code, so the mutation this guard is meant to catch (delete that `if` block) is not
+   * performed here; the implementer/reviewer should delete it and confirm both tests below go red
+   * before trusting the refactor kept the behaviour. As a sanity check on the tests themselves
+   * (not production code), each was run once against a deliberately wrong fetch stub (the second
+   * PUT's response body changed so the assertions could not pass) and failed on the assertion it
+   * exists to protect, then restored to the version below.
+   */
+  it('(a) a later edit sent while PUT #1 is in flight is resent once PUT #1 lands 200, with the latest text and the returned version', async () => {
+    vi.useFakeTimers();
+    const queryClient = makeQueryClient();
+    const run = makeRun({ id: RUN_ID, version: 1, tailored_cv: 'seed' });
+    queryClient.setQueryData(tailoringRunQueryKey(RUN_ID), run);
+    const { handle, setText, emitUpdate } = makeFakeHandle('seed');
+
+    let resolveFirstPut: ((response: Response) => void) | undefined;
+    const fetchMock = stubDocumentFetch({
+      putDocument: {
+        cv: (callNumber) =>
+          callNumber === 1
+            ? new Promise<Response>((resolve) => {
+                resolveFirstPut = resolve;
+              })
+            : Promise.resolve(
+                jsonResponse(200, { ...run, version: 3, tailored_cv: 'seed edited twice' }),
+              ),
+      },
+    });
+
+    const { result } = renderAutosave(RUN_ID, 'cv', handle, queryClient);
+
+    setText('seed edited once');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    // Type more while PUT #1 is still on the wire — a wish (`resendWantedRef`), not a second send.
+    setText('seed edited twice');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    // PUT #1 lands 200, carrying the *first* text — exactly as the server would answer it.
+    resolveFirstPut?.(jsonResponse(200, { ...run, version: 2, tailored_cv: 'seed edited once' }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(2);
+    const secondBody = lastPutBody(fetchMock, putPath(RUN_ID, 'cv')) as {
+      readonly expected_version: number;
+      readonly content: string;
+    };
+    expect(secondBody.content).toBe('seed edited twice');
+    // The version PUT #1 returned, not the version read when the first PUT was sent.
+    expect(secondBody.expected_version).toBe(2);
+
+    await flushMicrotasks();
+    await flushMicrotasks();
+    expect(result.current.kind).toBe('saved');
+  });
+
+  it('(b) typing away and back to exactly what PUT #1 sent, while it is in flight, issues no second PUT once it lands 200', async () => {
+    vi.useFakeTimers();
+    const queryClient = makeQueryClient();
+    const run = makeRun({ id: RUN_ID, version: 1, tailored_cv: 'seed' });
+    queryClient.setQueryData(tailoringRunQueryKey(RUN_ID), run);
+    const { handle, setText, emitUpdate } = makeFakeHandle('seed');
+
+    let resolveFirstPut: ((response: Response) => void) | undefined;
+    const fetchMock = stubDocumentFetch({
+      putDocument: {
+        cv: (callNumber) =>
+          callNumber === 1
+            ? new Promise<Response>((resolve) => {
+                resolveFirstPut = resolve;
+              })
+            : Promise.reject(new Error('a second PUT was not expected')),
+      },
+    });
+
+    const { result } = renderAutosave(RUN_ID, 'cv', handle, queryClient);
+
+    setText('seed edited once');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    // Type away, then back to exactly what PUT #1 is carrying. `onUpdate` measures `differs`
+    // against `sentRef` while a PUT is in flight, so the second edit reads as no change at all.
+    setText('seed edited once and then some');
+    act(() => {
+      emitUpdate();
+    });
+    setText('seed edited once');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    resolveFirstPut?.(jsonResponse(200, { ...run, version: 2, tailored_cv: 'seed edited once' }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+    expect(result.current.kind).toBe('saved');
+  });
+});
+
+describe('/verify slice 1.4 round 3 — MINOR: the unmount flush must compare against what is actually in flight', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * The unmount cleanup (`useDocumentAutosave.ts`, the effect around lines 437-451) decides
+   * whether to send a last PUT by comparing the editor's text against `lastSavedRef.current` — the
+   * last **resolved** save. But while a PUT is on the wire, the fact that matters is what *that*
+   * PUT is carrying (`sentRef.current`) — exactly the distinction `onUpdate` already draws
+   * (`baseline = inFlightRef.current ? sentRef.current : lastSavedRef.current`). Typing back to
+   * the last-resolved text while a *different* text is in flight makes the cleanup's comparison
+   * read "nothing to send" even though the in-flight PUT is about to overwrite the server with
+   * text the person is no longer looking at.
+   *
+   * RED against the hook as it stands: the cleanup sends nothing here, so only PUT B is ever
+   * recorded and the assertion below (expecting a second PUT carrying 'A') fails as
+   * `expect(received).toBe(expected) // Object.is equality — Expected: 2, Received: 1`.
+   */
+  it('typing back to the last-saved text while a newer PUT is in flight still queues a correcting PUT once that flight lands', async () => {
+    vi.useFakeTimers();
+    const queryClient = makeQueryClient();
+    const run = makeRun({ id: RUN_ID, version: 1, tailored_cv: 'A' });
+    queryClient.setQueryData(tailoringRunQueryKey(RUN_ID), run);
+    const { handle, setText, emitUpdate } = makeFakeHandle('A');
+
+    let resolveFirstPut: ((response: Response) => void) | undefined;
+    const fetchMock = stubDocumentFetch({
+      putDocument: {
+        cv: (callNumber) =>
+          callNumber === 1
+            ? new Promise<Response>((resolve) => {
+                resolveFirstPut = resolve;
+              })
+            : Promise.resolve(jsonResponse(200, { ...run, version: 3, tailored_cv: 'A' })),
+      },
+    });
+
+    const { unmount } = renderAutosave(RUN_ID, 'cv', handle, queryClient);
+
+    // B goes on the wire — held pending.
+    setText('B');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+    expect(lastPutBody(fetchMock, putPath(RUN_ID, 'cv'))).toMatchObject({ content: 'B' });
+
+    // Type to C, then back to A — the text the person leaves on screen — all while B is still on
+    // the wire, and before the resulting debounce has fired.
+    setText('C');
+    act(() => {
+      emitUpdate();
+    });
+    setText('A');
+    act(() => {
+      emitUpdate();
+    });
+
+    // Unmount now, before the debounce fires — the workspace navigating away.
+    unmount();
+
+    // B lands 200.
+    resolveFirstPut?.(jsonResponse(200, { ...run, version: 2, tailored_cv: 'B' }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // The server must end up holding A, the text on screen when the person left — exactly one
+    // more PUT, carrying A.
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(2);
+    expect(lastPutBody(fetchMock, putPath(RUN_ID, 'cv'))).toMatchObject({ content: 'A' });
+  });
+});
+
+describe('/verify slice 1.4 round 3 — MINOR: a debounce firing after a 409 resolves to conflict sends nothing', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Pins the rule the hook's own docstring states for a wish recorded during a 409's flight
+   * (`resendWantedRef` is explicitly cleared in `onError`, "everything else... drops it"): once
+   * the document has settled into `conflict`, a debounce that becomes due afterwards must send
+   * nothing. `send()`'s own `stateRef.current.kind === 'conflict'` guard is what stops it, not
+   * merely the dropped wish — this test arms a debounce **before** the 409 resolves and lets it
+   * fire strictly **after** `result.current.kind` already reads `'conflict'`, so the send it does
+   * not make can only be explained by that guard still holding once the timer is due.
+   *
+   * This does **not** prove anything about React's internal commit timing inside the window
+   * between the 409's promise settling and its `dispatch` running — jsdom plus fake timers give no
+   * way to freeze that gap and fire the timer *inside* it from this suite. What it does prove: a
+   * debounce due after `conflict` has visibly settled is inert, which is the externally observable
+   * half of the rule. Passes today.
+   */
+  it('after resolving to conflict, a debounce that becomes due afterwards sends nothing', async () => {
+    vi.useFakeTimers();
+    const queryClient = makeQueryClient();
+    const run = makeRun({ id: RUN_ID, version: 1, tailored_cv: 'seed' });
+    queryClient.setQueryData(tailoringRunQueryKey(RUN_ID), run);
+    const { handle, setText, emitUpdate } = makeFakeHandle('seed');
+    const serverRun = makeRun({ id: RUN_ID, version: 5, tailored_cv: 'someone else edited this' });
+
+    let resolveFirstPut: ((response: Response) => void) | undefined;
+    const fetchMock = stubDocumentFetch({
+      putDocument: {
+        cv: (callNumber) =>
+          callNumber === 1
+            ? new Promise<Response>((resolve) => {
+                resolveFirstPut = resolve;
+              })
+            : Promise.reject(new Error('no PUT should follow the conflict in this test')),
+      },
+      runDetail: () => Promise.resolve(jsonResponse(200, serverRun)),
+    });
+
+    const { result } = renderAutosave(RUN_ID, 'cv', handle, queryClient);
+
+    setText('seed edited');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    // Arm a fresh debounce while the first PUT is still in flight — the wish the docstring names.
+    setText('seed edited again');
+    act(() => {
+      emitUpdate();
+    });
+
+    // The first PUT lands 409, and the server's text genuinely differs — a real conflict.
+    resolveFirstPut?.(
+      jsonResponse(409, {
+        error: { code: 'document_version_conflict', message: 'stale', current_version: 5 },
+      }),
+    );
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(result.current.kind).toBe('conflict');
+    // The wish armed above must not have turned into a send during the resolution.
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    // The debounce armed before the resolution is still pending — let it become due now that
+    // `conflict` has visibly settled.
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+
+    expect(result.current.kind).toBe('conflict');
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+  });
+});

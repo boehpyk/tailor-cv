@@ -5,12 +5,12 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun';
-import { jsonResponse, makeRun } from '@/test/fixtures';
+import { countCallsTo, jsonResponse, makeRun } from '@/test/fixtures';
 
 import { DocumentWorkspace, UNSAVED_LEAVE_PROMPT } from './DocumentWorkspace';
 import { stubDocumentFetch } from '../test/fetchStub';
 
-import type { TailoringRun } from '@/features/tailoring/types';
+import type { TailoredDocumentKind, TailoringRun } from '@/features/tailoring/types';
 
 /**
  * Pins commit d929cc3's "two exit doors, one lock" (E-32, AC-34's leaving-half): `holdsUnsavedText`
@@ -30,6 +30,10 @@ import type { TailoringRun } from '@/features/tailoring/types';
  */
 
 const RUN_ID = 'leaving-fixture-run';
+
+function putPath(runId: string, kind: TailoredDocumentKind): string {
+  return `/api/tailoring-runs/${runId}/documents/${kind}`;
+}
 
 async function flushMicrotasks(): Promise<void> {
   await act(async () => {
@@ -392,18 +396,23 @@ describe('AC-34 — a 401 on one document releases the lock for both', () => {
       tailored_cv: 'CV seed text',
       cover_letter: 'Letter seed text',
     });
-    stubDocumentFetch({
-      putDocument: {
-        cv: () =>
-          Promise.resolve(
-            jsonResponse(401, {
-              error: { code: 'guest_session_expired', message: 'the session expired' },
-            }),
-          ),
-        // The letter is never flushed in this test (no tab switch away from it, no visibility
-        // change), so no PUT for it should ever be issued — leaving no handler here means the stub
-        // itself would fail the test loudly if that assumption were wrong.
-      },
+    const putDocumentAnswers401 = (): Promise<Response> =>
+      Promise.resolve(
+        jsonResponse(401, {
+          error: { code: 'guest_session_expired', message: 'the session expired' },
+        }),
+      );
+    // Both documents get the same handler. The letter never actually calls it (see below), but
+    // relying on "no handler here" to prove that used to be the bug: the stub rejects an unhandled
+    // call with a plain `Error`, `isTransient` in `useDocumentAutosave.ts` reads a plain `Error` as
+    // transient (it is not an `ApiError`, so the 4xx exclusion never applies), and the mutation's
+    // own retry-with-backoff would then run quietly on **real** timers after this test has already
+    // finished — never failing it. If the letter's PUT is ever attempted, in this test or after a
+    // future change to the timing below, it should meet the same 401 the CV does — the guest
+    // session is gone for the whole run, not one document — and settle cleanly instead of retrying
+    // into the void.
+    const fetchMock = stubDocumentFetch({
+      putDocument: { cv: putDocumentAnswers401, cover_letter: putDocumentAnswers401 },
     });
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { router } = renderDocumentWorkspace(run, 'cv');
@@ -411,23 +420,30 @@ describe('AC-34 — a 401 on one document releases the lock for both', () => {
     await typeIntoCv(' edited'); // CV -> dirty
 
     // AC-31: leaving the CV pane flushes its pending save at once. This sends the CV's PUT, which
-    // the stub above answers 401 — but answering it takes a microtask tick, so the letter is typed
-    // into (and left dirty, on purpose) before that 401 has had a chance to land and flip both
-    // editors to `editable: false`.
+    // the stub above answers 401 immediately (`Promise.resolve`, no real delay) — and `act`'s async
+    // form flushes every microtask and every effect the response triggers before it returns, which
+    // includes `DocumentEditors`' "expired" effect that calls `setEditable(false)` on **both**
+    // editors (AC-34: the session is the run's, not one document's). So by the time control
+    // reaches `typeIntoCoverLetter` below, the letter is already read-only — not "left dirty on
+    // purpose" as an earlier version of this comment claimed, and there never is a race window in
+    // this deterministic, fake-microtask-free path.
     await act(async () => {
       await router.navigate(`/runs/${RUN_ID}/cover_letter`);
     });
-    await typeIntoCoverLetter(' also edited'); // letter -> dirty, and stays that way
+    // A no-op: `user.type` cannot put text into a `contenteditable="false"` element, so the letter
+    // stays at its seed text and never becomes dirty. Kept in the test (rather than deleted)
+    // because it is itself part of what this test demonstrates — a person mid-keystroke on the
+    // second document when the first one's session dies simply cannot type into it, with no error
+    // and no dialog.
+    await typeIntoCoverLetter(' also edited');
 
     // Wait for the CV's 401 to resolve to `expired`. The sibling file's own 401 test asserts the
     // *SaveIndicator's* "Session expired" copy, but that indicator only ever shows the currently
     // *visible* document's state (`states[visible]`) — and the visible document here is the
-    // letter, still `dirty`, never the CV. `DocumentWorkspace`'s `expired` flag instead drives the
-    // shared footer (`cvState.kind === 'expired' || coverLetterState.kind === 'expired'`), which is
-    // exactly the fact this test needs: it flips the instant *either* document expires, regardless
-    // of which pane is on screen. This is a real-timer `waitFor` under the hood, well short of the
-    // 1500ms autosave debounce, so the letter's own still-pending debounce never fires and never
-    // sends an unstubbed PUT.
+    // letter. `DocumentWorkspace`'s `expired` flag instead drives the shared footer
+    // (`cvState.kind === 'expired' || coverLetterState.kind === 'expired'`), which is exactly the
+    // fact this test needs: it flips the instant *either* document expires, regardless of which
+    // pane is on screen.
     await screen.findByText(/session has ended/i);
     expect(editableIn(paneFor('cover_letter'))).toHaveAttribute('contenteditable', 'false');
 
@@ -448,5 +464,11 @@ describe('AC-34 — a 401 on one document releases the lock for both', () => {
 
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(router.state.location.pathname).toBe('/');
+    // The letter never went dirty (its `type` above was a no-op against a read-only pane), so its
+    // own unmount cleanup — reached when this navigation destroys `DocumentWorkspace` — finds
+    // nothing to flush. Zero calls, not "the stub would have thrown if this were wrong": the
+    // handler above means a PUT here would now be answered rather than rejected, so this assertion
+    // is the actual guard.
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cover_letter'), 'PUT')).toBe(0);
   });
 });
