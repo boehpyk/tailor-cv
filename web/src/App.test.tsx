@@ -88,4 +88,23 @@ describe('App', () => {
       screen.getByRole('region', { name: 'Your tailored CV and cover letter' }),
     ).toBeInTheDocument();
   });
+
+  // -----------------------------------------------------------------------------------------
+  // F12 — the layout route's routing table (AC-22): the not-found route and the /runs/:runId
+  // redirect. `renderApp` is not reused here — each test needs its own path.
+  // -----------------------------------------------------------------------------------------
+
+  it('E-28: an unknown path renders the not-found page, with a link back to the workspace', () => {
+    renderWithRouter('/nowhere');
+
+    expect(screen.getByText("We couldn't find that page.")).toBeInTheDocument();
+    const homeLink = screen.getByRole('link', { name: /back to the workspace/i });
+    expect(homeLink).toHaveAttribute('href', '/');
+  });
+
+  it('AC-22: /runs/:runId redirects to /runs/:runId/cv', () => {
+    const { router } = renderWithRouter('/runs/some-run-id');
+
+    expect(router.state.location.pathname).toBe('/runs/some-run-id/cv');
+  });
 });

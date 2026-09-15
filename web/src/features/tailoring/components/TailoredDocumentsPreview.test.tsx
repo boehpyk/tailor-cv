@@ -54,11 +54,34 @@ describe('TailoredDocumentsPreview', () => {
     expect(cvRegion).not.toHaveTextContent(/characters/);
   });
 
-  it('states that editing and downloads arrive next', () => {
+  it('renders the closing it is given', () => {
+    // F11 made `closing` a prop: `DocumentWorkspace`'s `EditorFallback` is the one production
+    // caller since 1.4, and it passes E-29's sentence, not 1.3's "editing comes next" — the preview
+    // is a read-only fallback after the bridge failed to open a document, not a promise of what
+    // comes next. This is the shape every real caller now exercises.
+    render(
+      <TailoredDocumentsPreview
+        tailoredCv={TAILORED_CV}
+        coverLetter={COVER_LETTER}
+        closing={<p role="alert">We couldn&apos;t open this document in the editor.</p>}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "We couldn't open this document in the editor.",
+    );
+    expect(
+      screen.queryByText('This is a read-only preview. Editing and downloads come next.'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('falls back to the 1.3 sentence when no closing is given — test-only: no production caller passes none', () => {
+    // T42-chosen wording, kept for the shape 1.3 shipped. `DocumentWorkspace` always supplies its
+    // own `closing` (the test above), so this default is exercised only here; it stays as the
+    // component's own honest default rather than a required prop, in case a future caller wants a
+    // generic read-only preview with nothing special to say.
     render(<TailoredDocumentsPreview tailoredCv={TAILORED_CV} coverLetter={COVER_LETTER} />);
 
-    // T42-chosen wording — the technical-plan.md bullet only requires "one honest sentence that
-    // editing and downloads arrive next", not this exact phrasing.
     expect(
       screen.getByText('This is a read-only preview. Editing and downloads come next.'),
     ).toBeInTheDocument();
