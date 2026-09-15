@@ -43,8 +43,12 @@ const RATE_LIMIT_FALLBACK_SECONDS = 60;
  * `loadLatest`, `keepMine`) close over the hook's refs and are attached in render; what the
  * reducer holds is the plain fact of where the save stands, so the reducer stays pure and the
  * state stays comparable.
+ *
+ * It holds nothing else — no in-flight count. At most one `PUT` per document is ever on the wire
+ * (see `submit`), so `saving` *is* the in-flight fact, and a second field saying the same thing
+ * would be one more thing to keep in agreement.
  */
-type Resolution =
+export type AutosaveState =
   | { readonly kind: 'saved' }
   | { readonly kind: 'dirty' }
   | { readonly kind: 'saving' }
@@ -54,71 +58,42 @@ type Resolution =
   | { readonly kind: 'invalid'; readonly problem: DocumentProblem }
   | { readonly kind: 'expired' };
 
-/**
- * What the reducer holds: where the save stands, and **how many `PUT`s this hook has handed to
- * the mutation that have not yet settled**. The count is what keeps the indicator honest. A second
- * `PUT` can be queued in the run's scope while the first is on the wire (the person kept typing
- * through a slow save, and the debounce fired again); the first one's `onSuccess` then finds the
- * editor's text ahead of what it sent, and without the count it would resolve to `dirty` —
- * *Unsaved changes* — while a genuine save is in flight (/verify slice 1.4). `saving` is true for
- * as long as `inFlight > 0`, whatever any single settlement says.
- */
-interface AutosaveState {
-  readonly resolution: Resolution;
-  readonly inFlight: number;
-}
-
-type Action =
+export type AutosaveAction =
   /** The editor's `update` event: `differs` is whether the text now differs from the last save. */
   | { readonly type: 'changed'; readonly differs: boolean }
-  /** A `PUT` was handed to the mutation (it may be queued behind another for this run, AC-32). */
+  /** A `PUT` was handed to the mutation (it may wait in the run's scope behind the *other* document's, AC-32). */
   | { readonly type: 'sent' }
-  /** One `PUT` settled (success or any error); `to` is where that answer leaves the document. */
-  | { readonly type: 'settled'; readonly to: Resolution }
-  /** A choice was made, or nothing needed sending; `to` is where that leaves the document. */
-  | { readonly type: 'resolved'; readonly to: Resolution };
+  /**
+   * A `PUT` was answered, a choice was made, or `send` found nothing to send; `to` is where that
+   * leaves the document.
+   */
+  | { readonly type: 'resolved'; readonly to: AutosaveState };
 
 /**
  * `expired` is terminal: nothing after a 401 can change it, because the session that owned the
  * run is gone (AC-34). `conflict` ignores typing: the person must choose between the two texts,
  * and a keystroke is not a choice (AC-33). `saving` ignores typing too — a `PUT` is on the wire
- * and its settlement decides whether the document is `saved` or `dirty` again, by comparing what
- * was sent with what is there now.
+ * and its answer decides whether the document is `saved` or `dirty` again, by comparing what was
+ * sent with what is there now. `paused` ignores it as well: the 429's window is being waited out,
+ * and the retry at its end reads the editor then.
  *
- * `settled` and `resolved` differ in one thing: `settled` is the answer to a `PUT` and so
- * decrements `inFlight`, while `resolved` (a conflict choice, or `send` finding nothing to send)
- * is not and does not — the two must not share an action, or a choice would decrement a count it
- * never incremented. A settlement that arrives while another `PUT` is still pending resolves to
- * `saving`, because that is what is true: the later `PUT`'s answer supersedes this one's. `expired`
- * is the exception — a 401 is the session's, not the request's, and the pending `PUT` will get
- * the same answer.
+ * Exported so it can be pinned in a pure test: every rule above is decidable from a state and an
+ * action, with no editor, no timer and no network.
  */
-function reduce(state: AutosaveState, action: Action): AutosaveState {
-  const { resolution, inFlight } = state;
-  if (resolution.kind === 'expired') {
+export function reduce(state: AutosaveState, action: AutosaveAction): AutosaveState {
+  if (state.kind === 'expired') {
     return state;
   }
   switch (action.type) {
     case 'changed':
-      if (
-        resolution.kind === 'conflict' ||
-        resolution.kind === 'saving' ||
-        resolution.kind === 'paused'
-      ) {
+      if (state.kind === 'conflict' || state.kind === 'saving' || state.kind === 'paused') {
         return state;
       }
-      return { ...state, resolution: action.differs ? { kind: 'dirty' } : { kind: 'saved' } };
+      return action.differs ? { kind: 'dirty' } : { kind: 'saved' };
     case 'sent':
-      return { resolution: { kind: 'saving' }, inFlight: inFlight + 1 };
-    case 'settled': {
-      const remaining = Math.max(inFlight - 1, 0);
-      if (remaining > 0 && action.to.kind !== 'expired') {
-        return { resolution: { kind: 'saving' }, inFlight: remaining };
-      }
-      return { resolution: action.to, inFlight: remaining };
-    }
+      return { kind: 'saving' };
     case 'resolved':
-      return { ...state, resolution: action.to };
+      return action.to;
   }
 }
 
@@ -143,8 +118,9 @@ function isDocumentProblem(value: unknown): value is DocumentProblem {
 
 /**
  * A save's variables. `content` is captured **only** when the editor is about to go away (an
- * unmount flush); every other save reads the document at send time, because a `PUT` queued
- * behind another for the same run should carry the text as it is when its turn comes.
+ * unmount flush); every other save reads the document at send time — the debounce's, *Keep my
+ * version*'s, and the one re-sent after a 200 that landed while the person kept typing — because
+ * the text to save is the text that is there when the `PUT` goes out, not when it was asked for.
  */
 interface SaveVariables {
   readonly content?: string;
@@ -162,6 +138,21 @@ interface SaveVariables {
  * save state is a `useReducer`, because it is *client* state about a *client* process and not a
  * copy of anything the server holds. The run itself stays in TanStack Query under
  * `tailoringRunQueryKey(runId)`.
+ *
+ * **One `PUT` in flight per document, and never one queued behind it** (/verify slice 1.4). The
+ * scope serialises the *two documents'* saves; it must not be used to queue a second save of the
+ * *same* document, and the reason is the 409. When the in-flight `PUT` is refused as stale, its
+ * handler re-reads the run and a fresh `version` lands in the cache — and a queued `PUT` would run
+ * next, read that fresh version at send time, get a 200, and overwrite the other writer's text with
+ * no choice ever shown. Optimistic versioning exists so that two writers never silently overwrite
+ * each other; a queue that re-reads the version and retries is *Keep my version* clicked by nobody.
+ * So while a `PUT` is on the wire, `submit` records that another send is *wanted* (`resendWantedRef`)
+ * instead of handing one to the mutation. A 200 then sends once, if the editor still differs from
+ * what was just saved; a 409 drops the wish and is resolved by comparison as below, with nothing
+ * sent until a click; every other answer drops it too, and the next change re-arms the debounce.
+ * `inFlightRef` is the fact the rule is built on, and it stays `true` through a 409's refetch —
+ * the answer is not resolved until the comparison is made, so a debounce firing in that window is
+ * a wish, not a send.
  *
  * **This hook observes the run's key** (`useQuery` with `enabled: false`) without ever fetching
  * it. The poller on the run page is the one that fetches; this observer says "the run must stay
@@ -205,10 +196,7 @@ export function useDocumentAutosave(
 
   useQuery({ ...tailoringRunQueryOptions(runId), enabled: false });
 
-  const [{ resolution: state }, dispatch] = useReducer(reduce, {
-    resolution: { kind: 'saved' },
-    inFlight: 0,
-  });
+  const [state, dispatch] = useReducer(reduce, { kind: 'saved' });
   // The latest *committed* state, for callbacks that run outside a render (the timer, the event
   // handlers). Written in an effect, not during render (/verify slice 1.4): a render can be
   // discarded or replayed — StrictMode, a concurrent render that is thrown away — so a ref written
@@ -220,7 +208,7 @@ export function useDocumentAutosave(
   // are the deferred kind — and a due `setTimeout` (`arm`'s debounce, a 429's retry) is a task
   // that can run in that gap, where `send` would read the previous state against a new render.
   // A layout effect runs synchronously inside the commit itself, before any other task can.
-  const stateRef = useRef<Resolution>(state);
+  const stateRef = useRef<AutosaveState>(state);
   useLayoutEffect(() => {
     stateRef.current = state;
   }, [state]);
@@ -231,7 +219,54 @@ export function useDocumentAutosave(
   lastSavedRef.current ??= handle.serialize();
   // The text of the `PUT` in flight, so its success can move `lastSavedRef` to exactly that.
   const sentRef = useRef<string | null>(null);
+  // Whether a `PUT` of this document is on the wire — or answered but not yet resolved (a 409's
+  // refetch is part of resolving it). A ref rather than `stateRef.current.kind === 'saving'`
+  // because it is written the instant a send is decided, in the same synchronous step, and read
+  // in the same callbacks: no commit sits between the write and the read.
+  const inFlightRef = useRef(false);
+  // The send that was wanted while one was in flight, or `null`. Set instead of sending; a 200
+  // takes it, everything else drops it. The variables are kept, not a boolean, so an unmount
+  // flush's captured text is what gets re-sent rather than a read of a destroyed editor.
+  const resendWantedRef = useRef<SaveVariables | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /**
+   * Where a refused `PUT` leaves the document. Async because a 409 is not resolved until the run
+   * has been re-read and compared; `lastSavedRef` moves here only in E-15b's lost-response case.
+   */
+  const resolutionOf = async (error: Error): Promise<AutosaveState> => {
+    if (!(error instanceof ApiError)) {
+      return { kind: 'failed' };
+    }
+    if (error.status === 401) {
+      return { kind: 'expired' };
+    }
+    if (error.status === 409 && error.code === 'document_version_conflict') {
+      let server: TailoringRun;
+      try {
+        server = await queryClient.query({ ...tailoringRunQueryOptions(runId), staleTime: 0 });
+      } catch {
+        return { kind: 'failed' };
+      }
+      const mine = handle.serialize();
+      if (server[textField] === mine) {
+        lastSavedRef.current = mine;
+        return { kind: 'saved' };
+      }
+      return { kind: 'conflict' };
+    }
+    if (error.status === 422 && error.code === 'document_invalid') {
+      const problem: unknown = error.details['problem'];
+      if (isDocumentProblem(problem)) {
+        return { kind: 'invalid', problem };
+      }
+    }
+    if (error.status === 429) {
+      const retryAfterSeconds = error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS;
+      return { kind: 'paused', retryAfterSeconds };
+    }
+    return { kind: 'failed' };
+  };
 
   const { mutate } = useMutation({
     scope: { id: `revise:${runId}` },
@@ -251,54 +286,42 @@ export function useDocumentAutosave(
       lastSavedRef.current = sentRef.current;
       queryClient.setQueryData(queryKey, run);
       void queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey });
-      const differs = handle.serialize() !== lastSavedRef.current;
-      dispatch({ type: 'settled', to: differs ? { kind: 'dirty' } : { kind: 'saved' } });
+      inFlightRef.current = false;
+      const wanted = resendWantedRef.current;
+      resendWantedRef.current = null;
+      dispatch({
+        type: 'resolved',
+        to: handle.serialize() !== lastSavedRef.current ? { kind: 'dirty' } : { kind: 'saved' },
+      });
+      // The one send that a wish becomes — and only if there is still something to send: the
+      // text may have come back to what this `PUT` just saved. `submit` is the `const` below;
+      // this callback runs when an answer arrives, long after the render that declared both.
+      if (wanted !== null && (wanted.content ?? handle.serialize()) !== lastSavedRef.current) {
+        submit(wanted);
+      }
     },
     onError: async (error) => {
-      if (!(error instanceof ApiError)) {
-        dispatch({ type: 'settled', to: { kind: 'failed' } });
-        return;
-      }
-      if (error.status === 401) {
-        dispatch({ type: 'settled', to: { kind: 'expired' } });
-        return;
-      }
-      if (error.status === 409 && error.code === 'document_version_conflict') {
-        let server: TailoringRun;
-        try {
-          server = await queryClient.query({ ...tailoringRunQueryOptions(runId), staleTime: 0 });
-        } catch {
-          dispatch({ type: 'settled', to: { kind: 'failed' } });
-          return;
-        }
-        const mine = handle.serialize();
-        if (server[textField] === mine) {
-          lastSavedRef.current = mine;
-          dispatch({ type: 'settled', to: { kind: 'saved' } });
-        } else {
-          dispatch({ type: 'settled', to: { kind: 'conflict' } });
-        }
-        return;
-      }
-      if (error.status === 422 && error.code === 'document_invalid') {
-        const problem: unknown = error.details['problem'];
-        if (isDocumentProblem(problem)) {
-          dispatch({ type: 'settled', to: { kind: 'invalid', problem } });
-          return;
-        }
-      }
-      if (error.status === 429) {
-        const retryAfterSeconds = error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS;
-        dispatch({ type: 'settled', to: { kind: 'paused', retryAfterSeconds } });
-        return;
-      }
-      dispatch({ type: 'settled', to: { kind: 'failed' } });
+      const to = await resolutionOf(error);
+      inFlightRef.current = false;
+      resendWantedRef.current = null;
+      dispatch({ type: 'resolved', to });
     },
   });
 
-  /** Hand a `PUT` to the mutation, unconditionally. */
+  /**
+   * Hand a `PUT` to the mutation — unless one for this document is already in flight, in which
+   * case record that another is wanted and let the answer decide (see the docstring's "one `PUT`
+   * in flight per document"). A later wish replaces an earlier one, so an unmount flush's captured
+   * text wins over a plain "read the editor".
+   */
   const submit = useCallback(
     (variables: SaveVariables = {}) => {
+      if (inFlightRef.current) {
+        resendWantedRef.current = variables;
+        return;
+      }
+      inFlightRef.current = true;
+      resendWantedRef.current = null;
       dispatch({ type: 'sent' });
       mutate(variables);
     },
@@ -311,10 +334,14 @@ export function useDocumentAutosave(
     if (current.kind === 'expired' || current.kind === 'conflict') {
       return;
     }
+    if (inFlightRef.current) {
+      // Whether there is something to send is decided when the flight lands, against what it
+      // saved — `lastSavedRef` is behind the wire right now.
+      submit();
+      return;
+    }
     if (handle.serialize() === lastSavedRef.current) {
-      if (current.kind !== 'saving') {
-        dispatch({ type: 'resolved', to: { kind: 'saved' } });
-      }
+      dispatch({ type: 'resolved', to: { kind: 'saved' } });
       return;
     }
     submit();
@@ -353,7 +380,11 @@ export function useDocumentAutosave(
       return;
     }
     const onUpdate = (): void => {
-      const differs = handle.serialize() !== lastSavedRef.current;
+      // While a `PUT` is on the wire, "differs" is measured against the text it carries: that is
+      // what the server will hold if it lands, and typing back to the *previous* save is a
+      // change that needs sending, not the absence of one.
+      const baseline = inFlightRef.current ? sentRef.current : lastSavedRef.current;
+      const differs = handle.serialize() !== baseline;
       dispatch({ type: 'changed', differs });
       const current = stateRef.current;
       if (current.kind === 'expired' || current.kind === 'conflict' || current.kind === 'paused') {
@@ -400,8 +431,9 @@ export function useDocumentAutosave(
   }, [options.visible, flush]);
 
   // Leaving the run page altogether: the editor is about to be destroyed, so the text is captured
-  // now and the `PUT` is handed to the mutation cache, which outlives this component. The timer
-  // is cleared either way — a timer that outlives its component is a save into a dead editor.
+  // now and the `PUT` is handed to the mutation cache, which outlives this component — or, with
+  // one already on the wire, recorded as the send wanted when that one lands. The timer is
+  // cleared either way: a timer that outlives its component is a save into a dead editor.
   useEffect(() => {
     return () => {
       if (timerRef.current !== null) {
@@ -411,12 +443,12 @@ export function useDocumentAutosave(
         if (current.kind !== 'expired' && current.kind !== 'conflict') {
           const content = handle.serialize();
           if (content !== lastSavedRef.current) {
-            mutate({ content });
+            submit({ content });
           }
         }
       }
     };
-  }, [handle, mutate]);
+  }, [handle, submit]);
 
   const loadLatest = useCallback(() => {
     const server = queryClient.getQueryData<TailoringRun>(queryKey);

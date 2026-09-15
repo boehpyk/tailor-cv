@@ -24,14 +24,19 @@ const STORAGE_NOTICE =
   'These documents are stored for 24 hours and are never kept in your browser.';
 
 /**
- * The question asked before an in-app navigation would destroy an editor that holds unsaved text
- * (AC-34: "the text is never lost"). Shown through `window.confirm`, so it has to read as a
- * yes/no: OK leaves and loses the edits, Cancel stays. The browser's own `beforeunload` prompt
- * cannot show custom text, so this sentence is only ever seen on the router's door — but it is
- * the same lock (see `holdsUnsavedText`), and it is exported so a test asserts the words.
+ * The question asked before an in-app navigation would destroy an editor that holds text the
+ * server has not confirmed (AC-34: "the text is never lost"). Shown through `window.confirm`, so
+ * it has to read as a yes/no: OK leaves, Cancel stays. It says "may not be saved" and not "will be
+ * lost", because that is what is true across the states that hold the lock: in `dirty` the
+ * unmount hands the text to the mutation cache, which outlives this component, and in `saving`
+ * the `PUT` on the wire lands whether or not the page is still here — while in `failed`,
+ * `invalid`, `paused` and `conflict` nothing is on its way at all. The person cannot tell which
+ * from the door, so the sentence promises neither. The browser's own `beforeunload` prompt cannot
+ * show custom text, so this sentence is only ever seen on the router's door — but it is the same
+ * lock (see `holdsUnsavedText`), and it is exported so a test asserts the words.
  */
 export const UNSAVED_LEAVE_PROMPT =
-  'Your latest edits have not been saved. Leave this page anyway and lose them?';
+  'Your latest edits may not be saved yet. Leave this page anyway?';
 
 /**
  * Whether leaving now would lose text the server does not have — the one predicate behind both
@@ -154,7 +159,8 @@ function visibleDocumentOf(segment: string | undefined): TailoredDocumentKind {
  * navigation that must **not** ask: it is a `<Link>` to this same run's other document, which is
  * a visibility change (AC-30) and a flush (AC-31), not a loss — so the blocker's function exempts
  * this run's two document URLs and blocks everything else. Both doors register only while the
- * lock is held, so a person leaving a saved document is not nagged at either.
+ * lock is held, so a person leaving a saved document is not nagged at either — and neither is a
+ * person leaving after a 401, whichever document answered it (see `leavingLosesWork`).
  *
  * Measured against `react-router` 7.18.3: a data router consults **one** blocker (the last one
  * registered) and warns about a second, which is why the lock lives here, over both documents,
@@ -181,7 +187,12 @@ function DocumentEditors({ run }: { readonly run: TailoringRun }): React.JSX.Ele
     cover_letter: coverLetterState,
   };
   const expired = cvState.kind === 'expired' || coverLetterState.kind === 'expired';
-  const leavingLosesWork = holdsUnsavedText(cvState) || holdsUnsavedText(coverLetterState);
+  // A 401 is the session's, not one document's: once either save has answered it, both editors
+  // are read-only and the server can take nothing more from this page — so the other document's
+  // `failed` or `dirty` is not work that leaving would lose, and holding the doors would only ask
+  // a person to stay for a save that can no longer happen.
+  const leavingLosesWork =
+    !expired && (holdsUnsavedText(cvState) || holdsUnsavedText(coverLetterState));
 
   useEffect(() => {
     if (!expired) {
