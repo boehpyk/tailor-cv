@@ -208,6 +208,12 @@ describe('AC-31 — debounced autosave, sent with the cache’s current version'
     act(() => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
+    // Restore before the assertion (not just in afterEach): TanStack's focusManager reads
+    // `document.visibilityState` on every retry-after-backoff and every continuation of a scoped
+    // mutation queue, so a `document` left permanently "hidden" pauses *later* tests' mutations
+    // forever — they hang rather than fail, and only when run after this one. Deleting the own
+    // property restores jsdom's prototype getter (which reports "visible").
+    Reflect.deleteProperty(document, 'visibilityState');
     await flushMicrotasks();
 
     expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);

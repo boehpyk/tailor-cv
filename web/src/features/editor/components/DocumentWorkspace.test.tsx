@@ -8,7 +8,7 @@ import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun
 import { countCallsTo, jsonResponse, makeRun } from '@/test/fixtures';
 
 import { DocumentWorkspace } from './DocumentWorkspace';
-import { normalizationFixtureExpected, normalizationFixtureMarkdown } from '../markdown/fixtures';
+import { normalizationFixtureMarkdown } from '../markdown/fixtures';
 import { AUTOSAVE_DEBOUNCE_MS } from '../saveState';
 import { stubDocumentFetch } from '../test/fetchStub';
 
@@ -48,6 +48,26 @@ async function advance(ms: number): Promise<void> {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(ms);
   });
+}
+
+/**
+ * Forces the autosave hook to flush a pending save immediately, instead of advancing fake timers
+ * past its debounce. In these AC-34 tests the debounce's `setTimeout` is armed by `user.type` under
+ * **real** timers (`userEvent` does not get on with fake ones against ProseMirror — see the AC-31
+ * companion test's comment), so a `vi.advanceTimersByTimeAsync` issued after `vi.useFakeTimers()`
+ * cannot see or convert it: a timer created before the fake clock exists is neither tracked nor
+ * advanced by it. `visibilitychange → hidden` reaches the hook's own, separate flush-on-hide
+ * listener instead, which does not care which clock armed the debounce. `visibilityState` is
+ * restored immediately after — left "hidden", TanStack's `focusManager` pauses every later
+ * retry-after-backoff and scoped-mutation continuation in this file, the same cross-test leak
+ * `useDocumentAutosave.test.tsx` hit.
+ */
+function flushDirtySaveViaVisibilityChange(): void {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  Reflect.deleteProperty(document, 'visibilityState');
 }
 
 function makeQueryClient(): QueryClient {
@@ -112,9 +132,14 @@ describe('AC-29 — opening a document does not dirty it, even when the bridge n
 
     renderDocumentWorkspace(run, 'cv');
 
-    expect(
-      within(paneFor('cv')).getByText(normalizationFixtureExpected.trim(), { exact: false }),
-    ).toBeInTheDocument();
+    // The fixtures module's hand-transcribed expected Markdown ("**bold**") never appears verbatim
+    // in the rendered DOM, because the bridge turns `**bold**` into a real `<strong>` element with no
+    // asterisks anywhere in its text. Assert what the DOM actually carries: a STRONG-tagged "bold"
+    // and the plain rendered sentence, plus proof the un-normalized source spelling is gone.
+    const pane = paneFor('cv');
+    expect(within(pane).getByText('bold').tagName).toBe('STRONG');
+    expect(pane).toHaveTextContent('A paragraph with bold text that should normalize.');
+    expect(pane).not.toHaveTextContent('__bold__');
 
     await advance(AUTOSAVE_DEBOUNCE_MS);
 
@@ -130,8 +155,15 @@ describe('AC-30 — both editors stay mounted; the URL only toggles visibility',
       tailored_cv: 'CV seed text',
       cover_letter: 'Letter seed text',
     });
-    const fetchMock = stubDocumentFetch({});
-    const { router } = renderDocumentWorkspace(run, 'cv');
+    // "No PUT needed" (the spec's own wording) is not "no PUT happened" — the AC-31 companion test
+    // below proves the tab switch *does* flush a real PUT for a dirty document. What AC-30 actually
+    // promises is that the typed text survives the switch on its own, independent of whether that
+    // save succeeds. So the stub here makes the PUT fail outright, and the proof is that the text is
+    // still there and the cache is untouched — never a call count, which would just contradict AC-31.
+    stubDocumentFetch({
+      putDocument: { cv: () => Promise.reject(new TypeError('Failed to fetch')) },
+    });
+    const { router, queryClient } = renderDocumentWorkspace(run, 'cv');
 
     expect(paneFor('cv')).toBeVisible();
 
@@ -152,7 +184,7 @@ describe('AC-30 — both editors stay mounted; the URL only toggles visibility',
 
     expect(paneFor('cv')).toBeVisible();
     expect(paneFor('cv')).toHaveTextContent('CV seed text plus typed text');
-    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(0);
+    expect(queryClient.getQueryData(tailoringRunQueryKey(RUN_ID))).toEqual(run);
   });
 
   it('an unsaved document shows a marker on its own tab while the other document is the visible one', async () => {
@@ -244,7 +276,7 @@ describe('AC-34 — session expiry and unrecoverable saves', () => {
     await user.type(editableIn(paneFor('cv')), ' edited');
 
     vi.useFakeTimers();
-    await advance(AUTOSAVE_DEBOUNCE_MS);
+    flushDirtySaveViaVisibilityChange();
     await flushMicrotasks();
     await flushMicrotasks();
 
@@ -281,7 +313,7 @@ describe('AC-34 — session expiry and unrecoverable saves', () => {
     );
 
     vi.useFakeTimers();
-    await advance(AUTOSAVE_DEBOUNCE_MS); // the first attempt
+    flushDirtySaveViaVisibilityChange(); // the first attempt
     await advance(1000); // retry #1 backoff
     await advance(2000); // retry #2 backoff
     await advance(4000); // retry #3 backoff — retries spent
