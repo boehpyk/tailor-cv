@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 
 import { ApiError } from '@/api/client';
 import { reviseTailoredDocument } from '@/api/tailoringRuns';
@@ -9,8 +9,16 @@ import {
 } from '@/features/tailoring/hooks/useTailoringRun';
 import { tailoringRunsQueryKey } from '@/features/tailoring/hooks/useTailoringRuns';
 
-import { AUTOSAVE_DEBOUNCE_MS, documentProblemCopy } from '../saveState';
+import { sameView, step, viewOf } from '../autosaveMachine';
+import { documentProblemCopy } from '../saveState';
 
+import type {
+  AutosaveEffect,
+  AutosaveEvent,
+  AutosaveMachine,
+  AutosaveView,
+  SaveFailure,
+} from '../autosaveMachine';
 import type { DocumentEditorHandle } from './useDocumentEditor';
 import type { SaveState } from '../saveState';
 import type {
@@ -38,65 +46,6 @@ const MAX_TRANSIENT_RETRIES = 3;
  */
 const RATE_LIMIT_FALLBACK_SECONDS = 60;
 
-/**
- * The reducer's state: `SaveState` with its callbacks stripped. The callbacks (`retry`,
- * `loadLatest`, `keepMine`) close over the hook's refs and are attached in render; what the
- * reducer holds is the plain fact of where the save stands, so the reducer stays pure and the
- * state stays comparable.
- *
- * It holds nothing else — no in-flight count. At most one `PUT` per document is ever on the wire
- * (see `submit`), so `saving` *is* the in-flight fact, and a second field saying the same thing
- * would be one more thing to keep in agreement.
- */
-export type AutosaveState =
-  | { readonly kind: 'saved' }
-  | { readonly kind: 'dirty' }
-  | { readonly kind: 'saving' }
-  | { readonly kind: 'failed' }
-  | { readonly kind: 'conflict' }
-  | { readonly kind: 'paused'; readonly retryAfterSeconds: number }
-  | { readonly kind: 'invalid'; readonly problem: DocumentProblem }
-  | { readonly kind: 'expired' };
-
-export type AutosaveAction =
-  /** The editor's `update` event: `differs` is whether the text now differs from the last save. */
-  | { readonly type: 'changed'; readonly differs: boolean }
-  /** A `PUT` was handed to the mutation (it may wait in the run's scope behind the *other* document's, AC-32). */
-  | { readonly type: 'sent' }
-  /**
-   * A `PUT` was answered, a choice was made, or `send` found nothing to send; `to` is where that
-   * leaves the document.
-   */
-  | { readonly type: 'resolved'; readonly to: AutosaveState };
-
-/**
- * `expired` is terminal: nothing after a 401 can change it, because the session that owned the
- * run is gone (AC-34). `conflict` ignores typing: the person must choose between the two texts,
- * and a keystroke is not a choice (AC-33). `saving` ignores typing too — a `PUT` is on the wire
- * and its answer decides whether the document is `saved` or `dirty` again, by comparing what was
- * sent with what is there now. `paused` ignores it as well: the 429's window is being waited out,
- * and the retry at its end reads the editor then.
- *
- * Exported so it can be pinned in a pure test: every rule above is decidable from a state and an
- * action, with no editor, no timer and no network.
- */
-export function reduce(state: AutosaveState, action: AutosaveAction): AutosaveState {
-  if (state.kind === 'expired') {
-    return state;
-  }
-  switch (action.type) {
-    case 'changed':
-      if (state.kind === 'conflict' || state.kind === 'saving' || state.kind === 'paused') {
-        return state;
-      }
-      return action.differs ? { kind: 'dirty' } : { kind: 'saved' };
-    case 'sent':
-      return { kind: 'saving' };
-    case 'resolved':
-      return action.to;
-  }
-}
-
 /** The `TailoringRun` field that holds `kind`'s current text. */
 function textFieldOf(kind: TailoredDocumentKind): 'tailored_cv' | 'cover_letter' {
   return kind === 'cv' ? 'tailored_cv' : 'cover_letter';
@@ -117,42 +66,104 @@ function isDocumentProblem(value: unknown): value is DocumentProblem {
 }
 
 /**
- * A save's variables. `content` is captured **only** when the editor is about to go away (an
- * unmount flush); every other save reads the document at send time — the debounce's, *Keep my
- * version*'s, and the one re-sent after a 200 that landed while the person kept typing — because
- * the text to save is the text that is there when the `PUT` goes out, not when it was asked for.
+ * The HTTP answer, translated into the machine's language. This is the boundary: past here
+ * nothing knows a status code, and the machine decides what a refusal means for the document.
  */
-interface SaveVariables {
-  readonly content?: string;
+function failureOf(error: Error): SaveFailure {
+  if (!(error instanceof ApiError)) {
+    return { kind: 'failed' };
+  }
+  if (error.status === 401) {
+    return { kind: 'expired' };
+  }
+  if (error.status === 409 && error.code === 'document_version_conflict') {
+    return { kind: 'conflict' };
+  }
+  if (error.status === 422 && error.code === 'document_invalid') {
+    const problem: unknown = error.details['problem'];
+    if (isDocumentProblem(problem)) {
+      return { kind: 'invalid', problem };
+    }
+  }
+  if (error.status === 429) {
+    return {
+      kind: 'rateLimited',
+      retryAfterSeconds: error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS,
+    };
+  }
+  return { kind: 'failed' };
+}
+
+/**
+ * The machine, held where callbacks can reach it and React can subscribe to it. `dispatch` steps
+ * the machine and hands back the effects for the caller to perform; `view` is the snapshot React
+ * renders, replaced only when what it shows would change, so `useSyncExternalStore` sees a stable
+ * value between meaningful changes.
+ */
+interface AutosaveStore {
+  readonly dispatch: (event: AutosaveEvent) => readonly AutosaveEffect[];
+  readonly view: () => AutosaveView;
+  readonly subscribe: (listener: () => void) => () => void;
+}
+
+function createAutosaveStore(initial: AutosaveMachine): AutosaveStore {
+  let machine = initial;
+  let view = viewOf(machine);
+  const listeners = new Set<() => void>();
+  return {
+    dispatch: (event) => {
+      const { next, effects } = step(machine, event);
+      machine = next;
+      const nextView = viewOf(next);
+      if (!sameView(view, nextView)) {
+        view = nextView;
+        listeners.forEach((listener) => {
+          listener();
+        });
+      }
+      return effects;
+    },
+    view: () => view,
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
 }
 
 /**
  * Keep one document saved — the slice's teaching hook (technical plan, "The editor").
  *
- * **What it owns, and where each thing lives.** The `PUT` is a `useMutation` **scoped per run**
- * (`scope: { id: 'revise:<runId>' }`): TanStack runs mutations in one scope serially, which is the
- * whole of AC-32 — with both documents dirty, the letter's `PUT` waits for the CV's to settle and
- * then reads the version *that one returned*, because `expected_version` is read from the query
- * cache **at send time** inside `mutationFn`, never captured in a closure at render. The debounce
- * timer is a ref (outside React); the last-saved text is a ref (a fact taken at one moment); the
- * save state is a `useReducer`, because it is *client* state about a *client* process and not a
- * copy of anything the server holds. The run itself stays in TanStack Query under
- * `tailoringRunQueryKey(runId)`.
+ * **The decision lives in `autosaveMachine.ts`; this hook performs it.** Everything that happens
+ * to the document — a keystroke, the timer firing, a tab switch, a `PUT` answering, a click on
+ * *Retry* or *Keep my version*, the component going away — is an `AutosaveEvent` handed to
+ * `step`, which returns the next state and a list of effects. The hook's job is the boring half:
+ * read the editor to build the event, perform the effects (`send` becomes `mutate`, `refetch`
+ * becomes a query, `armTimer`/`clearTimer` become the one `setTimeout`), and give React something
+ * to render. Read the machine's docstring for the states and the rules; read this one for how it
+ * is wired.
  *
- * **One `PUT` in flight per document, and never one queued behind it** (/verify slice 1.4). The
- * scope serialises the *two documents'* saves; it must not be used to queue a second save of the
- * *same* document, and the reason is the 409. When the in-flight `PUT` is refused as stale, its
- * handler re-reads the run and a fresh `version` lands in the cache — and a queued `PUT` would run
- * next, read that fresh version at send time, get a 200, and overwrite the other writer's text with
- * no choice ever shown. Optimistic versioning exists so that two writers never silently overwrite
- * each other; a queue that re-reads the version and retries is *Keep my version* clicked by nobody.
- * So while a `PUT` is on the wire, `submit` records that another send is *wanted* (`resendWantedRef`)
- * instead of handing one to the mutation. A 200 then sends once, if the editor still differs from
- * what was just saved; a 409 drops the wish and is resolved by comparison as below, with nothing
- * sent until a click; every other answer drops it too, and the next change re-arms the debounce.
- * `inFlightRef` is the fact the rule is built on, and it stays `true` through a 409's refetch —
- * the answer is not resolved until the comparison is made, so a debounce firing in that window is
- * a wish, not a send.
+ * **Where the machine lives, and why React subscribes to it rather than owning it.** The machine
+ * is stepped from places React does not schedule — a timer, a promise settling, a DOM event — and
+ * read back in the same places, synchronously. That is the definition of state *outside* React,
+ * and `useSyncExternalStore` is the hook made for it: the store holds the machine in a ref-like
+ * closure, and React subscribes to a snapshot of it. The alternative — mirroring the state into
+ * `useReducer` and reading a ref that a layout effect copies it into — is what the first version
+ * did, and the review found the gap in it: a timer due between the promise settling and React
+ * committing read a state the machine had already left. Here there is no copy to lag; a callback
+ * reads the machine, and the render reads the last snapshot the machine published.
+ *
+ * **What TanStack still owns.** The `PUT` is a `useMutation` **scoped per run**
+ * (`scope: { id: 'revise:<runId>' }`): TanStack runs mutations in one scope serially, which is
+ * AC-32 — with both documents dirty, the letter's `PUT` waits for the CV's and then reads the
+ * version *that one returned*, because `expected_version` is read from the query cache **at send
+ * time** inside `mutationFn`, never captured in a closure at render. The scope serialises the two
+ * documents; it is *not* how a second save of the same document is queued — the machine never
+ * sends while one is in flight, for the reason its docstring gives (a queued `PUT` after a 409
+ * would silently win). `retry` handles the transient cases with backoff; the machine sees only the
+ * final answer.
  *
  * **This hook observes the run's key** (`useQuery` with `enabled: false`) without ever fetching
  * it. The poller on the run page is the one that fetches; this observer says "the run must stay
@@ -169,20 +180,18 @@ interface SaveVariables {
  *
  * **The `useEffect`s are the legitimate kind, each synchronizing with something outside React:**
  * the editor's `update` event (an instance with its own event emitter), `visibilitychange` on the
- * document, the pane's visibility changing under a URL the router owns, and the timer's cleanup.
- * None fetches, none derives. The one `useLayoutEffect` mirrors the committed state into a ref
- * for the timer to read, and says why it is not a `useEffect`.
+ * document, the pane's visibility changing under a URL the router owns, and the unmount. None
+ * fetches, none derives. The unmount cleanup hands the machine an `unmount` event and nothing
+ * else: what to do — send the text now, or remember it for when the flight lands — is the
+ * machine's decision, and in a quiet state it is nothing, which is what keeps StrictMode's
+ * mount-unmount-mount rehearsal in development harmless.
  *
- * **Resolutions** (AC-33, AC-34): 200 → `saved`, or `dirty` if the text moved on during the
- * flight; 409 `document_version_conflict` → re-read the run, and if the server's text for this
- * document equals ours the response was simply lost (E-15b): adopt the version, `saved`, no second
- * `PUT` — otherwise `conflict`, with the two choices and nothing until one is clicked; 401 →
- * `expired`, terminal, and the container makes both editors read-only from it (the session is
- * the run's, not this document's); 422 `document_invalid` → `invalid(problem)`, waiting
- * for the next change; 429 → `paused` for the header's `Retry-After`, then one more attempt;
- * everything else, after three retries with backoff for the transient cases → `failed` with
- * *Retry*. Whatever happens, **the text is never touched**: the document lives in the editor, and
- * only `loadLatest` — a click — replaces it.
+ * **What the text is, and when it is read.** Every event that needs the document carries it,
+ * read from the editor at the moment the event happens. Two events arrive from a promise and may
+ * arrive after the component is gone — a `PUT` landing, the 409's refetch completing — and carry
+ * `textNow` instead, a function the machine calls only in a state where the editor still exists.
+ * After an unmount the machine is `leaving`, holding the text it captured while the editor was
+ * still there, and reads nothing.
  */
 export function useDocumentAutosave(
   runId: string,
@@ -191,283 +200,162 @@ export function useDocumentAutosave(
   options: DocumentAutosaveOptions = { visible: true },
 ): SaveState {
   const queryClient = useQueryClient();
-  const queryKey = tailoringRunQueryKey(runId);
   const textField = textFieldOf(kind);
 
   useQuery({ ...tailoringRunQueryOptions(runId), enabled: false });
 
-  const [state, dispatch] = useReducer(reduce, { kind: 'saved' });
-  // The latest *committed* state, for callbacks that run outside a render (the timer, the event
-  // handlers). Written in an effect, not during render (/verify slice 1.4): a render can be
-  // discarded or replayed — StrictMode, a concurrent render that is thrown away — so a ref written
-  // there would mirror a state React never committed. It is `useLayoutEffect` rather than
-  // `useEffect` because of *when* React runs passive effects: synchronously at the end of the
-  // commit only for a render caused by a discrete event, and otherwise in a task of its own,
-  // scheduled after the commit. Every dispatch that moves this state comes from a promise
-  // callback (a `PUT` settling) or a timer, not from a React event handler, so its passive effects
-  // are the deferred kind — and a due `setTimeout` (`arm`'s debounce, a 429's retry) is a task
-  // that can run in that gap, where `send` would read the previous state against a new render.
-  // A layout effect runs synchronously inside the commit itself, before any other task can.
-  const stateRef = useRef<AutosaveState>(state);
-  useLayoutEffect(() => {
-    stateRef.current = state;
-  }, [state]);
-
-  // What the server holds for this document, as far as this client knows — initially the seed's
-  // own serialization, so that opening is not dirtying (AC-29) even where the bridge normalised.
-  const lastSavedRef = useRef<string | null>(null);
-  lastSavedRef.current ??= handle.serialize();
-  // The text of the `PUT` in flight, so its success can move `lastSavedRef` to exactly that.
-  const sentRef = useRef<string | null>(null);
-  // Whether a `PUT` of this document is on the wire — or answered but not yet resolved (a 409's
-  // refetch is part of resolving it). A ref rather than `stateRef.current.kind === 'saving'`
-  // because it is written the instant a send is decided, in the same synchronous step, and read
-  // in the same callbacks: no commit sits between the write and the read.
-  const inFlightRef = useRef(false);
-  // The send that was wanted while one was in flight, or `null`. Set instead of sending; a 200
-  // takes it, everything else drops it. The variables are kept, not a boolean, so an unmount
-  // flush's captured text is what gets re-sent rather than a read of a destroyed editor.
-  const resendWantedRef = useRef<SaveVariables | null>(null);
+  // Created once, seeded with the editor's own serialization so that opening is not dirtying
+  // (AC-29) even where the bridge normalised the text on the way in.
+  const storeRef = useRef<AutosaveStore | null>(null);
+  storeRef.current ??= createAutosaveStore({ kind: 'idle', lastSaved: handle.serialize() });
+  const store = storeRef.current;
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  /**
-   * Where a refused `PUT` leaves the document. Async because a 409 is not resolved until the run
-   * has been re-read and compared; `lastSavedRef` moves here only in E-15b's lost-response case.
-   */
-  const resolutionOf = async (error: Error): Promise<AutosaveState> => {
-    if (!(error instanceof ApiError)) {
-      return { kind: 'failed' };
-    }
-    if (error.status === 401) {
-      return { kind: 'expired' };
-    }
-    if (error.status === 409 && error.code === 'document_version_conflict') {
-      let server: TailoringRun;
-      try {
-        server = await queryClient.query({ ...tailoringRunQueryOptions(runId), staleTime: 0 });
-      } catch {
-        return { kind: 'failed' };
-      }
-      const mine = handle.serialize();
-      if (server[textField] === mine) {
-        lastSavedRef.current = mine;
-        return { kind: 'saved' };
-      }
-      return { kind: 'conflict' };
-    }
-    if (error.status === 422 && error.code === 'document_invalid') {
-      const problem: unknown = error.details['problem'];
-      if (isDocumentProblem(problem)) {
-        return { kind: 'invalid', problem };
-      }
-    }
-    if (error.status === 429) {
-      const retryAfterSeconds = error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS;
-      return { kind: 'paused', retryAfterSeconds };
-    }
-    return { kind: 'failed' };
-  };
 
   const { mutate } = useMutation({
     scope: { id: `revise:${runId}` },
-    mutationFn: (variables: SaveVariables) => {
-      const run = queryClient.getQueryData<TailoringRun>(queryKey);
+    mutationFn: ({ content }: { readonly content: string }) => {
+      const run = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId));
       if (run === undefined) {
         // Unreachable while this hook's own observer is mounted; a plain failure rather than a
         // request with a guessed version, which the server would rightly refuse.
         return Promise.reject(new Error('useDocumentAutosave: the run is not in the cache.'));
       }
-      const content = variables.content ?? handle.serialize();
-      sentRef.current = content;
       return reviseTailoredDocument(runId, kind, { content, expected_version: run.version });
     },
     retry: (failureCount, error) => isTransient(error) && failureCount < MAX_TRANSIENT_RETRIES,
     onSuccess: (run) => {
-      lastSavedRef.current = sentRef.current;
-      queryClient.setQueryData(queryKey, run);
+      queryClient.setQueryData(tailoringRunQueryKey(runId), run);
       void queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey });
-      inFlightRef.current = false;
-      const wanted = resendWantedRef.current;
-      resendWantedRef.current = null;
-      dispatch({
-        type: 'resolved',
-        to: handle.serialize() !== lastSavedRef.current ? { kind: 'dirty' } : { kind: 'saved' },
-      });
-      // The one send that a wish becomes — and only if there is still something to send: the
-      // text may have come back to what this `PUT` just saved. `submit` is the `const` below;
-      // this callback runs when an answer arrives, long after the render that declared both.
-      if (wanted !== null && (wanted.content ?? handle.serialize()) !== lastSavedRef.current) {
-        submit(wanted);
-      }
+      // `dispatch` is the `const` below; this callback runs when an answer arrives, long after
+      // the render that declared both.
+      dispatch({ type: 'landed200', textNow: () => handle.serialize() });
     },
-    onError: async (error) => {
-      const to = await resolutionOf(error);
-      inFlightRef.current = false;
-      resendWantedRef.current = null;
-      dispatch({ type: 'resolved', to });
+    onError: (error) => {
+      dispatch({ type: 'landedError', failure: failureOf(error) });
     },
   });
 
   /**
-   * Hand a `PUT` to the mutation — unless one for this document is already in flight, in which
-   * case record that another is wanted and let the answer decide (see the docstring's "one `PUT`
-   * in flight per document"). A later wish replaces an earlier one, so an unmount flush's captured
-   * text wins over a plain "read the editor".
+   * Step the machine and perform what it asks. `perform` and `dispatch` are declared together
+   * because a timer or a refetch, once done, dispatches again; a `useMemo` over stable inputs
+   * (the store is created once, `mutate` and `queryClient` are stable, `handle` is memoised on
+   * the editor instance) keeps one identity for the life of the component.
    */
-  const submit = useCallback(
-    (variables: SaveVariables = {}) => {
-      if (inFlightRef.current) {
-        resendWantedRef.current = variables;
-        return;
+  const dispatch = useMemo(() => {
+    function perform(effect: AutosaveEffect): void {
+      switch (effect.type) {
+        case 'send':
+          mutate({ content: effect.content });
+          return;
+        case 'refetch':
+          void queryClient.query({ ...tailoringRunQueryOptions(runId), staleTime: 0 }).then(
+            (server) => {
+              dispatch({
+                type: 'refetched',
+                serverText: server[textField],
+                textNow: () => handle.serialize(),
+              });
+            },
+            () => {
+              dispatch({ type: 'refetchFailed' });
+            },
+          );
+          return;
+        case 'armTimer':
+          clearTimer();
+          timerRef.current = setTimeout(() => {
+            timerRef.current = null;
+            dispatch({ type: 'timerDue', text: handle.serialize() });
+          }, effect.ms);
+          return;
+        case 'clearTimer':
+          clearTimer();
+          return;
       }
-      inFlightRef.current = true;
-      resendWantedRef.current = null;
-      dispatch({ type: 'sent' });
-      mutate(variables);
-    },
-    [mutate],
-  );
-
-  /** Save if there is something to save and the state allows it. */
-  const send = useCallback(() => {
-    const current = stateRef.current;
-    if (current.kind === 'expired' || current.kind === 'conflict') {
-      return;
     }
-    if (inFlightRef.current) {
-      // Whether there is something to send is decided when the flight lands, against what it
-      // saved — `lastSavedRef` is behind the wire right now.
-      submit();
-      return;
-    }
-    if (handle.serialize() === lastSavedRef.current) {
-      dispatch({ type: 'resolved', to: { kind: 'saved' } });
-      return;
-    }
-    submit();
-  }, [handle, submit]);
-
-  const clearTimer = useCallback(() => {
-    if (timerRef.current !== null) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-  }, []);
-
-  const arm = useCallback(
-    (ms: number) => {
-      clearTimer();
-      timerRef.current = setTimeout(() => {
+    function clearTimer(): void {
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
         timerRef.current = null;
-        send();
-      }, ms);
-    },
-    [clearTimer, send],
-  );
-
-  /** A pending debounce becomes a save now (AC-31's two flush triggers, and the unmount). */
-  const flush = useCallback(() => {
-    if (timerRef.current !== null) {
-      clearTimer();
-      send();
+      }
     }
-  }, [clearTimer, send]);
+    function dispatch(event: AutosaveEvent): void {
+      for (const effect of store.dispatch(event)) {
+        perform(effect);
+      }
+    }
+    return dispatch;
+  }, [store, mutate, queryClient, runId, textField, handle]);
 
-  // The editor's `update` event arms the debounce — subscribing to an instance outside React.
+  const view = useSyncExternalStore(store.subscribe, store.view);
+
+  // The editor's `update` event is a `change` — subscribing to an instance outside React.
   useEffect(() => {
     const editor = handle.editor;
     if (editor === null) {
       return;
     }
     const onUpdate = (): void => {
-      // While a `PUT` is on the wire, "differs" is measured against the text it carries: that is
-      // what the server will hold if it lands, and typing back to the *previous* save is a
-      // change that needs sending, not the absence of one.
-      const baseline = inFlightRef.current ? sentRef.current : lastSavedRef.current;
-      const differs = handle.serialize() !== baseline;
-      dispatch({ type: 'changed', differs });
-      const current = stateRef.current;
-      if (current.kind === 'expired' || current.kind === 'conflict' || current.kind === 'paused') {
-        return;
-      }
-      if (differs) {
-        arm(AUTOSAVE_DEBOUNCE_MS);
-      } else {
-        clearTimer();
-      }
+      dispatch({ type: 'change', text: handle.serialize() });
     };
     editor.on('update', onUpdate);
     return () => {
       editor.off('update', onUpdate);
     };
-  }, [handle, arm, clearTimer]);
-
-  // A 429 waits out the server's window, then tries once more.
-  useEffect(() => {
-    if (state.kind === 'paused') {
-      arm(Math.max(state.retryAfterSeconds * 1000, AUTOSAVE_DEBOUNCE_MS));
-    }
-  }, [state, arm]);
+  }, [handle, dispatch]);
 
   // The tab going to the background flushes: a hidden tab may be a closing one.
   useEffect(() => {
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') {
-        flush();
+        dispatch({ type: 'flush', text: handle.serialize() });
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [flush]);
+  }, [handle, dispatch]);
 
   // Switching to the other document flushes this one (AC-31): the URL changed under the router,
   // and the pane that just left the screen should not still be waiting out its debounce.
   useEffect(() => {
     if (!options.visible) {
-      flush();
+      dispatch({ type: 'flush', text: handle.serialize() });
     }
-  }, [options.visible, flush]);
+  }, [options.visible, handle, dispatch]);
 
-  // Leaving the run page altogether: the editor is about to be destroyed, so the text is captured
-  // now and the `PUT` is handed to the mutation cache, which outlives this component — or, with
-  // one already on the wire, recorded as the send wanted when that one lands. The timer is
-  // cleared either way: a timer that outlives its component is a save into a dead editor.
+  // Leaving the run page altogether: the editor is about to be destroyed, so the text is read
+  // now, and the machine decides whether it is sent at once (a pending debounce), remembered for
+  // when the flight lands (one on the wire), or nothing (a quiet document). The `PUT` goes to the
+  // mutation cache, which outlives this component.
   useEffect(() => {
     return () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-        const current = stateRef.current;
-        if (current.kind !== 'expired' && current.kind !== 'conflict') {
-          const content = handle.serialize();
-          if (content !== lastSavedRef.current) {
-            submit({ content });
-          }
-        }
-      }
+      dispatch({ type: 'unmount', text: handle.serialize() });
     };
-  }, [handle, submit]);
+  }, [handle, dispatch]);
+
+  const retry = useCallback(() => {
+    dispatch({ type: 'retry', text: handle.serialize() });
+  }, [handle, dispatch]);
 
   const loadLatest = useCallback(() => {
-    const server = queryClient.getQueryData<TailoringRun>(queryKey);
+    const server = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId));
     if (server === undefined) {
       return;
     }
     handle.reseed(server[textField] ?? '');
-    lastSavedRef.current = handle.serialize();
-    dispatch({ type: 'resolved', to: { kind: 'saved' } });
-  }, [handle, queryClient, queryKey, textField]);
+    dispatch({ type: 'loadLatest', text: handle.serialize() });
+  }, [handle, queryClient, runId, textField, dispatch]);
 
   const keepMine = useCallback(() => {
-    submit();
-  }, [submit]);
+    dispatch({ type: 'keepMine', text: handle.serialize() });
+  }, [handle, dispatch]);
 
   return useMemo<SaveState>(() => {
-    switch (state.kind) {
+    switch (view.kind) {
       case 'failed':
-        return { kind: 'failed', retry: send };
+        return { kind: 'failed', retry };
       case 'conflict':
         return { kind: 'conflict', loadLatest, keepMine };
       case 'saved':
@@ -476,7 +364,7 @@ export function useDocumentAutosave(
       case 'paused':
       case 'invalid':
       case 'expired':
-        return state;
+        return view;
     }
-  }, [state, send, loadLatest, keepMine]);
+  }, [view, retry, loadLatest, keepMine]);
 }
