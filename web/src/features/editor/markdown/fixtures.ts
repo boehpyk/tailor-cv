@@ -80,6 +80,20 @@ export const modelCvFixtureMarkdown = `# Jordan Rivera
 [University website](https://example.edu)
 `;
 
+/**
+ * A link whose text is identical to its `href` — the common LinkedIn/GitHub/portfolio line shape
+ * (`[https://example.com/x](https://example.com/x)`), and MAJOR 1's fixture (/verify slice 1.4).
+ * `defaultMarkdownSerializer.marks.link`'s `open` emits CommonMark autolink syntax
+ * (`<https://example.com/x>`) whenever a link's text equals its `href` — a legitimate CommonMark
+ * shorthand the *default* serializer is entitled to use because the *default* parser's `autolink`
+ * rule reads it back as a link. This bridge's tokenizer does not enable `autolink`
+ * (`bridge.ts`'s `GRAMMAR_RULES`, and ADR-0015 §2's grammar names only `[text](href)`), so the next
+ * parse reads `<https://example.com/x>` as plain text: the mark is gone on the very first round
+ * trip a user's own profile link would take through the editor.
+ */
+export const selfDescribingLinkFixtureMarkdown =
+  'See [https://example.com/x](https://example.com/x) for more.';
+
 /** A model-shaped cover letter — the second document every succeeded run carries (TR-5). */
 export const modelLetterFixtureMarkdown = `# Cover Letter
 
@@ -115,5 +129,6 @@ export const markdownFixtureCorpus: readonly MarkdownFixture[] = [
   { name: 'a javascript: link', markdown: javascriptLinkFixtureMarkdown },
   { name: 'a model-shaped CV', markdown: modelCvFixtureMarkdown },
   { name: 'a model-shaped cover letter', markdown: modelLetterFixtureMarkdown },
+  { name: 'a [url](url) self-describing link', markdown: selfDescribingLinkFixtureMarkdown },
   { name: 'certain normalisation (__bold__ → **bold**)', markdown: normalizationFixtureMarkdown },
 ];
