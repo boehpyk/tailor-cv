@@ -1191,8 +1191,9 @@ async def test_two_sessions_racing_to_revise_one_run_the_second_save_raises_conc
     with pytest.raises(TailoringRunConcurrentlyModified):
         await repo2.save(stale_copy)
     # The caller's boundary (the repository's own `save` docstring): a failed flush leaves the
-    # session unusable until rolled back. `CommittingTailoringRunRepository` does this in
-    # production; here the test is the caller.
+    # session unusable until rolled back. `CommittingTailoringRunRepository` contains this in a
+    # SAVEPOINT in production (commit 6ccab15); here, with no SAVEPOINT open, the test is the
+    # caller and rolls back the whole session.
     await session2.rollback()
     await session2.close()
 
@@ -1281,9 +1282,10 @@ async def test_a_cv_revision_pairs_check_violation_through_the_repository_leaks_
         "leak the tailored CV this test bound as a parameter (AC-19)"
     )
 
-    # The caller's boundary, exactly as `CommittingTailoringRunRepository` performs it in
-    # production and the AC-7 race test above performs it by hand: a failed flush leaves the
-    # session unusable until rolled back.
+    # The caller's boundary: a failed flush leaves the session unusable until rolled back.
+    # `CommittingTailoringRunRepository` contains this in a SAVEPOINT in production (commit
+    # 6ccab15); here, as in the AC-7 race test above, the test is the caller and rolls back the
+    # whole session by hand.
     await session.rollback()
 
 

@@ -11,7 +11,7 @@ import { allPutBodies, lastPutBody, stubDocumentFetch } from '../test/fetchStub'
 import { AUTOSAVE_DEBOUNCE_MS } from '../saveState';
 
 import type { DocumentEditorHandle } from './useDocumentEditor';
-import type { TailoredDocumentKind } from '@/features/tailoring/types';
+import type { TailoredDocumentKind, TailoringRun } from '@/features/tailoring/types';
 import type { ReactNode } from 'react';
 
 /**
@@ -461,6 +461,181 @@ describe('AC-33 — resolving a save', () => {
       readonly expected_version: number;
     };
     expect(secondBody.expected_version).toBe(5);
+  });
+});
+
+describe('/verify slice 1.4 — a second PUT already queued when a 409 arrives must not bypass AC-33’s choice', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * The race: the first PUT is held pending; while it is on the wire the person keeps typing, so
+   * a second PUT for the same document is queued behind it in the mutation's scope (AC-32). The
+   * first then answers 409 `document_version_conflict`, and the handler refetches the run — a
+   * fresh `version` lands in the cache. `mutationFn` reads `expected_version` and the document's
+   * text **at execution time**, never from a closure — so if the queued PUT is allowed to run
+   * next, it carries the fresh version and whatever the editor holds right now, and a server that
+   * accepts it overwrites the other writer's text without AC-33's two-choice notice ever
+   * appearing. Returns everything a test needs to drive the two keystrokes and then resolve the
+   * first PUT; `resolveFirstPut` is a getter because the mock only sets the variable once the
+   * first PUT actually goes out.
+   */
+  function setupQueuedConflict(serverRun: TailoringRun) {
+    const queryClient = makeQueryClient();
+    const run = makeRun({ id: RUN_ID, version: 1, tailored_cv: 'seed' });
+    queryClient.setQueryData(tailoringRunQueryKey(RUN_ID), run);
+    const { handle, setText, emitUpdate, reseedMock } = makeFakeHandle('seed');
+
+    let resolveFirstPut: ((response: Response) => void) | undefined;
+    const fetchMock = stubDocumentFetch({
+      putDocument: {
+        cv: (callNumber) =>
+          callNumber === 1
+            ? new Promise<Response>((resolve) => {
+                resolveFirstPut = resolve;
+              })
+            : Promise.resolve(jsonResponse(200, { ...serverRun, version: serverRun.version + 1 })),
+      },
+      runDetail: () => Promise.resolve(jsonResponse(200, serverRun)),
+    });
+
+    const { result } = renderAutosave(RUN_ID, 'cv', handle, queryClient);
+    return {
+      handle,
+      setText,
+      emitUpdate,
+      reseedMock,
+      fetchMock,
+      result,
+      resolveFirstPut: () => resolveFirstPut,
+    };
+  }
+
+  /** Types once, lets the debounce fire, types again, lets that debounce fire too — leaving the
+   * first PUT pending on the wire and a second queued behind it in the scope. */
+  async function typeTwiceQueuingASecondSend(
+    setText: (text: string) => void,
+    emitUpdate: () => void,
+    fetchMock: ReturnType<typeof vi.fn>,
+  ): Promise<void> {
+    setText('seed edited once');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    setText('seed edited twice');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    // The second send is queued in the scope behind the first, still on the wire — not sent yet.
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+  }
+
+  it('resolves to conflict and sends no second PUT until a choice is made; Keep my version then sends exactly one more, against the fresh version', async () => {
+    vi.useFakeTimers();
+    const serverRun = makeRun({
+      id: RUN_ID,
+      version: 5,
+      tailored_cv: 'someone else edited this while I was mid-save',
+    });
+    const { setText, emitUpdate, fetchMock, result, resolveFirstPut } =
+      setupQueuedConflict(serverRun);
+
+    await typeTwiceQueuingASecondSend(setText, emitUpdate, fetchMock);
+
+    resolveFirstPut()?.(
+      jsonResponse(409, {
+        error: { code: 'document_version_conflict', message: 'stale', current_version: 5 },
+      }),
+    );
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(result.current.kind).toBe('conflict');
+    // The queued PUT must not have gone out on its own — the choice has to be shown first, or the
+    // other writer's text is silently overwritten (the MAJOR this test exists to catch).
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+
+    const conflictState = result.current;
+    if (conflictState.kind === 'conflict') {
+      act(() => {
+        conflictState.keepMine();
+      });
+    }
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(2);
+    const secondBody = lastPutBody(fetchMock, putPath(RUN_ID, 'cv')) as {
+      readonly expected_version: number;
+    };
+    expect(secondBody.expected_version).toBe(5);
+  });
+
+  it('alternatively, Load the latest version re-seeds from the server and sends no further PUT', async () => {
+    vi.useFakeTimers();
+    const serverRun = makeRun({
+      id: RUN_ID,
+      version: 5,
+      tailored_cv: 'someone else edited this while I was mid-save',
+    });
+    const { setText, emitUpdate, fetchMock, result, resolveFirstPut, reseedMock } =
+      setupQueuedConflict(serverRun);
+
+    await typeTwiceQueuingASecondSend(setText, emitUpdate, fetchMock);
+
+    resolveFirstPut()?.(
+      jsonResponse(409, {
+        error: { code: 'document_version_conflict', message: 'stale', current_version: 5 },
+      }),
+    );
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(result.current.kind).toBe('conflict');
+    expect(reseedMock).not.toHaveBeenCalled();
+
+    const conflictState = result.current;
+    if (conflictState.kind === 'conflict') {
+      act(() => {
+        conflictState.loadLatest();
+      });
+    }
+
+    expect(reseedMock).toHaveBeenCalledWith('someone else edited this while I was mid-save');
+    // Loading the server's copy is a resolution, not a send.
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+  });
+
+  it('same-content variant: if the server’s text already equals the editor’s, this resolves to saved with no second PUT', async () => {
+    vi.useFakeTimers();
+    // Equal to what the editor holds after the second keystroke below — the lost-update case
+    // (E-15b), not a genuine conflict.
+    const serverRun = makeRun({ id: RUN_ID, version: 5, tailored_cv: 'seed edited twice' });
+    const { setText, emitUpdate, fetchMock, result, resolveFirstPut } =
+      setupQueuedConflict(serverRun);
+
+    await typeTwiceQueuingASecondSend(setText, emitUpdate, fetchMock);
+
+    resolveFirstPut()?.(
+      jsonResponse(409, {
+        error: { code: 'document_version_conflict', message: 'stale', current_version: 5 },
+      }),
+    );
+    await flushMicrotasks();
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    expect(result.current.kind).toBe('saved');
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
   });
 });
 

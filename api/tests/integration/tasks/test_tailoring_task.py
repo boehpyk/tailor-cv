@@ -532,8 +532,8 @@ async def test_a_real_database_failure_saving_a_succeeded_run_leaks_no_document_
     )
 
 
-# --- T16: `CommittingTailoringRunRepository.save` rolls back its own session on a conflict, and ----
-# --- the session stays usable afterward -------------------------------------------------------------
+# --- T16: `CommittingTailoringRunRepository.save` contains a conflict's failed flush in a --------
+# --- SAVEPOINT, and the session stays usable afterward ------------------------------------------
 
 
 async def test_the_committing_repositorys_save_rolls_back_on_a_conflict_and_the_session_stays_usable(
@@ -544,9 +544,10 @@ async def test_the_committing_repositorys_save_rolls_back_on_a_conflict_and_the_
 ) -> None:
     """`CommittingTailoringRunRepository.save` (`tasks/container.py`) is the worker's own wrapper
     around `SqlAlchemyTailoringRunRepository`: every write commits, and its own docstring promises
-    that a conflict rolls back the session **before** re-raising, because "nothing else would roll
-    it back" in the worker — the task returns `SKIPPED` and its own closing commit would otherwise
-    raise a second, unrelated error over the first.
+    that a conflict is contained to the one run that lost — the flush runs inside a SAVEPOINT, so
+    only that run's instance is expired, not the wrapper's whole session — because "nothing else
+    would roll it back" in the worker — the task returns `SKIPPED` and its own closing commit would
+    otherwise raise a second, unrelated error over the first (commit 6ccab15).
 
     Driven with the identical two-`AsyncSession`-on-one-connection technique
     `test_tailoring_run_repository.py`'s own AC-7 test uses: `session2`'s copy is pre-loaded into

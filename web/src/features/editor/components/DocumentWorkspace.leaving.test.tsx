@@ -66,12 +66,11 @@ function makeQueryClient(): QueryClient {
 }
 
 /**
- * Mounts `DocumentWorkspace` on a real data router with three routes: this run's own
- * `/runs/:runId/:document` (so `useBlocker`'s exemption can compare `pathname`), a trivial `/` (the
- * workspace, the blocked destination in most cases below) and a trivial `/runs/other-run/cv` (a
- * second run, to prove the exemption is scoped to *this* run's id and not any `/runs/*` path).
- * `useBlocker` requires a data router — a bare `MemoryRouter` has no data-router context — which is
- * exactly what `createMemoryRouter` supplies here, matching the sibling file.
+ * Mounts `DocumentWorkspace` on a real data router with two routes: this run's own
+ * `/runs/:runId/:document` (so `useBlocker`'s exemption can compare `pathname`) and a trivial `/`
+ * (the workspace, the blocked destination in most cases below). `useBlocker` requires a data
+ * router — a bare `MemoryRouter` has no data-router context — which is exactly what
+ * `createMemoryRouter` supplies here, matching the sibling file.
  */
 function renderDocumentWorkspace(
   run: TailoringRun,

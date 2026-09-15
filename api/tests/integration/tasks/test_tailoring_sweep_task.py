@@ -329,17 +329,22 @@ async def test_a_version_conflict_on_the_earlier_run_does_not_crash_the_sweep_on
     connection: AsyncConnection,
     clock: FixedClock,
 ) -> None:
-    """MAJOR 2 — `CommittingTailoringRunRepository.save` (`infrastructure/tasks/container.py`) rolls
-    the session back on `TailoringRunConcurrentlyModified`. An `AsyncSession.rollback()` expires
-    **every** instance the session holds, not only the one whose save just failed — so the next
-    iteration of `AbandonStaleTailoringRuns.__call__`'s loop (`application/tailoring/
-    abandon_stale_tailoring_runs.py`) calls `run.is_stale(now, stale_after)` on the *next* candidate,
-    a plain synchronous attribute read (`domain/tailoring/tailoring_run.py::is_stale` touches
-    `self._status` and `self._started_at`) with no `await` in front of it. On an expired attribute of
-    an object bound to an `AsyncSession`, that read tries an implicit lazy-refresh, and outside any
-    `greenlet_spawn` context (which only wraps SQLAlchemy's own awaited calls, never a bare Python
-    property access made from ordinary application code) that refresh raises
-    `sqlalchemy.exc.MissingGreenlet` instead of resuming the sweep.
+    """MAJOR 2 — before commit 6ccab15, `CommittingTailoringRunRepository.save`
+    (`infrastructure/tasks/container.py`) rolled the whole session back on
+    `TailoringRunConcurrentlyModified`. A root-boundary `AsyncSession.rollback()` restores via
+    `_restore_snapshot(dirty_only=False)`, which expires **every** instance the session holds, not
+    only the one whose save just failed — so the next iteration of `AbandonStaleTailoringRuns.
+    __call__`'s loop (`application/tailoring/abandon_stale_tailoring_runs.py`) calls
+    `run.is_stale(now, stale_after)` on the *next* candidate, a plain synchronous attribute read
+    (`domain/tailoring/tailoring_run.py::is_stale` touches `self._status` and `self._started_at`)
+    with no `await` in front of it. On an expired attribute of an object bound to an
+    `AsyncSession`, that read tries an implicit lazy-refresh, and outside any `greenlet_spawn`
+    context (which only wraps SQLAlchemy's own awaited calls, never a bare Python property access
+    made from ordinary application code) that refresh raises `sqlalchemy.exc.MissingGreenlet`
+    instead of resuming the sweep. The fix (6ccab15) flushes the failing save inside a SAVEPOINT
+    instead: a nested boundary's snapshot restore is `dirty_only=True`, so only the one run that
+    was modified inside the SAVEPOINT is expired, and the sweep's other loaded candidates read
+    without I/O.
 
     Reproduced with two real, committed `running` rows and a genuine optimistic-lock conflict — no
     mocked repository, matching this suite's own G-35 constraint test just above. `earlier`
