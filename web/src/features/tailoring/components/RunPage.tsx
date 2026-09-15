@@ -22,6 +22,12 @@ function parseDocument(value: string | undefined): DocumentSegment | null {
 
 const HOME_LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
 
+/**
+ * An in-app navigation, which `beforeunload` never sees. On a `succeeded` run this link unmounts
+ * `DocumentWorkspace` and destroys both editors, so while either holds unsaved text the router's
+ * blocker in `DocumentWorkspace` asks first (E-32, AC-34) — that is the workspace's lock, not
+ * this link's, and nothing here needs to know about it.
+ */
 function BackToWorkspace(): React.JSX.Element {
   return (
     <p className="text-sm">

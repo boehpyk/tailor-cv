@@ -15,6 +15,34 @@
  * attribute on a paragraph, a `style` mark or a `class` attribute each re-opens the sanitizer
  * question that this module closes, and each must be argued for in an ADR, not added here.
  *
+ * **Every attribute the schema can carry** (measured in 3.31.3, read in `node_modules`; `doc`,
+ * `paragraph`, `text`, `hardBreak`, `bulletList`, `listItem`, `bold` and `italic` carry none).
+ * Two reach the wire and one of them is free-form; the rest never leave the editor:
+ *
+ * - `heading.level` — `1 | 2 | 3`, closed by `levels`. Declared `rendered: false`: it chooses the
+ *   tag (`h1`–`h3`) and never appears as a DOM attribute. Written back as `#`, `##`, `###`.
+ * - `orderedList.start` — an integer, default `1`, rendered on the `<ol>` only when it is not `1`.
+ *   The bridge reads it from the list's first number and writes it back as that number.
+ * - `orderedList.type` — the HTML list marker (`1`, `a`, `A`, `i`, `I`), default `null`. The
+ *   extension parses it from a pasted `<ol type>` or a `list-style-type` style and renders it only
+ *   when set and not `1`; the bridge never sets it and never writes it, so it does not survive a
+ *   save. In-editor cosmetics for the person who pasted, and nothing else.
+ * - `link.href` — the URL, judged by `isLinkSchemeAllowed` at both entrances (see below).
+ * - `link.title` — **free-form text**, default `null`, from `[text](href "title")` or a pasted
+ *   `<a title>`, and written back by the bridge as `"title"` with its quotes escaped. It reaches
+ *   the DOM through ProseMirror's `renderSpec`, which calls `setAttribute` with the string as a
+ *   *value* — never parsed as markup — so it is text on a tooltip and not an injection path; and
+ *   it is the only free-form attribute the wire format carries.
+ * - `link.target` and `link.rel` — fixed by the extension's `HTMLAttributes` to `_blank` and
+ *   `noopener noreferrer nofollow` on every rendered `<a>`. A pasted `<a target rel>` can override
+ *   them on that one mark, because an attribute without its own `parseHTML` falls back to the
+ *   same-named DOM attribute (`@tiptap/core`, `injectExtensionAttributesToParseRule`); that
+ *   changes nothing, because `openOnClick` is off and the bridge writes neither.
+ * - `link.class` — default `null`, the same paste-only route in, rendered back onto the `<a>` in
+ *   the paster's own editor, and dropped at the first save because the bridge writes only `href`
+ *   and `title`. A class name is a styling hook, not a URL and not markup; the paragraph above is
+ *   about attributes that *reach the wire*, and this one does not.
+ *
  * What is measured, not assumed, about the `Link` extension (3.31.3, read in `node_modules`):
  *
  * - `protocols` is **additive**. The extension's own `isAllowedUri` starts from a built-in list

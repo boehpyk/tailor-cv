@@ -135,10 +135,48 @@ function createParser(schema: Schema): MarkdownParser {
   });
 }
 
+/** `prosemirror-markdown` does not export its mark-spec type; this is the shape its map holds. */
+type MarkSerializerSpec = (typeof defaultMarkdownSerializer)['marks'][string];
+
+/**
+ * The link mark, written as `[text](href "title")` **always** — never as an autolink `<href>`.
+ *
+ * `defaultMarkdownSerializer.marks.link` is not reused, and the reason is a rule about the whole
+ * bridge: **a serializer and a parser are one grammar only if the parser accepts everything the
+ * serializer can emit.** The default's `open` takes an `isPlainURL` branch whenever a link's text
+ * equals its `href` (the LinkedIn / GitHub / portfolio line every CV has) and emits CommonMark
+ * autolink syntax, `<https://…>`. That is legitimate for the *default* parser, whose `autolink`
+ * rule reads it straight back — but `GRAMMAR_RULES` above never enables `autolink` (ADR-0015 §2
+ * names `[text](href)` as the grammar's one link form), so the very next parse read `<https://…>`
+ * as plain text: the mark was gone and the angle brackets were in the CV (/verify slice 1.4,
+ * MAJOR 1). Worse, 1.5's `markdown-it-py` *does* render `<url>` as a link, so the PDF and the
+ * editor would have disagreed about the same row. One form on the wire, accepted by both parsers.
+ *
+ * Everything else is the default's, byte for byte: `(`, `)` and `"` in the destination and `"` in
+ * the title are backslash-escaped, the title is written only when present, and `mixable` lets the
+ * mark nest with `bold` and `italic` in either order. The default's `open` also set
+ * `state.inAutolink`, which the `text` node serializer reads to *skip* escaping inside `<…>`; a
+ * constant `[` never sets it, so link text is escaped like any other text — which is what makes
+ * `[https://x/a_b*](…)` survive.
+ */
+const linkMark: MarkSerializerSpec = {
+  open: '[',
+  close(_state, mark) {
+    const href: unknown = mark.attrs['href'];
+    const title: unknown = mark.attrs['title'];
+    const destination = typeof href === 'string' ? href.replace(/[()"]/g, '\\$&') : '';
+    const titlePart =
+      typeof title === 'string' && title !== '' ? ` "${title.replace(/"/g, '\\"')}"` : '';
+    return `](${destination}${titlePart})`;
+  },
+  mixable: true,
+};
+
 /**
  * The serializer: `defaultMarkdownSerializer`'s node and mark functions, re-keyed onto TipTap's
- * names, with three deliberate choices of spelling — none of which affects AC-29's stability, all
- * of which decide what the *first* save writes back:
+ * names — except `link`, which is `linkMark` above for the reason written there — with three
+ * deliberate choices of spelling — none of which affects AC-29's stability, all of which decide
+ * what the *first* save writes back:
  *
  * - bullets are `-`, the marker the model writes, so a list survives a round trip byte-for-byte;
  * - lists are tight (`tightLists: true`, passed at `serialize` time, which is where the typings
@@ -156,7 +194,6 @@ function createSerializer(): MarkdownSerializer {
   const text = nodes['text'];
   const em = marks['em'];
   const strong = marks['strong'];
-  const link = marks['link'];
   if (
     heading === undefined ||
     paragraph === undefined ||
@@ -164,10 +201,9 @@ function createSerializer(): MarkdownSerializer {
     hardBreak === undefined ||
     text === undefined ||
     em === undefined ||
-    strong === undefined ||
-    link === undefined
+    strong === undefined
   ) {
-    // `prosemirror-markdown` ships all eight; the check is what lets the re-keying stay typed
+    // `prosemirror-markdown` ships all seven; the check is what lets the re-keying stay typed
     // under `noUncheckedIndexedAccess` without a `!`.
     throw new Error('prosemirror-markdown: the default serializer is missing a grammar entry');
   }
@@ -192,7 +228,7 @@ function createSerializer(): MarkdownSerializer {
         });
       },
     },
-    { italic: em, bold: strong, link },
+    { italic: em, bold: strong, link: linkMark },
     { hardBreakNodeName: 'hardBreak' },
   );
 }

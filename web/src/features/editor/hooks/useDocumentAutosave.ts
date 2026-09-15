@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from 'react';
 
 import { ApiError } from '@/api/client';
 import { reviseTailoredDocument } from '@/api/tailoringRuns';
@@ -54,35 +54,71 @@ type Resolution =
   | { readonly kind: 'invalid'; readonly problem: DocumentProblem }
   | { readonly kind: 'expired' };
 
+/**
+ * What the reducer holds: where the save stands, and **how many `PUT`s this hook has handed to
+ * the mutation that have not yet settled**. The count is what keeps the indicator honest. A second
+ * `PUT` can be queued in the run's scope while the first is on the wire (the person kept typing
+ * through a slow save, and the debounce fired again); the first one's `onSuccess` then finds the
+ * editor's text ahead of what it sent, and without the count it would resolve to `dirty` —
+ * *Unsaved changes* — while a genuine save is in flight (/verify slice 1.4). `saving` is true for
+ * as long as `inFlight > 0`, whatever any single settlement says.
+ */
+interface AutosaveState {
+  readonly resolution: Resolution;
+  readonly inFlight: number;
+}
+
 type Action =
   /** The editor's `update` event: `differs` is whether the text now differs from the last save. */
   | { readonly type: 'changed'; readonly differs: boolean }
   /** A `PUT` was handed to the mutation (it may be queued behind another for this run, AC-32). */
   | { readonly type: 'sent' }
-  /** The mutation settled, or a choice was made; `to` is where that leaves the document. */
+  /** One `PUT` settled (success or any error); `to` is where that answer leaves the document. */
+  | { readonly type: 'settled'; readonly to: Resolution }
+  /** A choice was made, or nothing needed sending; `to` is where that leaves the document. */
   | { readonly type: 'resolved'; readonly to: Resolution };
 
 /**
  * `expired` is terminal: nothing after a 401 can change it, because the session that owned the
  * run is gone (AC-34). `conflict` ignores typing: the person must choose between the two texts,
  * and a keystroke is not a choice (AC-33). `saving` ignores typing too — a `PUT` is on the wire
- * and its resolution decides whether the document is `saved` or `dirty` again, by comparing what
+ * and its settlement decides whether the document is `saved` or `dirty` again, by comparing what
  * was sent with what is there now.
+ *
+ * `settled` and `resolved` differ in one thing: `settled` is the answer to a `PUT` and so
+ * decrements `inFlight`, while `resolved` (a conflict choice, or `send` finding nothing to send)
+ * is not and does not — the two must not share an action, or a choice would decrement a count it
+ * never incremented. A settlement that arrives while another `PUT` is still pending resolves to
+ * `saving`, because that is what is true: the later `PUT`'s answer supersedes this one's. `expired`
+ * is the exception — a 401 is the session's, not the request's, and the pending `PUT` will get
+ * the same answer.
  */
-function reduce(state: Resolution, action: Action): Resolution {
-  if (state.kind === 'expired') {
+function reduce(state: AutosaveState, action: Action): AutosaveState {
+  const { resolution, inFlight } = state;
+  if (resolution.kind === 'expired') {
     return state;
   }
   switch (action.type) {
     case 'changed':
-      if (state.kind === 'conflict' || state.kind === 'saving' || state.kind === 'paused') {
+      if (
+        resolution.kind === 'conflict' ||
+        resolution.kind === 'saving' ||
+        resolution.kind === 'paused'
+      ) {
         return state;
       }
-      return action.differs ? { kind: 'dirty' } : { kind: 'saved' };
+      return { ...state, resolution: action.differs ? { kind: 'dirty' } : { kind: 'saved' } };
     case 'sent':
-      return { kind: 'saving' };
+      return { resolution: { kind: 'saving' }, inFlight: inFlight + 1 };
+    case 'settled': {
+      const remaining = Math.max(inFlight - 1, 0);
+      if (remaining > 0 && action.to.kind !== 'expired') {
+        return { resolution: { kind: 'saving' }, inFlight: remaining };
+      }
+      return { resolution: action.to, inFlight: remaining };
+    }
     case 'resolved':
-      return action.to;
+      return { ...state, resolution: action.to };
   }
 }
 
@@ -143,7 +179,8 @@ interface SaveVariables {
  * **The `useEffect`s are the legitimate kind, each synchronizing with something outside React:**
  * the editor's `update` event (an instance with its own event emitter), `visibilitychange` on the
  * document, the pane's visibility changing under a URL the router owns, and the timer's cleanup.
- * None fetches, none derives.
+ * None fetches, none derives. The one `useLayoutEffect` mirrors the committed state into a ref
+ * for the timer to read, and says why it is not a `useEffect`.
  *
  * **Resolutions** (AC-33, AC-34): 200 → `saved`, or `dirty` if the text moved on during the
  * flight; 409 `document_version_conflict` → re-read the run, and if the server's text for this
@@ -168,10 +205,25 @@ export function useDocumentAutosave(
 
   useQuery({ ...tailoringRunQueryOptions(runId), enabled: false });
 
-  const [state, dispatch] = useReducer(reduce, { kind: 'saved' });
-  // The latest state, for callbacks that run outside a render (the timer, the event handlers).
+  const [{ resolution: state }, dispatch] = useReducer(reduce, {
+    resolution: { kind: 'saved' },
+    inFlight: 0,
+  });
+  // The latest *committed* state, for callbacks that run outside a render (the timer, the event
+  // handlers). Written in an effect, not during render (/verify slice 1.4): a render can be
+  // discarded or replayed — StrictMode, a concurrent render that is thrown away — so a ref written
+  // there would mirror a state React never committed. It is `useLayoutEffect` rather than
+  // `useEffect` because of *when* React runs passive effects: synchronously at the end of the
+  // commit only for a render caused by a discrete event, and otherwise in a task of its own,
+  // scheduled after the commit. Every dispatch that moves this state comes from a promise
+  // callback (a `PUT` settling) or a timer, not from a React event handler, so its passive effects
+  // are the deferred kind — and a due `setTimeout` (`arm`'s debounce, a 429's retry) is a task
+  // that can run in that gap, where `send` would read the previous state against a new render.
+  // A layout effect runs synchronously inside the commit itself, before any other task can.
   const stateRef = useRef<Resolution>(state);
-  stateRef.current = state;
+  useLayoutEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   // What the server holds for this document, as far as this client knows — initially the seed's
   // own serialization, so that opening is not dirtying (AC-29) even where the bridge normalised.
@@ -200,15 +252,15 @@ export function useDocumentAutosave(
       queryClient.setQueryData(queryKey, run);
       void queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey });
       const differs = handle.serialize() !== lastSavedRef.current;
-      dispatch({ type: 'resolved', to: differs ? { kind: 'dirty' } : { kind: 'saved' } });
+      dispatch({ type: 'settled', to: differs ? { kind: 'dirty' } : { kind: 'saved' } });
     },
     onError: async (error) => {
       if (!(error instanceof ApiError)) {
-        dispatch({ type: 'resolved', to: { kind: 'failed' } });
+        dispatch({ type: 'settled', to: { kind: 'failed' } });
         return;
       }
       if (error.status === 401) {
-        dispatch({ type: 'resolved', to: { kind: 'expired' } });
+        dispatch({ type: 'settled', to: { kind: 'expired' } });
         return;
       }
       if (error.status === 409 && error.code === 'document_version_conflict') {
@@ -216,31 +268,31 @@ export function useDocumentAutosave(
         try {
           server = await queryClient.query({ ...tailoringRunQueryOptions(runId), staleTime: 0 });
         } catch {
-          dispatch({ type: 'resolved', to: { kind: 'failed' } });
+          dispatch({ type: 'settled', to: { kind: 'failed' } });
           return;
         }
         const mine = handle.serialize();
         if (server[textField] === mine) {
           lastSavedRef.current = mine;
-          dispatch({ type: 'resolved', to: { kind: 'saved' } });
+          dispatch({ type: 'settled', to: { kind: 'saved' } });
         } else {
-          dispatch({ type: 'resolved', to: { kind: 'conflict' } });
+          dispatch({ type: 'settled', to: { kind: 'conflict' } });
         }
         return;
       }
       if (error.status === 422 && error.code === 'document_invalid') {
         const problem: unknown = error.details['problem'];
         if (isDocumentProblem(problem)) {
-          dispatch({ type: 'resolved', to: { kind: 'invalid', problem } });
+          dispatch({ type: 'settled', to: { kind: 'invalid', problem } });
           return;
         }
       }
       if (error.status === 429) {
         const retryAfterSeconds = error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS;
-        dispatch({ type: 'resolved', to: { kind: 'paused', retryAfterSeconds } });
+        dispatch({ type: 'settled', to: { kind: 'paused', retryAfterSeconds } });
         return;
       }
-      dispatch({ type: 'resolved', to: { kind: 'failed' } });
+      dispatch({ type: 'settled', to: { kind: 'failed' } });
     },
   });
 
