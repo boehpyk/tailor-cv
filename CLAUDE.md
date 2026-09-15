@@ -18,32 +18,47 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: two slices shipped, and a third verified on its branch (2026-09-13).** Phase 1 is under
-> way. The architecture now carries a paid external call, a worker, and the codebase's first scheduled
-> job.
+> **Status: three slices shipped, and a fourth built and reviewed on its branch (2026-09-15).** Phase 1 is
+> under way. The architecture now carries a paid external call, a worker, a scheduled job, and the
+> first unauthenticated *write* to a PII row on a timer.
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
 > - **1.2 `posting-job-description-intake`** (PR #2) — paste a job description or hand over a link,
 >   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
-> - **1.3 `tailoring-generate-documents`** (verified on its branch; not yet pushed, no PR) — one
->   button returns a tailored CV and a cover letter.
->   - A run is queued, executed by a Celery worker behind `LlmPort` (Gemini), and polled by the client.
->   - Every outcome that spent money is a row (ADR-0014, amended 2026-09-13).
->   - Model output is re-validated on receipt.
->   - A stale-run sweep on beat recovers runs that a dead worker left `running`.
->   - Eval run 4: p95 `llm_duration_ms` 6.4 s on typical inputs.
+> - **1.3 `tailoring-generate-documents`** (PR #4) — one button returns a tailored CV and a cover
+>   letter: queued, executed by a Celery worker behind `LlmPort` (Gemini), polled by the client;
+>   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat. Eval run 4: p95
+>   `llm_duration_ms` 6.4 s.
+> - **1.4 `workspace-progress-and-editor`** (verified on its branch; not yet pushed, no PR) — the
+>   tabbed workspace, the three-stage progress stepper, React Router, and a TipTap editor over both
+>   documents with debounced autosave.
+>   - The edit is a **revision on the run**, stored as Markdown; the aggregate owns the version and
+>     the mapper only checks it (`version_id_generator=False`) — one column refuses a stale edit
+>     **and** closes 1.3's concurrent duplicate delivery (ADR-0015).
+>   - The editor renders **no HTML**: Markdown → tokens (`html: false`) → ProseMirror nodes. The one
+>     residual is a URL attribute, gated to three schemes at both entrances. 1.5 owns the HTML path.
+>   - `PUT /api/tailoring-runs/{id}/documents/{kind}` with `expected_version`; 409 on a conflict,
+>     resolved by comparison on the client — never a silent overwrite, never a "keep mine" nobody
+>     clicked.
+>   - `/verify` ran its three rounds **without a PASS** and stopped, per the escalation rule. Rounds
+>     1 and 2 each closed their MAJORs (a serializer emitting autolink syntax its own parser
+>     refuses; a failed flush expiring the sweep's whole identity map; a queued save winning a
+>     detected conflict — each a red test before its fix, each verified closed by the next round).
+>     Round 3 found no regression and one remaining MAJOR: the autosave hook's resend-on-200
+>     branch — now load-bearing for "the text is never lost" — has no test that fails when it is
+>     deleted, plus two narrow timing windows in the same hook. **Owner's decision pending:** pin
+>     the branch and the windows as they are, or re-model the hook's six refs as one small state
+>     machine outside React. See FORboehpyk.md, "What's next".
 >
-> **817 backend and 151 frontend tests**, green twice in a row. Every gate was verified by running
-> it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, `tsc --noEmit`, ESLint,
-> Prettier, Vitest, `vite build`. The production image builds, runs as non-root, and registers both
-> Celery tasks and both routed queues. `make eval` measures prompt quality and latency against the
-> real API. It is not a test, and it costs money.
+> **921 backend and 356 frontend tests**, green twice in a row. Every gate was verified by running
+> it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, **`tsc -b`**, ESLint,
+> Prettier, Vitest, `vite build`. **The TypeScript gate had checked zero files since 1.1** — a bare
+> `tsc --noEmit` on a solution-style `tsconfig.json` compiles nothing; it passed
+> `const x: number = "nope"` for four slices and was found by the editor skeleton. `make eval`
+> measures prompt quality and latency against the real API. It is not a test, and it costs money.
 >
-> **Carried out of 1.3, each with an owner and a trigger:**
-> - **Concurrent duplicate delivery.** Two in-flight deliveries of one run both read `queued` and both
->   pay, because ADR-0014 §6's guarantee is sequential only. Close it before 1.4 ships editing, with
->   optimistic versioning.
+> **Carried out of 1.4, each with an owner and a trigger:**
 > - **Startup refusals never exit under `uvicorn --workers N`.** The API-key guard and the
 >   stale-window guard both leave the API respawning. Owner: `devops`, before the deploy SSH secrets
 >   are set. Import the composition root once and exit non-zero before `exec uvicorn`.
@@ -51,11 +66,15 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   recorded `llm_timed_out`, with two calls charged. Accepted; fix in a later slice, measured first.
 > - **Beat is invisible to `/health/ready`**, because `control.ping` reaches workers only. Slice 1.6's
 >   heartbeat covers it.
-> - **Before 1.4's first migration:**
->   - Alembic autogenerate renders `TypeDecorator` columns as unimportable references; add the
->     `render_item` hook.
->   - `qa`: recover a *raising* downgrade in the index-migration test, and type the sweep-task tests'
->     run ids.
+> - **The editor is not lazy-loaded.** TipTap, ProseMirror and markdown-it are 530 kB of the 894 kB
+>   bundle (four cache-stable chunks; 1.3 shipped 236 kB) and load on the workspace, where nobody
+>   edits. A `React.lazy` in `RunPage` with a chunk-load failure path is a decision for whoever next
+>   measures first paint. Noted in `vite.config.ts`.
+> - **1.5's three obligations** are written in ADR-0015 §2 and E-13: render Markdown with
+>   `html=False`, sanitize with `nh3` on the grammar's allow-list, give WeasyPrint a `url_fetcher`
+>   that refuses everything. 1.4 sanitized nothing — it rendered nodes.
+> - **Closed this slice:** the duplicate delivery (ADR-0015 §3), the `render_item` hook, the raising
+>   downgrade, the typed sweep ids.
 >
 > **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
 > passes and pushes images to GHCR.
@@ -204,7 +223,7 @@ make lint                # ruff format --check + ruff check
 make types               # mypy --strict
 make imports             # import-linter — the proof the domain stayed pure
 make test                # pytest (opts: k=, file=) against tailorcraft_test
-make web.check           # tsc --noEmit + eslint + vitest + vite build
+make web.check           # tsc -b --noEmit + eslint + prettier + vitest + vite build
 make check               # all of the above — run before every commit
 make check.static        # every gate EXCEPT pytest/vitest — the RED commit of a TDD cycle only
 
@@ -434,6 +453,29 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   Sniffing a DOCX opens the upload as a zip and reads its whole central directory — a 100,000-entry,
   8.6 MB archive (under the 10 MB cap) stalled the loop **374 ms** for every concurrent user, with no
   error and nothing logged. A rate limit bounds how *often* the loop stalls, never whether it stalls.
+- **A bare `tsc --noEmit` on a solution-style `tsconfig.json` type-checks zero files.** `web/tsconfig.json`
+  is `files: []` plus two references; without `-b` (or `-p tsconfig.app.json`) tsc compiles nothing
+  and exits 0. The Makefile, the `build` script and CI all ran that form for four slices, so the
+  "types" gate was `vite build`'s transpile and nothing more. `tsc -b --noEmit` is the gate now, and
+  the six errors it surfaced were fixed in the same commit. A gate that checks nothing also supplies
+  confidence.
+- **A failed flush expires the whole identity map, and it does so *inside* the flush.** SQLAlchemy
+  rolls a failed flush back to the nearest transaction boundary; at the root that is
+  `_restore_snapshot(dirty_only=False)` — every loaded instance is expired before your `except`
+  runs, and the next attribute read on any of them is a lazy load, which on an `AsyncSession` is
+  `MissingGreenlet`. Two consequences met in 1.4: read `run.id` into a local **before** the flush
+  (after it, the read raised `PendingRollbackError` and a 409 became a 503), and a batch that keeps
+  iterating loaded aggregates after one refused write must contain each write in a SAVEPOINT
+  (`expunge` → `begin_nested()` → flush → commit; `begin_nested()` itself flushes on entry, so a
+  dirty aggregate handed to it flushes *outside* the SAVEPOINT). A `rollback()` is a statement about
+  the session, not about the one object that failed.
+- **`get_settings()` under `APP_ENV=test` still returns the *dev* `database_url`.** Only
+  `tests/conftest.py` swaps in `test_database_url`, by overriding Alembic's option and the engine
+  fixture. A probe or cleanup script that builds its own engine from `settings.database_url` — even
+  with `APP_ENV=test` — is pointed at the dev database, and one such script's `DELETE FROM
+  tailoring_run; DELETE FROM identity_guest_session` emptied dev through the cascades during 1.4's
+  verify. Anything that deletes must name `test_database_url` explicitly and assert the URL contains
+  `_test` before the first statement.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global

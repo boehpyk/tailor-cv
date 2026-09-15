@@ -1337,28 +1337,251 @@ setting and what it actually does**:
 Each was found the same way as before: say what would be observably different if the reassuring name were
 true, then go and look.
 
+## Days ten to twelve: the editor, and the number that belongs to nobody
+
+Slice 1.4 is the first one where a stranger *writes* into a row that holds their own CV. Until now a CV
+arrived once, as a file, and left once, to Google. From here on it arrives every 1.5 seconds of typing, as a
+JSON body, and lands in a second pair of columns beside the model's draft. The slice took three days,
+fifty-odd commits, and three rounds of review before it passed — and the two hardest bugs were in code
+that every gate had already called green.
+
+### Who owns the version number?
+
+The design question that shaped everything else was small and looked administrative: when the editor
+says "this edit applies to version 7", who decided it was 7?
+
+SQLAlchemy will happily do it for you. Declare `version_id_col` and the mapper increments the column on
+every `UPDATE` and adds `WHERE version = :loaded` to the statement; two writers who both loaded 7 can't
+both win. It costs nothing and it closes the concurrent-duplicate-delivery hole slice 1.3 left open.
+But the number then lives in the ORM, invisible to the domain: a pure unit test can't assert a version,
+and the editor's "you are stale" rule has to be checked in a use case against a value the aggregate
+never set.
+
+So the aggregate owns it. `TailoringRun` increments `_version` in every named transition —
+`mark_started`, `mark_succeeded`, `mark_failed`, and now `revise_cv` and `revise_cover_letter` — and
+the mapping declares `version_id_generator=False`, which tells SQLAlchemy "check it, don't touch it".
+The domain has a rule about a fact the domain owns; the database enforces it where two processes meet.
+
+**The catch, and it is the whole reason there is a table-driven test:** with the generator off,
+SQLAlchemy's check only *detects* a race the application bumped past. Two writers who both leave the
+column at 5 both match `WHERE version = 5`. A transition that forgets its `+= 1` has no concurrency
+protection at all, and nothing will tell you. That is why "every transition increments by exactly one"
+is an invariant with a walk over every legal path rather than a convention in a docstring.
+
+A quieter lesson came with it. The domain change and the mapping change could not be committed
+separately: a run loaded from Postgres without a mapped `_version` has nothing to bump, so sixteen
+integration tests failed the moment the domain was right and before the mapping was. The honest fix was
+one commit for both, saying why — not a `getattr(self, "_version", 1)` fallback, which would have hidden
+exactly the missing-mapping hole the invariant exists to expose.
+
+### No HTML, anywhere
+
+The editor is TipTap, which is ProseMirror, which renders a document from a *node tree*, not from a
+string. That fact decided the format and the security argument at once.
+
+The stored format is Markdown — the model already writes it, the value objects already validate it, and
+1.5's four export formats all derive from it on the server. The client parses Markdown into tokens with
+`markdown-it` running `html: false`, so a `<script>` in the model's output is a *text token* by
+construction, and `prosemirror-markdown` turns tokens into nodes. No HTML string ever exists on the
+client. There is nothing for DOMPurify to purify, and a test greps the source for
+`dangerouslySetInnerHTML` to make sure it stays that way.
+
+The argument has exactly one hole, and writing it down was more useful than closing it quietly: a mark
+with a URL-valued attribute. `href` on a link is the whole residual risk. It's closed by an allow-list of
+three schemes — `http`, `https`, `mailto` — applied at **both entrances**: `markdown-it`'s
+`validateLink` on the way in, and the Link mark's `isAllowedUri` on the way out. That second one was
+measured rather than assumed, and the measurement mattered: TipTap's `protocols` option is *additive*,
+so configuring it alone still let `ftp:`, `tel:`, protocol-relative and bare-host hrefs through. The
+schema module now carries an inventory of every attribute it can hold (the Link mark has five, not one)
+so the next person who adds an Image node finds the argument they are about to break.
+
+### A serializer and a parser are one grammar only if…
+
+The first review found the bug that most embarrasses me, because every test was green and the fixture
+that would have caught it was the most ordinary line in any CV: `[https://github.com/jane](https://github.com/jane)`.
+
+`prosemirror-markdown`'s default link serializer has a shortcut: when a link's text equals its `href`,
+it writes CommonMark's autolink form, `<https://github.com/jane>`. Perfectly legal. But our tokenizer
+runs a grammar-only preset with `autolink` switched off — ADR-0015 names `[text](href)` as the one link
+form — so on the very next parse those angle brackets were read as plain text. The link mark was gone and
+the brackets were in the CV. Worse, 1.5's Python renderer *would* have rendered `<url>` as a link, so the
+PDF and the editor would have disagreed about the same row.
+
+AC-29's stability test — `serialize(parse(serialize(parse(md)))) === serialize(parse(md))` — passed
+throughout, because it compares *strings*, and the string was stable. The loss was structural. The fix was
+a link serializer that always writes `[text](href)`; the test that pins it collects the set of link-mark
+hrefs from the parsed document before and after a round trip and compares those. **A serializer and a
+parser are one grammar only if the parser accepts everything the serializer can emit.** Round-trip
+tests should compare the thing you care about, and here it was marks, not characters.
+
+### A rollback is a statement about the whole session
+
+The second review finding was in the beat sweep, and its diagnosis was wrong twice before it was right.
+
+E-20 promised that when the sweep's write loses a race — a worker decided the run between the sweep's
+read and its `save` — the sweep counts a conflict and moves on to the next run. Against the in-memory fake
+it did. Against Postgres, the tick crashed on the *next* run with `MissingGreenlet`: the async session was
+being asked to lazy-load an attribute outside the one place it is allowed to.
+
+The obvious diagnosis: the committing repository calls `rollback()` on a conflict, and a rollback expires
+every instance in the identity map — including the remaining candidates the loop still holds. The obvious
+fix: wrap each write in a SAVEPOINT with `begin_nested()`, whose rollback expires only what was modified
+inside it. Both obvious, both half wrong, and the agent who implemented it measured instead of trusting
+me:
+
+- The expiry never came from our `rollback()`. A *failed flush* rolls itself back to the nearest
+  transaction boundary before any `except` runs, and at the root boundary that means `dirty_only=False`
+  — the whole map. Our `rollback()` was closing a transaction that was already dead.
+- `begin_nested()` **flushes on entry**. The port contract is "mutate, then save", so the aggregate was
+  already dirty when the wrapper opened the SAVEPOINT — and got flushed *outside* it, un-translated,
+  expiring everything again.
+
+The shape that works is `expunge` the aggregate, open the SAVEPOINT, let the inner repository `add` and
+flush inside it, commit. On a refused `UPDATE` only that run is expired; the other candidates keep their
+state; the tick finishes. The same family of fact had already bitten once that week: the repository read
+`run.id` *after* the failed flush to log it, and the read raised `PendingRollbackError` — a
+`SQLAlchemyError` — so the 409 the client was owed came out as a 503. Read what you need into a local
+before the flush. A rollback, however it happens, is about the session, not the one object that failed.
+
+### A "keep mine" nobody clicked
+
+The third round's finding was mine to own: it came out of a fix from the second.
+
+The autosave hook uses a TanStack Query mutation `scope` so that the two documents of a run save in
+order — the letter's `PUT` waits for the CV's and carries the version it returned. That queue was also
+letting a *second* save of the *same* document line up behind an in-flight one. Now trace a 409: the
+first `PUT` is refused, the handler refetches the run to compare — which puts the fresh version in the
+cache — and TanStack runs the queued mutation, whose `mutationFn` reads the version at execution time.
+Fresh version, current text, 200. The other writer's edit is overwritten and the two-choice notice AC-33
+promised never appears. Optimistic versioning exists so that two writers never silently overwrite each
+other; a queue that re-reads the version and retries is *Keep my version* without the click.
+
+The fix removes the queue for a single document: at most one `PUT` in flight per document, and a change
+during a save records a *wish* — the variables to send — that the landing decides. A 200 sends the wish
+once, if the text still differs from what was saved. A 409 drops it and waits for a human. The scope
+stays, because two *documents* should still take turns.
+
+### The type gate that checked nothing
+
+The editor skeleton surfaced something older than the slice. `web/tsconfig.json` is solution-style —
+`files: []` plus two project references — and a bare `tsc --noEmit` on that file compiles **zero
+files** and exits 0. The Makefile, the `build` script and CI all ran that form. For four slices, the
+"types" gate was `vite build`'s transpile and nothing more; it passed a deliberate
+`const x: number = "nope"`.
+
+`tsc -b --noEmit` follows the references. Turning it on found seven real errors, one of which was a
+version mismatch — vitest 2 nesting its own vite 5 beside the project's vite 6, so the config file's
+`test` block never type-checked — fixed by moving to a vitest that peers on vite 6. Slice 1.3's chapter
+already had the sentence for this: a gate that checks a different thing than it claims is worse than no
+gate, because it also supplies confidence.
+
+### The tests that were wrong, and the discipline that let them be
+
+Every GREEN in this slice exposed a few test defects, and the number is worth saying out loud: about
+twenty across the slice. None was a test that had been captured from running the code — the rule the
+codebase most fears. They were the ordinary ways a test written *before* the implementation misjudges the
+world:
+
+- the in-memory fake hands `get()` the same object the use case just mutated, so "the row is unchanged"
+  is unsatisfiable against a fake with no row apart from the object;
+- Testing Library computes an accessible name via a spec whose step 2A returns `""` for anything
+  `hidden`, so "find the hidden tab panel by name" can never match;
+- SQLAlchemy's identity map is *weakly* referencing: a "pre-loaded stale copy" nobody holds is collected
+  at once, and the race you meant to stage never happens;
+- a `setTimeout` armed under real timers is invisible to a fake clock installed afterwards;
+- one test set `document.visibilityState = 'hidden'` and never restored it, and TanStack's focus manager
+  paused every later retry in the file — the tests didn't fail, they hung;
+- `userEvent.type` clicks a ProseMirror editor before typing, and where the caret lands depends on
+  `elementFromPoint`, which jsdom doesn't have, so one run in three the keystrokes landed at the start.
+
+What made this survivable was the rule that a test may not be edited in the commit that makes it pass.
+Each fix went into its own test-only commit, *before* the GREEN, saying which of the spec and the test
+had won and why. The history shows every RED, every fix, every GREEN, and a reviewer can check in one
+`git log` that no implementer ever touched a test to make it green. Five such commits for twenty
+defects, and by the end they read as the slice's most honest paragraphs.
+
+### Working with agents that get cut off
+
+Four times during the slice a sub-agent died mid-task on a session limit. Two of them had written nothing;
+two had written *most* of their files and run *none* of the gates. The second kind is the dangerous one:
+the editor skeleton's docstrings said "measured" about things nobody had run. The successor agent was
+told to treat every claim in the inherited files as unverified, and it found one that was wrong
+(the `protocols` option being additive). The habit generalises past agents: a file that says "measured"
+is a claim about a past that may not have happened.
+
+One agent's probe script did real harm. It called `get_settings()` under `APP_ENV=test`, got the *dev*
+database URL — only the test fixtures override that, not the settings object — and its cleanup deleted
+every tailoring run and guest session on dev, taking every CV and posting with it through the cascades.
+Nothing on the uploads volume, nothing in the test database, nothing anyone could not re-seed. But the
+lesson goes into CLAUDE.md as a footgun: anything that deletes must name the test URL explicitly and
+assert `_test` is in it before its first statement.
+
+### Smaller lessons, still worth keeping
+
+- **TipTap in jsdom** needs `Range.prototype.getClientRects`, `getBoundingClientRect` and
+  `document.elementFromPoint` polyfilled — measured by mounting one and reading the stack traces. And
+  `useEditor`'s `setOptions` deliberately preserves `editable`, so read-only-on-401 must be
+  `editor.setEditable(false)` from an effect, not a prop.
+- **A `<Link>` outside a router throws; an `Outlet` outside a router renders nothing.** Which is why the
+  layout component may keep its header but not a link home.
+- **`beforeunload` guards the browser's exits. React Router's exits need `useBlocker`.** Two doors, one
+  lock — and a data router consults exactly one blocker, so the lock lives in the component that owns
+  both editors.
+- **TanStack Query collects a query with no observer and `gcTime: 0` on the next tick.** A hook that
+  wants to *read* a key it does not render must hold a disabled observer on it.
+- **Tailwind v4 scans comments.** A doc comment containing the bare word "transition" shipped an unused
+  CSS rule. Compare the CSS asset hash against `main` when you only changed prose.
+- **A skeleton must be inert.** The frontend skeletons render roles and nothing else — no copy, no
+  branching, no default — because a skeleton that already works makes the RED pass on arrival, which
+  the previous two slices had each learned once.
+
+### The common thread, a sixth time
+
+Day nine's bugs lived between a setting and what it actually does. This slice's lived between **a
+mechanism and the moment it fires**: a serializer's shortcut and the parser that never learned it; a
+flush that rolls itself back before your `except`; a `begin_nested()` that flushes before it opens; a
+queued mutation that runs after the refetch that was meant to stop it; a timer armed before the fake
+clock existed. In every case the code was reasonable and the *order* was wrong, and in every case the fix
+began with someone refusing to accept my diagnosis until they had measured it.
+
 ## What's next
 
-Slice 1.3 is verified on its branch: 817 backend and 151 frontend tests, green twice in a row, and a
-reviewer PASS on round 3 of 3. The branch hasn't been pushed and has no pull request yet.
+Slice 1.4 is built on its branch: 921 backend and 356 frontend tests, green twice in a row, every
+acceptance criterion and failure row checked, the red-first history clean. What it does **not** have is
+a reviewer PASS. Three rounds each found something real; rounds 1 and 2 closed theirs, and round 3 —
+the last the process allows before stopping — found no regression but one remaining MAJOR and three
+narrow findings, all in the autosave hook:
+
+- the resend-on-200 branch (text typed *during* a slow save is sent once more when that save lands) is
+  now load-bearing for "the text is never lost", and no test fails when it is deleted;
+- the unmount cleanup still measures "needs sending" against the last *saved* text rather than the last
+  *sent*, so typing C then back to A during a save of B and leaving keeps B;
+- a sub-millisecond window between a 409's refetch resolving and React committing the `conflict` state
+  in which a due debounce could still send;
+- a test docblock claiming a guard its stub cannot deliver (a plain `Error` is "transient" and retries).
+
+The rule for three rounds without a pass is that the design is wrong, not the code — and here that
+reads true. The hook holds six refs (`stateRef`, `inFlightRef`, `resendWantedRef`, `lastSavedRef`,
+`sentRef`, the timer) and one reducer, and every round found a new gap *between* two of them. The
+honest options are on the table for the owner: pin the branch and the windows as they are (two red
+tests, two small fixes, a docblock), or re-model the hook as one small state machine outside React with
+the rendered `SaveState` derived from it, and re-verify once.
+
+The branch hasn't been pushed and has no pull request yet.
 
 Carried forward, each with an owner and a trigger:
-- **Concurrent duplicate delivery:** close it before 1.4 ships editing, using optimistic versioning.
 - **Startup refusals that never exit under uvicorn** (the API-key guard and the stale-window guard):
   `devops`, before the deploy SSH secrets are set.
 - **Very long CVs** can exceed the per-attempt timeout: a later slice, measured first.
 - **Beat isn't monitored**, because `/health/ready` can't see it: slice 1.6, alongside the purge.
-- **The Alembic autogenerate hook** still renders `TypeDecorator` columns badly: before 1.4's first
-  migration.
-- **Two test-hygiene items** (a downgrade that *raises* isn't recovered; untyped run ids in the sweep task
-  tests): `qa`, before 1.4's first migration.
-- **The eval corpus's PII guard has no test.** It was checked by hand and works; whether to add one is your
-  call.
+- **The editor is not lazy-loaded.** 530 kB of TipTap and friends load on the workspace where nobody
+  edits. Whoever next measures first paint decides.
 - **The deploy path is still unproven.** Configure a required reviewer on the `production` environment
   before adding the SSH secrets.
 
-Next is 1.4: the workspace, the three-stage progress view, and the TipTap editor. That slice inherits the
-sanitising obligation this one left written down: tailored text is rendered as plain text today, and an
-editor that renders HTML changes that.
+Next is 1.5: exports. It inherits three obligations this slice wrote down rather than met — render
+Markdown with `html=False`, sanitize with `nh3` on the grammar's allow-list, and hand WeasyPrint a
+`url_fetcher` that refuses everything. 1.4 sanitized nothing; it rendered nodes. The first HTML string
+in this product's document path is 1.5's to create, and to defend.
 
 The specs die when the features ship. This file doesn't.
