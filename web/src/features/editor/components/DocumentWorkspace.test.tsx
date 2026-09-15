@@ -115,6 +115,21 @@ function editableIn(pane: HTMLElement): HTMLElement {
   return editable;
 }
 
+/**
+ * "The typed text is still there" without betting on *where* it landed. `user.type` clicks the
+ * contenteditable before typing, and where ProseMirror puts the caret for that click depends on
+ * `elementFromPoint` / `caretPositionFromPoint` — both polyfilled to nothing in jsdom — so the caret
+ * sometimes lands at the document start rather than the end. Under a loaded worker pool that
+ * happened in roughly one full-suite run in three: the text became "editedCV seed text", and an
+ * assertion on the concatenation failed while every property these tests care about (the seed
+ * survived, the keystrokes survived, nothing was lost) held. Asserting the two fragments
+ * separately is what the acceptance criteria actually promise.
+ */
+function expectTypedTextKept(pane: HTMLElement, typed: string): void {
+  expect(pane).toHaveTextContent('CV seed text');
+  expect(pane).toHaveTextContent(typed);
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -183,7 +198,7 @@ describe('AC-30 — both editors stay mounted; the URL only toggles visibility',
     });
 
     expect(paneFor('cv')).toBeVisible();
-    expect(paneFor('cv')).toHaveTextContent('CV seed text plus typed text');
+    expectTypedTextKept(paneFor('cv'), 'plus typed text');
     expect(queryClient.getQueryData(tailoringRunQueryKey(RUN_ID))).toEqual(run);
   });
 
@@ -285,7 +300,7 @@ describe('AC-34 — session expiry and unrecoverable saves', () => {
     expect(screen.getByText(/24 hours/i)).toBeInTheDocument();
     const homeLink = screen.getByRole('link', { name: /home|workspace/i });
     expect(homeLink).toHaveAttribute('href', '/');
-    expect(paneFor('cv')).toHaveTextContent('CV seed text edited');
+    expectTypedTextKept(paneFor('cv'), 'edited');
     expect(router.state.location.pathname).toBe(`/runs/${RUN_ID}/cv`);
   });
 
@@ -321,7 +336,7 @@ describe('AC-34 — session expiry and unrecoverable saves', () => {
 
     expect(screen.getByText(/couldn.t save/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
-    expect(paneFor('cv')).toHaveTextContent('CV seed text edited');
+    expectTypedTextKept(paneFor('cv'), 'edited');
   });
 });
 
