@@ -38,10 +38,31 @@ export class ApiError extends Error {
      * Defaulted, so every existing `new ApiError(status, message, code)` is unchanged.
      */
     readonly details: Readonly<Record<string, unknown>> = {},
+    /**
+     * The `Retry-After` header as a number of seconds, when a response carried one in its
+     * delta-seconds form — the form every TailorCraft 429 uses — and `null` otherwise (no header,
+     * or the HTTP-date form, which nothing here sends and nothing here parses).
+     *
+     * A header, not a body field, so it is read in this module and nowhere else: `client.ts` is
+     * the one place that knows about headers, and a hook that wanted this number without it would
+     * either make one up or scrape the server's prose `message`, which is not a contract.
+     *
+     * Defaulted, so every existing `new ApiError(status, message, code)` is unchanged.
+     */
+    readonly retryAfterSeconds: number | null = null,
   ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/** `Retry-After: 37` → 37; anything else (absent, an HTTP-date, garbage) → `null`. */
+function retryAfterSecondsOf(response: Response): number | null {
+  const header = response.headers.get('Retry-After');
+  if (header === null || !/^\d+$/.test(header.trim())) {
+    return null;
+  }
+  return Number(header.trim());
 }
 
 /**
@@ -129,9 +150,15 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
       // The rest of the envelope is kept, not dropped: some codes carry a fact the caller acts on
       // (a 409 `tailoring_already_running` names the active run). See `ApiError.details`.
       const { code, message, ...details } = parsed.error;
-      throw new ApiError(response.status, message, code, details);
+      throw new ApiError(response.status, message, code, details, retryAfterSecondsOf(response));
     }
-    throw new ApiError(response.status, `${String(response.status)} for ${path}`, null);
+    throw new ApiError(
+      response.status,
+      `${String(response.status)} for ${path}`,
+      null,
+      {},
+      retryAfterSecondsOf(response),
+    );
   }
 
   return parsed as T;

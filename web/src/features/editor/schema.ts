@@ -19,8 +19,11 @@
  *
  * - `protocols` is **additive**. The extension's own `isAllowedUri` starts from a built-in list
  *   (`http, https, ftp, ftps, mailto, tel, callto, sms, cid, xmpp`) and appends the option's
- *   entries to it. Naming the three here documents the grammar and changes nothing at runtime; the
- *   "and nothing else" half of AC-28 needs the `isAllowedUri` option, which F10a owns.
+ *   entries to it — and its regex also admits a scheme-less destination (`//host`, `/path`, a bare
+ *   `example.com`). Naming the three in `protocols` documents the grammar and changes nothing at
+ *   runtime; the "and nothing else" half of AC-28 is the **`isAllowedUri` option** below
+ *   (`(url, ctx) => boolean`, consulted by `renderHTML`, `parseHTML`, `setLink`, the paste rule
+ *   and the autolinker alike), which replaces the built-in guard rather than extending it.
  * - `javascript:` is rejected by the default guard already: the built-in regex admits a scheme
  *   only from the list, and a bare word followed by `:` matches neither the "no scheme" branch nor
  *   the "relative" one. Measured (F8) with `setContent` JSON carrying `javascript:alert(1)`,
@@ -31,9 +34,10 @@
  *   `getAttrs`) a `javascript:` link is not parsed at all; its text is kept as plain text.
  * - **The guard is render-time only.** After the JSON `setContent` above, `getJSON()` still holds
  *   `href: "javascript:alert(1)"` on the mark. A Markdown serializer reads mark attrs, not the
- *   rendered DOM, so the bridge (F10a) must refuse the scheme on the way *in* — markdown-it's
- *   default `validateLink` already turns `[x](javascript:…)` into plain text, and the bridge should
- *   narrow it to these three schemes rather than rely on the render-time `href=""`.
+ *   rendered DOM, so the bridge refuses the scheme on the way *in* — markdown-it's default
+ *   `validateLink` already turns `[x](javascript:…)` into plain text, and `markdown/bridge.ts`
+ *   narrows it to these same three schemes rather than rely on the render-time `href=""`. The
+ *   same rule at both entrances: the bridge's `validateLink` **is** `isLinkSchemeAllowed`.
  * - `openOnClick`, `autolink` and `linkOnPaste` are the three ways a link is *created or followed*
  *   without the user asking for one; all three are off.
  */
@@ -71,6 +75,25 @@ export const documentHeadingLevels: readonly (1 | 2 | 3)[] = [1, 2, 3];
 export const documentLinkProtocols: readonly string[] = ['http', 'https', 'mailto'];
 
 /**
+ * The `Link` extension's URI guard, replacing (not extending — see the docstring) its built-in
+ * one: an `href` is allowed only if it begins with one of `documentLinkProtocols` followed by a
+ * colon. It is an **allow-list on the scheme**, which is what makes the classic evasions fall out
+ * rather than be enumerated: `JAVASCRIPT:` fails the case-insensitive membership test, and
+ * `java\u200bscript:` never parses as a scheme at all. Whitespace is stripped first only so a
+ * destination padded with it is judged on what it is, as the built-in guard does. No scheme-less
+ * destination is admitted: a relative link means nothing in a document that is exported to a PDF.
+ *
+ * Exported so the AC-28 test can call it directly rather than reach into the extension's options.
+ */
+export function isLinkSchemeAllowed(url: string | null | undefined): boolean {
+  if (typeof url !== 'string') {
+    return false;
+  }
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url.replace(/\s|\p{White_Space}/gu, ''));
+  return scheme?.[1] !== undefined && documentLinkProtocols.includes(scheme[1].toLowerCase());
+}
+
+/**
  * The extension list, in full. Every StarterKit member outside the grammar is disabled **by name**
  * — 3.31.3 has 22 option keys and registers all of them by default — so a StarterKit upgrade that
  * adds a new default extension still has to get past the equality test, and so a reader sees what
@@ -106,5 +129,6 @@ export const documentExtensions: readonly AnyExtension[] = [
     autolink: false,
     linkOnPaste: false,
     protocols: [...documentLinkProtocols],
+    isAllowedUri: (url) => isLinkSchemeAllowed(url),
   }),
 ];

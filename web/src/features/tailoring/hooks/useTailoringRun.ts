@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
 import { fetchTailoringRun } from '@/api/tailoringRuns';
@@ -10,6 +10,21 @@ import type { TailoringRun } from '../types';
 /** The cache key for one run. `null` is a legal member: it is the key of the disabled query. */
 export function tailoringRunQueryKey(runId: string | null) {
   return ['tailoring', 'tailoringRun', runId] as const;
+}
+
+/**
+ * The key and the fetcher for one run, and nothing about *when* to fetch — for a caller that
+ * reads or refreshes the run outside this poller. The editor's autosave is the one such caller
+ * (1.4): it observes the key so the run stays cached for as long as a document is open, and
+ * re-reads it through `queryClient.query(...)` after a 409 to compare texts (AC-33). Polling,
+ * retry policy and the 4xx stop stay `useTailoringRun`'s alone; sharing only the key and the
+ * fetcher is what keeps two readers of one resource from disagreeing about what it is.
+ */
+export function tailoringRunQueryOptions(runId: string) {
+  return queryOptions({
+    queryKey: tailoringRunQueryKey(runId),
+    queryFn: ({ signal }) => fetchTailoringRun(runId, signal),
+  });
 }
 
 /** How often to re-read a run that is still `queued` or `running`. */

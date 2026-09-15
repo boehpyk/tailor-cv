@@ -42,16 +42,31 @@ export const AUTOSAVE_DEBOUNCE_MS = 1500;
  * One sentence per state — the eight strings of AC-31. Typed as a `Record` over the union's
  * discriminant so a ninth state is a compile error at the one place that must name it.
  *
- * Skeleton (F8): every value is empty. F10c fills them; the test asserts the strings, and that
- * *Saving…* is not a substring of *Couldn't save*.
+ * *Saving…* and *Couldn't save* share no substring in either direction, and a test says so: the
+ * working state and the failed state must read as different things, because a person who cannot
+ * tell them apart refreshes mid-save and either loses the edit or pays for nothing. `invalid`'s
+ * sentence is the prefix of *Can't save: <reason>*; the reason is `documentProblemCopy`'s.
  */
 export const saveStateCopy: Readonly<Record<SaveState['kind'], string>> = {
-  saved: '',
-  dirty: '',
-  saving: '',
-  failed: '',
-  conflict: '',
-  paused: '',
-  invalid: '',
-  expired: '',
+  saved: 'Saved',
+  dirty: 'Unsaved changes',
+  saving: 'Saving…',
+  failed: "Couldn't save",
+  conflict: 'Changed elsewhere',
+  paused: 'Saving paused',
+  invalid: "Can't save",
+  expired: 'Session expired',
+};
+
+/**
+ * Why a 422 `document_invalid` refused the text, as the indicator says it. Exhaustive over
+ * `DocumentProblem`, so a fifth label on the server is a compile error here rather than a blank
+ * after the colon. The bounds themselves are the server's (Constitution §4.5): the copy names the
+ * kind of limit, never the number, because the number is not this client's to state.
+ */
+export const documentProblemCopy: Readonly<Record<DocumentProblem, string>> = {
+  empty: 'the document is empty',
+  too_short: 'the document is too short',
+  too_long: 'the document is too long',
+  invalid_characters: 'the document contains characters that cannot be stored',
 };
