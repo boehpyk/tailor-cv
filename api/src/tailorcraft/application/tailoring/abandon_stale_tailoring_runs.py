@@ -126,8 +126,9 @@ class AbandonStaleTailoringRuns:
 
     **Transactions and failure (G-35).** This use case does not commit, exactly as
     `ExecuteTailoringRun` does not: the beat task's composition root decides the transaction
-    boundary, and its committing repository rolls back a refused save so the session stays usable
-    for the next run in the batch. Any failure other than the skip and the conflict above propagates
+    boundary, and its committing repository contains a refused save in a SAVEPOINT so the other
+    candidates this loop still holds keep their loaded state (a whole-session rollback would expire
+    them, and the next `is_stale` would lazy-load outside the loop — measured at /verify). Any failure other than the skip and the conflict above propagates
     — a database that is down makes `list_stale_running` or `save` raise, the task raises, nothing
     further is recorded this tick, and the next tick tries again. That retry is safe because the sweep is idempotent by the aggregate's
     own rules: an abandoned run is no longer `RUNNING`, so it is never listed twice.

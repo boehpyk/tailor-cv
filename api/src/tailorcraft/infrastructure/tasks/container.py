@@ -51,7 +51,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
@@ -99,7 +98,7 @@ class CommittingTailoringRunRepository:
         await self._session.commit()
 
     async def save(self, run: TailoringRun) -> None:
-        """Flush **and commit** — the whole reason this class exists.
+        """Flush inside a SAVEPOINT, **then commit** — the whole reason this class exists.
 
         Safe to commit under the aggregate the caller is still holding only because
         `create_session_factory` sets `expire_on_commit=False`. With SQLAlchemy's default, this
@@ -107,19 +106,49 @@ class CommittingTailoringRunRepository:
         `run.mark_failed`, say — would trigger a lazy refresh, which an async session raises on
         rather than quietly issuing SQL. Loud, but only once you hit it, and only in the worker.
 
-        A conflict rolls back **here**, before it is re-raised. The inner repository leaves the
-        session in the state a failed flush leaves it in — unusable until a rollback — and in this
-        process nothing else would roll it back: the `ExecuteTailoringRun` task returns `SKIPPED`
-        and its closing commit would raise a second, unrelated error over the first, and the
-        stale-run sweep counts the conflict and moves on to the next run in the same batch, whose
-        own save would then fail for a reason that has nothing to do with that run. Rolling back is
-        the caller's boundary (port docstring), and in the worker this class is the caller.
+        **A conflict is contained to the one run that lost, and the SAVEPOINT is what contains it.**
+        A failed flush rolls back on its way out, and that rollback restores the snapshot of the
+        nearest transaction *boundary*. At the root boundary — the only one there is without a
+        SAVEPOINT — SQLAlchemy restores it by expiring **every** instance in the identity map
+        (`SessionTransaction._restore_snapshot(dirty_only=False)`), not the one whose `UPDATE` was
+        refused. The first version of this method then called `session.rollback()`, which closes
+        that dead transaction but expires nothing further: the damage was already done in the flush.
+        The stale-run sweep found it (slice 1.4's `/verify`): a conflict on the first candidate
+        expired the second, and the sweep's next `run.is_stale(...)` — a plain attribute read with
+        no `await`, from ordinary application code — tried to lazy-load `_status` on an
+        `AsyncSession` outside `greenlet_spawn` and raised `MissingGreenlet`. E-20's "the batch
+        continues" was true against the fake repository and false against this one.
+
+        The same lesson as "read the id before the flush" in the inner repository, one level up: a
+        `rollback()` is a statement about the **whole session**, never about the one object that
+        failed. Inside a SAVEPOINT the boundary is the nested transaction, and its snapshot restore is
+        `dirty_only=True` — the run that was flushed is expired (its in-memory copy was wrong, and
+        the caller drops it anyway), every other loaded instance keeps its state, the outer
+        transaction stays active, and the next candidate's `is_stale` is a plain read again.
+
+        **The `expunge` before `begin_nested` is load-bearing, and it is not in SQLAlchemy's textbook
+        example.** `begin_nested()` flushes on entry, unconditionally, so that the SAVEPOINT starts
+        from a clean session (`SessionTransaction._take_snapshot`; `no_autoflush` does not reach it,
+        because it is a direct `flush()`, not an autoflush). The textbook mutates *inside* the
+        `with` block, so it never meets this. A use case mutates the aggregate and *then* calls
+        `save` — that is the port's contract — so `run` is already dirty when this method is
+        entered, and a bare `begin_nested()` would flush it in `__aenter__`: outside the SAVEPOINT,
+        outside the inner repository's `StaleDataError` translation, and back to expiring the whole
+        identity map. Measured against 2.0.52 before this shape was chosen. Detaching the run for the
+        moment the SAVEPOINT opens keeps its modifications (`state.modified` survives `expunge`) and
+        leaves the session with nothing to flush; the inner `save` re-attaches it with `add()` and
+        flushes it where the SAVEPOINT can bound the failure. A run that arrives already detached
+        (the inner docstring's "session closed between the load and the save" case) skips the
+        `expunge` and is re-attached by the same `add()`.
+
+        The failure this does *not* contain is a database failure that is not a conflict (G-35): it
+        propagates, the sweep raises, the task's error boundary rolls the session back, and the runs
+        already committed one-per-save stay committed — the SAVEPOINT changes nothing there.
         """
-        try:
+        if run in self._session:
+            self._session.expunge(run)
+        async with self._session.begin_nested():
             await self._inner.save(run)
-        except TailoringRunConcurrentlyModified:
-            await self._session.rollback()
-            raise
         await self._session.commit()
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:

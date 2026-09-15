@@ -34,6 +34,11 @@ test:
 `import sqlalchemy as sa` is deliberately **not** added to `autogen_context.imports`: Alembic's own
 renderer never registers it because `script.py.mako` imports it unconditionally, and a second copy
 emitted through `${imports}` would fail Ruff (F811) in every generated draft.
+
+**The one thing to re-measure on an Alembic bump:** the impl is handed to
+`alembic.autogenerate.render._repr_type`, a *private* function with no compatibility promise, so a
+new Alembic version can rename it, change its signature or change what it emits without a release
+note — re-run the P1t unit test above before trusting the first draft after the bump.
 """
 
 from __future__ import annotations

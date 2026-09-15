@@ -126,7 +126,10 @@ class SqlAlchemyTailoringRunRepository:
         `PendingRollbackError` — a `SQLAlchemyError` nothing above this layer maps, rendered as a
         503 for what is a 409. Found by slice 1.4's AC-12(b) API test, the first thing to drive
         this branch against a real database; a plain `TailoringRunId` value taken up front is
-        immune to the expiry.
+        immune to the expiry. "Every instance" is the root boundary's behaviour, which is what this
+        bare repository gets in the API; the worker's `CommittingTailoringRunRepository` wraps this
+        flush in a SAVEPOINT precisely so that the expiry stops at the dirty run (its docstring has
+        the measurement).
         """
         run_id = run.id
         self._session.add(run)
