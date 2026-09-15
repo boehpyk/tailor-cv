@@ -1,10 +1,10 @@
 import { Link, useNavigate, useParams } from 'react-router';
 
+import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
 import { ProgressStepper } from '@/features/workspace/components/ProgressStepper';
 import { progressOfRun } from '@/features/workspace/progress';
 
 import { NotFoundPage } from './NotFoundPage';
-import { TailoredDocumentsPreview } from './TailoredDocumentsPreview';
 import { TailoringRejectionNotice } from './TailoringRejectionNotice';
 import { activeTailoringRunId, rejectionMessage } from '../apiErrorCopy';
 import { useCreateTailoringRun } from '../hooks/useCreateTailoringRun';
@@ -45,7 +45,7 @@ function BackToWorkspace(): React.JSX.Element {
  *
  * **Four states, three error kinds.** Loading; working (the stepper, 1.3's two sentences, no retry
  * control); failed (1.3's notice, **Try again** only when the API said `retryable`); succeeded (the
- * documents). The errors: a 404 and a 401 each get their own sentence and a link home, because the
+ * editor). The errors: a 404 and a 401 each get their own sentence and a link home, because the
  * run is gone or the session is and no re-read will change that; a network failure or a 5xx gets
  * 1.3's *unreadable* state with **Check again**, because the run may well still be working, and a
  * user who reads "failed" there refreshes and pays twice.
@@ -56,9 +56,14 @@ function BackToWorkspace(): React.JSX.Element {
  * an input that has since expired, a 409 for one that is not extracted) and its answer is rendered
  * as error B, the same as on the workspace.
  *
- * `:document` is validated (E-28: `/runs/{id}/banana` is a not-found page, not a blank one) and
- * otherwise unused until F10, where it chooses which editor is visible. Until then a succeeded run
- * renders 1.3's read-only `TailoredDocumentsPreview` — both documents, as before.
+ * `:document` is validated here (E-28: `/runs/{id}/banana` is a not-found page, not a blank one)
+ * and read again inside `DocumentWorkspace`, where it chooses which of the two editors is visible
+ * (AC-30). A succeeded run renders the workspace, which is handed the **run**, not the view: the
+ * editors seed from the wire documents and the autosave writes the run's query key, so the
+ * workspace's unit is the resource. `viewOfWatchedRun` still decides *that* the run succeeded,
+ * and the stepper above still shows stage 3 done. The workspace keys its editors on the run id,
+ * and its error boundary (AC-35) is what turns a document the bridge cannot parse into 1.3's
+ * read-only preview rather than a blank page.
  */
 export function RunPage(): React.JSX.Element {
   const params = useParams<'runId' | 'document'>();
@@ -139,8 +144,11 @@ export function RunPage(): React.JSX.Element {
         />
       )}
 
-      {view.kind === 'succeeded' && (
-        <TailoredDocumentsPreview tailoredCv={view.tailoredCv} coverLetter={view.coverLetter} />
+      {/* `succeeded` implies the detail query answered (a list summary cannot show the documents,
+          so the view never says `succeeded` from one), hence `data` is set; the narrowing is for
+          the type, the same as `onRetry` above. */}
+      {view.kind === 'succeeded' && watched.data !== undefined && (
+        <DocumentWorkspace run={watched.data} />
       )}
 
       {rejection !== null && (

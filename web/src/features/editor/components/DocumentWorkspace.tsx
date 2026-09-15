@@ -49,24 +49,29 @@ export function DocumentWorkspace({ run }: DocumentWorkspaceProps): React.JSX.El
  * E-29: the read-only preview and the sentence. **No `PUT` can be issued from here** — there is no
  * editor, no autosave hook, no debounce; the fallback is the same component 1.3 shipped, holding
  * the same two strings the run already carries.
+ *
+ * The sentence is the preview's `closing`, so it is on the page **once**: the preview's own 1.3
+ * footer ("editing comes next") would be untrue beside an editor that just failed, and a second
+ * copy of E-29's sentence above the panes would be two matches for one string. `alert`, because
+ * it is the answer to "where is the editor?" and a screen reader should hear it before the panes.
  */
 function EditorFallback({ run }: { readonly run: TailoringRun }): React.JSX.Element {
   return (
-    <div className="space-y-4">
-      <p role="alert" className="text-sm text-slate-700">
-        We couldn&apos;t open this document in the editor.
-      </p>
-      <TailoredDocumentsPreview
-        tailoredCv={{
-          text: run.tailored_cv ?? '',
-          characterCount: run.tailored_cv_character_count,
-        }}
-        coverLetter={{
-          text: run.cover_letter ?? '',
-          characterCount: run.cover_letter_character_count,
-        }}
-      />
-    </div>
+    <TailoredDocumentsPreview
+      tailoredCv={{
+        text: run.tailored_cv ?? '',
+        characterCount: run.tailored_cv_character_count,
+      }}
+      coverLetter={{
+        text: run.cover_letter ?? '',
+        characterCount: run.cover_letter_character_count,
+      }}
+      closing={
+        <p role="alert" className="text-slate-700">
+          We couldn&apos;t open this document in the editor.
+        </p>
+      }
+    />
   );
 }
 

@@ -1,5 +1,7 @@
 import { useId } from 'react';
 
+import type { ReactNode } from 'react';
+
 /** One tailored document as the preview needs it: the text, and the server's count of it. */
 export interface PreviewDocument {
   /** Untrusted model output. Rendered as a text node, never as markup (AC-31). */
@@ -15,6 +17,19 @@ export interface PreviewDocument {
 export interface TailoredDocumentsPreviewProps {
   readonly tailoredCv: PreviewDocument;
   readonly coverLetter: PreviewDocument;
+  /**
+   * The one sentence under the two panes — what this preview *is*, said once, because the panes
+   * themselves look the same whatever the reason for showing them. It is a prop so that the
+   * caller who knows the reason states it: the editor's boundary passes E-29's "We couldn't open
+   * this document in the editor." (with its `alert` role), and the sentence appears **once**, here,
+   * rather than once above the panes and again below them.
+   *
+   * The default is the sentence 1.3 shipped, when this preview was the success state itself and
+   * the only thing after it was the next slice. Nothing in production renders the default now —
+   * the editor's fallback is the preview's only caller — so it is the 1.3 shape kept for the tests
+   * written against it (T44); the honest sentence for a read-only preview is the caller's to say.
+   */
+  readonly closing?: ReactNode;
 }
 
 /** Pinned rather than the browser's locale, for the reason `formatStoredUntil` gives. */
@@ -62,21 +77,21 @@ function DocumentPane({
  *
  * **No `dangerouslySetInnerHTML`, and no markdown renderer** (AC-31, G-33). The documents are
  * untrusted text written by a model that read a job posting a stranger chose, which makes them the
- * most attacker-influenced strings in the product. Sanitizing them into HTML is slice 1.4's job,
- * when the editor genuinely needs markup; until then the safest renderer is the one React already
- * has.
+ * most attacker-influenced strings in the product. Since 1.4 the editor renders them through the
+ * Markdown bridge (never as HTML either); this preview is what a person sees when that bridge
+ * cannot open a document (AC-35), and the safest renderer for a document that just broke a parser
+ * is the one React already has.
  */
 export function TailoredDocumentsPreview({
   tailoredCv,
   coverLetter,
+  closing = <p>This is a read-only preview. Editing and downloads come next.</p>,
 }: TailoredDocumentsPreviewProps): React.JSX.Element {
   return (
     <div className="space-y-4">
       <DocumentPane title="Tailored CV" doc={tailoredCv} />
       <DocumentPane title="Cover letter" doc={coverLetter} />
-      <p className="text-sm text-slate-500">
-        This is a read-only preview. Editing and downloads come next.
-      </p>
+      <div className="text-sm text-slate-500">{closing}</div>
     </div>
   );
 }

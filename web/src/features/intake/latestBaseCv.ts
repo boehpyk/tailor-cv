@@ -8,7 +8,8 @@ import type { BaseCv } from './types';
  * `items[0]` as "latest" would be trusting a guarantee the server never made.
  *
  * **One definition, two readers.** `BaseCvUploadPanel` uses it to decide which CV is on screen;
- * `TailorPanel` uses it to decide which CV to tailor. They were a private helper and would have been
+ * `WorkspacePage` (1.3's `TailorPanel`, before 1.4 folded the launch into the workspace) uses it to
+ * decide which CV to tailor. They were a private helper and would have been
  * a copy — and two copies of "which one is newest" drift into a tailoring panel that sends a
  * different CV from the one the user is looking at. Sharing the function makes that disagreement
  * impossible rather than unlikely.
