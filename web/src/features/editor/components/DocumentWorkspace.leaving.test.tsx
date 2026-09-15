@@ -5,7 +5,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun';
-import { makeRun } from '@/test/fixtures';
+import { jsonResponse, makeRun } from '@/test/fixtures';
 
 import { DocumentWorkspace, UNSAVED_LEAVE_PROMPT } from './DocumentWorkspace';
 import { stubDocumentFetch } from '../test/fetchStub';
@@ -125,6 +125,13 @@ async function typeIntoCv(edit: string): Promise<void> {
   const user = userEvent.setup();
   await user.click(editableIn(paneFor('cv')));
   await user.type(editableIn(paneFor('cv')), edit);
+}
+
+/** Same as `typeIntoCv`, for the cover-letter pane — real timers, same reason. */
+async function typeIntoCoverLetter(edit: string): Promise<void> {
+  const user = userEvent.setup();
+  await user.click(editableIn(paneFor('cover_letter')));
+  await user.type(editableIn(paneFor('cover_letter')), edit);
 }
 
 /** Drives the CV into `failed` exactly as the sibling file's AC-34 test does: reject every PUT,
@@ -372,5 +379,74 @@ describe('E-32/AC-34 — the browser door (beforeunload) in the failed state', (
     const preventDefault = vi.spyOn(event, 'preventDefault');
     handler(event);
     expect(preventDefault).toHaveBeenCalled();
+  });
+});
+
+describe('AC-34 — a 401 on one document releases the lock for both', () => {
+  it('the CV answering 401 releases the lock even while the letter is still dirty: no confirm, and beforeunload is no longer held', async () => {
+    const addEventListenerSpy = vi.spyOn(window, 'addEventListener');
+    const removeEventListenerSpy = vi.spyOn(window, 'removeEventListener');
+    const run = makeRun({
+      id: RUN_ID,
+      status: 'succeeded',
+      tailored_cv: 'CV seed text',
+      cover_letter: 'Letter seed text',
+    });
+    stubDocumentFetch({
+      putDocument: {
+        cv: () =>
+          Promise.resolve(
+            jsonResponse(401, {
+              error: { code: 'guest_session_expired', message: 'the session expired' },
+            }),
+          ),
+        // The letter is never flushed in this test (no tab switch away from it, no visibility
+        // change), so no PUT for it should ever be issued — leaving no handler here means the stub
+        // itself would fail the test loudly if that assumption were wrong.
+      },
+    });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { router } = renderDocumentWorkspace(run, 'cv');
+
+    await typeIntoCv(' edited'); // CV -> dirty
+
+    // AC-31: leaving the CV pane flushes its pending save at once. This sends the CV's PUT, which
+    // the stub above answers 401 — but answering it takes a microtask tick, so the letter is typed
+    // into (and left dirty, on purpose) before that 401 has had a chance to land and flip both
+    // editors to `editable: false`.
+    await act(async () => {
+      await router.navigate(`/runs/${RUN_ID}/cover_letter`);
+    });
+    await typeIntoCoverLetter(' also edited'); // letter -> dirty, and stays that way
+
+    // Wait for the CV's 401 to resolve to `expired`. The sibling file's own 401 test asserts the
+    // *SaveIndicator's* "Session expired" copy, but that indicator only ever shows the currently
+    // *visible* document's state (`states[visible]`) — and the visible document here is the
+    // letter, still `dirty`, never the CV. `DocumentWorkspace`'s `expired` flag instead drives the
+    // shared footer (`cvState.kind === 'expired' || coverLetterState.kind === 'expired'`), which is
+    // exactly the fact this test needs: it flips the instant *either* document expires, regardless
+    // of which pane is on screen. This is a real-timer `waitFor` under the hood, well short of the
+    // 1500ms autosave debounce, so the letter's own still-pending debounce never fires and never
+    // sends an unstubbed PUT.
+    await screen.findByText(/session has ended/i);
+    expect(editableIn(paneFor('cover_letter'))).toHaveAttribute('contenteditable', 'false');
+
+    // The lock releases the instant the CV expires — before this navigation, not because of it.
+    const beforeunloadAdds = addEventListenerSpy.mock.calls.filter(
+      (call) => call[0] === 'beforeunload',
+    ).length;
+    const beforeunloadRemoves = removeEventListenerSpy.mock.calls.filter(
+      (call) => call[0] === 'beforeunload',
+    ).length;
+    expect(beforeunloadAdds).toBeGreaterThan(0); // it was held while the CV was merely dirty
+    expect(beforeunloadRemoves).toBe(beforeunloadAdds); // and fully released once expired arrived
+
+    confirmSpy.mockClear();
+    await act(async () => {
+      await router.navigate('/');
+    });
+
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(router.state.location.pathname).toBe('/');
   });
 });
