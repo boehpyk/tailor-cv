@@ -18,9 +18,9 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: three slices shipped, and a fourth verified on its branch (2026-09-16).** Phase 1 is
-> under way. The architecture now carries a paid external call, a worker, a scheduled job, and the
-> first unauthenticated *write* to a PII row on a timer.
+> **Status: four slices shipped (2026-09-16).** Phase 1 is under way. The architecture now carries
+> a paid external call, a worker, a scheduled job, and the first unauthenticated *write* to a PII
+> row on a timer.
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
@@ -30,9 +30,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   letter: queued, executed by a Celery worker behind `LlmPort` (Gemini), polled by the client;
 >   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat. Eval run 4: p95
 >   `llm_duration_ms` 6.4 s.
-> - **1.4 `workspace-progress-and-editor`** (verified on its branch; not yet pushed, no PR) — the
->   tabbed workspace, the three-stage progress stepper, React Router, and a TipTap editor over both
->   documents with debounced autosave.
+> - **1.4 `workspace-progress-and-editor`** (PR #5) — the tabbed workspace, the three-stage
+>   progress stepper, React Router, and a TipTap editor over both documents with debounced autosave.
 >   - The edit is a **revision on the run**, stored as Markdown; the aggregate owns the version and
 >     the mapper only checks it (`version_id_generator=False`) — one column refuses a stale edit
 >     **and** closes 1.3's concurrent duplicate delivery (ADR-0015).
