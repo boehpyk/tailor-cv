@@ -1535,39 +1535,62 @@ assert `_test` is in it before its first statement.
   branching, no default — because a skeleton that already works makes the RED pass on arrival, which
   the previous two slices had each learned once.
 
+### The fourth round: replacing six refs with one machine
+
+Three rounds without a pass is the process's own signal that the *design* is wrong, and the owner
+took it that way. The autosave hook had grown six refs — the rendered state's mirror, "in flight",
+"resend wanted", "last saved", "last sent", the timer — plus a reducer, and every round had found a new
+gap between two of them. Option A was to pin the remaining gaps with two red tests and three small
+fixes. Option B was to throw the refs away.
+
+B won, and the shape it produced is the one I'd teach from now. `autosaveMachine.ts` is a pure module
+with no React, no TanStack and no HTTP in it: ten states (`idle`, `debouncing`, `inFlight`,
+`resolvingConflict`, `conflict`, `paused`, `failed`, `invalid`, `expired`, and `leaving` for a
+document whose component is gone while a save is still on the wire), eleven events, four effects
+(`send`, `refetch`, `armTimer`, `clearTimer`), and one function: `step(machine, event) → { next,
+effects }`. The hook holds the machine in a single ref, performs the effects, and *derives* the
+rendered save state with `useSyncExternalStore` — state that is read from timers, promises and DOM
+events is outside React by definition, and a `useReducer` mirror is exactly the copy whose lag round 3
+had found.
+
+Each of round 3's findings became a single transition you can point at: resend-on-200 is `inFlight +
+landed200` (send once, iff the text still differs from what was just saved); the unmount rule is
+`inFlight + unmount → leaving{wish}` with the text captured while the editor still exists, so nothing
+ever reads a destroyed one — and the `leaving` rows of the table pass a `textNow` that *throws*, so that
+sentence is an assertion; the 409 window is gone because the guard reads the machine, never a
+committed React state. The reviewer ran the mutations: delete the resend transition and two tests go red;
+measure "still differs" against the wrong baseline and seven do. A 10 × 11 sweep asserts that every
+(state, event) pair the table doesn't name lands on the default branch — the same machine, no effects —
+so a new state or event without a row fails on arrival.
+
+The old 76-row reducer table was retired rather than edited. Two of its rules *were* the removed
+design — "a second send is permitted while one is in flight" and "the reducer adopts whatever it is
+told" — and a table certifying a deleted design is coverage the assertion cannot deliver. A test that
+must change because the design changed is not a test edited to pass; the commit says which is which.
+
+The fourth round passed, with four small findings that took an hour: the hook's `dispatch` had been a
+`useMemo`, which React may discard — so the store created once now owns `dispatch`, the effects and the
+timer, and the unmount effect can fire for exactly one reason; the docblocks that still described the
+six refs were re-pointed at transitions; a StrictMode test pins the dev-only mount-unmount-mount
+rehearsal that would otherwise be the first thing a newcomer breaks.
+
 ### The common thread, a sixth time
 
 Day nine's bugs lived between a setting and what it actually does. This slice's lived between **a
 mechanism and the moment it fires**: a serializer's shortcut and the parser that never learned it; a
 flush that rolls itself back before your `except`; a `begin_nested()` that flushes before it opens; a
 queued mutation that runs after the refetch that was meant to stop it; a timer armed before the fake
-clock existed. In every case the code was reasonable and the *order* was wrong, and in every case the fix
-began with someone refusing to accept my diagnosis until they had measured it.
+clock existed; a `useMemo` that may forget. In every case the code was reasonable and the *order* was
+wrong, and in every case the fix began with someone refusing to accept my diagnosis until they had
+measured it. And when three rounds of that were not enough, the answer was not a seventh ref — it was a
+table you can read.
 
 ## What's next
 
-Slice 1.4 is built on its branch: 921 backend and 356 frontend tests, green twice in a row, every
-acceptance criterion and failure row checked, the red-first history clean. What it does **not** have is
-a reviewer PASS. Three rounds each found something real; rounds 1 and 2 closed theirs, and round 3 —
-the last the process allows before stopping — found no regression but one remaining MAJOR and three
-narrow findings, all in the autosave hook:
-
-- the resend-on-200 branch (text typed *during* a slow save is sent once more when that save lands) is
-  now load-bearing for "the text is never lost", and no test fails when it is deleted;
-- the unmount cleanup still measures "needs sending" against the last *saved* text rather than the last
-  *sent*, so typing C then back to A during a save of B and leaving keeps B;
-- a sub-millisecond window between a 409's refetch resolving and React committing the `conflict` state
-  in which a due debounce could still send;
-- a test docblock claiming a guard its stub cannot deliver (a plain `Error` is "transient" and retries).
-
-The rule for three rounds without a pass is that the design is wrong, not the code — and here that
-reads true. The hook holds six refs (`stateRef`, `inFlightRef`, `resendWantedRef`, `lastSavedRef`,
-`sentRef`, the timer) and one reducer, and every round found a new gap *between* two of them. The
-honest options are on the table for the owner: pin the branch and the windows as they are (two red
-tests, two small fixes, a docblock), or re-model the hook as one small state machine outside React with
-the rendered `SaveState` derived from it, and re-verify once.
-
-The branch hasn't been pushed and has no pull request yet.
+Slice 1.4 is verified on its branch: 921 backend and 431 frontend tests, green twice in a row, every
+acceptance criterion and failure row checked, the red-first history clean, and a reviewer PASS on the
+fourth round — the one after the autosave hook became a state machine. The branch hasn't been pushed and
+has no pull request yet.
 
 Carried forward, each with an owner and a trigger:
 - **Startup refusals that never exit under uvicorn** (the API-key guard and the stale-window guard):
@@ -1576,6 +1599,8 @@ Carried forward, each with an owner and a trigger:
 - **Beat isn't monitored**, because `/health/ready` can't see it: slice 1.6, alongside the purge.
 - **The editor is not lazy-loaded.** 530 kB of TipTap and friends load on the workspace where nobody
   edits. Whoever next measures first paint decides.
+- **A paused document whose author leaves** sends into the 429 window and may lose the text if refused
+  again; a `leaving`-with-timer state is the model if it is ever wanted. Noted in the machine.
 - **The deploy path is still unproven.** Configure a required reviewer on the `production` environment
   before adding the SSH secrets.
 

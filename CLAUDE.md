@@ -18,7 +18,7 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: three slices shipped, and a fourth built and reviewed on its branch (2026-09-15).** Phase 1 is
+> **Status: three slices shipped, and a fourth verified on its branch (2026-09-16).** Phase 1 is
 > under way. The architecture now carries a paid external call, a worker, a scheduled job, and the
 > first unauthenticated *write* to a PII row on a timer.
 >
@@ -41,17 +41,15 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   - `PUT /api/tailoring-runs/{id}/documents/{kind}` with `expected_version`; 409 on a conflict,
 >     resolved by comparison on the client — never a silent overwrite, never a "keep mine" nobody
 >     clicked.
->   - `/verify` ran its three rounds **without a PASS** and stopped, per the escalation rule. Rounds
->     1 and 2 each closed their MAJORs (a serializer emitting autolink syntax its own parser
->     refuses; a failed flush expiring the sweep's whole identity map; a queued save winning a
->     detected conflict — each a red test before its fix, each verified closed by the next round).
->     Round 3 found no regression and one remaining MAJOR: the autosave hook's resend-on-200
->     branch — now load-bearing for "the text is never lost" — has no test that fails when it is
->     deleted, plus two narrow timing windows in the same hook. **Owner's decision pending:** pin
->     the branch and the windows as they are, or re-model the hook's six refs as one small state
->     machine outside React. See FORboehpyk.md, "What's next".
+>   - `/verify` took four review rounds. The first three each found something real — a serializer
+>     emitting autolink syntax its own parser refuses; a failed flush expiring the sweep's whole
+>     identity map; a queued save winning a detected conflict — and the third still left gaps
+>     *between* the autosave hook's six refs. The owner chose to re-model the hook as **one pure
+>     state machine** (`features/editor/autosaveMachine.ts`, `step(machine, event) → {next,
+>     effects}`, a 10 × 11 table with a mechanised default-branch sweep) rather than pin the gaps;
+>     the fourth round PASSed it. Every finding was a red test before its fix.
 >
-> **921 backend and 356 frontend tests**, green twice in a row. Every gate was verified by running
+> **921 backend and 431 frontend tests**, green twice in a row. Every gate was verified by running
 > it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, **`tsc -b`**, ESLint,
 > Prettier, Vitest, `vite build`. **The TypeScript gate had checked zero files since 1.1** — a bare
 > `tsc --noEmit` on a solution-style `tsconfig.json` compiles nothing; it passed
