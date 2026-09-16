@@ -78,7 +78,11 @@ from tailorcraft.domain.tailoring.errors import (
     LlmUnavailable,
     TailoringFailed,
 )
-from tailorcraft.domain.tailoring.events import TailoringRunFailed, TailoringRunSucceeded
+from tailorcraft.domain.tailoring.events import (
+    TailoringRunFailed,
+    TailoringRunStarted,
+    TailoringRunSucceeded,
+)
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     CoverLetter,
@@ -522,3 +526,78 @@ async def test_missing_extracted_text_records_llm_error_without_calling_the_llm(
     stored = await runs.get(run.id)
     assert stored.status is TailoringRunStatus.FAILED
     assert stored.failure_reason is TailoringFailureReason.LLM_ERROR
+
+
+# --- 9. AC-8: two deliveries of one queued run in flight at once (the ADR-0014 §6 residual) --------
+
+
+async def test_two_concurrent_deliveries_the_loser_is_skipped_with_one_llm_call(
+    clock: FixedClock,
+) -> None:
+    """AC-8: the duplicate-delivery gap ADR-0014's amendment left open, closed by ADR-0015 §3's
+    version check. This is the mirror of 1.3's AC-10 (`test_redelivery_of_an_already_decided_run_is_
+    skipped_with_no_second_llm_call`, above), which covers *sequential* redelivery — one worker,
+    finished, then asked again — via the aggregate's own `TailoringAlreadyDecided` (TR-3). This test
+    covers two deliveries **in flight at the same time**, which TR-3 cannot see: both read the run
+    while it is still `queued`, so both `mark_started` calls succeed against their own in-memory
+    copy, and only the version each carries into `save` can tell them apart.
+
+    Two independent `TailoringRun` **objects**, not two references to one, is the load-bearing setup
+    detail: sharing one Python object (as the two-fake in-memory store would if `find`/`get` handed
+    back the same reference twice) would make the second `mark_started` raise `TailoringAlreadyStarted`
+    in-process before either ever reached `save`, and this test would then be exercising 1.3's guard
+    again instead of the new one. Building the run twice through `TailoringRun.request` with the same
+    id, references and `requested_at` produces two distinct objects that each independently believe
+    they are the first to start it — exactly what two separate worker processes, each with their own
+    database session, would load.
+
+    Against 1.3's unmodified `execute_tailoring_run.py` this must go red: nothing there catches
+    `TailoringRunConcurrentlyModified`, so the loser's `__call__` propagates the fake's raised
+    exception instead of returning `SKIPPED`.
+    """
+    session_id = _a_session_id()
+    cvs = FakeBaseCvRepository()
+    cv = _extracted_base_cv(session_id)
+    await cvs.add(cv)
+    postings = FakeJobPostingRepository()
+    posting = _job_posting(session_id)
+    await postings.add(posting)
+
+    run_id = TailoringRunId(value=uuid4())
+    requested_at = clock.now()
+
+    def _independently_loaded_copy() -> TailoringRun:
+        return TailoringRun.request(
+            id=run_id,
+            guest_session_id=session_id,
+            base_cv_id=cv.id,
+            job_posting_id=posting.id,
+            requested_at=requested_at,
+        )
+
+    winner_runs = FakeTailoringRunRepository()
+    await winner_runs.add(_independently_loaded_copy())
+    # The loser's very own `save` — its first and only one in this test — is the one that must lose
+    # the race, so `conflict_on_save=1` fires exactly there.
+    loser_runs = FakeTailoringRunRepository(conflict_on_save=1)
+    await loser_runs.add(_independently_loaded_copy())
+
+    winner_events = RecordingEventPublisher()
+    loser_events = RecordingEventPublisher()
+    llm = FakeLlm(_a_draft())
+    winner_use_case = _use_case(winner_runs, cvs, postings, llm, winner_events, clock)
+    loser_use_case = _use_case(loser_runs, cvs, postings, llm, loser_events, clock)
+    cmd = ExecuteTailoringRunCommand(tailoring_run_id=run_id)
+
+    winner_outcome = await winner_use_case(cmd)
+    assert winner_outcome is ExecuteTailoringRunOutcome.SUCCEEDED
+    assert len(llm.calls) == 1
+
+    loser_outcome = await loser_use_case(cmd)
+
+    assert loser_outcome is ExecuteTailoringRunOutcome.SKIPPED
+    assert len(llm.calls) == 1  # unchanged: the loser never reached the model
+    # the loser's `mark_started` recorded `TailoringRunStarted` on its own in-memory copy, but its
+    # `save` raised before step 4's `publish`, so that event never left the buffer
+    loser_started_events = [e for e in loser_events.published if isinstance(e, TailoringRunStarted)]
+    assert loser_started_events == []

@@ -41,7 +41,7 @@ migration.make: ## Autogenerate a migration (usage: make migration.make name="ad
 migration.down: ## Roll back one migration
 	$(API) alembic downgrade -1
 
-deps: ## Sync Python dependencies from uv.lock — in EVERY container running application code
+deps: ## Sync dependencies from the lockfiles — in EVERY container running application code
 	# api, worker AND beat. All three mount the same source and run the same package, so a sync
 	# that reaches only `api` leaves the other two on a venv from whenever they were last built.
 	# That is not hypothetical: slice 1.3 found `worker` and `beat` still holding a venv from
@@ -50,6 +50,9 @@ deps: ## Sync Python dependencies from uv.lock — in EVERY container running ap
 	# project's worker running a stale image for four releases: no error, just behaviour that
 	# does not match the source.
 	for c in api worker beat; do $(DC_DEV) exec -T $$c uv sync --frozen; done
+	# `web` too: its node_modules is an anonymous volume, so a dependency added to package.json on the
+	# host is invisible to the container until something installs it there (slice 1.4, F1).
+	$(DC_DEV) exec -T web npm ci
 
 db.dump: ## Dump the database (custom format) to backups/
 	@mkdir -p $(DUMP_DIR)
@@ -103,7 +106,10 @@ test.twice: ## Run the suite twice. A second run that fails means state leaked (
 # Quality gates — frontend
 #-----------------------------------------------------------
 web.types: ## TypeScript check
-	$(WEB) npx tsc --noEmit
+	# `-b` is load-bearing: web/tsconfig.json is solution-style (`files: []` + references), and a bare
+	# `tsc --noEmit` on it type-checks ZERO files. It passed a deliberate `const x: number = "nope"`
+	# for four slices (found at 1.4's F8). A gate that checks nothing also supplies confidence.
+	$(WEB) npx tsc -b --noEmit
 
 web.lint: ## ESLint
 	$(WEB) npm run lint

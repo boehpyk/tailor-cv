@@ -34,6 +34,7 @@ from tailorcraft.application.posting.list_job_postings import ListJobPostingsFor
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
+from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
@@ -614,3 +615,39 @@ def get_list_tailoring_runs(
 
 
 ListTailoringRunsDep = Annotated[ListTailoringRunsForSession, Depends(get_list_tailoring_runs)]
+
+
+def get_tailoring_revise_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds saves of an edited document per session (slice 1.4). **Fails open** — `fail_open=True`.
+
+    The rule from 1.1 (OQ-7) and 1.2 (OQ-8), applied for the third time: *fail open when the cost is
+    ours and bounded; fail closed when the cost is money or somebody else's infrastructure.* A save
+    is one `UPDATE` of one document, at most 20,000 characters, bounded by the value object the
+    router constructs before the use case ever runs, so an unlimited save costs our own database and
+    nothing else — and Redis being down must not stop a person saving their CV (E-31). The same rule
+    sends `get_tailoring_rate_limiter` the other way: a run spends money on every call.
+
+    Per session only, no per-IP scope, on purpose: a save is always bound to a session that already
+    owns the run, so a fresh session buys a hammering script nothing.
+    """
+    return RedisFixedWindowRateLimiter(redis, namespace="tailoring:revise", fail_open=True)
+
+
+TailoringReviseRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_tailoring_revise_rate_limiter)
+]
+
+
+def get_revise_tailored_document(
+    runs: TailoringRunRepositoryDep,
+    get_run: GetTailoringRunDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> ReviseTailoredDocument:
+    """The second argument is the `GetTailoringRunForSession` *use case*, not the repository, for
+    the reason `get_request_tailoring_run` gives: "what authorizes the write is the link to the
+    session" is inherited from the read that already owns that rule (AC-14), not written again."""
+    return ReviseTailoredDocument(runs, get_run, events, clock)
+
+
+ReviseTailoredDocumentDep = Annotated[ReviseTailoredDocument, Depends(get_revise_tailored_document)]

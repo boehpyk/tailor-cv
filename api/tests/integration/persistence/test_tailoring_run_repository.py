@@ -44,21 +44,31 @@ file:
 from __future__ import annotations
 
 import asyncio
+import traceback
 from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import event, select, text
+from sqlalchemy import event, inspect, select, text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
-from tailorcraft.domain.tailoring.errors import TailoringRunNotFound
+from tailorcraft.domain.tailoring.errors import (
+    TailoringRunConcurrentlyModified,
+    TailoringRunNotFound,
+)
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     CoverLetter,
@@ -991,6 +1001,294 @@ async def test_ix_tailoring_run_running_started_at_exists_with_its_partial_predi
     assert "running" in indexdef
 
 
+# --- T15 (slice 1.4, ADR-0015): round trip of the five new columns, the three new CHECKs, AC-7's ---
+# --- optimistic-concurrency race directly against the repository, the mapper's version seam, and ---
+# --- AC-19's traceback proof for a CHECK violation forced through the repository -------------------
+
+
+async def test_round_trip_of_a_run_with_no_revision_leaves_the_five_new_columns_at_their_defaults(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """A `succeeded` run nobody has edited: `version` is whatever the aggregate's own transitions
+    left it at, `current_documents` equals the draft (no override), and both revision instants are
+    `NULL` — the ordinary case, not the edge case (mirrors the module's own note on NULL round
+    trips for the 1.3 columns).
+    """
+    owner = await _persist_owner(session, clock, token_hash="40" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    run = _succeeded(runs, owner.id, clock)
+    await runs.add(run)
+
+    session.expunge_all()
+    reloaded = await runs.get(run.id)
+
+    assert reloaded.version == run.version
+    assert reloaded.current_documents == run.documents
+    assert reloaded.cv_edited_at is None
+    assert reloaded.cover_letter_edited_at is None
+
+
+async def test_round_trip_of_a_run_with_both_revisions_preserves_version_current_documents_and_both_whole_second_instants(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """A `succeeded` run with both documents revised: `version` bumped twice, `current_documents`
+    holding BOTH revisions (never the draft), the draft itself untouched (TR-11), and both revision
+    instants surviving the round trip bit-for-bit — whole-second, because they come from the
+    `FixedClock` and ADR-0007 says a database round trip can never change a whole-second value.
+    """
+    owner = await _persist_owner(session, clock, token_hash="41" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    run = _succeeded(runs, owner.id, clock)
+    await runs.add(run)
+
+    revised_cv = TailoredCv("c" * 450)
+    run.revise_cv(revised_cv, expected_version=run.version, at=clock.now())
+    revised_letter = CoverLetter("d" * 250)
+    run.revise_cover_letter(revised_letter, expected_version=run.version, at=clock.now())
+    await runs.save(run)
+
+    session.expunge_all()
+    reloaded = await runs.get(run.id)
+
+    assert reloaded.version == run.version
+    assert reloaded.current_documents == run.current_documents
+    assert reloaded.current_documents is not None
+    assert reloaded.current_documents.cv == revised_cv
+    assert reloaded.current_documents.cover_letter == revised_letter
+    # The draft (`documents`) keeps its 1.3 meaning — what the model produced — and must be
+    # unaffected by either revision (TR-11).
+    assert reloaded.documents == run.documents
+    assert reloaded.cv_edited_at is not None
+    assert reloaded.cv_edited_at.microsecond == 0
+    assert reloaded.cv_edited_at == run.cv_edited_at
+    assert reloaded.cover_letter_edited_at is not None
+    assert reloaded.cover_letter_edited_at.microsecond == 0
+    assert reloaded.cover_letter_edited_at == run.cover_letter_edited_at
+
+
+# --- AC-21: the three new CHECKs, each driven by a raw UPDATE the aggregate itself cannot reach ----
+
+
+async def test_check_constraint_rejects_an_edited_cv_without_its_edited_at(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    owner = await _persist_owner(session, clock, token_hash="42" * 32)
+    run_id = uuid4()
+    await _raw_insert(
+        session,
+        owner.id,
+        clock,
+        id=run_id,
+        status="succeeded",
+        tailored_cv="x" * 450,
+        cover_letter="y" * 250,
+        completed_at=clock.now(),
+    )
+
+    with pytest.raises(IntegrityError, match="ck_tailoring_run_cv_revision_pairs"):
+        await session.execute(
+            text("UPDATE tailoring_run SET edited_cv = :edited_cv WHERE id = :id"),
+            {"edited_cv": "z" * 450, "id": run_id},
+        )
+
+
+async def test_check_constraint_rejects_an_edited_cover_letter_without_its_edited_at(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    owner = await _persist_owner(session, clock, token_hash="43" * 32)
+    run_id = uuid4()
+    await _raw_insert(
+        session,
+        owner.id,
+        clock,
+        id=run_id,
+        status="succeeded",
+        tailored_cv="x" * 450,
+        cover_letter="y" * 250,
+        completed_at=clock.now(),
+    )
+
+    with pytest.raises(IntegrityError, match="ck_tailoring_run_cover_letter_revision_pairs"):
+        await session.execute(
+            text(
+                "UPDATE tailoring_run SET edited_cover_letter = :edited_cover_letter WHERE id = :id"
+            ),
+            {"edited_cover_letter": "z" * 250, "id": run_id},
+        )
+
+
+async def test_check_constraint_rejects_a_revision_on_a_non_succeeded_row(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """The third CHECK: `edited_cv` paired correctly with `cv_edited_at` (so the first CHECK is
+    satisfied) still cannot land on a `queued` row (TR-9) — a hand-written `UPDATE` is exactly how
+    this would arise, since the aggregate's own `revise_cv`/`revise_cover_letter` refuse it in
+    Python first (`_guard_revisable`)."""
+    owner = await _persist_owner(session, clock, token_hash="44" * 32)
+    run_id = uuid4()
+    await _raw_insert(session, owner.id, clock, id=run_id, status="queued")
+
+    with pytest.raises(IntegrityError, match="ck_tailoring_run_revision_requires_success"):
+        await session.execute(
+            text(
+                "UPDATE tailoring_run SET edited_cv = :edited_cv, cv_edited_at = :cv_edited_at "
+                "WHERE id = :id"
+            ),
+            {"edited_cv": "z" * 450, "cv_edited_at": clock.now(), "id": run_id},
+        )
+
+
+# --- AC-7: the optimistic-concurrency race, directly against the repository, two AsyncSessions on --
+# --- the same already-open connection --------------------------------------------------------------
+
+
+async def test_two_sessions_racing_to_revise_one_run_the_second_save_raises_concurrently_modified_and_the_row_holds_the_first_revision(
+    session: AsyncSession, connection: AsyncConnection, clock: FixedClock
+) -> None:
+    """The mapping's own `version_id_col=tailoring_run.c.version` / `version_id_generator=False`
+    seam (AC-7), exercised directly against the repository — no HTTP, no use case, just two
+    independent `AsyncSession`s on the same already-open connection, the identical technique
+    `tests/api/test_tailoring_revise.py::test_two_writers_racing_through_http_second_answers_409_
+    with_null_current_version` uses for the API layer, one layer down. Two traps are real and were
+    measured there, and both apply here unchanged: the identity map holds its entries *weakly*, so
+    the second session's copy of the run must be kept in a local for the whole test or it is
+    collected the moment nothing else references it and the second session would simply re-query a
+    fresh (non-stale) row; and the SAVEPOINT that load opens must be released — `session2.commit()`
+    — before the first writer's save, or it encloses that write and a later rollback on `session2`
+    would discard it.
+    """
+    owner = await _persist_owner(session, clock, token_hash="45" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    run = _succeeded(runs, owner.id, clock)
+    await runs.add(run)
+    # Close the transaction the `add()` flush opened (autobegin), so it is not left dangling
+    # *underneath* the nested SAVEPOINT `session2` is about to open on this same connection — see
+    # the HTTP-level test's identical comment for why the LIFO order matters.
+    await session.commit()
+
+    second_factory = async_sessionmaker(
+        bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    session2 = second_factory()
+    repo2 = SqlAlchemyTailoringRunRepository(session2)
+    # Pre-loaded into session2's identity map NOW, before the first writer moves the row on, and
+    # held in a local for the rest of the test (see the docstring above).
+    stale_copy = await repo2.get(run.id)
+    await session2.commit()  # releases the SAVEPOINT; expire_on_commit=False keeps the copy stale
+
+    run.revise_cv(
+        TailoredCv("QA_PERSISTENCE_RACE_WINNER " + "c" * 450),
+        expected_version=run.version,
+        at=clock.now(),
+    )
+    await runs.save(run)
+
+    stale_copy.revise_cv(
+        TailoredCv("QA_PERSISTENCE_RACE_LOSER " + "d" * 450),
+        expected_version=stale_copy.version,
+        at=clock.now(),
+    )
+    with pytest.raises(TailoringRunConcurrentlyModified):
+        await repo2.save(stale_copy)
+    # The caller's boundary (the repository's own `save` docstring): a failed flush leaves the
+    # session unusable until rolled back. `CommittingTailoringRunRepository` contains this in a
+    # SAVEPOINT in production (commit 6ccab15); here, with no SAVEPOINT open, the test is the
+    # caller and rolls back the whole session.
+    await session2.rollback()
+    await session2.close()
+
+    session.expunge_all()
+    reloaded = await runs.get(run.id)
+    assert reloaded.version == run.version
+    assert reloaded.current_documents is not None
+    assert "QA_PERSISTENCE_RACE_WINNER" in reloaded.current_documents.cv.value
+    assert "QA_PERSISTENCE_RACE_LOSER" not in reloaded.current_documents.cv.value
+    del stale_copy  # held until here on purpose (see the docstring)
+
+
+# --- The mapper's version seam: `version_id_generator` is False, `version_id_col` is `version` -----
+
+
+def test_version_id_generator_is_false_and_version_id_col_is_the_version_column() -> None:
+    """OQ-4 (ADR-0015 §3): the aggregate owns the number, the mapper only checks it. Asserted
+    against `inspect(TailoringRun)` rather than assumed from the mapping module's source, so a
+    "tidy-up" that drops `version_id_generator=False` back to SQLAlchemy's own default (an
+    incrementing generator) is a red test rather than a silent behaviour change: the aggregate's
+    `_version += 1` would then race the ORM's own increment on every flush.
+    """
+    mapper = inspect(TailoringRun)
+    assert mapper is not None
+    assert mapper.version_id_generator is False
+    assert mapper.version_id_col is tailoring_run_table.c.version
+
+
+# --- AC-19's traceback proof: a `ck_tailoring_run_cv_revision_pairs` violation forced through the --
+# --- repository must leak no fragment of the document through the exception's message, its ---------
+# --- rendered __cause__/__context__ chain, or its surviving `.params` ------------------------------
+
+
+async def test_a_cv_revision_pairs_check_violation_through_the_repository_leaks_no_document_text(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """The persistence-layer half of AC-19, mirroring `test_database_engine.py`'s and
+    `test_tailoring_task.py`'s G-28 test for this slice's own new columns: `SqlAlchemyTailoringRun
+    Repository.save` only translates `StaleDataError` (AC-7's race); a CHECK violation is a
+    different `IntegrityError` entirely and is left to propagate through the same sanitized engine
+    (`infrastructure/persistence/database.py::create_engine`'s `handle_error` listener), so this
+    test proves that sanitizer actually reaches a failure this slice's own columns can cause.
+
+    Forced by the exact technique the task list names: `revise_cv` writes the pair correctly, and
+    then `_cv_edited_at` is set back to `None` directly on the aggregate — bypassing TR-10 the way
+    only a bug or a hand-written mutation could — so the `UPDATE` `save()` issues carries an
+    `edited_cv` with no matching instant and Postgres refuses it.
+
+    A test that only checked `str(exc)` would pass a one-flag `hide_parameters=True` fix that
+    leaves the chained, driver-native exception's own message — and the bound parameters surviving
+    on the exception object — fully intact (`test_database_engine.py`'s own finding); this test
+    checks the rendered `__cause__`/`__context__` chain and `exc.params` for exactly that reason.
+    """
+    owner = await _persist_owner(session, clock, token_hash="46" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    run = _succeeded(runs, owner.id, clock)
+    await runs.add(run)
+
+    marker = "QA_AC19_PERSISTENCE_CV_MARKER_5e2a91d4"
+    run.revise_cv(
+        TailoredCv(f"{marker} " + "c" * 450), expected_version=run.version, at=clock.now()
+    )
+    # Bypasses the aggregate's own pairing invariant (TR-10) — the only way to reach the state this
+    # CHECK exists to refuse, exactly as the CHECK-constraint tests above reach theirs via raw SQL.
+    run._cv_edited_at = None
+
+    with pytest.raises(IntegrityError) as exc_info:
+        await runs.save(run)
+
+    # The positive proof the assertions below cannot pass vacuously: the flush must actually have
+    # failed at the database with THIS constraint, not merely raised something else.
+    exc = exc_info.value
+    assert "ck_tailoring_run_cv_revision_pairs" in str(exc), (
+        "debuggability regression: the constraint's own name must survive sanitizing"
+    )
+
+    rendered_chain = "".join(traceback.format_exception(exc))
+    assert marker not in str(exc), "AC-19: the tailored CV leaked into the exception's message"
+    assert marker not in rendered_chain, (
+        "AC-19: the tailored CV leaked into the exception's rendered chain "
+        "(__cause__/__context__) — this is what Celery logs and what Sentry walks"
+    )
+    assert exc.params is None, (
+        "no bound values may survive on the sanitized exception object — DBAPIError.__reduce__ "
+        "pickles exc.params, and a future log line or Sentry before_send reading it back would "
+        "leak the tailored CV this test bound as a parameter (AC-19)"
+    )
+
+    # The caller's boundary: a failed flush leaves the session unusable until rolled back.
+    # `CommittingTailoringRunRepository` contains this in a SAVEPOINT in production (commit
+    # 6ccab15); here, as in the AC-7 race test above, the test is the caller and rolls back the
+    # whole session by hand.
+    await session.rollback()
+
+
 def test_migration_3d0b70b7837f_downgrade_removes_the_partial_index(settings: Settings) -> None:
     """Run as a plain `def test_...`, not `async def` — exactly the reason
     `test_tailoring_task.py`'s two literal-bridge tests are plain `def`s: `alembic/env.py`'s
@@ -1035,8 +1333,31 @@ def test_migration_3d0b70b7837f_downgrade_removes_the_partial_index(settings: Se
     # The first call is a no-op today (current revision is already 3d0b70b7837f, this migration's own
     # revision) and starts pulling its future purpose the day a newer head exists: strip anything
     # newer than this migration before exercising ITS downgrade() specifically.
-    command.downgrade(config, "3d0b70b7837f")
-    command.downgrade(config, "33d8cf628221")
+    # downgrade() itself can raise (AC-2) rather than merely complete without dropping the index.
+    # A raise partway through a migration script leaves the schema in whatever state PostgreSQL's
+    # DDL transaction rolled back to, not necessarily matching alembic_version, so the same
+    # recovery the completes-but-does-not-drop path below performs (stamp forward if the index
+    # is still physically present, then upgrade to head) is run here too, before the original
+    # exception is re-raised — chained onto a recovery failure exactly as `assertion_error` is
+    # below, so a broken recovery is never mistaken for the regression that triggered it.
+    downgrade_error: Exception | None = None
+    try:
+        command.downgrade(config, "3d0b70b7837f")
+        command.downgrade(config, "33d8cf628221")
+    except Exception as exc:
+        downgrade_error = exc
+
+    if downgrade_error is not None:
+        try:
+            if asyncio.run(_index_exists()):
+                command.stamp(config, "3d0b70b7837f")
+            command.upgrade(config, "head")
+            assert asyncio.run(_index_exists()) is True, (
+                "the schema must be back at head before the next test in the session runs"
+            )
+        except Exception as recovery_exc:
+            raise downgrade_error from recovery_exc
+        raise downgrade_error
 
     # The assertion is captured rather than let propagate immediately, so that a failure recovering
     # the schema below (the `finally` this replaces) can never stand in for it in the report. Suppose

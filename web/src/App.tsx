@@ -1,26 +1,19 @@
-import { BaseCvUploadPanel } from './features/intake/components/BaseCvUploadPanel';
-import { JobPostingPanel } from './features/posting/components/JobPostingPanel';
-import { TailorPanel } from './features/tailoring/components/TailorPanel';
+import { Outlet } from 'react-router';
+
 import { SystemStatus } from './features/health/components/SystemStatus';
 
 /**
- * The application shell.
+ * The layout route.
  *
- * Three product surfaces, each rendered as a section rather than behind a route: slice 1.1's
- * base-CV upload, slice 1.2's job-posting intake, and slice 1.3's tailoring panel. React Router is
- * not installed until 1.4, and the dual-tab workspace (CV | cover letter) is that slice's design
- * work — doing it badly here means doing it twice.
+ * Since slice 1.4 `App` renders no product surface of its own: the header, then whichever page the
+ * URL selects through `<Outlet />`, then the system status. The pages are in `router.tsx`. What
+ * stays here is what every page shares — and system status stays last because it is diagnostic
+ * rather than part of the task.
  *
- * The order is the order of the task. You tailor a CV *to* a posting, so the CV comes first and the
- * posting second, and tailoring sits below both because it needs them both. System status is
- * diagnostic rather than part of the task, so it stays last.
- *
- * **The shell passes no props.** Each panel reads the server state it needs from TanStack Query,
- * using the same query keys as its siblings. `TailorPanel` gets the CV and posting from the cache
- * that `BaseCvUploadPanel` and `JobPostingPanel` fill, so there is still one request per list. It
- * does not get them threaded through `App`, which would turn this shell into a relay for data it
- * never uses. Each `<section aria-labelledby>` is the landmark, which is why the panels render no
- * heading of their own.
+ * **The layout passes no props.** Each page reads the server state it needs from TanStack Query, so
+ * the shell is not a relay for data it never uses. Nothing here depends on the router except
+ * `Outlet` itself, which renders nothing outside a router rather than throwing (react-router 7 reads
+ * a context whose default `outlet` is `null`) — so the shell can still be rendered on its own.
  */
 export function App(): React.JSX.Element {
   return (
@@ -32,26 +25,7 @@ export function App(): React.JSX.Element {
         </p>
       </header>
 
-      <section aria-labelledby="base-cv-heading" className="mb-10">
-        <h2 id="base-cv-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
-          Your base CV
-        </h2>
-        <BaseCvUploadPanel />
-      </section>
-
-      <section aria-labelledby="job-posting-heading" className="mb-10">
-        <h2 id="job-posting-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
-          The job you are applying for
-        </h2>
-        <JobPostingPanel />
-      </section>
-
-      <section aria-labelledby="tailoring-heading" className="mb-10">
-        <h2 id="tailoring-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
-          Your tailored CV and cover letter
-        </h2>
-        <TailorPanel />
-      </section>
+      <Outlet />
 
       <section aria-labelledby="system-status-heading">
         <h2

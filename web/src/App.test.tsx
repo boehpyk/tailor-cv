@@ -1,9 +1,21 @@
 import { screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderWithQuery } from '@/test/render';
+import { renderWithRouter } from '@/test/render';
 
-import { App } from './App';
+/**
+ * Since F3 `App` is the layout route — header, `<Outlet />`, `SystemStatus` — and the three
+ * sections these tests pair up live in the `/` route's element. Mounting the real route table on a
+ * memory router at `/` keeps the assertions about what a visitor to `/` sees, which is what they
+ * were always about; rendering `<App />` alone would now find an empty outlet.
+ *
+ * **F5b:** this used to build its own `createMemoryRouter` + `RouterProvider` inline; that is now
+ * `renderWithRouter` (`@/test/render`), generalised for any path so every other test file (the
+ * workspace, the run page) shares one implementation instead of reinventing it.
+ */
+function renderApp(): void {
+  renderWithRouter('/');
+}
 
 /**
  * T44 — structure and markup coverage for `App.tsx`'s landmark and heading wiring (task-list T44,
@@ -30,7 +42,7 @@ describe('App', () => {
   });
 
   it('gives the tailoring section a landmark labelled by its own heading', () => {
-    renderWithQuery(<App />);
+    renderApp();
 
     const heading = screen.getByRole('heading', {
       level: 2,
@@ -44,7 +56,7 @@ describe('App', () => {
   });
 
   it('places the tailoring section after both the base-CV and job-posting sections', () => {
-    renderWithQuery(<App />);
+    renderApp();
 
     const cvHeading = screen.getByRole('heading', { name: 'Your base CV' });
     const postingHeading = screen.getByRole('heading', { name: 'The job you are applying for' });
@@ -64,7 +76,7 @@ describe('App', () => {
   });
 
   it('renders the tailoring landmark as a section distinct from the base-CV and job-posting landmarks', () => {
-    renderWithQuery(<App />);
+    renderApp();
 
     // Three named regions, not one merged landmark a screen-reader user would have to page through
     // as a single block.
@@ -75,5 +87,24 @@ describe('App', () => {
     expect(
       screen.getByRole('region', { name: 'Your tailored CV and cover letter' }),
     ).toBeInTheDocument();
+  });
+
+  // -----------------------------------------------------------------------------------------
+  // F12 — the layout route's routing table (AC-22): the not-found route and the /runs/:runId
+  // redirect. `renderApp` is not reused here — each test needs its own path.
+  // -----------------------------------------------------------------------------------------
+
+  it('E-28: an unknown path renders the not-found page, with a link back to the workspace', () => {
+    renderWithRouter('/nowhere');
+
+    expect(screen.getByText("We couldn't find that page.")).toBeInTheDocument();
+    const homeLink = screen.getByRole('link', { name: /back to the workspace/i });
+    expect(homeLink).toHaveAttribute('href', '/');
+  });
+
+  it('AC-22: /runs/:runId redirects to /runs/:runId/cv', () => {
+    const { router } = renderWithRouter('/runs/some-run-id');
+
+    expect(router.state.location.pathname).toBe('/runs/some-run-id/cv');
   });
 });

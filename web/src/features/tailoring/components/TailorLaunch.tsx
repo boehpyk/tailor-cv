@@ -20,12 +20,31 @@ export interface TailorLaunchProps {
   readonly hasPreviousRun: boolean;
   /** The create mutation is in flight. The control is disabled so a double click cannot pay twice. */
   readonly isStarting: boolean;
+  /**
+   * The session's latest run is still `queued` or `running` (AC-25). The API would answer a second
+   * `POST` with a 409 `tailoring_already_running`; disabling the control with that reason spares
+   * the round trip and, more to the point, tells the user *why* — the run they already paid for is
+   * the thing to wait for. Optional, defaulting to `false`, because the run page's retry never has a
+   * run in flight beside it.
+   */
+  readonly runInProgress?: boolean;
   readonly onLaunch: () => void;
 }
 
-/** Why the button is disabled, in words — or `null` when both inputs are ready. */
-function blockedReason(baseCv: BaseCvCheck, jobPosting: JobPostingCheck): string | null {
+/**
+ * Why the button is disabled, in words — or `null` when both inputs are ready and nothing is
+ * running. The in-flight run comes first: it is the reason that stays true whatever the checklist
+ * says, and a user reading one sentence should read the one that explains the wait.
+ */
+function blockedReason(
+  baseCv: BaseCvCheck,
+  jobPosting: JobPostingCheck,
+  runInProgress: boolean,
+): string | null {
   const reasons: string[] = [];
+  if (runInProgress) {
+    reasons.push('A tailoring run is already under way — wait for it to finish first.');
+  }
   switch (baseCv.state) {
     case 'ready':
       break;
@@ -102,11 +121,12 @@ export function TailorLaunch({
   jobPosting,
   hasPreviousRun,
   isStarting,
+  runInProgress = false,
   onLaunch,
 }: TailorLaunchProps): React.JSX.Element {
   const reasonId = useId();
   const disclosureId = useId();
-  const reason = blockedReason(baseCv, jobPosting);
+  const reason = blockedReason(baseCv, jobPosting, runInProgress);
 
   return (
     <div className="space-y-3">

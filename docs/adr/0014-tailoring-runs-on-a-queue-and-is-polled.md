@@ -385,6 +385,11 @@ contradicts AC-12, and ADR-0004's promise that a failed run is a recorded state.
 
     This also closes G-36's lost update. `SELECT … FOR UPDATE SKIP LOCKED` in `find` was rejected: it would
     make a locked run look `MISSING`.
+
+    **Closed by [ADR-0015](./0015-edits-are-a-revision-on-the-run-stored-as-markdown.md) §3
+    (2026-09-13, slice 1.4):** the aggregate increments the version on every transition and the
+    mapper checks it (`version_id_generator=False`); the same column also guards the editor's
+    stale edit.
   - Likewise, "`task_acks_late = True` makes redelivery real" holds only for a message whose worker's main
     process was lost.
 - **The accepted residual (G-28).**

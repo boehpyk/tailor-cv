@@ -25,6 +25,15 @@ Used by:
   `FakeTailoringRunRepository.save_calls` and `FakeLlm.on_call` are added in this commit: T12 needs
   to observe the repository's state at the exact moment the LLM is invoked, to prove `running` is
   saved before the call rather than after (technical-plan.md's "Step 4 — two commits").
+- `tests/integration/tailoring/test_revise_tailored_document.py` (T6 — `ReviseTailoredDocument`),
+  `test_execute_tailoring_run.py` (AC-8) and `test_abandon_stale_tailoring_runs.py` (AC-9).
+  `FakeTailoringRunRepository.conflict_on_save` and `.saved` are added in this commit (ADR-0015 §3):
+  a repository built with `conflict_on_save=N` raises `TailoringRunConcurrentlyModified` on its next
+  `N` calls to `save`, decrementing each time, before reverting to its ordinary behaviour — the
+  in-memory stand-in for the database race a `version_id_col` mismatch reports as `StaleDataError`.
+  `.saved` records every run a *successful* `save` call persisted, in order, which is what lets a
+  test on the rejection paths assert nothing was written (`saved == []`) without caring whether
+  `save` was even reached.
 """
 
 from __future__ import annotations
@@ -54,6 +63,7 @@ from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 from tailorcraft.domain.tailoring.errors import (
     TailoringFailed,
     TailoringNotQueued,
+    TailoringRunConcurrentlyModified,
     TailoringRunNotFound,
 )
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
@@ -257,11 +267,26 @@ class FakeTailoringRunRepository:
     `started_at is None` — the same fold `TailoringRun.is_stale` makes, expressed as a filter —
     oldest first with a `NULL` counted as oldest (`NULLS FIRST`), ties on `started_at` broken by id,
     at most `limit`, no locking.
+
+    `conflict_on_save` (T6, ADR-0015 §3) is the in-memory stand-in for the database race the mapping
+    reports as `StaleDataError` once `version_id_col` is wired: a repository built with
+    `conflict_on_save=N` raises `TailoringRunConcurrentlyModified` on its next `N` calls to `save`,
+    decrementing on each raise, then behaves exactly as before. It says nothing about *which* run —
+    the real adapter's `WHERE version = :loaded` can't target one either, it fails whichever `UPDATE`
+    it is asked to run next — so a test needing a conflict on one specific run out of several (AC-9)
+    composes a small local subclass instead, rather than stretching this counter to do a job it
+    cannot honestly do.
+
+    `saved` (T6) records every run a *successful* `save` persisted, in order — as distinct from
+    `save_calls`, which records only the `status` of each successful save. A rejection-path test
+    (E-5 … E-9) asserts `saved == []` without having to know whether `save` was even reached.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, conflict_on_save: int = 0) -> None:
         self._by_id: dict[TailoringRunId, TailoringRun] = {}
         self.save_calls: list[TailoringRunStatus] = []
+        self.saved: list[TailoringRun] = []
+        self._conflict_on_save = conflict_on_save
 
     def next_identity(self) -> TailoringRunId:
         return TailoringRunId(value=uuid4())
@@ -270,7 +295,11 @@ class FakeTailoringRunRepository:
         self._by_id[run.id] = run
 
     async def save(self, run: TailoringRun) -> None:
+        if self._conflict_on_save > 0:
+            self._conflict_on_save -= 1
+            raise TailoringRunConcurrentlyModified(run.id)
         self.save_calls.append(run.status)
+        self.saved.append(run)
         self._by_id[run.id] = run
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:

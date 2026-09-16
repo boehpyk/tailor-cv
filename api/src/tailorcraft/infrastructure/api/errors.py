@@ -37,8 +37,15 @@ from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable
 from tailorcraft.domain.tailoring.errors import (
     BaseCvNotReadyForTailoring,
+    EmptyTailoredDocument,
+    InvalidTailoredDocument,
+    TailoredDocumentTooLong,
+    TailoredDocumentTooShort,
+    TailoredDocumentVersionConflict,
     TailoringAlreadyRunning,
     TailoringNotQueued,
+    TailoringRunConcurrentlyModified,
+    TailoringRunNotEditable,
     TailoringRunNotFound,
     TooManyTailoringRuns,
 )
@@ -172,10 +179,11 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     # is caught by `ExecuteTailoringRun` inside the worker and recorded on the aggregate as
     # `failed` + a `failure_reason`; it never reaches an HTTP boundary, and the client learns about
     # it from a **200** on the next poll (AC-12). The same goes for the aggregate's transition
-    # guards (`TailoringAlreadyStarted`, `TailoringNotRunning`, `TailoringAlreadyDecided`) and the
-    # document value objects' errors — all of them live entirely inside the task. Reaching the
-    # `raise exc` floor below with one of those is a genuine bug, and a real 500 is the honest
-    # answer to it, exactly as this function's docstring says.
+    # guards (`TailoringAlreadyStarted`, `TailoringNotRunning`, `TailoringAlreadyDecided`) — they
+    # live entirely inside the task. Reaching the `raise exc` floor below with one of those is a
+    # genuine bug, and a real 500 is the honest answer to it, exactly as this function's docstring
+    # says. (The document value objects' errors used to be on this list; since 1.4 the `PUT`
+    # router constructs those value objects from the client's text, so they are mapped below.)
 
     if isinstance(exc, TailoringRunNotFound):
         # G-29: also what `GetTailoringRunForSession` raises (`from TailoringRunNotOwnedBySession`)
@@ -261,7 +269,87 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
             },
         )
 
+    # -- tailoring, the editor's write path (slice 1.4, ADR-0015) --------------------------------
+    # The four document value-object errors cross the HTTP boundary here for the FIRST time. In 1.3
+    # they were raised only inside `parse_tailoring_response` on the model's output and recorded on
+    # the run; in 1.4 the router constructs `TailoredCv`/`CoverLetter` from the *client's* text and
+    # lets them reach this mapping (E-10 … E-12). One code, `document_invalid`, and a fixed
+    # `problem` label per type: the client branches on the label (its copy names the floor or the
+    # ceiling per kind, which it already knows), never on a sentence.
+    #
+    # **The `message` is a fixed sentence and never `str(exc)`.** Today those four messages carry
+    # only counts and limits — checked, not assumed — but the rule is about what a message *could*
+    # carry: this dict is the response body, and the text the value object refused is the user's
+    # own CV. A fixed sentence cannot leak it whatever a future message includes (AC-16, AC-19).
+
+    if isinstance(exc, EmptyTailoredDocument):
+        return _document_invalid("empty", "The document is empty.")
+
+    if isinstance(exc, TailoredDocumentTooShort):
+        return _document_invalid("too_short", "The document is too short to save.")
+
+    if isinstance(exc, TailoredDocumentTooLong):
+        return _document_invalid("too_long", "The document is too long to save.")
+
+    if isinstance(exc, InvalidTailoredDocument):
+        return _document_invalid(
+            "invalid_characters", "The document contains characters that cannot be stored."
+        )
+
+    if isinstance(exc, TailoringRunNotEditable):
+        # E-7. 409, not 422: the request was well-formed and named a run the caller owns — it is
+        # the run's *state* that conflicts with what was asked for, exactly `base_cv_not_extracted`'s
+        # reasoning one aggregate over. The body carries `status` the way `tailoring_already_running`
+        # carries `active_tailoring_run_id`: the client tells "still working, keep polling" apart
+        # from "there is nothing to edit" without a second read.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_run_not_editable",
+                "message": "This run can't be edited.",
+                "status": exc.status.value,
+            },
+        )
+
+    if isinstance(exc, TailoredDocumentVersionConflict):
+        # E-8 — the aggregate's own compare: the editor was shown an older `version`. The body
+        # carries the number the run is actually at, so the client can refetch and compare rather
+        # than merely being told "no".
+        return _document_version_conflict(current_version=exc.current_version)
+
+    if isinstance(exc, TailoringRunConcurrentlyModified):
+        # E-9 — the repository's translation of `StaleDataError`: two writers passed the aggregate's
+        # compare and the second `UPDATE … WHERE version = :seen` matched no row. Same code as E-8,
+        # because it is the same thing to the person holding the tab ("your copy is stale, refetch
+        # and compare"), but `current_version` is **`null`**: the aggregate this request holds IS
+        # the stale copy, and the true number lives in a row it has just been told it does not
+        # have. Inventing one would be a lie the client would send straight back as
+        # `expected_version`.
+        return _document_version_conflict(current_version=None)
+
     raise exc
+
+
+def _document_invalid(problem: str, message: str) -> HTTPException:
+    """422 `document_invalid` with a fixed `problem` label (E-10 … E-12) — one builder so the four
+    branches above cannot drift into four envelope shapes."""
+    return HTTPException(
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={"code": "document_invalid", "message": message, "problem": problem},
+    )
+
+
+def _document_version_conflict(*, current_version: int | None) -> HTTPException:
+    """409 `document_version_conflict` from either of its two sources (E-8 with the number, E-9 with
+    `null`) — one builder, one code, one message, so the client has one branch to write."""
+    return HTTPException(
+        status.HTTP_409_CONFLICT,
+        detail={
+            "code": "document_version_conflict",
+            "message": "This document was changed elsewhere. Reload the latest version.",
+            "current_version": current_version,
+        },
+    )
 
 
 def _fetch_failure_to_http(reason: FetchFailureReason) -> HTTPException:

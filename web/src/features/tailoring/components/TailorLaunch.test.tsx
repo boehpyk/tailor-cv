@@ -58,13 +58,13 @@ describe('TailorLaunch', () => {
     );
 
     const checklist = screen.getByRole('list', { name: 'What tailoring needs' });
-    const items = screen.getAllByRole('listitem');
-    expect(items).toHaveLength(2);
-    expect(checklist).toContainElement(items[0]);
-    expect(checklist).toContainElement(items[1]);
+    const [first, second] = screen.getAllByRole('listitem');
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
+    expect(checklist).toContainElement(first ?? null);
+    expect(checklist).toContainElement(second ?? null);
     // Structure, not T42's exact detail wording: each item names its own subject.
-    expect(items[0]).toHaveTextContent(/base cv/i);
-    expect(items[1]).toHaveTextContent(/job posting/i);
+    expect(first).toHaveTextContent(/base cv/i);
+    expect(second).toHaveTextContent(/job posting/i);
   });
 
   it('names the CV file and the posting title in the checklist when both are ready', () => {

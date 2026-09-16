@@ -1,4 +1,5 @@
-"""The `tailoring` HTTP surface: request a tailoring run, list a session's runs, read one.
+"""The `tailoring` HTTP surface: request a tailoring run, list a session's runs, read one, and
+revise one of a run's documents.
 
 Built in three passes (docs/sdlc.md §2): **SKELETON** (T29 — real paths, real schemas,
 `NotImplementedError` bodies), **RED** (T30, `qa` — 42 tests against those exact signatures, 26 of
@@ -7,6 +8,9 @@ the response shaping and the `DomainError` -> status translation, until those te
 single edit to them). The contract — the three paths, the status codes, the schemas and every row of
 the failure contract — came from the spec rather than from FastAPI, which is why this tier was
 red-first at all.
+
+Slice 1.4 (`workspace-progress-and-editor`, ADR-0015) added the fourth route the same way: **T12**
+the `PUT` skeleton and the three new response fields, **T13** `qa`'s red, **T14** the handler.
 
 **Two contract decisions live here rather than in a commit message.**
 
@@ -18,7 +22,7 @@ until a worker finishes. Paired with `Location`, it tells a reader of the OpenAP
 without reading any prose. A 201 would say "here is the thing you asked for", and the thing they
 asked for is not there yet.
 
-**`require_guest_session` on all three routes, and no session is minted anywhere** (OQ-3, G-4,
+**`require_guest_session` on all four routes, and no session is minted anywhere** (OQ-3, G-4,
 AC-16). This is a **deliberate departure** from `routers/intake.py` and `routers/posting.py`, which
 both mint a fresh `GuestSession` on `POST` for a missing, unknown or expired cookie — so a reader
 arriving from either of those two will notice the inconsistency, and this paragraph is here so they
@@ -54,15 +58,30 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRunCommand
+from tailorcraft.application.tailoring.revise_tailored_document import (
+    ReviseCoverLetterCommand,
+    ReviseCvCommand,
+    ReviseTailoredDocumentCommand,
+)
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.tailoring.errors import TailoringNotQueued
+from tailorcraft.domain.tailoring.errors import (
+    TailoredDocumentVersionConflict,
+    TailoringNotQueued,
+    TailoringRunNotEditable,
+)
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
-from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason, TailoringRunId
+from tailorcraft.domain.tailoring.value_objects import (
+    CoverLetter,
+    TailoredCv,
+    TailoredDocumentKind,
+    TailoringFailureReason,
+    TailoringRunId,
+)
 from tailorcraft.infrastructure.api.deps import (
     ClockDep,
     EventPublisherDep,
@@ -70,16 +89,19 @@ from tailorcraft.infrastructure.api.deps import (
     ListTailoringRunsDep,
     RequestTailoringRunDep,
     RequireGuestSessionDep,
+    ReviseTailoredDocumentDep,
     SessionDep,
     SettingsDep,
     TailoringQueueDep,
     TailoringRateLimiterDep,
+    TailoringReviseRateLimiterDep,
     TailoringRunRepositoryDep,
 )
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 from tailorcraft.infrastructure.api.schemas.tailoring import (
     CreateTailoringRunRequest,
+    ReviseDocumentRequest,
     TailoringRunListResponse,
     TailoringRunResponse,
     TailoringRunSummary,
@@ -156,8 +178,16 @@ def _is_retryable(reason: TailoringFailureReason | None) -> bool:
 def _to_response(run: TailoringRun, expires_at: datetime) -> TailoringRunResponse:
     """The full shape, including both documents. `expires_at` is the **session's** — the session
     owns the 24-hour promise (ADR-0006), exactly as `BaseCvResponse` and `JobPostingResponse` carry
-    it."""
-    documents = run.documents
+    it.
+
+    **`tailored_cv` / `cover_letter` mean the CURRENT document** (ADR-0015 §4): the visitor's
+    revision where one exists, else the model's draft — `run.current_documents`, never
+    `run.documents`. The counts are of that same text. The draft is not served at all (OQ-3):
+    nothing in this slice reads it, and serving two bodies per document would double the PII in
+    every poll for a feature that is not built. `*_edited_at` is how a consumer tells which of the
+    two it is reading — `null` means the draft, untouched.
+    """
+    documents = run.current_documents
     metrics = run.metrics
     return TailoringRunResponse(
         id=run.id.value,
@@ -181,6 +211,9 @@ def _to_response(run: TailoringRun, expires_at: datetime) -> TailoringRunRespons
         started_at=run.started_at,
         completed_at=run.completed_at,
         expires_at=expires_at,
+        version=run.version,
+        tailored_cv_edited_at=run.cv_edited_at,
+        cover_letter_edited_at=run.cover_letter_edited_at,
     )
 
 
@@ -191,8 +224,12 @@ def _to_summary(run: TailoringRun, expires_at: datetime) -> TailoringRunSummary:
     keys), for the reason `TailoringRunSummary`'s docstring gives for not subclassing: a derivation
     makes the *next* field added to the full shape appear in the list by default, and the direction
     that default leaks is a stranger's rewritten CV.
+
+    The two counts are of the **current** documents, as on the full shape (ADR-0015 §4), and
+    `version` rides here too so the workspace's latest-run card and the run page agree on it
+    without a second read.
     """
-    documents = run.documents
+    documents = run.current_documents
     metrics = run.metrics
     return TailoringRunSummary(
         id=run.id.value,
@@ -214,6 +251,9 @@ def _to_summary(run: TailoringRun, expires_at: datetime) -> TailoringRunSummary:
         started_at=run.started_at,
         completed_at=run.completed_at,
         expires_at=expires_at,
+        version=run.version,
+        tailored_cv_edited_at=run.cv_edited_at,
+        cover_letter_edited_at=run.cover_letter_edited_at,
     )
 
 
@@ -592,3 +632,307 @@ async def get_tailoring_run(
         raise domain_error_to_http_exception(exc) from exc
 
     return _to_response(run, session.expires_at)
+
+
+@router.put(
+    "/{tailoring_run_id}/documents/{kind}",
+    response_model=TailoringRunResponse,
+    responses={
+        status.HTTP_200_OK: {
+            "description": (
+                "The revision is committed. The body is the full run at its new `version`, with "
+                "`tailored_cv` / `cover_letter` meaning the **current** document (ADR-0015 §4) and "
+                "the revised one's `*_edited_at` set. `Cache-Control: no-store`."
+            ),
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": (
+                "tailoring_run_not_found — **identical** for an id that does not exist and one "
+                "owned by a different session (E-6, AC-14); never a 403, which would confirm the "
+                "id is real."
+            ),
+        },
+        status.HTTP_409_CONFLICT: {
+            "model": ErrorResponse,
+            "description": (
+                "tailoring_run_not_editable (E-7 — the run is `queued`, `running` or `failed`; the "
+                "error body carries `status`) | document_version_conflict (E-8 — a stale "
+                "`expected_version`, the body carries `current_version`; E-9 — two writers raced "
+                "and the second `UPDATE` matched no row, the body carries `current_version: null` "
+                "and the client refetches for the number)."
+            ),
+        },
+        status.HTTP_413_CONTENT_TOO_LARGE: {
+            "model": ErrorResponse,
+            "description": (
+                "request_too_large — the 256 KiB JSON body cap, refused on Content-Length before "
+                "the body is parsed (E-3, `MaxBodySizeMiddleware`, unchanged). The value object's "
+                "20,000-character ceiling is the real bound; this cap is the transport's."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": (
+                "validation_error — the body is not JSON, `content` is missing or not a string, "
+                "`expected_version` is missing, not an integer or `< 1`, an extra field is present, "
+                "the run id is not a UUID, or `kind` is not `cv` | `cover_letter` (E-1, E-2, E-4) "
+                "| document_invalid — the value object refused the text; the error body carries "
+                "`problem`: `empty` | `too_short` | `too_long` | `invalid_characters` (E-10 … "
+                "E-12). **Never the text**, in the body or in a log line."
+            ),
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "model": ErrorResponse,
+            "description": (
+                "rate_limited (E-30 — 600 saves per session per hour) — carries a Retry-After "
+                "header."
+            ),
+            "headers": {
+                "Retry-After": {
+                    "description": "Seconds until the budget refills.",
+                    "schema": {"type": "integer"},
+                },
+            },
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "model": ErrorResponse,
+            "description": (
+                "service_unavailable — Postgres down, or the commit failed; nothing survives the "
+                "rollback (E-14). **Not** rate_limit_unavailable: the save limiter fails open "
+                "(E-31), because the cost of a save is one bounded `UPDATE` of ours, not money."
+            ),
+        },
+        **_GUEST_SESSION_EXPIRED,
+    },
+)
+async def revise_tailored_document(
+    tailoring_run_id: UUID,
+    kind: TailoredDocumentKind,
+    response: Response,
+    body: Annotated[ReviseDocumentRequest, Body()],
+    session: RequireGuestSessionDep,
+    settings: SettingsDep,
+    rate_limiter: TailoringReviseRateLimiterDep,
+    revise: ReviseTailoredDocumentDep,
+    db: SessionDep,
+) -> TailoringRunResponse:
+    """Replace the current content of one of a `succeeded` run's two documents with the caller's
+    revision, and answer the full run at its new `version`.
+
+    **`PUT`, not `PATCH` and not `POST …/revisions`** (ADR-0015 §4): the request replaces the
+    current content of one sub-resource in full, and there is no revision collection to post into —
+    the run keeps the draft and one current text per document, no history. `expected_version` rides
+    in the body rather than in `If-Match`, because the client already holds `version` as a JSON
+    field and the 409 body must carry `current_version`.
+
+    **Validation at the boundary, in this order, and each step's position is load-bearing:**
+
+    1. **The body cap** — `MaxBodySizeMiddleware`, 256 KiB on `Content-Length`, before a byte of the
+       body is read (E-3 → 413 `request_too_large`).
+    2. **The shape** — `ReviseDocumentRequest`: `content: str`, `expected_version: int >= 1`,
+       `extra="forbid"` (E-1, E-2 → 422 `validation_error`).
+    3. **The path** — `tailoring_run_id: UUID` and `kind: TailoredDocumentKind`, so a malformed id
+       or an unknown kind is FastAPI's own 422 `validation_error` (E-4). The enum's string values
+       *are* the URL segments (`cv`, `cover_letter`); there is no mapping to get wrong.
+    4. **The rate limiter** — `tailoring:revise`, session scope, 600/hour, **fail-open** (E-30 → 429
+       + `Retry-After`; E-31 → the save proceeds). After shape validation so a malformed request
+       never consumes a counter; before the value object so a hostile client cannot burn CPU on
+       20,000-character strings past its budget.
+    5. **The value object, constructed HERE** — `match kind`: `TailoredCv(body.content)` or
+       `CoverLetter(body.content)`. Its four failures collapse to one 422 `document_invalid` with a
+       `problem` label (E-10 … E-12). In the router and not the use case because this *is* the
+       validation boundary, and because the command's type (`ReviseCvCommand.content: TailoredCv`)
+       then says what it holds rather than re-deriving it from `kind` a second time.
+    6. **The use case** — `ReviseTailoredDocument`, through the composed read, which is where "not
+       mine" becomes the same 404 as "does not exist" (E-6), `TailoringRunNotEditable` becomes 409
+       `tailoring_run_not_editable` with `status` (E-7), and `TailoredDocumentVersionConflict`
+       becomes 409 `document_version_conflict` with `current_version` (E-8).
+    7. **The commit, inside this handler's own error boundary** — never left to the session
+       dependency's teardown, which runs after the response is on the wire. A failed commit rolls
+       back and answers 503 `service_unavailable` (E-14). The optimistic `UPDATE … WHERE version =
+       :seen` that matched no row surfaces here as `TailoringRunConcurrentlyModified` → 409
+       `document_version_conflict` with `current_version: null` (E-9).
+    8. **`Cache-Control: no-store`** — set before anything else, as on the two reads: the body is
+       a person's rewritten CV and a letter naming the employer.
+
+    `session` is `RequireGuestSessionDep`, never the minting variant, for the reason the module
+    docstring gives (E-5 → 401, no `Set-Cookie`, no session row — AC-15).
+
+    **What this handler logs, and never logs** (AC-19): the run id, `kind`, `problem`, the version
+    numbers, `character_count`, exception *type names*. Never `body.content`, never a fragment of
+    either document, never the client IP alongside a run id — there is no IP here at all: the save
+    limiter is session-scoped only (deps.py says why), so this handler never reads the request.
+    """
+    # -- 8, first. The header is a property of the route, not of the answer (see `_no_store`). ----
+    _no_store(response)
+    run_id = TailoringRunId(tailoring_run_id)
+
+    # Two plain values off the session aggregate, taken BEFORE any I/O, and the timing is not
+    # tidiness. `session` is a mapped instance the dependency loaded into this request's
+    # `AsyncSession`; a flush that fails (E-9, the `StaleDataError` the repository translates)
+    # rolls its transaction back on the way out, and that rollback **expires every instance the
+    # session holds** — the guest session included — while leaving the transaction inactive until
+    # the boundary rolls back. Reading `session.id` inside the `except` branch below would then be
+    # a lazy load on a session that refuses to run one: a `PendingRollbackError` in place of the
+    # 409. Found by AC-12(b)'s test; a frozen value object read up front cannot expire.
+    guest_session_id = session.id
+    expires_at = session.expires_at
+
+    # -- 4. The rate limiter, session scope, FAIL-OPEN (E-30, E-31; AC-18). ---------------------
+    #
+    # After steps 1 to 3 (the body cap, the shape and the path — FastAPI's, already done by the time
+    # this body runs), so a malformed request never consumes a counter; before the value object,
+    # so a client past its budget cannot spend CPU on 20,000-character strings. Session scope only:
+    # a save is always bound to a session that already owns the run, so a fresh session buys a
+    # hammering script nothing — which is also why there is no `client_ip` call and no IP anywhere
+    # in this handler.
+    #
+    # `fail_open=True` (deps.py): an unreachable Redis makes `check` answer "allowed" after logging
+    # `rate_limit.unavailable` with `scope`, `namespace` and the error type — E-31's row exactly —
+    # so unlike the POST above there is no `RateLimiterUnavailable` to catch and no 503 to answer.
+    # The cost of an unlimited save is one bounded `UPDATE` of ours, not money.
+    decision = await rate_limiter.check(
+        "session", str(guest_session_id.value), settings.tailoring_revise_rate_limit_per_hour
+    )
+    if not decision.allowed:
+        # `scope` and `namespace` only (E-30). No identifier; the run id is not logged either,
+        # because nothing about the run has been read yet and the counter is per session.
+        log.info("rate_limit.exceeded", scope="session", namespace=rate_limiter.namespace)
+        retry_after = decision.retry_after_seconds
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "rate_limited",
+                "message": f"Too many saves. Try again in {retry_after} seconds.",
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # -- 5. The value object, constructed HERE (E-10 … E-12; AC-16). ----------------------------
+    #
+    # This is the validation boundary, so the text meets its bounds here and not in the use case.
+    # `match kind` closed by `assert_never`: a third `TailoredDocumentKind` added without an arm is
+    # a mypy error naming it, not a request that silently builds the wrong type. The `except`
+    # arm reaches `domain_error_to_http_exception` like every other `DomainError` in this module
+    # — the four value-object errors collapse there to one 422 `document_invalid` with a fixed
+    # `problem` label, and a fixed `message`; neither carries the text.
+    #
+    # The log line carries `character_count` from `body.content` — the size, never the string
+    # (E-10's row) — and the error's fully-qualified type name, which for these four is the
+    # `problem` label spelled the domain's way.
+    command: ReviseTailoredDocumentCommand
+    try:
+        match kind:
+            case TailoredDocumentKind.CV:
+                command = ReviseCvCommand(
+                    tailoring_run_id=run_id,
+                    guest_session_id=guest_session_id,
+                    content=TailoredCv(body.content),
+                    expected_version=body.expected_version,
+                )
+            case TailoredDocumentKind.COVER_LETTER:
+                command = ReviseCoverLetterCommand(
+                    tailoring_run_id=run_id,
+                    guest_session_id=guest_session_id,
+                    content=CoverLetter(body.content),
+                    expected_version=body.expected_version,
+                )
+            case _:
+                assert_never(kind)
+    except DomainError as exc:
+        log.info(
+            "tailoring.document_rejected",
+            tailoring_run_id=str(run_id.value),
+            guest_session_id=str(guest_session_id.value),
+            kind=kind.value,
+            character_count=len(body.content),
+            error_type=type(exc).__name__,
+        )
+        # `from None`, not `from exc`: this frame's locals hold `body`, which holds the text the
+        # value object just refused, and a chained exception keeps the frame reachable from a
+        # Sentry report (CLAUDE.md on `include_local_variables`).
+        raise domain_error_to_http_exception(exc) from None
+
+    # -- 6. The use case (E-5 … E-9; AC-12, AC-13, AC-14). ---------------------------------------
+    #
+    # Four `DomainError`s can come out of it, and every one of them is translated by the shared
+    # mapping so the one mapping stays the one mapping: `GuestSessionExpired` (401),
+    # `TailoringRunNotFound` (404, for absent *and* not mine), `TailoringRunNotEditable` (409 with
+    # `status`), `TailoredDocumentVersionConflict` (409 with `current_version`) — and, from the
+    # repository's flush rather than the aggregate, `TailoringRunConcurrentlyModified` (409 with
+    # `current_version: null`, E-9). That last one leaves the session in the failed state a failed
+    # flush leaves it in; the rollback is `get_session`'s teardown, which runs on any exception —
+    # and this `raise` is one. Nothing is written on any of the five: the first four raise before
+    # the save, and the fifth is a save that matched no row.
+    #
+    # The log line carries the ids, `kind` and the numbers the failure names (`expected_version`
+    # on every branch, `status` / `current_version` where the error has one) — E-7's, E-8's and
+    # E-9's rows — and never the text, which lives only on `command`, a local this line does not
+    # read.
+    try:
+        run = await revise(command)
+    except DomainError as exc:
+        log.info(
+            "tailoring.document_not_revised",
+            tailoring_run_id=str(run_id.value),
+            guest_session_id=str(guest_session_id.value),
+            kind=kind.value,
+            expected_version=body.expected_version,
+            error_type=type(exc).__name__,
+            **_conflict_fields(exc),
+        )
+        raise domain_error_to_http_exception(exc) from None
+
+    # The wire shape is built before the commit, as the POST builds its own: the aggregate as the
+    # use case handed it back, served from this session's identity map.
+    wire = _to_response(run, expires_at)
+
+    # -- 7. Commit HERE, inside this handler's own error boundary (E-14). ------------------------
+    #
+    # The same reasoning as the POST above: `get_session`'s teardown commits after the response is
+    # on the wire, so a commit that fails there would fire with a 200 already sent for a row that
+    # then rolled back. `error_type` only — a driver error's message quotes parameters, and the
+    # parameters here are the CV (CLAUDE.md, "a failed database write carries its data out").
+    try:
+        await db.commit()
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        log.error(
+            "tailoring.revision_not_committed",
+            tailoring_run_id=str(run_id.value),
+            kind=kind.value,
+            error_type=type(exc).__name__,
+        )
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "service_unavailable",
+                "message": "Something went wrong saving your document. Please try again.",
+            },
+        ) from None
+
+    # The success line (AC-19): ids, `kind`, the new `version`, the size and the outcome. The
+    # character count is read off the value object the aggregate now holds — the same number
+    # `TailoredDocumentRevised` carries — never the string it counts.
+    log.info(
+        "tailoring.document_revised",
+        tailoring_run_id=str(run_id.value),
+        guest_session_id=str(guest_session_id.value),
+        kind=kind.value,
+        version=run.version,
+        character_count=command.content.character_count,
+        outcome="revised",
+    )
+    return wire
+
+
+def _conflict_fields(exc: DomainError) -> dict[str, str | int]:
+    """The extra log fields a rejected revision's error names — E-7's `status`, E-8's
+    `current_version` — and nothing for the errors that carry no number (E-5, E-6, E-9). Ids,
+    enums and integers only; never text (AC-19)."""
+    if isinstance(exc, TailoringRunNotEditable):
+        return {"status": exc.status.value}
+    if isinstance(exc, TailoredDocumentVersionConflict):
+        return {"current_version": exc.current_version}
+    return {}

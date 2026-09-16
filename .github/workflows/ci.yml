@@ -106,7 +106,8 @@ jobs:
       - run: npm ci
 
       - name: TypeScript
-        run: npx tsc --noEmit
+        # `-b`: the root tsconfig is solution-style; without it tsc checks zero files (see Makefile).
+        run: npx tsc -b --noEmit
 
       - name: Lint (ESLint)
         run: npm run lint

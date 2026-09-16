@@ -14,11 +14,14 @@ watched failing on its own assertion before it was written (docs/sdlc.md §2) �
 fixed the signatures, the field types and the bounds so that the red step could fail on a `raises`
 assertion rather than on an `ImportError`.
 
-The other five — `TailoringRunId`, `TailoredDocuments`, `TailoringRunStatus`,
-`TailoringFailureReason` and `TailoredDraft` — have nothing to enforce: a typed UUID, two carriers of
-already-validated value objects, and two closed enums. There was nothing to defer, so no test of
-theirs was ever red. That is the tiered cycle working rather than a hole in it, exactly as
-`PostingSource`, `FetchedPosting` and `FetchFailureReason` were in slice 1.2.
+The other six — `TailoringRunId`, `TailoredDocuments`, `TailoringRunStatus`,
+`TailoringFailureReason`, `TailoredDocumentKind` and `TailoredDraft` — have nothing to enforce: a
+typed UUID, two carriers of already-validated value objects, and three closed enums. There was
+nothing to defer, so no test of theirs was ever red. That is the tiered cycle working rather than a
+hole in it, exactly as `PostingSource`, `FetchedPosting` and `FetchFailureReason` were in slice 1.2.
+`TailoredDocumentKind` arrived with slice 1.4 (workspace-progress-and-editor); the document types it
+addresses are **unchanged** by that slice on purpose — the user's revision is held to the same rules
+as the model's draft, by the same code, and no second set of bounds exists anywhere (ADR-0015 §2).
 """
 
 from __future__ import annotations
@@ -362,6 +365,28 @@ class TailoringRunStatus(StrEnum):
     RUNNING = "running"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+
+
+class TailoredDocumentKind(StrEnum):
+    """Which of a run's two documents is meant: the CV or the cover letter. Two values, closed.
+
+    An enum, not a value object, for the same reason `TailoringRunStatus` is one: the set is closed
+    and there is nothing to validate — a `__post_init__` would have no rule to enforce. And an enum
+    rather than two booleans or two methods everywhere, because the same discriminator is needed in
+    three places that must agree: it is the **URL path segment** of 1.4's document sub-resource
+    (`PUT /api/tailoring-runs/{id}/documents/{kind}`), the `kind` field on
+    `TailoredDocumentRevised`, and the discriminator between the two revise commands. The string
+    values are chosen to be usable in a URL **without a mapping** — `cv` and `cover_letter` appear
+    in the path exactly as they appear here, so there is no translation table for a router and a log
+    query to disagree about.
+
+    This is an *address* for one of a run's documents, not an *identity* (ADR-0015 §1): a document
+    has no id of its own because it has no lifecycle of its own, and the day 1.5 or 2.3 needs one is
+    the day the promotion ADR-0014 §9 describes becomes due.
+    """
+
+    CV = "cv"
+    COVER_LETTER = "cover_letter"
 
 
 class TailoringFailureReason(StrEnum):

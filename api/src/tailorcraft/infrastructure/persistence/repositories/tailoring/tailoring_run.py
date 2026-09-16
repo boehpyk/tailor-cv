@@ -22,12 +22,17 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
+import structlog
 from sqlalchemy import func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
+from sqlalchemy.orm.exc import StaleDataError
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.tailoring.errors import TailoringRunNotFound
+from tailorcraft.domain.tailoring.errors import (
+    TailoringRunConcurrentlyModified,
+    TailoringRunNotFound,
+)
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 from tailorcraft.infrastructure.identifiers import uuid7
@@ -35,6 +40,8 @@ from tailorcraft.infrastructure.persistence.types.tailoring import TailoringRunS
 
 if TYPE_CHECKING:
     from tailorcraft.domain.tailoring.ports import TailoringRunRepository
+
+log = structlog.get_logger(__name__)
 
 # `TailoringRun._id` etc. are class-body annotations only (`domain/tailoring/tailoring_run.py`
 # assigns no value — `map_imperatively`'s `properties=` installs the real `InstrumentedAttribute` at
@@ -101,9 +108,45 @@ class SqlAlchemyTailoringRunRepository:
         commits are the load-bearing part here, not this method (port docstring, technical-plan
         "Transaction boundaries"). `save` promises durability to the next read in this transaction;
         when that reaches disk is the caller's boundary.
+
+        Raises `TailoringRunConcurrentlyModified` when the row moved on since this aggregate was
+        loaded (port docstring; ADR-0015 §3, TR-8). The mapping declares `version` as
+        `version_id_col`, so the flush's `UPDATE … WHERE id = :id AND version = :loaded` matches no
+        row and SQLAlchemy raises `StaleDataError` — a vendor exception nothing outside this module
+        may see, translated here into the domain's name for it. The session is left in the failed
+        state a failed flush leaves it in: rolling back is the caller's boundary, exactly as
+        committing is.
+
+        **The id is read BEFORE the flush, and that line is load-bearing.** A failed flush rolls
+        its transaction back on the way out, and that rollback `_expire`s every instance the
+        session holds — `run` included, because it is the dirty one. The session's transaction is
+        then inactive until the caller rolls back, so touching `run.id` inside the `except` below
+        would try to re-load an expired attribute on a session that refuses to run a query, and the
+        `StaleDataError` this branch exists to translate would surface instead as a
+        `PendingRollbackError` — a `SQLAlchemyError` nothing above this layer maps, rendered as a
+        503 for what is a 409. Found by slice 1.4's AC-12(b) API test, the first thing to drive
+        this branch against a real database; a plain `TailoringRunId` value taken up front is
+        immune to the expiry. "Every instance" is the root boundary's behaviour, which is what this
+        bare repository gets in the API; the worker's `CommittingTailoringRunRepository` wraps this
+        flush in a SAVEPOINT precisely so that the expiry stops at the dirty run (its docstring has
+        the measurement).
         """
+        run_id = run.id
         self._session.add(run)
-        await self._session.flush()
+        try:
+            await self._session.flush()
+        except StaleDataError as exc:
+            # The type only, never the message: SQLAlchemy's message names the table and the
+            # primary key, and `hide_parameters` is what keeps the bound values (the CV) out of the
+            # driver's line — but the *frame* holds `run`, which holds up to four documents, and
+            # `include_local_variables=False` is a setting rather than a law. `from None` makes the
+            # frame unreachable from any report of the domain error (E-9; Constitution §8).
+            log.warning(
+                "tailoring.concurrent_modification",
+                tailoring_run_id=str(run_id.value),
+                error_type=type(exc).__name__,
+            )
+            raise TailoringRunConcurrentlyModified(run_id) from None
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:
         # The column stays on the left of `==` below (silencing ruff's SIM300 "Yoda condition"):

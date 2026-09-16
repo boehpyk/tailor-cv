@@ -78,6 +78,15 @@ class TailoringRunRepository(Protocol):
         commits rather than one (technical-plan.md, "Transaction boundaries"): `running` has to be
         visible to a polling client *while* a twelve-second call is still in flight, so step 4's save
         is committed on its own and step 6/7's save closes the second transaction.
+
+        Raises `TailoringRunConcurrentlyModified` when the row has changed since this aggregate was
+        loaded (its `version` no longer matches — ADR-0015 §3, TR-8). The caller decides what that
+        means: the worker returns `SKIPPED`, the sweep counts it and continues, the API answers 409.
+        The error is domain-defined and adapter-raised, exactly like `TailoringNotQueued` from the
+        queue adapter below and `TailoringFailed` from the LLM adapter — the port names the failure
+        in the domain's language, and the adapter is responsible for translating whatever the vendor
+        throws (here SQLAlchemy's `StaleDataError`, which nothing outside the repository ever sees).
+        The aggregate cannot raise this itself: it can see only its own `version`, never the row's.
         """
         ...
 

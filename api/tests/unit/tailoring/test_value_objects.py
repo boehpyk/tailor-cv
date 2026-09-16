@@ -40,6 +40,7 @@ from tailorcraft.domain.tailoring.value_objects import (
     ModelName,
     PromptVersion,
     TailoredCv,
+    TailoredDocumentKind,
     TailoredDocuments,
 )
 
@@ -443,6 +444,20 @@ def test_tailored_documents_cannot_be_constructed_with_only_one_document() -> No
     no custom domain error here because there is nothing left for one to say."""
     with pytest.raises(TypeError):
         TailoredDocuments(cv=TailoredCv("a" * 400))  # type: ignore[call-arg]
+
+
+# --- TailoredDocumentKind (slice 1.4, ADR-0015) ------------------------------------------------------
+#
+# An enum with nothing to validate — green on arrival, exactly like `TailoringRunStatus`'s values,
+# which this file has never needed to test for the same reason. Pinned here anyway because these two
+# strings are a public contract in three places at once (the URL path segment, the `kind` field on
+# `TailoredDocumentRevised`, and the revise-command discriminator): a silent rename of either value
+# would be a breaking change to a URL that this test would catch and nothing else in this file would.
+
+
+def test_tailored_document_kind_values_are_the_url_path_segments() -> None:
+    assert TailoredDocumentKind.CV.value == "cv"
+    assert TailoredDocumentKind.COVER_LETTER.value == "cover_letter"
 
 
 # --- Value semantics: compare by value, frozen ------------------------------------------------------

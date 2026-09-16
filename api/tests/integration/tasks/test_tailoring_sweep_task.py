@@ -60,6 +60,7 @@ from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
+    TailoringRunId,
     TailoringRunStatus,
 )
 from tailorcraft.infrastructure.clock import FixedClock
@@ -150,7 +151,7 @@ def _bind_sweep_to_this_sessions_worker(
     monkeypatch.setattr(sweep_task_module, "abandon_stale_runs_use_case", _fake_sweep_use_case)
 
 
-async def _reread(connection: AsyncConnection, run_id: Any) -> TailoringRun:
+async def _reread(connection: AsyncConnection, run_id: TailoringRunId) -> TailoringRun:
     """Read a run back through a *brand-new* `AsyncSession` bound to the same test connection —
     proving the sweep's writes are genuinely durable in this transaction, not merely visible through
     the writer's own identity map. Same `async_sessionmaker` construction as `conftest.py`'s own
@@ -318,6 +319,92 @@ async def test_a_real_database_failure_on_a_later_run_leaves_an_earlier_run_dura
     assert reloaded_earlier.failure_reason is TailoringFailureReason.ABANDONED
 
 
+# --- MAJOR 2 (/verify slice 1.4): a conflict on one run must not crash the batch on the next -----
+
+
+async def test_a_version_conflict_on_the_earlier_run_does_not_crash_the_sweep_on_the_later_run(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    session: AsyncSession,
+    connection: AsyncConnection,
+    clock: FixedClock,
+) -> None:
+    """MAJOR 2 — before commit 6ccab15, `CommittingTailoringRunRepository.save`
+    (`infrastructure/tasks/container.py`) rolled the whole session back on
+    `TailoringRunConcurrentlyModified`. A root-boundary `AsyncSession.rollback()` restores via
+    `_restore_snapshot(dirty_only=False)`, which expires **every** instance the session holds, not
+    only the one whose save just failed — so the next iteration of `AbandonStaleTailoringRuns.
+    __call__`'s loop (`application/tailoring/abandon_stale_tailoring_runs.py`) calls
+    `run.is_stale(now, stale_after)` on the *next* candidate, a plain synchronous attribute read
+    (`domain/tailoring/tailoring_run.py::is_stale` touches `self._status` and `self._started_at`)
+    with no `await` in front of it. On an expired attribute of an object bound to an
+    `AsyncSession`, that read tries an implicit lazy-refresh, and outside any `greenlet_spawn`
+    context (which only wraps SQLAlchemy's own awaited calls, never a bare Python property access
+    made from ordinary application code) that refresh raises `sqlalchemy.exc.MissingGreenlet`
+    instead of resuming the sweep. The fix (6ccab15) flushes the failing save inside a SAVEPOINT
+    instead: a nested boundary's snapshot restore is `dirty_only=True`, so only the one run that
+    was modified inside the SAVEPOINT is expired, and the sweep's other loaded candidates read
+    without I/O.
+
+    Reproduced with two real, committed `running` rows and a genuine optimistic-lock conflict — no
+    mocked repository, matching this suite's own G-35 constraint test just above. `earlier`
+    (`list_stale_running` orders `started_at` ascending, so it is processed first) has its `version`
+    column bumped by a raw `UPDATE` issued on THIS test's own session/connection — the T15/AC-7
+    two-session technique's single-session cousin: the row no longer matches what the identity-mapped
+    ORM object believes it loaded, so the sweep's own `save(earlier)` fails exactly as a genuine
+    concurrent writer (another worker, or a redelivered task) would make it fail. `later`'s row is
+    left completely untouched; the only thing wrong with it afterward is that the Python object
+    describing it now sits in a session `rollback()` just expired.
+
+    **Expected once MAJOR 2 is fixed:** `_sweep()` does not raise; `earlier` is counted a conflict
+    and its row stays `running` (the conflicting write never landed); `later` is abandoned normally.
+    Today it is expected to fail with `MissingGreenlet` before any of those assertions run.
+    """
+    owner = await _persist_owner(session, clock, token_hash="34" * 32)
+    runs = SqlAlchemyTailoringRunRepository(session)
+    now = _real_now()
+    earlier = _running_run(
+        runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=900, now=now
+    )
+    later = _running_run(
+        runs, owner.id, requested_at_seconds_ago=800, started_at_seconds_ago=700, now=now
+    )
+    earlier_id = earlier.id
+    later_id = later.id
+    await runs.add(earlier)
+    await runs.add(later)
+    await session.commit()
+
+    # The version bump that makes the sweep's own later `save(earlier)` fail with a REAL
+    # `StaleDataError` → `TailoringRunConcurrentlyModified` — issued on the same session the sweep
+    # will use, so it is visible to the sweep's `list_stale_running` SELECT within the same
+    # transaction without needing a commit of its own.
+    await session.execute(
+        sql_text("UPDATE tailoring_run SET version = version + 1 WHERE id = :id"),
+        {"id": str(earlier_id.value)},
+    )
+    _bind_sweep_to_this_sessions_worker(monkeypatch, settings, session)
+
+    result = await sweep_task_module._sweep()
+
+    assert result.abandoned == 1
+    assert result.conflicts == 1
+    assert result.skipped == 0
+
+    reloaded_earlier = await _reread(connection, earlier_id)
+    assert reloaded_earlier.status is TailoringRunStatus.RUNNING, (
+        "the conflicting write must never have landed — the row the raw UPDATE bumped is the only "
+        "row this test changed directly"
+    )
+
+    reloaded_later = await _reread(connection, later_id)
+    assert reloaded_later.status is TailoringRunStatus.FAILED, (
+        "the earlier run's conflict must not crash the batch before the later, untouched-by-conflict "
+        "run gets its turn"
+    )
+    assert reloaded_later.failure_reason is TailoringFailureReason.ABANDONED
+
+
 # --- The sweep never builds an LLM adapter -------------------------------------------------------
 
 
@@ -438,7 +525,7 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     """
     monkeypatch.setattr(sweep_container, "get_settings", lambda: settings)
 
-    async def _seed_a_stale_run() -> tuple[GuestSessionId, Any]:
+    async def _seed_a_stale_run() -> tuple[GuestSessionId, TailoringRunId]:
         seeding_engine = create_async_engine(settings.test_database_url, poolclass=None)
         try:
             async with AsyncSession(seeding_engine, expire_on_commit=False) as seeding_session:
@@ -457,7 +544,7 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
         finally:
             await seeding_engine.dispose()
 
-    async def _reread_status(run_id: Any) -> TailoringRun:
+    async def _reread_status(run_id: TailoringRunId) -> TailoringRun:
         verify_engine = create_async_engine(settings.test_database_url, poolclass=None)
         try:
             async with AsyncSession(verify_engine, expire_on_commit=False) as verify_session:
@@ -507,6 +594,9 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     assert swept_match, caplog.text
     assert int(swept_match.group(1)) >= 1, caplog.text
     assert re.search(r'"?skipped_count"?\s*[:=]\s*0\b', caplog.text), caplog.text
+    # T16: `conflicts` is the log line's fourth field (E-20; ADR-0015 §3) — this tick has no
+    # concurrent writer, so it must be logged as 0 rather than merely present.
+    assert re.search(r'"?conflicts"?\s*[:=]\s*0\b', caplog.text), caplog.text
     assert re.search(r'"?duration_ms"?\s*[:=]', caplog.text), caplog.text
     # Constitution §8: no run content, ever. `owner_id`/`tailored_cv`/`cover_letter` checks were
     # removed from here (verify round 2): every one of them was vacuously true regardless of what
