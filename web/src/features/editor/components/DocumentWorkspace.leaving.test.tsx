@@ -25,8 +25,10 @@ import type { TailoredDocumentKind, TailoringRun } from '@/features/tailoring/ty
  * avoids re-running that file's own `describe` blocks a second time via the module import.
  *
  * `qa` did not write `DocumentWorkspace.tsx`; every assertion below was checked against the
- * implementation and the file's own docstrings (lines 36-62 and 122-167) before being written, and
- * this docblock records any place code and prose disagreed.
+ * implementation and the file's own docstrings — `holdsUnsavedText`/`UNSAVED_LEAVE_PROMPT` and
+ * `DocumentEditors`' "two exit doors, one lock" effects (the `beforeunload` listener and
+ * `useBlocker`) — before being written, and this docblock records any place code and prose
+ * disagreed.
  */
 
 const RUN_ID = 'leaving-fixture-run';

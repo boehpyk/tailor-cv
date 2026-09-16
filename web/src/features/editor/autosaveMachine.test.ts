@@ -576,16 +576,26 @@ describe('expired (terminal, AC-34)', () => {
 
 const leavingCases: readonly Case[] = [
   {
-    name: 'leaving + landed200, no wish: settles idle at what was sent',
+    name: 'leaving + landed200, no wish: settles idle at what was sent, without reading the destroyed editor',
     machine: { kind: 'leaving', lastSaved: A, sent: B, wish: null },
-    event: { type: 'landed200', textNow: () => B },
+    event: {
+      type: 'landed200',
+      textNow: () => {
+        throw new Error('destroyed editor read');
+      },
+    },
     next: { kind: 'idle', lastSaved: B },
     effects: [],
   },
   {
     name: 'leaving + landed200, a wish recorded before unmount: sends it once, without reading the destroyed editor',
     machine: { kind: 'leaving', lastSaved: A, sent: B, wish: C },
-    event: { type: 'landed200', textNow: () => C },
+    event: {
+      type: 'landed200',
+      textNow: () => {
+        throw new Error('destroyed editor read');
+      },
+    },
     next: { kind: 'leaving', lastSaved: B, sent: C, wish: null },
     effects: [SEND_C],
   },

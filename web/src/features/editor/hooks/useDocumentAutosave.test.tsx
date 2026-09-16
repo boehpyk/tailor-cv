@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun';
@@ -68,6 +69,9 @@ interface FakeHandleBundle {
   /** Simulate the editor's `update` event — what F10c is expected to arm the debounce from. */
   readonly emitUpdate: () => void;
   readonly reseedMock: ReturnType<typeof vi.fn>;
+  /** How many `'update'` listeners are currently registered — StrictMode's rehearsal is only
+   * harmless if exactly one survives it (a leaked or missing cleanup shows up here as 2 or 0). */
+  readonly updateListenerCount: () => number;
 }
 
 /**
@@ -120,6 +124,7 @@ function makeFakeHandle(seed: string): FakeHandleBundle {
       });
     },
     reseedMock,
+    updateListenerCount: () => updateListeners.size,
   };
 }
 
@@ -719,18 +724,18 @@ describe('/verify slice 1.4 round 3 — MAJOR: resend-on-200 must not silently v
   });
 
   /**
-   * Regression guard for `onSuccess`'s tail in `useDocumentAutosave.ts` — the
-   * `if (wanted !== null && (wanted.content ?? handle.serialize()) !== lastSavedRef.current) {
-   * submit(wanted); }` block, currently around lines 299-301. Both tests in this block **pass
-   * today**: the branch exists, so there is nothing to observe failing. Their value is the
-   * opposite direction — round 3's actual MAJOR was that deleting that block left every existing
-   * test green, i.e. nothing in the suite could tell the branch was gone. `qa` does not edit
-   * production code, so the mutation this guard is meant to catch (delete that `if` block) is not
-   * performed here; the implementer/reviewer should delete it and confirm both tests below go red
-   * before trusting the refactor kept the behaviour. As a sanity check on the tests themselves
-   * (not production code), each was run once against a deliberately wrong fetch stub (the second
-   * PUT's response body changed so the assertions could not pass) and failed on the assertion it
-   * exists to protect, then restored to the version below.
+   * Regression guard for the resend-on-200 rule — `autosaveMachine.ts`'s `stepInFlight`, the
+   * `landed200` case's `if (sendWanted) { return send(sent, text, owed); }` branch (around lines
+   * 260-263). Both tests in this block **pass today**: the branch exists, so there is nothing to
+   * observe failing. Their value is the opposite direction — round 3's actual MAJOR (against the
+   * pre-machine hook) was that deleting the equivalent block left every existing test green, i.e.
+   * nothing in the suite could tell the branch was gone. `qa` does not edit production code, so
+   * the mutation this guard is meant to catch (delete that branch, or hard-code `sendWanted` to
+   * `false`) is not performed here; the implementer/reviewer should delete it and confirm both
+   * tests below go red before trusting a future refactor kept the behaviour. As a sanity check on
+   * the tests themselves (not production code), each was run once against a deliberately wrong
+   * fetch stub (the second PUT's response body changed so the assertions could not pass) and
+   * failed on the assertion it exists to protect, then restored to the version below.
    */
   it('(a) a later edit sent while PUT #1 is in flight is resent once PUT #1 lands 200, with the latest text and the returned version', async () => {
     vi.useFakeTimers();
@@ -763,7 +768,9 @@ describe('/verify slice 1.4 round 3 — MAJOR: resend-on-200 must not silently v
     await flushMicrotasks();
     expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
 
-    // Type more while PUT #1 is still on the wire — a wish (`resendWantedRef`), not a second send.
+    // Type more while PUT #1 is still on the wire — arms a debounce (`inFlight + change` →
+    // `debounceArmed`), and its firing below turns into the wish (`inFlight + timerDue` →
+    // `sendWanted`), not a second send.
     setText('seed edited twice');
     act(() => {
       emitUpdate();
@@ -820,8 +827,9 @@ describe('/verify slice 1.4 round 3 — MAJOR: resend-on-200 must not silently v
     await flushMicrotasks();
     expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
 
-    // Type away, then back to exactly what PUT #1 is carrying. `onUpdate` measures `differs`
-    // against `sentRef` while a PUT is in flight, so the second edit reads as no change at all.
+    // Type away, then back to exactly what PUT #1 is carrying. `inFlight + change`
+    // (`autosaveMachine.ts`'s `stepInFlight`) measures `differs` against `sent` — the in-flight
+    // machine's own field — so landing back on exactly what was sent reads as no change at all.
     setText('seed edited once and then some');
     act(() => {
       emitUpdate();
@@ -849,18 +857,20 @@ describe('/verify slice 1.4 round 3 — MINOR: the unmount flush must compare ag
   });
 
   /**
-   * The unmount cleanup (`useDocumentAutosave.ts`, the effect around lines 437-451) decides
-   * whether to send a last PUT by comparing the editor's text against `lastSavedRef.current` — the
-   * last **resolved** save. But while a PUT is on the wire, the fact that matters is what *that*
-   * PUT is carrying (`sentRef.current`) — exactly the distinction `onUpdate` already draws
-   * (`baseline = inFlightRef.current ? sentRef.current : lastSavedRef.current`). Typing back to
-   * the last-resolved text while a *different* text is in flight makes the cleanup's comparison
-   * read "nothing to send" even though the in-flight PUT is about to overwrite the server with
-   * text the person is no longer looking at.
+   * The unmount transition (`autosaveMachine.ts`'s `stepInFlight`, the `unmount` case) decides
+   * whether to record a wish by comparing the editor's text against `sent` — what *that* flight is
+   * carrying — never against `lastSaved`, the last **resolved** save. That is the same baseline
+   * `stepInFlight`'s `change` case already compares against while a PUT is in flight. Typing back
+   * to the last-resolved text while a *different* text is in flight must still record a wish,
+   * because the in-flight PUT is about to overwrite the server with text the person is no longer
+   * looking at.
    *
-   * RED against the hook as it stands: the cleanup sends nothing here, so only PUT B is ever
-   * recorded and the assertion below (expecting a second PUT carrying 'A') fails as
-   * `expect(received).toBe(expected) // Object.is equality — Expected: 2, Received: 1`.
+   * GREEN against the machine as it stands: `wish: event.text === sent ? null : event.text` reads
+   * `sent`, so the comparison this test drives is correct today. (Against the pre-machine hook,
+   * whose unmount cleanup compared against the last-*resolved* save instead, this test recorded
+   * the round-3 MINOR: only PUT B was ever sent, and the assertion below — expecting a second PUT
+   * carrying 'A' — failed as `expect(received).toBe(expected) // Object.is equality — Expected: 2,
+   * Received: 1`.)
    */
   it('typing back to the last-saved text while a newer PUT is in flight still queues a correcting PUT once that flight lands', async () => {
     vi.useFakeTimers();
@@ -925,19 +935,25 @@ describe('/verify slice 1.4 round 3 — MINOR: a debounce firing after a 409 res
   });
 
   /**
-   * Pins the rule the hook's own docstring states for a wish recorded during a 409's flight
-   * (`resendWantedRef` is explicitly cleared in `onError`, "everything else... drops it"): once
-   * the document has settled into `conflict`, a debounce that becomes due afterwards must send
-   * nothing. `send()`'s own `stateRef.current.kind === 'conflict'` guard is what stops it, not
-   * merely the dropped wish — this test arms a debounce **before** the 409 resolves and lets it
-   * fire strictly **after** `result.current.kind` already reads `'conflict'`, so the send it does
-   * not make can only be explained by that guard still holding once the timer is due.
+   * Pins the rule for a wish recorded during a 409's flight: once the document has settled into
+   * `conflict`, a debounce that becomes due afterwards must send nothing. The wish is dropped
+   * structurally — `autosaveMachine.ts`'s `resolvingConflict` and `conflict` variants carry no
+   * `sendWanted` field at all, so nothing survives the `inFlight + landedError(conflict) →
+   * resolvingConflict` transition to resend — and the guard against a *later* `timerDue` is
+   * `stepConflict`'s default branch ("a keystroke is not a choice (AC-33), and neither is a timer,
+   * a flush or an unmount"): every event but `keepMine`/`loadLatest` is a no-op once `conflict` is
+   * reached. This test arms a debounce **before** the 409 resolves and lets it fire strictly
+   * **after** `result.current.kind` already reads `'conflict'`, so the send it does not make can
+   * only be explained by that default branch still holding once the timer is due.
    *
-   * This does **not** prove anything about React's internal commit timing inside the window
-   * between the 409's promise settling and its `dispatch` running — jsdom plus fake timers give no
-   * way to freeze that gap and fire the timer *inside* it from this suite. What it does prove: a
-   * debounce due after `conflict` has visibly settled is inert, which is the externally observable
-   * half of the rule. Passes today.
+   * Unlike the pre-machine hook, `step` is a pure, synchronous reducer — there is no window
+   * between a promise settling and a `dispatch` for a stray timer to land in; the hook calls
+   * `step` once, synchronously, inside the mutation's own callback. What this test still cannot
+   * prove is React's *commit* timing — whether `result.current` has visibly updated by the instant
+   * the debounce timer callback runs is a jsdom/fake-timers question, not a `step` question, and
+   * this suite has no way to freeze that gap. What it does prove: a debounce due after `conflict`
+   * has visibly settled is inert, which is the externally observable half of the rule. Passes
+   * today.
    */
   it('after resolving to conflict, a debounce that becomes due afterwards sends nothing', async () => {
     vi.useFakeTimers();
@@ -997,5 +1013,106 @@ describe('/verify slice 1.4 round 3 — MINOR: a debounce firing after a 409 res
 
     expect(result.current.kind).toBe('conflict');
     expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+  });
+});
+
+describe('StrictMode — the mount-unmount-mount rehearsal (per the hook’s own docstring)', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * `useDocumentAutosave.ts`'s own docstring claims the unmount cleanup "hands the machine an
+   * `unmount` event and nothing else... which is what keeps StrictMode's mount-unmount-mount
+   * rehearsal in development harmless." This test drives that claim rather than reading it: it
+   * mounts the hook under a real `<StrictMode>` (matching `main.tsx`), which runs the effect
+   * lifecycle (setup -> cleanup -> setup) once extra, synchronously, before any test code runs —
+   * and then checks the three things a leak in that rehearsal would break.
+   *
+   * If the `update`-listener effect's cleanup ever stopped calling `editor.off` before the
+   * rehearsal's second `editor.on`, `updateListenerCount()` would read 2, not 1, and a single
+   * `emitUpdate()` later would silently dispatch the same `change` twice. If the unmount effect's
+   * cleanup fired the `unmount` event against a document that was never dirty and the machine
+   * mishandled it, a PUT would go out before anyone typed a keystroke — `stepIdle`'s default
+   * branch is what makes that impossible, and the assertion below is what makes the claim
+   * checkable instead of merely asserted in a docstring.
+   */
+  it('mounts cleanly under StrictMode, sends exactly one PUT per debounce, and an unmount mid-flight sends the wish exactly once', async () => {
+    vi.useFakeTimers();
+    const queryClient = makeQueryClient();
+    const run = makeRun({ id: RUN_ID, version: 1, tailored_cv: 'seed' });
+    queryClient.setQueryData(tailoringRunQueryKey(RUN_ID), run);
+    const { handle, setText, emitUpdate, updateListenerCount } = makeFakeHandle('seed');
+
+    let resolveFirstPut: ((response: Response) => void) | undefined;
+    const fetchMock = stubDocumentFetch({
+      putDocument: {
+        cv: (callNumber) =>
+          callNumber === 1
+            ? new Promise<Response>((resolve) => {
+                resolveFirstPut = resolve;
+              })
+            : Promise.reject(new Error('a second PUT was not expected')),
+      },
+    });
+
+    function strictWrapper({ children }: { children: ReactNode }): React.JSX.Element {
+      return (
+        <StrictMode>
+          <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+        </StrictMode>
+      );
+    }
+
+    const { unmount } = renderHook(() => useDocumentAutosave(RUN_ID, 'cv', handle), {
+      wrapper: strictWrapper,
+    });
+
+    // The rehearsal has already run, synchronously, inside the `render` above. The document was
+    // never dirty during it, so nothing was sent, and exactly one `'update'` listener survives —
+    // not two (a leaked first registration) and not zero (a cleanup that outran the replayed setup).
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(0);
+    expect(updateListenerCount()).toBe(1);
+
+    // One keystroke, one debounce, one PUT — the rehearsal left the machine in a single, ordinary
+    // `idle` state, not doubled.
+    setText('seed edited once');
+    act(() => {
+      emitUpdate();
+    });
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(1);
+    const firstBody = lastPutBody(fetchMock, putPath(RUN_ID, 'cv')) as {
+      readonly expected_version: number;
+    };
+    expect(firstBody.expected_version).toBe(1);
+
+    // Type again while PUT #1 is on the wire, then unmount before it lands: `stepInFlight`'s
+    // `unmount` case captures the wish, read now, while the editor still exists.
+    setText('seed edited twice');
+    act(() => {
+      emitUpdate();
+    });
+    unmount();
+
+    // PUT #1 lands 200, carrying the version this run started at.
+    resolveFirstPut?.(jsonResponse(200, { ...run, version: 2, tailored_cv: 'seed edited once' }));
+    await flushMicrotasks();
+    await flushMicrotasks();
+
+    // The wish is sent exactly once, against the version PUT #1 returned.
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(2);
+    const secondBody = lastPutBody(fetchMock, putPath(RUN_ID, 'cv')) as {
+      readonly expected_version: number;
+      readonly content: string;
+    };
+    expect(secondBody.expected_version).toBe(2);
+    expect(secondBody.content).toBe('seed edited twice');
+
+    // Nothing after: no component is left to arm a debounce, and a further tick sends nothing.
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+    await flushMicrotasks();
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(2);
   });
 });
