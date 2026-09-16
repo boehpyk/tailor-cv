@@ -95,34 +95,111 @@ function failureOf(error: Error): SaveFailure {
 }
 
 /**
+ * What performing an effect needs from the world outside the machine: the editor to read, a way
+ * to send a `PUT`, and a way to re-read the run. Each comes from a render — the editor handle is
+ * a hook's return, the sender wraps `useMutation`'s `mutate` — so the store, which outlives every
+ * render, reads them through a ref the hook refreshes after each commit rather than capturing
+ * them at construction. A timer firing a minute after a re-render reaches the current ones.
+ */
+interface AutosaveCollaborators {
+  readonly handle: DocumentEditorHandle;
+  /** Perform the `send` effect: one `PUT` carrying `content`. */
+  readonly send: (content: string) => void;
+  /** Perform the `refetch` effect: the server's text for this document, freshly read. */
+  readonly refetch: () => Promise<string | null>;
+}
+
+/**
  * The machine, held where callbacks can reach it and React can subscribe to it. `dispatch` steps
- * the machine and hands back the effects for the caller to perform; `view` is the snapshot React
- * renders, replaced only when what it shows would change, so `useSyncExternalStore` sees a stable
- * value between meaningful changes.
+ * the machine and performs the effects it returns; `view` is the snapshot React renders, replaced
+ * only when what it shows would change, so `useSyncExternalStore` sees a stable value between
+ * meaningful changes.
+ *
+ * **`dispatch` is created once, with the store, and its identity is a fact rather than a cache.**
+ * The hook's unmount cleanup fires an `unmount` event, which steps a document with a `PUT` out
+ * into `leaving` — a state where the editor is assumed gone and later keystrokes are ignored. So
+ * that cleanup must run for exactly one reason. An earlier version built `dispatch` with `useMemo`
+ * and listed it as that effect's dependency; React documents `useMemo` as a performance hint it
+ * may discard, and a recomputation would have unmounted a document that was still on screen.
+ * Owning `dispatch` here, in a closure the hook creates once in a ref, is what makes "the same
+ * `dispatch` for the life of the component" true by construction.
+ *
+ * **The one timer lives here too.** The machine is its accountant (see `autosaveMachine.ts`); the
+ * store is its holder, because the timer's callback dispatches and the store is what dispatches.
  */
 interface AutosaveStore {
-  readonly dispatch: (event: AutosaveEvent) => readonly AutosaveEffect[];
+  readonly dispatch: (event: AutosaveEvent) => void;
   readonly view: () => AutosaveView;
   readonly subscribe: (listener: () => void) => () => void;
 }
 
-function createAutosaveStore(initial: AutosaveMachine): AutosaveStore {
+function createAutosaveStore(
+  initial: AutosaveMachine,
+  collaborators: { readonly current: AutosaveCollaborators },
+): AutosaveStore {
   let machine = initial;
   let view = viewOf(machine);
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
+
+  function clearTimer(): void {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  }
+
+  // The editor is read when the event happens, never earlier: a timer or a promise settles long
+  // after the render that armed it.
+  function textNow(): string {
+    return collaborators.current.handle.serialize();
+  }
+
+  function perform(effect: AutosaveEffect): void {
+    switch (effect.type) {
+      case 'send':
+        collaborators.current.send(effect.content);
+        return;
+      case 'refetch':
+        void collaborators.current.refetch().then(
+          (serverText) => {
+            dispatch({ type: 'refetched', serverText, textNow });
+          },
+          () => {
+            dispatch({ type: 'refetchFailed' });
+          },
+        );
+        return;
+      case 'armTimer':
+        clearTimer();
+        timer = setTimeout(() => {
+          timer = null;
+          dispatch({ type: 'timerDue', text: textNow() });
+        }, effect.ms);
+        return;
+      case 'clearTimer':
+        clearTimer();
+        return;
+    }
+  }
+
+  function dispatch(event: AutosaveEvent): void {
+    const { next, effects } = step(machine, event);
+    machine = next;
+    const nextView = viewOf(next);
+    if (!sameView(view, nextView)) {
+      view = nextView;
+      listeners.forEach((listener) => {
+        listener();
+      });
+    }
+    for (const effect of effects) {
+      perform(effect);
+    }
+  }
+
   return {
-    dispatch: (event) => {
-      const { next, effects } = step(machine, event);
-      machine = next;
-      const nextView = viewOf(next);
-      if (!sameView(view, nextView)) {
-        view = nextView;
-        listeners.forEach((listener) => {
-          listener();
-        });
-      }
-      return effects;
-    },
+    dispatch,
     view: () => view,
     subscribe: (listener) => {
       listeners.add(listener);
@@ -148,12 +225,19 @@ function createAutosaveStore(initial: AutosaveMachine): AutosaveStore {
  * **Where the machine lives, and why React subscribes to it rather than owning it.** The machine
  * is stepped from places React does not schedule — a timer, a promise settling, a DOM event — and
  * read back in the same places, synchronously. That is the definition of state *outside* React,
- * and `useSyncExternalStore` is the hook made for it: the store holds the machine in a ref-like
- * closure, and React subscribes to a snapshot of it. The alternative — mirroring the state into
- * `useReducer` and reading a ref that a layout effect copies it into — is what the first version
- * did, and the review found the gap in it: a timer due between the promise settling and React
- * committing read a state the machine had already left. Here there is no copy to lag; a callback
- * reads the machine, and the render reads the last snapshot the machine published.
+ * and `useSyncExternalStore` is the hook made for it: the store holds the machine in a closure
+ * created once in a ref, and React subscribes to a snapshot of it. The alternative — mirroring the
+ * state into `useReducer` and reading a ref that a layout effect copies it into — is what the
+ * first version did, and the review found the gap in it: a timer due between the promise settling
+ * and React committing read a state the machine had already left. Here there is no copy to lag; a
+ * callback reads the machine, and the render reads the last snapshot the machine published.
+ *
+ * **The store performs the effects too, and reads the world through a ref.** `send` needs
+ * `mutate`, `refetch` needs the query client, the timer needs the editor — all things a render
+ * hands out. Rather than rebuild the performer whenever one of them might change (which is what a
+ * `useMemo` over them would do, and `useMemo` is a cache React may drop at will), the store reads
+ * them from a ref the hook refreshes after every commit. `dispatch`'s identity is therefore a
+ * fact of construction, which the unmount effect below relies on; the reason is spelled out there.
  *
  * **What TanStack still owns.** The `PUT` is a `useMutation` **scoped per run**
  * (`scope: { id: 'revise:<runId>' }`): TanStack runs mutations in one scope serially, which is
@@ -204,13 +288,6 @@ export function useDocumentAutosave(
 
   useQuery({ ...tailoringRunQueryOptions(runId), enabled: false });
 
-  // Created once, seeded with the editor's own serialization so that opening is not dirtying
-  // (AC-29) even where the bridge normalised the text on the way in.
-  const storeRef = useRef<AutosaveStore | null>(null);
-  storeRef.current ??= createAutosaveStore({ kind: 'idle', lastSaved: handle.serialize() });
-  const store = storeRef.current;
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const { mutate } = useMutation({
     scope: { id: `revise:${runId}` },
     mutationFn: ({ content }: { readonly content: string }) => {
@@ -226,66 +303,41 @@ export function useDocumentAutosave(
     onSuccess: (run) => {
       queryClient.setQueryData(tailoringRunQueryKey(runId), run);
       void queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey });
-      // `dispatch` is the `const` below; this callback runs when an answer arrives, long after
-      // the render that declared both.
-      dispatch({ type: 'landed200', textNow: () => handle.serialize() });
+      // `store` is the `const` below; this callback runs when an answer arrives, long after the
+      // render that declared both — and a `PUT` can only have been sent through the store.
+      store.dispatch({ type: 'landed200', textNow: () => handle.serialize() });
     },
     onError: (error) => {
-      dispatch({ type: 'landedError', failure: failureOf(error) });
+      store.dispatch({ type: 'landedError', failure: failureOf(error) });
     },
   });
 
-  /**
-   * Step the machine and perform what it asks. `perform` and `dispatch` are declared together
-   * because a timer or a refetch, once done, dispatches again; a `useMemo` over stable inputs
-   * (the store is created once, `mutate` and `queryClient` are stable, `handle` is memoised on
-   * the editor instance) keeps one identity for the life of the component.
-   */
-  const dispatch = useMemo(() => {
-    function perform(effect: AutosaveEffect): void {
-      switch (effect.type) {
-        case 'send':
-          mutate({ content: effect.content });
-          return;
-        case 'refetch':
-          void queryClient.query({ ...tailoringRunQueryOptions(runId), staleTime: 0 }).then(
-            (server) => {
-              dispatch({
-                type: 'refetched',
-                serverText: server[textField],
-                textNow: () => handle.serialize(),
-              });
-            },
-            () => {
-              dispatch({ type: 'refetchFailed' });
-            },
-          );
-          return;
-        case 'armTimer':
-          clearTimer();
-          timerRef.current = setTimeout(() => {
-            timerRef.current = null;
-            dispatch({ type: 'timerDue', text: handle.serialize() });
-          }, effect.ms);
-          return;
-        case 'clearTimer':
-          clearTimer();
-          return;
-      }
-    }
-    function clearTimer(): void {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    }
-    function dispatch(event: AutosaveEvent): void {
-      for (const effect of store.dispatch(event)) {
-        perform(effect);
-      }
-    }
-    return dispatch;
-  }, [store, mutate, queryClient, runId, textField, handle]);
+  // The latest-render view of what an effect needs. The ref is refreshed after every commit — an
+  // effect with no dependency list — so the store, created once below, never holds a stale
+  // `handle` or `mutate`, and never has to be recreated because a render produced a new one.
+  const latest: AutosaveCollaborators = {
+    handle,
+    send: (content) => {
+      mutate({ content });
+    },
+    refetch: () =>
+      queryClient
+        .query({ ...tailoringRunQueryOptions(runId), staleTime: 0 })
+        .then((server) => server[textField]),
+  };
+  const collaborators = useRef(latest);
+  useEffect(() => {
+    collaborators.current = latest;
+  });
+
+  // Created once, seeded with the editor's own serialization so that opening is not dirtying
+  // (AC-29) even where the bridge normalised the text on the way in.
+  const storeRef = useRef<AutosaveStore | null>(null);
+  storeRef.current ??= createAutosaveStore(
+    { kind: 'idle', lastSaved: handle.serialize() },
+    collaborators,
+  );
+  const store = storeRef.current;
 
   const view = useSyncExternalStore(store.subscribe, store.view);
 
@@ -296,48 +348,54 @@ export function useDocumentAutosave(
       return;
     }
     const onUpdate = (): void => {
-      dispatch({ type: 'change', text: handle.serialize() });
+      store.dispatch({ type: 'change', text: handle.serialize() });
     };
     editor.on('update', onUpdate);
     return () => {
       editor.off('update', onUpdate);
     };
-  }, [handle, dispatch]);
+  }, [handle, store]);
 
   // The tab going to the background flushes: a hidden tab may be a closing one.
   useEffect(() => {
     const onVisibilityChange = (): void => {
       if (document.visibilityState === 'hidden') {
-        dispatch({ type: 'flush', text: handle.serialize() });
+        store.dispatch({ type: 'flush', text: handle.serialize() });
       }
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [handle, dispatch]);
+  }, [handle, store]);
 
   // Switching to the other document flushes this one (AC-31): the URL changed under the router,
   // and the pane that just left the screen should not still be waiting out its debounce.
   useEffect(() => {
     if (!options.visible) {
-      dispatch({ type: 'flush', text: handle.serialize() });
+      store.dispatch({ type: 'flush', text: handle.serialize() });
     }
-  }, [options.visible, handle, dispatch]);
+  }, [options.visible, handle, store]);
 
   // Leaving the run page altogether: the editor is about to be destroyed, so the text is read
   // now, and the machine decides whether it is sent at once (a pending debounce), remembered for
   // when the flight lands (one on the wire), or nothing (a quiet document). The `PUT` goes to the
   // mutation cache, which outlives this component.
+  //
+  // This cleanup can run for exactly one reason: the component is gone. Its only dependency is
+  // `store`, created once in a ref and never replaced; the editor handle is read through the
+  // collaborators ref, which is not a dependency. Nothing a re-render produces — a new handle, a
+  // new `mutate`, a memo React chose to drop — can make it fire, and that matters because the
+  // `unmount` event steps a document with a `PUT` out into `leaving`, where keystrokes are ignored.
   useEffect(() => {
     return () => {
-      dispatch({ type: 'unmount', text: handle.serialize() });
+      store.dispatch({ type: 'unmount', text: collaborators.current.handle.serialize() });
     };
-  }, [handle, dispatch]);
+  }, [store]);
 
   const retry = useCallback(() => {
-    dispatch({ type: 'retry', text: handle.serialize() });
-  }, [handle, dispatch]);
+    store.dispatch({ type: 'retry', text: handle.serialize() });
+  }, [handle, store]);
 
   const loadLatest = useCallback(() => {
     const server = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId));
@@ -345,12 +403,12 @@ export function useDocumentAutosave(
       return;
     }
     handle.reseed(server[textField] ?? '');
-    dispatch({ type: 'loadLatest', text: handle.serialize() });
-  }, [handle, queryClient, runId, textField, dispatch]);
+    store.dispatch({ type: 'loadLatest', text: handle.serialize() });
+  }, [handle, queryClient, runId, textField, store]);
 
   const keepMine = useCallback(() => {
-    dispatch({ type: 'keepMine', text: handle.serialize() });
-  }, [handle, dispatch]);
+    store.dispatch({ type: 'keepMine', text: handle.serialize() });
+  }, [handle, store]);
 
   return useMemo<SaveState>(() => {
     switch (view.kind) {

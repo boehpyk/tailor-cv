@@ -334,7 +334,12 @@ function stepPaused(
         ? stay({ kind: 'idle', lastSaved })
         : send(lastSaved, event.text);
     case 'unmount':
-      // Leaving loses the text; the window is the server's to enforce again if it must.
+      // The person is leaving with text the 429 kept from being saved. It is sent now, inside the
+      // window the server named, so this one `PUT` may be refused again — and then the text is
+      // gone: `leaving` has no timer and nobody to show *Retry* to. Sending is still the better
+      // odds, because not sending loses the text for certain. If a paused document has to survive
+      // its author leaving, the model is a `leaving` variant that keeps the timer and sends when
+      // the window closes; nothing here is built for that yet.
       return event.text === lastSaved
         ? { next: { kind: 'idle', lastSaved }, effects: [CLEAR_TIMER] }
         : {
