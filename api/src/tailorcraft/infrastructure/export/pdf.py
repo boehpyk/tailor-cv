@@ -29,6 +29,12 @@ skipped red.
 from __future__ import annotations
 
 from typing import Final, NoReturn
+from urllib.parse import urlsplit
+
+import structlog
+from weasyprint import CSS, HTML
+
+log = structlog.get_logger(__name__)
 
 
 class UrlFetchRefused(Exception):
@@ -139,7 +145,18 @@ def refuse_every_url(url: str, timeout: float | None = None) -> NoReturn:
     The log line I3 writes carries the **scheme only** — never the URL. A URL a user typed into
     their own CV can carry their name (X-54, Constitution §8).
     """
-    raise NotImplementedError
+    # `urlsplit` raises on a malformed IPv6 literal, and this function is reached with whatever a
+    # stranger's document contains. Refusing is the only outcome; the log line must not be what
+    # turns a refusal into an exception of a different type.
+    try:
+        scheme = urlsplit(url).scheme or "none"
+    except ValueError:
+        scheme = "unparseable"
+    log.info("export.url_fetch_refused", scheme=scheme)
+    # A constant message. Interpolating the URL here would put it in the exception, and WeasyPrint
+    # logs a fetcher's exception itself — which is how a stranger's URL would reach our logs by a
+    # route nobody wrote.
+    raise UrlFetchRefused("This renderer fetches nothing.")
 
 
 def render_pdf(html: str) -> bytes:
@@ -148,4 +165,13 @@ def render_pdf(html: str) -> bytes:
     CPU-bound and synchronous, like every renderer here; the adapter runs it in
     `asyncio.to_thread` under `asyncio.wait_for` in both processes, never on the event loop.
     """
-    raise NotImplementedError
+    document = HTML(string=html, base_url=None, url_fetcher=refuse_every_url)
+    rendered = document.write_pdf(stylesheets=[CSS(string=STYLESHEET)])
+    # WeasyPrint 70 ships no type information, so `write_pdf` is `Any` here; its signature is
+    # `write_pdf(target=None, ...)` and it returns the bytes only when `target` is None — which is
+    # why the narrowing is a real check rather than a `cast`. If a future version ever changes that,
+    # this raises where the adapter's `except Exception` floor can translate it, instead of handing
+    # `None` to a caller annotated `bytes`.
+    if not isinstance(rendered, bytes):
+        raise TypeError(f"weasyprint.write_pdf returned {type(rendered).__name__}, not bytes")
+    return rendered

@@ -63,7 +63,10 @@ dependencies = [
     #
     # Imported by exactly one module: tailorcraft.infrastructure.export.pdf.
     "weasyprint>=63",
-    # Imported by exactly one module: tailorcraft.infrastructure.export.tokens.
+    # The parser itself (`MarkdownIt`) is imported by exactly one module:
+    # tailorcraft.infrastructure.export.tokens. Its `Token` type is the pipeline's own data type, so
+    # the three walkers import that one name for their signatures — which is the opposite of a
+    # vendor leak: it is what lets the parse happen once, in one place.
     "markdown-it-py>=3.0",
     # Imported by exactly one module: tailorcraft.infrastructure.export.html.
     "nh3>=0.2",
@@ -164,6 +167,15 @@ ignore_missing_imports = true
 # untyped surface stops at that module rather than spreading through the codebase.
 [[tool.mypy.overrides]]
 module = ["trafilatura.*"]
+ignore_missing_imports = true
+
+# WeasyPrint 70 ships no py.typed and has no stubs on typeshed (checked, not assumed — `markdown_it`
+# and `nh3` both DO ship type information, so only this one needs an entry). The import is confined
+# to `infrastructure/export/pdf.py`, whose two functions are fully annotated, and the one value that
+# crosses back out of the untyped surface — `write_pdf`'s return — is narrowed with an `isinstance`
+# rather than a `cast`, so `Any` stops inside that module.
+[[tool.mypy.overrides]]
+module = ["weasyprint.*"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
