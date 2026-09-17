@@ -28,13 +28,25 @@ skipped red.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final, NoReturn
 from urllib.parse import urlsplit
 
 import structlog
 from weasyprint import CSS, HTML
+from weasyprint.css.tokens import InvalidValues, PercentageInMath, RelativeLengthInMath
+from weasyprint.images import ImageLoadingError
+from weasyprint.svg.utils import PointError
+from weasyprint.urls import FatalURLFetchingError, URLFetchingError
 
 log = structlog.get_logger(__name__)
+
+# The adapter's `url_fetcher` seam, typed so that the seam cannot widen into a policy.
+# **`NoReturn` is the contract, not documentation**: a fetcher that may return is a fetcher that may
+# fetch, and this alias is what makes "there is no allowed URL" a thing `mypy --strict` checks about
+# every substitute. AC-30's recording wrapper delegates to `refuse_every_url` and therefore satisfies
+# it; a stub that returned a resource would not type-check.
+UrlFetcher = Callable[[str], NoReturn]
 
 
 class UrlFetchRefused(Exception):
@@ -45,6 +57,10 @@ class UrlFetchRefused(Exception):
     exception per resource, logs it, and renders the page without that resource — so a document
     pointing at an image produces a PDF without the image, not a failed render. AC-30's test asserts
     the absence of a socket, not the presence of a failure.
+
+    That "catches it per resource" is only true because of `_NonFatalFetcher` below; weasyprint 70
+    decides between per-resource and fatal by reading an attribute off the fetcher, and a bare
+    function does not have it. Read that class before changing anything here.
     """
 
 
@@ -159,13 +175,75 @@ def refuse_every_url(url: str, timeout: float | None = None) -> NoReturn:
     raise UrlFetchRefused("This renderer fetches nothing.")
 
 
-def render_pdf(html: str) -> bytes:
+class _NonFatalFetcher:
+    """Wraps a `UrlFetcher` so WeasyPrint 70 can handle its refusal the way it documents.
+
+    **Measured against weasyprint 70.0, and it is not what the plain-function API used to do.**
+    `weasyprint.urls.fetch` calls the fetcher, catches `Exception`, and then reads
+    `url_fetcher._fail_on_errors` to decide between a per-resource `URLFetchingError` (caught by the
+    caller, which logs and renders without the resource) and a `FatalURLFetchingError` that stops
+    the render. A plain function has no such attribute, so the refusal came back out as
+    `AttributeError: 'function' object has no attribute '_fail_on_errors'` — raised *inside* the
+    library's own error handler, aborting the whole render. Every document that so much as mentions
+    an external resource would have failed instead of rendering without it, and the adapter's floor
+    would have recorded it as `render_error` with no way to tell why.
+
+    `False` is the value this pipeline wants, and deliberately so: WeasyPrint then renders the page
+    without the resource, which is exactly what AC-30(c) and X-54 promise. `True` would raise
+    `FatalURLFetchingError`, which subclasses **`BaseException`** — an `except Exception` floor
+    cannot catch it, and the port's promise would break on the one path it exists for.
+
+    A wrapper rather than an attribute bolted onto `refuse_every_url`, because the seam accepts any
+    `UrlFetcher` and a test's recording wrapper has no more `_fail_on_errors` than a bare function
+    does. Every fetcher reaching WeasyPrint goes through this class, so the library's contract is
+    satisfied for all of them.
+    """
+
+    # Read by `weasyprint.urls.fetch`. Private in the library and named here on purpose: this is a
+    # measured fact about weasyprint 70.0 and it is what a version bump has to re-check.
+    _fail_on_errors = False
+
+    def __init__(self, fetch: UrlFetcher) -> None:
+        self._fetch = fetch
+
+    def __call__(self, url: str) -> NoReturn:
+        self._fetch(url)
+
+
+# WeasyPrint's own exception types that can escape `write_pdf`, measured against **weasyprint 70.0**
+# by sweeping every module in the package for `BaseException` subclasses. They are the *specific*
+# translations that sit on top of `MarkdownDocumentRenderer`'s floor, carrying the better reason
+# (`render_failed`, the document's own fault) instead of the residual `render_error`.
+#
+# They live here rather than in the adapter because `pdf.py` is the only module allowed to import
+# `weasyprint` (ADR-0017's adapter table), so the adapter catches this tuple by name.
+#
+# **`FatalURLFetchingError` subclasses `BaseException`, not `Exception`** — the one measured hole in
+# the floor, and the reason this tuple is typed `type[BaseException]`. `_NonFatalFetcher` makes it
+# unreachable today; naming it anyway is what keeps the port's promise true if that ever changes,
+# and it is safe to catch by name in a way `except BaseException` never is (X-36).
+PDF_DOCUMENT_ERRORS: Final[tuple[type[BaseException], ...]] = (
+    FatalURLFetchingError,
+    URLFetchingError,
+    InvalidValues,
+    PercentageInMath,
+    RelativeLengthInMath,
+    ImageLoadingError,
+    PointError,
+)
+
+
+def render_pdf(html: str, *, url_fetcher: UrlFetcher = refuse_every_url) -> bytes:
     """Render sanitized HTML to PDF bytes with `STYLESHEET` and a fetcher that refuses everything.
 
     CPU-bound and synchronous, like every renderer here; the adapter runs it in
     `asyncio.to_thread` under `asyncio.wait_for` in both processes, never on the event loop.
+
+    `url_fetcher` is the adapter's testing seam arriving from `MarkdownDocumentRenderer`, with the
+    refusing fetcher as its strict default. Nothing under `api/src/` ever passes it; AC-30(b) wraps
+    the default in a recorder and asserts the count is zero on a conformant document.
     """
-    document = HTML(string=html, base_url=None, url_fetcher=refuse_every_url)
+    document = HTML(string=html, base_url=None, url_fetcher=_NonFatalFetcher(url_fetcher))
     rendered = document.write_pdf(stylesheets=[CSS(string=STYLESHEET)])
     # WeasyPrint 70 ships no type information, so `write_pdf` is `Any` here; its signature is
     # `write_pdf(target=None, ...)` and it returns the bytes only when `target` is None — which is

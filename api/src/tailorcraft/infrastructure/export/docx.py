@@ -53,6 +53,9 @@ from urllib.parse import urlsplit
 
 from docx import Document as new_document
 from docx.document import Document
+from docx.exceptions import PythonDocxError
+from docx.opc.exceptions import OpcError
+from docx.oxml.exceptions import XmlchemyError
 from docx.text.paragraph import Paragraph
 from markdown_it.token import Token
 
@@ -60,6 +63,26 @@ from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 from tailorcraft.infrastructure.export.tokens import (
     ALLOWED_LINK_SCHEMES,
     strip_refused_link_markup,
+)
+
+# `python-docx`'s own exception types that can escape this module, measured against **python-docx
+# 1.2.0** by sweeping the package for `Exception` subclasses. They are the *specific* translations
+# that sit on top of `MarkdownDocumentRenderer`'s floor, carrying the better reason (`render_failed`,
+# the document's own fault) instead of the residual `render_error`.
+#
+# They live here rather than in the adapter because `renderer.py` must not import `docx` — it
+# imports the HTML module, and AC-31 forbids any module from doing both. So the adapter catches this
+# tuple by name and the vendor stays behind its own walker.
+#
+# Three base classes, not the ten leaves: `InvalidSpanError` and `InvalidXmlError` are
+# `PythonDocxError`s, `PackageNotFoundError` is an `OpcError`, and `oxml`'s own `InvalidXmlError` is
+# an `XmlchemyError`. The `docx.image.exceptions` family is deliberately absent — every one of them
+# is raised while *inserting an image*, and an image is unrepresentable in this pipeline (X-53), so
+# listing them would be a translation for a path that cannot be reached.
+DOCX_DOCUMENT_ERRORS: Final[tuple[type[Exception], ...]] = (
+    PythonDocxError,
+    OpcError,
+    XmlchemyError,
 )
 
 # The default template's own heading styles, by the level the grammar allows. `normalize_to_grammar`
