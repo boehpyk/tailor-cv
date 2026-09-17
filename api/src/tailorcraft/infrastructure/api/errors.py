@@ -1,5 +1,5 @@
 """`DomainError` -> `HTTPException` translation for this API's whole HTTP surface — `identity`,
-`intake`, `posting` and `tailoring`.
+`intake`, `posting`, `tailoring` and `export`.
 
 The domain never raises `HTTPException` and never carries a status code (CLAUDE.md, ADR-0004) — this
 is the one module that assigns one, for every `DomainError` this slice's use cases can raise.
@@ -21,6 +21,16 @@ from typing import assert_never
 
 from fastapi import HTTPException, status
 
+from tailorcraft.domain.export.errors import (
+    DocumentRenderFailed,
+    ExportFormatNotInline,
+    ExportFormatNotQueued,
+    ExportJobNotFound,
+    ExportNotQueued,
+    ExportNotReady,
+    TailoringRunNotExportable,
+    TooManyExportJobs,
+)
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.intake.errors import BaseCvNotFound, InvalidFilename, TooManyBaseCvs
 from tailorcraft.domain.posting.errors import (
@@ -327,7 +337,66 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         # `expected_version`.
         return _document_version_conflict(current_version=None)
 
+    # -- export (slice 1.5, ADR-0016 / ADR-0017) — SKELETON (I16); the bodies are I18's ---------
+    # Again a branch in the SAME function, for the reason this module's docstring gives: `deps.py`
+    # and all four routers share one mapping, and one mapping is what keeps four 401s from becoming
+    # four messages.
+    #
+    # The `isinstance` union below IS the specification of what this slice's use cases can raise
+    # across an HTTP boundary, which is why it is written whole at the skeleton stage while the
+    # statuses and codes behind it are not: the tuple is a signature, `_export_error_to_http`'s body
+    # is behaviour. I18 fills it in against the failure contract:
+    #
+    #   TailoringRunNotExportable -> 409 `tailoring_run_not_exportable` (+ `status`)   X-4, X-14
+    #   TooManyExportJobs         -> 409 `too_many_export_jobs` (no number in the body) X-18
+    #   ExportFormatNotQueued     -> 422 `validation_error`                            X-15
+    #   ExportFormatNotInline     -> 422 `validation_error`                            X-1
+    #   ExportJobNotFound         -> 404 `export_job_not_found`                        X-43
+    #   ExportNotReady            -> 409 `export_not_ready` (+ `status`, + `failure_reason`)
+    #                                                                                  X-44, X-45
+    #   ExportNotQueued           -> 503 `queue_unavailable`                           X-22
+    #   DocumentRenderTimedOut    -> 503 `render_timed_out`                            X-6
+    #   DocumentRenderFailed      -> 500 `render_failed` — the floor, and the ONE deliberate 500
+    #                                in this codebase. Order matters: the timeout is a subclass.
+    #                                                                                  X-5
+    #
+    # **Note which two export errors are NOT in this union, and that both absences are structural.**
+    # `StoredFileMissing` (X-47 -> 410) and `FileStoreUnavailable` (X-48 -> 503) are already mapped
+    # *above*, by the `tailoring` branch, to one 503 `storage_unavailable` — and that branch is
+    # reached first, since `StoredFileMissing` is a subclass. Two open decisions for I18, flagged
+    # here rather than silently resolved at the skeleton stage because either one changes an answer
+    # an existing test asserts:
+    #   1. the 410/`export_file_gone` split has to be caught somewhere that only the file route
+    #      reaches — the handler's own `except`, most likely, since 410 for a missing stored file is
+    #      a statement about *this* route's resource and not about the store in general; and
+    #   2. AC-26 and X-48 name the code `service_unavailable` where the existing branch says
+    #      `storage_unavailable`. One of the two has to win **on purpose**, and it is named in the
+    #      commit that decides it.
+    if isinstance(
+        exc,
+        TailoringRunNotExportable
+        | TooManyExportJobs
+        | ExportFormatNotQueued
+        | ExportFormatNotInline
+        | ExportJobNotFound
+        | ExportNotReady
+        | ExportNotQueued
+        | DocumentRenderFailed,
+    ):
+        return _export_error_to_http(exc)
+
     raise exc
+
+
+def _export_error_to_http(exc: DomainError) -> HTTPException:
+    """Map one `export` `DomainError` to its status and `code` (X-4 … X-48).
+
+    SKELETON (I16): the union that reaches this function is settled; every branch inside it is I18's
+    and is written against the failure contract, with `DocumentRenderTimedOut` tested **before** its
+    `DocumentRenderFailed` base — the subclass ordering is the whole difference between a 503 that
+    invites a retry and the 500 that admits a bug.
+    """
+    raise NotImplementedError
 
 
 def _document_invalid(problem: str, message: str) -> HTTPException:
