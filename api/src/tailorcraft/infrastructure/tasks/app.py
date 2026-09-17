@@ -5,10 +5,13 @@ application use case, and translates the outcome — exactly like an HTTP route,
 short as one. Business logic in a task is logic that can only be exercised by running a worker
 (ADR-0005).
 
-The beat schedule holds one job: the stale-run sweep (slice 1.3, G-25'), which records a run whose
-worker was lost. The guest-retention purge (FR-6) lands with slice 1.6, and the roadmap deliberately
-keeps it *off* until it has been rehearsed by hand on real data. It issues a `DELETE` against rows and
-unlinks files, and neither is reversible.
+The beat schedule holds two jobs, one per aggregate that a lost worker can strand: the stale-run
+sweep (slice 1.3, G-25') and the stale-**job** sweep (slice 1.5, X-29, AC-20). They are two entries
+rather than one generalized sweep for the reason ADR-0016 (c) gives — the two aggregates have
+different terminal states, different failure reasons and different windows, and a shared sweep would
+have to be widened by whichever of them grew a third. The guest-retention purge (FR-6) lands with
+slice 1.6, and the roadmap deliberately keeps it *off* until it has been rehearsed by hand on real
+data. It issues a `DELETE` against rows and unlinks files, and neither is reversible.
 
 **The worker's observability is configured here, by Celery signal, and that is not decoration.**
 `create_app`'s lifespan calls `configure_logging` / `configure_sentry` for the API process; nothing
@@ -45,6 +48,20 @@ ABANDON_STALE_TAILORING_RUNS_TASK_NAME: Final = "tailorcraft.tailoring.abandon_s
 # **below** the interval, so at most one live tick exists at any moment: see `beat_schedule`.
 STALE_RUN_SWEEP_INTERVAL_SECONDS: Final = 60.0
 STALE_RUN_SWEEP_EXPIRES_SECONDS: Final = 55.0
+
+# The stale-**job** sweep's task name (slice 1.5, X-29, AC-20), here for the same reason the run
+# sweep's is: `beat_schedule` names it and `tasks/export_sweep.py` imports this module, so the other
+# direction is an import cycle.
+ABANDON_STALE_EXPORT_JOBS_TASK_NAME: Final = "tailorcraft.export.abandon_stale_jobs"
+
+# Its interval and expiry. **The same two numbers as the run sweep's, and deliberately two more
+# constants rather than a reuse of those.** They are equal today by agreement, not by dependency:
+# these govern a different schedule over a different aggregate, and the day a long render backlog
+# makes the job sweep worth running every 30 s, that change must not silently halve the run sweep's
+# interval too. Shared shape is not shared meaning (CLAUDE.md). The expiry is below the interval for
+# the reason written at `beat_schedule` below.
+STALE_EXPORT_SWEEP_INTERVAL_SECONDS: Final = 60.0
+STALE_EXPORT_SWEEP_EXPIRES_SECONDS: Final = 55.0
 
 # The hard time limit: the pool child running a task is killed at this many seconds. Named because
 # two things read it, the config below and the stale-window check at the top of `create_celery`,
@@ -130,6 +147,8 @@ def create_celery() -> Celery:
         include=[
             "tailorcraft.infrastructure.tasks.tailoring",
             "tailorcraft.infrastructure.tasks.tailoring_sweep",
+            "tailorcraft.infrastructure.tasks.export",
+            "tailorcraft.infrastructure.tasks.export_sweep",
         ],
     )
     celery_app.conf.update(
@@ -227,14 +246,31 @@ def create_celery() -> Celery:
         # **Redis remembers bindings.** kombu adds one when a queue is declared and never removes
         # one. Any broker that ran the old declaration keeps the stale binding until someone deletes
         # it: `SREM _kombu.binding.celery "celery\x06\x16\x06\x16tailoring"`.
+        #
+        # **The third queue, `export` (slice 1.5, AC-44), for the reason the second one exists.** A
+        # PDF render holds a worker slot for a second or two; `--concurrency=2` means two of them can
+        # hold both slots while a tailoring run the user is watching a spinner for waits. One worker
+        # consumes all three today, so this separates the messages and not yet the capacity — and
+        # that is exactly the point: giving exports their own worker is then `-Q export` in
+        # `docker-compose.yml` rather than a code change.
+        #
+        # It was written **with its routing key in its first version**, and that sentence is the
+        # whole of the lesson above applied forward rather than recorded. kombu adds a binding when
+        # a queue is declared and never removes one; `watchmedo` restarts the worker the moment this
+        # file is saved; so a version of this line without `routing_key=` would have reached the dev
+        # broker before anyone chose to run it, bound `export` under the key `celery`, and left a
+        # publish on `celery` reaching two queues until someone ran `SREM` by hand. There is no
+        # version of this declaration without the key anywhere in this branch's history.
         task_default_queue=DEFAULT_QUEUE_NAME,
         task_queues=(
             Queue(DEFAULT_QUEUE_NAME, routing_key=DEFAULT_QUEUE_NAME),
             Queue(settings.tailoring_queue_name, routing_key=settings.tailoring_queue_name),
+            Queue(settings.export_queue_name, routing_key=settings.export_queue_name),
         ),
         # --- The beat schedule --------------------------------------------------------------------
         #
-        # One job until slice 1.6: the stale-run sweep (G-25'). See the module docstring.
+        # Two jobs until slice 1.6: the stale-run sweep (G-25') and the stale-job sweep (X-29). See
+        # the module docstring for why they are two entries and not one.
         beat_schedule={
             "abandon-stale-tailoring-runs": {
                 "task": ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
@@ -259,6 +295,29 @@ def create_celery() -> Celery:
                     # unrun as well. That delays recovery and never loses it: a stale run stays
                     # listed until a tick finds a free slot.
                     "expires": STALE_RUN_SWEEP_EXPIRES_SECONDS,
+                },
+            },
+            # The stale-**job** sweep (slice 1.5, X-29, AC-20): the one recovery for an export whose
+            # worker was lost. Redelivery is not, for the reason written at `task_acks_late` above —
+            # a killed pool child, a hard time limit and a task that raised all ack their message —
+            # so without this entry every one of those leaves a job `rendering` for ever behind a UI
+            # that says "still preparing your file".
+            "abandon-stale-export-jobs": {
+                "task": ABANDON_STALE_EXPORT_JOBS_TASK_NAME,
+                "schedule": STALE_EXPORT_SWEEP_INTERVAL_SECONDS,
+                "options": {
+                    # **The default `celery` queue, not `export`** — the run sweep's reason exactly:
+                    # queueing the recovery behind the backlog of renders it is recovering from
+                    # makes recovery wait on the workload that failed. It becomes separate capacity
+                    # the day exports get their own worker (`-Q`, a compose change), and this line
+                    # is already right for that day.
+                    "queue": DEFAULT_QUEUE_NAME,
+                    # Below the interval, so at most one live tick exists: a worker back after an
+                    # hour finds one sweep worth running rather than sixty, and the fifty-nine it
+                    # discards were each made pointless by the one after it. A tick that expires
+                    # unrun delays recovery and never loses it — a stale job stays listed until a
+                    # tick finds a free slot.
+                    "expires": STALE_EXPORT_SWEEP_EXPIRES_SECONDS,
                 },
             },
         },
