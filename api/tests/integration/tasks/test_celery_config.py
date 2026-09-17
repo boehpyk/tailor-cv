@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import pytest
 
-from tailorcraft.infrastructure.settings import MisconfiguredSettings, Settings
+from tailorcraft.infrastructure.settings import MisconfiguredSettings, Settings, get_settings
 from tailorcraft.infrastructure.tasks import app as tasks_app_module
 from tailorcraft.infrastructure.tasks.app import (
     ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
@@ -137,6 +137,36 @@ def test_no_two_queues_in_task_queues_share_a_routing_key() -> None:
         "two queues sharing a routing key both receive any publish made with that key — exactly the "
         "double-delivery V5d-3 fixes (tasks/app.py's own comment on task_queues)"
     )
+
+
+# --- AC-44 (I14t): the export queue is the third declared queue --------------------------------
+
+
+def test_task_queues_declares_exactly_the_default_tailoring_and_export_queues() -> None:
+    """AC-44: `export` (I12) joins the default and `tailoring` queues as the third one declared —
+    not merely "some three queues", but specifically the ones `settings` and `tasks/app.py`'s own
+    `DEFAULT_QUEUE_NAME` constant name. `test_every_queue_in_task_queues_has_a_routing_key_equal_
+    to_its_own_name` above already proves every declared queue's routing key equals its own name,
+    generically, for however many queues are declared — adding `export` there needed no change. What
+    was still unproven is that `export` is actually one of the three: a typo in `Queue(settings.
+    export_queue_name, routing_key=settings.export_queue_name)` (e.g. the wrong settings attribute)
+    would still pass that generic test as long as whatever name it *did* declare matched its own
+    routing key.
+
+    Proven to discriminate by locally deleting the third `Queue(...)` entry from `task_queues` in
+    `tasks/app.py`: this test goes red on the set comparison (`{'celery', 'tailoring'}` vs. the
+    three-name set below) while the generic routing-key test above stays green, since two queues
+    each still route on their own name.
+    """
+    settings = get_settings()
+    queue_names = {queue.name for queue in app.conf.task_queues}
+
+    assert queue_names == {
+        tasks_app_module.DEFAULT_QUEUE_NAME,
+        settings.tailoring_queue_name,
+        settings.export_queue_name,
+    }
+    assert len(app.conf.task_queues) == 3, "one Queue object per name — no duplicate declarations"
 
 
 # --- RED (verify round 2): tailoring_stale_after_seconds must stay above task_time_limit, or the --
