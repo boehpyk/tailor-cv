@@ -34,6 +34,15 @@ Used by:
   `.saved` records every run a *successful* `save` call persisted, in order, which is what lets a
   test on the rejection paths assert nothing was written (`saved == []`) without caring whether
   `save` was even reached.
+- `tests/integration/export/` (T6 — the seven `export` use cases). `FakeExportJobRepository` is
+  `FakeTailoringRunRepository`'s shape (`next_identity`, `add`, `get`-raises, `find`-returns-`None`,
+  `conflict_on_save`, `saved`, `.all()`) plus the three lookups `ExportJobRepository` adds that no
+  earlier port needed — `list_for_run`, `find_latest_for_key` and `list_stale_rendering` — because
+  `ExportJob` is the first aggregate in this codebase looked up by a business key instead of only by
+  id. `FakeDocumentRenderer` and `FakeExportQueue` mirror `FakeLlm` and `FakeTailoringQueue`'s shape
+  (one instance, one configured outcome, a `.calls` / `.enqueued` log); `MissingFileStore` is a third
+  `FileStorePort` stand-in beside the pre-existing `InMemoryFileStore` and `AlwaysFailingFileStore`,
+  for the one case neither covers — a `ready` job's `get` finding nothing (X-47).
 """
 
 from __future__ import annotations
@@ -44,6 +53,14 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from tailorcraft.domain.export.errors import (
+    DocumentRenderFailed,
+    ExportJobConcurrentlyModified,
+    ExportJobNotFound,
+    ExportNotQueued,
+)
+from tailorcraft.domain.export.export_job import ExportJob
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
 from tailorcraft.domain.identity.errors import GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -59,7 +76,7 @@ from tailorcraft.domain.posting.value_objects import (
     SourceUrl,
 )
 from tailorcraft.domain.shared.events import DomainEvent
-from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
+from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
     TailoringFailed,
     TailoringNotQueued,
@@ -68,6 +85,7 @@ from tailorcraft.domain.tailoring.errors import (
 )
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
+    TailoredDocumentKind,
     TailoredDraft,
     TailoringRunId,
     TailoringRunStatus,
@@ -195,13 +213,22 @@ class InMemoryFileStore:
 
 
 class AlwaysFailingFileStore:
-    """`FileStorePort` that fails every write, simulating F-14 (`ENOSPC` / `EACCES`)."""
+    """`FileStorePort` that fails every write, simulating F-14 (`ENOSPC` / `EACCES`).
+
+    `get` raises `FileStoreUnavailable` too — added in this commit (T6) for
+    `DownloadExportFile`'s X-48 (`EIO`, permissions: the store answers, but not with the file).
+    Before 1.5 nothing in this codebase ever called `get` at all (`StoredFileMissing`'s own
+    docstring says so), so widening it from the original guard-rail `AssertionError` changes no
+    existing test's behaviour — 1.1's upload test never reaches this method either way. `delete`
+    keeps the `AssertionError`: nothing here needs it to fail, and it stays a guard against a test
+    reaching a method it does not claim to cover.
+    """
 
     async def put(self, ref: FileRef, data: bytes) -> None:
         raise FileStoreUnavailable("simulated storage failure")
 
     async def get(self, ref: FileRef) -> bytes:
-        raise AssertionError("get() should not be reached in this scenario")
+        raise FileStoreUnavailable("simulated storage failure")
 
     async def delete(self, ref: FileRef) -> None:
         raise AssertionError("delete() should not be reached in this scenario")
@@ -428,6 +455,177 @@ class FakeTailoringQueue:
         if self._outcome is not None:
             raise self._outcome
         self.enqueued.append(run_id)
+
+
+class FakeExportJobRepository:
+    """In-memory `ExportJobRepository`.
+
+    `FakeTailoringRunRepository`'s shape (`next_identity`, `add`, `get`-raises, `find`-returns-
+    `None`, `conflict_on_save`, `saved`, `.all()`), for the identical reason: `ExportJob` is the
+    second aggregate in this codebase loaded, mutated and re-saved by a second process (the worker),
+    so it needs the same optimistic-concurrency stand-in. `conflict_on_save` (T6, ADR-0015 §3
+    applied a second time) raises `ExportJobConcurrentlyModified` on its next `N` calls to `save`,
+    decrementing each time, then behaves normally — the in-memory version of the `StaleDataError` a
+    real `version_id_col` mismatch reports.
+
+    Three methods have no counterpart in `FakeTailoringRunRepository`, because `ExportJobRepository`
+    is the first port in this codebase with lookups keyed on something other than an id alone:
+
+    - `list_for_run` — every job for a run, **newest first** (`requested_at` descending, ties
+      broken by id descending — the same total order `find_latest_for_key` needs for the identical
+      reason, since the whole-second `Clock` makes ties ordinary rather than rare).
+    - `find_latest_for_key` — the most recent job for a (run, document, format) triple, or `None`.
+      `RequestExport`'s idempotency check (X-16, X-17).
+    - `list_stale_rendering` — `RENDERING` jobs whose `started_at` is before `started_before`, **or**
+      has no `started_at` at all (the same `NULLS FIRST` fold `ExportJob.is_stale` makes, expressed
+      as a filter), oldest first, ties broken by id, bounded by `limit`. `AbandonStaleExportJobs`'s
+      lookup (X-29).
+    """
+
+    def __init__(self, conflict_on_save: int = 0) -> None:
+        self._by_id: dict[ExportJobId, ExportJob] = {}
+        self.saved: list[ExportJob] = []
+        self._conflict_on_save = conflict_on_save
+
+    def next_identity(self) -> ExportJobId:
+        return ExportJobId(value=uuid4())
+
+    async def add(self, job: ExportJob) -> None:
+        self._by_id[job.id] = job
+
+    async def save(self, job: ExportJob) -> None:
+        if self._conflict_on_save > 0:
+            self._conflict_on_save -= 1
+            raise ExportJobConcurrentlyModified(job.id)
+        self.saved.append(job)
+        self._by_id[job.id] = job
+
+    async def get(self, job_id: ExportJobId) -> ExportJob:
+        try:
+            return self._by_id[job_id]
+        except KeyError:
+            raise ExportJobNotFound(str(job_id)) from None
+
+    async def find(self, job_id: ExportJobId) -> ExportJob | None:
+        return self._by_id.get(job_id)
+
+    async def list_for_run(self, run_id: TailoringRunId) -> Sequence[ExportJob]:
+        jobs = [job for job in self._by_id.values() if job.tailoring_run_id == run_id]
+        jobs.sort(key=lambda job: (job.requested_at, job.id.value), reverse=True)
+        return jobs
+
+    async def find_latest_for_key(
+        self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat
+    ) -> ExportJob | None:
+        candidates = [
+            job
+            for job in self._by_id.values()
+            if job.tailoring_run_id == run_id and job.document == document and job.format == format
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda job: (job.requested_at, job.id.value), reverse=True)
+        return candidates[0]
+
+    async def count_for_session(self, sid: GuestSessionId) -> int:
+        return len([job for job in self._by_id.values() if job.guest_session_id == sid])
+
+    async def list_stale_rendering(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[ExportJob]:
+        candidates = [
+            job
+            for job in self._by_id.values()
+            if job.status is ExportJobStatus.RENDERING
+            and (job.started_at is None or job.started_at < started_before)
+        ]
+
+        def _sort_key(job: ExportJob) -> tuple[bool, datetime, UUID]:
+            # `started_at is None` sorts first (`False < True`); ties on `started_at` break on id.
+            return (job.started_at is not None, job.started_at or _EPOCH, job.id.value)
+
+        candidates.sort(key=_sort_key)
+        return candidates[:limit]
+
+    def all(self) -> list[ExportJob]:
+        """Test-only inspection, not part of `ExportJobRepository`."""
+        return list(self._by_id.values())
+
+
+class FakeDocumentRenderer:
+    """`DocumentRendererPort` that either returns fixed bytes or raises a fixed
+    `DocumentRenderFailed`, mirroring `FakeLlm`'s and `FakeExtractor`'s shape: one instance,
+    configured with exactly the outcome a test is about.
+
+    `calls` records the exact `(markdown, document, format)` triple `render` was invoked with — not
+    merely a count — because `render`'s two keyword-only parameters (`document`, `format`) are the
+    two facts a test needs to assert the use case selected the right source and asked for the right
+    format, the same argument `FakeLlm.calls` makes for `(cv, posting)`.
+
+    `delay_seconds` sleeps before producing the outcome, on every call — present for the same reason
+    `FakeLlm.delay_seconds` is, even though no T6 test drives it past a budget: a later timeout test
+    needs it and this is where it must live to avoid a second, drifting copy of this fake.
+    """
+
+    def __init__(
+        self,
+        outcome: bytes | DocumentRenderFailed,
+        *,
+        delay_seconds: float = 0.0,
+    ) -> None:
+        self._outcome = outcome
+        self._delay_seconds = delay_seconds
+        self.calls: list[tuple[str, TailoredDocumentKind, ExportFormat]] = []
+
+    async def render(
+        self, markdown: str, *, document: TailoredDocumentKind, format: ExportFormat
+    ) -> bytes:
+        self.calls.append((markdown, document, format))
+        if self._delay_seconds:
+            await asyncio.sleep(self._delay_seconds)
+        if isinstance(self._outcome, DocumentRenderFailed):
+            raise self._outcome
+        return self._outcome
+
+
+class FakeExportQueue:
+    """`ExportQueuePort` that records every id it was asked to enqueue, or raises a fixed
+    `ExportNotQueued` instead — one instance per test, configured with exactly the outcome that test
+    is about, mirroring `FakeTailoringQueue`'s shape exactly (the default `outcome=None` is the
+    broker accepting the publish; passing an `ExportNotQueued` instance is X-22's broker-down
+    variant).
+
+    Not exercised by any test in this commit — `RequestExport` never enqueues, per its own docstring,
+    and no other T6 use case reaches this port — but added here now for `FakeTailoringQueue`'s own
+    reason: the HTTP-contract tests (I17) need it, and this is where a fake belongs so it never grows
+    a second, drifting copy.
+    """
+
+    def __init__(self, outcome: ExportNotQueued | None = None) -> None:
+        self._outcome = outcome
+        self.enqueued: list[ExportJobId] = []
+
+    async def enqueue(self, job_id: ExportJobId) -> None:
+        if self._outcome is not None:
+            raise self._outcome
+        self.enqueued.append(job_id)
+
+
+class MissingFileStore:
+    """`FileStorePort` whose `get` always raises `StoredFileMissing` — the file a `ready` row names
+    has been deleted from under it (X-47). `put` and `delete` raise `AssertionError`, the
+    `AlwaysFailingFileStore` convention: this fake exists for `DownloadExportFile`'s read path only,
+    and a test reaching either write method has drifted from what it claims to cover.
+    """
+
+    async def put(self, ref: FileRef, data: bytes) -> None:
+        raise AssertionError("put() should not be reached in this scenario")
+
+    async def get(self, ref: FileRef) -> bytes:
+        raise StoredFileMissing("simulated missing file")
+
+    async def delete(self, ref: FileRef) -> None:
+        raise AssertionError("delete() should not be reached in this scenario")
 
 
 class _HasAll(Protocol):
