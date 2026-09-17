@@ -57,6 +57,7 @@ def create_celery() -> Celery:
 
     Raises:
         MisconfiguredSettings: `tailoring_stale_after_seconds` is not above the hard time limit.
+        MisconfiguredSettings: `export_stale_after_seconds` is not above the hard time limit.
     """
     settings = get_settings()
 
@@ -90,6 +91,30 @@ def create_celery() -> Celery:
             "TAILORING_STALE_AFTER_SECONDS must be greater than Celery's task_time_limit: "
             f"tailoring_stale_after_seconds={settings.tailoring_stale_after_seconds} is not above "
             f"task_time_limit={TASK_TIME_LIMIT_SECONDS}. The stale-run sweep would record a call "
+            "that is still running as abandoned, and its paid-for result would be lost. Set it "
+            f"above {TASK_TIME_LIMIT_SECONDS} (the default is 300)."
+        )
+
+    # **The second guard, beside the first, same shape, same reason.** Slice 1.5's stale-job sweep
+    # (`AbandonStaleExportJobs`) is `AbandonStaleTailoringRuns`'s sibling: a live render must never
+    # be swept. With `export_stale_after_seconds` at or below the hard limit, the sweep can record a
+    # job `abandoned` while its worker is still writing the file, the worker's later `mark_ready`
+    # then meets a row the sweep already decided, and the render is lost after being paid for in
+    # worker seconds and disk. Above the limit, the pool child is killed before its job is old
+    # enough to sweep.
+    #
+    # **This runs at API import too**, for the same reason as the guard above:
+    # `infrastructure/api/main.py` imports `app` from this module. Under `uvicorn --workers N` this
+    # refusal does NOT exit the container — the supervisor respawns the failing import for ever, and
+    # the container never becomes ready and never exits, so `restart: unless-stopped` never cycles
+    # it and nothing reads as a restart loop. Worker and beat fail loudly by contrast: the celery CLI
+    # cannot load the app, so the process exits and shows as a restart loop. When a release's API
+    # never goes ready, read its log for this message before suspecting the network (CLAUDE.md).
+    if settings.export_stale_after_seconds <= TASK_TIME_LIMIT_SECONDS:
+        raise MisconfiguredSettings(
+            "EXPORT_STALE_AFTER_SECONDS must be greater than Celery's task_time_limit: "
+            f"export_stale_after_seconds={settings.export_stale_after_seconds} is not above "
+            f"task_time_limit={TASK_TIME_LIMIT_SECONDS}. The stale-job sweep would record a render "
             "that is still running as abandoned, and its paid-for result would be lost. Set it "
             f"above {TASK_TIME_LIMIT_SECONDS} (the default is 300)."
         )
