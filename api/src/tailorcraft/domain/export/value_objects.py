@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import assert_never
 from uuid import UUID
 
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
@@ -96,18 +97,54 @@ class ExportFormat(StrEnum):
 
     @property
     def delivery(self) -> ExportDelivery:
-        """`INLINE` for `md` and `txt`, `QUEUED` for `pdf` and `docx` (AC-1)."""
-        raise NotImplementedError
+        """`INLINE` for `md` and `txt`, `QUEUED` for `pdf` and `docx` (AC-1).
+
+        A `match` closed by `assert_never` rather than a `self in (MD, TXT)` membership test or a
+        dict lookup, and the difference is what happens when a fifth format is added: a membership
+        test silently folds the newcomer into the `QUEUED` half and a dict raises `KeyError` in
+        production, while this stops `mypy --strict` with the member's name in the message. The
+        answer to "is rendering this CPU-bound?" is the one fact in this slice that must never be
+        guessed at — a wrong `INLINE` puts WeasyPrint on the event loop, which passes every test
+        with one user and collapses at five, silently.
+        """
+        match self:
+            case ExportFormat.MD | ExportFormat.TXT:
+                return ExportDelivery.INLINE
+            case ExportFormat.PDF | ExportFormat.DOCX:
+                return ExportDelivery.QUEUED
+            case _:
+                assert_never(self)
 
     @property
     def media_type(self) -> str:
-        """The `Content-Type` this format is served as, charset included where it applies."""
-        raise NotImplementedError
+        """The `Content-Type` this format is served as, charset included where it applies.
+
+        `charset=utf-8` on the two text formats and not on the two binary ones, because it means
+        something for exactly the first two: a tailored CV carries accented names and typographic
+        dashes, and a browser left to guess an encoding renders them as mojibake in the one document
+        a stranger is about to send to an employer.
+        """
+        match self:
+            case ExportFormat.MD:
+                return "text/markdown; charset=utf-8"
+            case ExportFormat.TXT:
+                return "text/plain; charset=utf-8"
+            case ExportFormat.PDF:
+                return "application/pdf"
+            case ExportFormat.DOCX:
+                return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            case _:
+                assert_never(self)
 
     @property
     def file_extension(self) -> str:
-        """The extension a file of this format carries — the member's own value."""
-        raise NotImplementedError
+        """The extension a file of this format carries — the member's own value.
+
+        `self.value`, not a second table, which is what makes ADR-0011's storage grammar and the
+        wire spelling the same string **by construction**: there is no mapping here that could drift
+        out of step with the member it maps.
+        """
+        return self.value
 
 
 class ExportJobStatus(StrEnum):
@@ -186,8 +223,41 @@ def download_filename(document: TailoredDocumentKind, format: ExportFormat) -> s
     asserts the header is byte-identical to the constant. A rule about what may not influence an
     output belongs where rules live, not in the layer that happens to emit the header.
 
-    T3 implements this as a `match` over both enums with an `assert_never` default, so that a fifth
-    format or a third document kind is a type error here before it is a missing filename in
-    production.
+    Implemented as a `match` over both enums with an `assert_never` default, so that a fifth format
+    or a third document kind is a type error here before it is a missing filename in production.
+    The eight results are written out as literals rather than assembled from a stem and
+    `format.file_extension`: assembling them would be shorter and would also be the first step back
+    towards deriving a filename, and the whole rule is that this output is a constant.
+
+    **Two nested `match`es rather than one over the pair.** The nested form gives each enum its own
+    `assert_never`, so adding a format and adding a document kind are two distinct type errors that
+    each name the member that is missing an arm — where a single wildcard over the tuple reports one
+    failure for either cause.
     """
-    raise NotImplementedError
+    match document:
+        case TailoredDocumentKind.CV:
+            match format:
+                case ExportFormat.MD:
+                    return "tailored-cv.md"
+                case ExportFormat.TXT:
+                    return "tailored-cv.txt"
+                case ExportFormat.PDF:
+                    return "tailored-cv.pdf"
+                case ExportFormat.DOCX:
+                    return "tailored-cv.docx"
+                case _:
+                    assert_never(format)
+        case TailoredDocumentKind.COVER_LETTER:
+            match format:
+                case ExportFormat.MD:
+                    return "cover-letter.md"
+                case ExportFormat.TXT:
+                    return "cover-letter.txt"
+                case ExportFormat.PDF:
+                    return "cover-letter.pdf"
+                case ExportFormat.DOCX:
+                    return "cover-letter.docx"
+                case _:
+                    assert_never(format)
+        case _:
+            assert_never(document)

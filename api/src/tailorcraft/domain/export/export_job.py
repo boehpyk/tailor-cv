@@ -9,23 +9,38 @@ exist for an inline format** (XJ-2), and no other aggregate in this codebase has
 refuses one of its own enum's members. A supertype would either not hold that rule or would impose
 it on three classes it makes no sense for.
 
-This module is written in two steps (docs/sdlc.md §2): this T1 skeleton of real signatures with
-`NotImplementedError` bodies, so that `qa`'s T2 tests fail on their *assertions* rather than on an
-`ImportError`, and then T3's GREEN filling in `request`, the three transitions and the reads against
-those recorded reds. Nothing in the tests is touched to get there.
+This module was written in two steps (docs/sdlc.md §2): a skeleton of real signatures with
+`NotImplementedError` bodies, so that `qa`'s tests failed on their *assertions* rather than on an
+`ImportError`, and then the GREEN step that filled in `request`, the three transitions and the reads
+against those recorded reds. Nothing in the tests was touched to get there.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from tailorcraft.domain.export.errors import (
+    ExportAlreadyDecided,
+    ExportAlreadyStarted,
+    ExportFormatNotQueued,
+    ExportNotRendering,
+    InvalidRunVersion,
+)
+from tailorcraft.domain.export.events import (
+    ExportFailed,
+    ExportReady,
+    ExportRequested,
+    ExportStarted,
+)
 from tailorcraft.domain.export.value_objects import (
+    ExportDelivery,
     ExportFailureReason,
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
 )
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 from tailorcraft.domain.shared.files import FileRef
 
@@ -247,8 +262,80 @@ class ExportJob(RecordsEvents):
         aggregate never sees the run (see "Deliberately not invariants"). The use case passes
         `run.version` at the moment of the click; from then on the job renders *that* version or
         fails `source_changed`.
+
+        Both refusals happen **before `cls()`**, so a job that breaks XJ-2 or XJ-8 never exists even
+        momentarily — there is no half-built instance for an `except` block somewhere to catch and
+        keep.
         """
-        raise NotImplementedError
+        if format.delivery is ExportDelivery.INLINE:
+            raise ExportFormatNotQueued(format)
+        if run_version < 1:
+            raise InvalidRunVersion(f"run_version must be >= 1, got {run_version} (XJ-8)")
+
+        job = cls()
+        job._id = id
+        job._guest_session_id = guest_session_id
+        job._tailoring_run_id = tailoring_run_id
+        job._document = document
+        job._format = format
+        job._run_version = run_version
+        job._status = ExportJobStatus.QUEUED
+        job._failure_reason = None
+        job._file_key = None
+        job._byte_size = None
+        job._render_duration_ms = None
+        job._requested_at = requested_at
+        job._started_at = None
+        job._completed_at = None
+        # XJ-6: `version` is 1 at request; every transition after this bumps it by exactly one.
+        job._version = 1
+
+        job.record(
+            ExportRequested(
+                export_job_id=id,
+                guest_session_id=guest_session_id,
+                tailoring_run_id=tailoring_run_id,
+                document=document,
+                format=format,
+                run_version=run_version,
+                occurred_at=requested_at,
+            )
+        )
+        return job
+
+    def _guard_outcome_not_yet_decided(self) -> None:
+        """The bottom two rows of the transition table, written once rather than three times: from
+        `READY` or `FAILED`, all three transitions raise `ExportAlreadyDecided` (XJ-4). Two copies
+        of an invariant is one copy that gets fixed and one that does not — the call
+        `TailoringRun._guard_outcome_not_yet_decided` and `BaseCv` both make.
+
+        Deliberately checked **before** each method's own status rule, so a redelivered task calling
+        `mark_started` on a job that is already `ready` is told the outcome is decided rather than
+        that the job is merely already started. The first is the fact the caller needs: one says
+        "someone else finished this", the other says "someone else is still on it".
+        """
+        if self._status in (ExportJobStatus.READY, ExportJobStatus.FAILED):
+            raise ExportAlreadyDecided(
+                f"the outcome of {self._id!r} was already decided as {self._status!r}"
+            )
+
+    def _guard_completed_at(self, at: datetime) -> None:
+        """XJ-5's second half, shared by `mark_ready` and `mark_failed`: an outcome may not be
+        recorded as happening before the render started, or — when the job never started — before it
+        was requested.
+
+        The `None` branch is reachable only from `mark_failed`, because `mark_ready` is legal only
+        from `RENDERING` and `RENDERING` always carries a `started_at`. It is written as a fallback
+        rather than as an assertion precisely so that the one caller that *can* be in that state
+        gets an honest floor instead of no check at all: a `not_queued` failure recorded before its
+        own job was requested is the same negative duration XJ-5 exists to refuse.
+        """
+        floor = self._requested_at if self._started_at is None else self._started_at
+        if at < floor:
+            raise InvariantViolated(
+                "completed_at must be >= started_at, or >= requested_at when the job never "
+                "started (XJ-5)"
+            )
 
     def mark_started(self, at: datetime) -> None:
         """A worker picked this job up and is about to render it: `queued → rendering`.
@@ -262,7 +349,19 @@ class ExportJob(RecordsEvents):
         what stops the second is the `version` bump here plus `ExportJobConcurrentlyModified` on its
         `save` (AC-6, X-30) — which is why the bump is an invariant and not a detail.
         """
-        raise NotImplementedError
+        self._guard_outcome_not_yet_decided()
+        if self._status is ExportJobStatus.RENDERING:
+            raise ExportAlreadyStarted(f"{self._id!r} is already rendering")
+        if at < self._requested_at:
+            raise InvariantViolated("started_at must be >= requested_at (XJ-5)")
+
+        self._status = ExportJobStatus.RENDERING
+        self._started_at = at
+        # XJ-6: with the generator off, the row's version check only detects a race this bump moved
+        # past — a transition that forgets this line has no concurrency protection (ADR-0015 §3).
+        self._version += 1
+
+        self.record(ExportStarted(export_job_id=self._id, occurred_at=at))
 
     def mark_ready(self, *, byte_size: int, render_duration_ms: int, at: datetime) -> None:
         """The render produced bytes and they are on the volume: `rendering → ready`.
@@ -285,7 +384,30 @@ class ExportJob(RecordsEvents):
         for PRD §8's: a `ready` job that cannot say how big its file is or how long it took is a
         success-rate and latency budget with no evidence behind it.
         """
-        raise NotImplementedError
+        self._guard_outcome_not_yet_decided()
+        if self._status is not ExportJobStatus.RENDERING:
+            raise ExportNotRendering(f"{self._id!r} is {self._status!r}, not rendering")
+        self._guard_completed_at(at)
+
+        self._status = ExportJobStatus.READY
+        # XJ-7: the key is computed, never passed. The row and the file cannot disagree, because
+        # neither side chose the name.
+        self._file_key = self.storage_ref
+        self._byte_size = byte_size
+        self._render_duration_ms = render_duration_ms
+        self._completed_at = at
+        # XJ-6, as in `mark_started` above.
+        self._version += 1
+
+        self.record(
+            ExportReady(
+                export_job_id=self._id,
+                format=self._format,
+                byte_size=byte_size,
+                render_duration_ms=render_duration_ms,
+                occurred_at=at,
+            )
+        )
 
     def mark_failed(self, reason: ExportFailureReason, at: datetime) -> None:
         """The job ended without a file: `queued → failed` or `rendering → failed`.
@@ -297,8 +419,23 @@ class ExportJob(RecordsEvents):
         Legal from `queued` for exactly one reason — a failed enqueue (`not_queued`, X-22) — which
         the class docstring's table spells out. It accepts all nine reasons, including the four
         nothing raises: the aggregate records the fact of a failure, not the fact of an exception.
+
+        There is no status check beyond the decided guard, and the absence is the `queued` cell of
+        the table rather than an omission: both non-terminal statuses may fail.
         """
-        raise NotImplementedError
+        self._guard_outcome_not_yet_decided()
+        self._guard_completed_at(at)
+
+        self._status = ExportJobStatus.FAILED
+        self._failure_reason = reason
+        self._completed_at = at
+        # XJ-6, as in the two transitions above. `started_at` is deliberately left untouched: on the
+        # `queued → failed` path it stays `None`, because no worker ever began a render and a
+        # timestamp invented to satisfy a state machine lies to every latency measurement built on
+        # it.
+        self._version += 1
+
+        self.record(ExportFailed(export_job_id=self._id, reason=reason, occurred_at=at))
 
     @property
     def storage_ref(self) -> FileRef:
@@ -315,7 +452,7 @@ class ExportJob(RecordsEvents):
         first is a computation, the second is a fact, and AC-5 asserts they are equal after
         `mark_ready` rather than assuming it.
         """
-        raise NotImplementedError
+        return FileRef.for_export(self._id, self._format)
 
     def is_stale(self, now: datetime, stale_after: timedelta) -> bool:
         """Whether this job claims to be `rendering` but no worker can still be on it — a pure query
@@ -347,9 +484,14 @@ class ExportJob(RecordsEvents):
         does not read settings. Its one hard constraint lives outside this method, where it can be
         seen: the window must sit above the task's hard time limit, so a render still in flight can
         never be judged stale — which is what the second startup guard in `create_celery` refuses to
-        boot without (D3).
+        boot without (D3). This method cannot know that limit and does not pretend to.
         """
-        raise NotImplementedError
+        if self._status is not ExportJobStatus.RENDERING:
+            return False
+        # The fold, on the stale side for the reason in the docstring above.
+        if self._started_at is None:
+            return True
+        return now - self._started_at > stale_after
 
     def was_requested_for(self, run_version: int) -> bool:
         """Whether this job was requested for the run version it is being compared against — i.e.
@@ -367,27 +509,27 @@ class ExportJob(RecordsEvents):
         a per-document version — is a second counter that the optimistic-concurrency column would
         then have to agree with.
         """
-        raise NotImplementedError
+        return self._run_version == run_version
 
     @property
     def id(self) -> ExportJobId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def guest_session_id(self) -> GuestSessionId:
-        raise NotImplementedError
+        return self._guest_session_id
 
     @property
     def tailoring_run_id(self) -> TailoringRunId:
-        raise NotImplementedError
+        return self._tailoring_run_id
 
     @property
     def document(self) -> TailoredDocumentKind:
-        raise NotImplementedError
+        return self._document
 
     @property
     def format(self) -> ExportFormat:
-        raise NotImplementedError
+        return self._format
 
     @property
     def run_version(self) -> int:
@@ -398,15 +540,15 @@ class ExportJob(RecordsEvents):
         another aggregate's state*, read once and frozen, and the other is this job's own
         optimistic-concurrency counter. Neither is ever assigned from the other.
         """
-        raise NotImplementedError
+        return self._run_version
 
     @property
     def status(self) -> ExportJobStatus:
-        raise NotImplementedError
+        return self._status
 
     @property
     def failure_reason(self) -> ExportFailureReason | None:
-        raise NotImplementedError
+        return self._failure_reason
 
     @property
     def file_key(self) -> FileRef | None:
@@ -416,27 +558,27 @@ class ExportJob(RecordsEvents):
         file nothing has written, and 1.6's retention sweep would then be unlinking paths that were
         never created.
         """
-        raise NotImplementedError
+        return self._file_key
 
     @property
     def byte_size(self) -> int | None:
-        raise NotImplementedError
+        return self._byte_size
 
     @property
     def render_duration_ms(self) -> int | None:
-        raise NotImplementedError
+        return self._render_duration_ms
 
     @property
     def requested_at(self) -> datetime:
-        raise NotImplementedError
+        return self._requested_at
 
     @property
     def started_at(self) -> datetime | None:
-        raise NotImplementedError
+        return self._started_at
 
     @property
     def completed_at(self) -> datetime | None:
-        raise NotImplementedError
+        return self._completed_at
 
     @property
     def version(self) -> int:
@@ -446,4 +588,4 @@ class ExportJob(RecordsEvents):
         database only *detects* a race that this number was bumped past. There is no setter; nothing
         outside the three transitions writes it. See `run_version` above for the other integer.
         """
-        raise NotImplementedError
+        return self._version

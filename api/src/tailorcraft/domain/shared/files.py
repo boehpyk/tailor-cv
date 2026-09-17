@@ -13,14 +13,15 @@ adds a re-export to `domain/intake/__init__.py`, that guarantee breaks silently;
 `__init__` free of re-exports, or give `for_base_cv` its own module instead.
 
 **The identical arrangement now holds for `export`, and it breaks the identical way.** Slice 1.5
-adds `for_export`, so this module also imports `ExportJobId` and `ExportFormat` from
-`tailorcraft.domain.export.value_objects` — and, once `for_export` has a body, `ExportFormatNotQueued`
-from `tailorcraft.domain.export.errors` — while `export_job.py`, in that same package, imports
-`FileRef` back out of here. The guarantee is the same one: `domain/export/__init__.py` re-exports
-nothing and `domain/export/value_objects.py` never imports this module, so neither of those imports
-can reach `export_job.py`. Add one re-export to that package `__init__` and the cycle closes, surfacing
-as an `ImportError` at application startup rather than anywhere near the edit that caused it. Two
-contexts now rest on this rule instead of one, which is the argument for eventually giving
+adds `for_export`, so this module also imports `ExportDelivery`, `ExportFormat` and `ExportJobId`
+from `tailorcraft.domain.export.value_objects` and `ExportFormatNotQueued` from
+`tailorcraft.domain.export.errors` — while `export_job.py`, in that same package, imports `FileRef`
+back out of here. The guarantee is the same one: `domain/export/__init__.py` re-exports nothing, and
+neither `domain/export/value_objects.py` nor `domain/export/errors.py` imports this module, so none
+of those imports can reach `export_job.py`. Add one re-export to that package `__init__` and the
+cycle closes, surfacing as an `ImportError` at application startup rather than anywhere near the
+edit that caused it. Two contexts now rest on this rule instead of one, which is the argument for
+eventually giving
 `for_base_cv` and `for_export` their own module — and the argument against doing it today is that
 two keys derived from two ids is not yet a module's worth of behaviour.
 """
@@ -31,7 +32,8 @@ import re
 from dataclasses import dataclass
 from typing import Protocol
 
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.errors import ExportFormatNotQueued
+from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat, ExportJobId
 from tailorcraft.domain.intake.errors import InvalidFileRef
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType
 from tailorcraft.domain.shared.errors import DomainError
@@ -94,8 +96,16 @@ class FileRef:
         (XJ-7), and what lets 1.6 reconstruct every file's key from a row — or from an id alone —
         with no lookup table (AC-23). The filename is still a UUIDv7, so the orphan sweep needs no
         database at all (ADR-0011 §4); export files and base-CV files share the tree and the rule.
+
+        The refusal asks `format.delivery`, never `format in (MD, TXT)`: the fact "this format has no
+        file" is `ExportFormat`'s to answer (AC-1), and a membership test written out here would be a
+        second copy of it that a fifth format could walk straight past.
         """
-        raise NotImplementedError
+        if format.delivery is ExportDelivery.INLINE:
+            raise ExportFormatNotQueued(format)
+        hex_digits = job_id.value.hex
+        key = f"{hex_digits[0:2]}/{hex_digits[2:4]}/{job_id.value}.{format.file_extension}"
+        return cls(key=key)
 
 
 class FileStorePort(Protocol):
