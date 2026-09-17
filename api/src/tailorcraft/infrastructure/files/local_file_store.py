@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
-from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
+from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable, StoredFileMissing
 
 if TYPE_CHECKING:
     from tailorcraft.domain.shared.files import FileStorePort
@@ -56,9 +56,31 @@ class LocalFileStore:
             raise FileStoreUnavailable("could not store file") from exc
 
     async def get(self, ref: FileRef) -> bytes:
-        """Read the bytes stored at `ref`'s key."""
+        """Read the bytes stored at `ref`'s key.
+
+        Two answers, because the caller has two different things to do about them (X-47, X-48). A
+        key that resolves to nothing is `StoredFileMissing` and the download handler turns it into
+        **410 `export_file_gone`**: the file will not come back, so retrying *this* request helps
+        nobody — exporting again does. Every other filesystem failure — `EIO`, `EACCES`, the volume
+        unmounted — is `FileStoreUnavailable` and becomes **503**: try again, it may well work.
+
+        The narrower `except` must come first and that ordering is load-bearing rather than
+        stylistic: `StoredFileMissing` is a **subclass** of `FileStoreUnavailable` and
+        `FileNotFoundError` is an `OSError`, so an `OSError` floor placed above would swallow the
+        missing case and quietly answer 503 for ever. The floor stays underneath, where it makes the
+        port's promise true by construction (CLAUDE.md: a port that translates *every* failure needs
+        a catch-all, not an allow-list); the specific translation sits on top carrying the better
+        reason. A caller that only cares "the store failed" still catches `FileStoreUnavailable` and
+        needs no edit.
+        """
         try:
             return await asyncio.to_thread(self._get_sync, ref)
+        except FileNotFoundError as exc:
+            # Same fields as every other line here, and the same omission: never the key, never the
+            # joined path. A resolved path carries a UUID that identifies one person's document and
+            # names the volume layout of the box it ran on (Constitution §8, ADR-0011 §6).
+            log.error("file_store.get_missing", errno=exc.errno, root=str(self._root))
+            raise StoredFileMissing("stored file is missing") from exc
         except OSError as exc:
             log.error("file_store.get_failed", errno=exc.errno, root=str(self._root))
             raise FileStoreUnavailable("could not read file") from exc
