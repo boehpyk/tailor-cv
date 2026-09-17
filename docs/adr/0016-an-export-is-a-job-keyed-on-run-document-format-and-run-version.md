@@ -155,8 +155,14 @@ store rendered files from the worker. It now does, and the contract is:
   grammar — `pdf` and `docx` are already admitted, and the grammar is **not widened**, because `md`
   and `txt` are never stored. `for_export` raises `ExportFormatNotQueued` for an inline format: an
   inline format has no file and therefore no ref.
-- **The row column that carries it is `export_job.file_key`** (`VARCHAR(64) NULL UNIQUE`), written
-  by the aggregate in `mark_ready` from its own id and format. `mark_ready` takes no `FileRef`
+- **The row column that carries it is `export_job.file_key`** (`VARCHAR(512) NULL UNIQUE`), written
+  by the aggregate in `mark_ready` from its own id and format. The width is **not** chosen for this
+  column: it is `FileRefType`'s, reused from `types/shared.py` where 1.1 put it and sized there *for*
+  this reuse. A second decorator differing only in a length is how one storage grammar ends up
+  re-validated by two different rules on the way out of two tables. (Corrected 2026-09-17 at I4 —
+  this ADR first said `VARCHAR(64)`, which contradicted its own instruction to reuse the decorator.
+  Nothing depends on the narrower width: a key too long for the grammar is unconstructable long
+  before it reaches a column.) `mark_ready` takes no `FileRef`
   argument, so the row and the file can never disagree — neither side chose the name.
 - **The retention contract 1.6 consumes** is exactly two guarantees, both tested in this slice:
   every row cascades from `identity_guest_session` (`ON DELETE CASCADE`, indexed), and
