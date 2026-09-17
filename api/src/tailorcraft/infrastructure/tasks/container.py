@@ -37,7 +37,8 @@ worker is synchronous, so every task opens a *fresh* loop with `asyncio.run`; a 
 would be bound to whichever loop happened to run the first task and would raise on the second. In a
 worker that presents as "it worked in development and died under load", which is the worst way to
 meet this bug. Hence: the engine is built **inside** `tailoring_use_case`, which runs inside the
-loop, and disposed before that loop closes.
+loop, and disposed before that loop closes — and inside each of the three builders that followed it,
+for the same reason and with no exception made for the cheap ones.
 """
 
 from __future__ import annotations
@@ -48,14 +49,21 @@ from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tailorcraft.application.export.abandon_stale_export_jobs import AbandonStaleExportJobs
+from tailorcraft.application.export.render_export_job import RenderExportJob
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
+from tailorcraft.domain.export.export_job import ExportJob
+from tailorcraft.domain.export.ports import ExportJobRepository
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
-from tailorcraft.domain.tailoring.value_objects import TailoringRunId
+from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
+from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
+from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -173,6 +181,96 @@ class CommittingTailoringRunRepository:
         `save`, which commits one abandoned run at a time. A failure part-way through a batch then
         keeps every run already recorded, and the next tick lists only the rest."""
         return await self._inner.list_stale_running(started_before, limit)
+
+
+class CommittingExportJobRepository:
+    """The worker's `ExportJobRepository`: the ordinary one, except that **every write commits.**
+
+    **This is `CommittingTailoringRunRepository` above, written out a second time rather than
+    generalized, and the duplication is the decision.** Read that class's `save` docstring for the
+    reasoning — four paragraphs on `expire_on_commit=False`, on a failed flush expiring the whole
+    identity map at the root boundary, on why `rollback()` is a statement about the session and never
+    about the one object that failed, and on why `expunge` before `begin_nested()` is load-bearing
+    and absent from SQLAlchemy's textbook example. Every word of it is true here, and none of it is
+    repeated here.
+
+    What a generic `Committing[T]` wrapper would have cost: it would have to be written against a
+    supertype of two repository Protocols that share a *shape* and not a contract. They differ in
+    every method beyond the four CRUD ones — `list_for_session` and `find_active_for_session` over
+    there, `list_for_run`, `find_latest_for_key` and `list_stale_rendering` here — so the supertype
+    would be four methods wide and each repository would need its own pass-throughs anyway, for the
+    delegation reason below. Shared shape is not shared behaviour (CLAUDE.md), and the price of
+    saying so is nine pass-through methods that `mypy --strict` checks against the Protocol.
+
+    **Delegation rather than a subclass of `SqlAlchemyExportJobRepository`**, for the import-order
+    reason `CommittingTailoringRunRepository` documents: that module reads `ExportJob._id` as a plain
+    attribute at *import* time to build its `InstrumentedAttribute` casts, and those attributes exist
+    only once `configure_mappings()` has run. A `class X(SqlAlchemyExportJobRepository)` statement is
+    a top-level import by another name, so the relationship has to be composition.
+
+    **Two commits per render, and they are the reason this exists.** `RenderExportJob` writes twice
+    on the ordinary path — `rendering` before the render, then `ready` or `failed` after it — and
+    those two saves must land in two separate transactions, or a client polling
+    `GET /api/export-jobs/{id}` sees `queued` for the whole render and then jumps to a terminal
+    status, which is indistinguishable from a job no worker ever picked up.
+    """
+
+    def __init__(self, inner: ExportJobRepository, session: AsyncSession) -> None:
+        self._inner = inner
+        self._session = session
+
+    def next_identity(self) -> ExportJobId:
+        return self._inner.next_identity()
+
+    async def add(self, job: ExportJob) -> None:
+        await self._inner.add(job)
+        await self._session.commit()
+
+    async def save(self, job: ExportJob) -> None:
+        """Flush inside a SAVEPOINT, **then commit** — see `CommittingTailoringRunRepository.save`.
+
+        The `expunge` is not a precaution here either: `begin_nested()` flushes on entry,
+        unconditionally, to take its snapshot, and a use case mutates the aggregate *before* calling
+        `save` — that is the port's contract — so a bare `begin_nested()` would flush the dirty job
+        in `__aenter__`, outside the SAVEPOINT and outside the inner repository's `StaleDataError`
+        translation, and a conflict would expire the whole identity map on its way out.
+
+        That is exactly what the sweep cannot survive. `AbandonStaleExportJobs` keeps iterating
+        loaded aggregates after a conflict (X-39: it counts one and continues), and the next
+        candidate's `job.is_stale(...)` is a plain attribute read with no `await` — on an expired
+        instance that is a lazy load on an `AsyncSession`, which is `MissingGreenlet`. 1.4's
+        `/verify` met that bug in the run sweep; this class is shaped so the job sweep never can.
+        """
+        if job in self._session:
+            self._session.expunge(job)
+        async with self._session.begin_nested():
+            await self._inner.save(job)
+        await self._session.commit()
+
+    async def get(self, job_id: ExportJobId) -> ExportJob:
+        return await self._inner.get(job_id)
+
+    async def find(self, job_id: ExportJobId) -> ExportJob | None:
+        return await self._inner.find(job_id)
+
+    async def list_for_run(self, run_id: TailoringRunId) -> Sequence[ExportJob]:
+        return await self._inner.list_for_run(run_id)
+
+    async def find_latest_for_key(
+        self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat
+    ) -> ExportJob | None:
+        return await self._inner.find_latest_for_key(run_id, document, format)
+
+    async def count_for_session(self, sid: GuestSessionId) -> int:
+        return await self._inner.count_for_session(sid)
+
+    async def list_stale_rendering(
+        self, started_before: datetime, limit: int
+    ) -> Sequence[ExportJob]:
+        """A read, so **no commit**, like the other read pass-throughs. The sweep's writes go through
+        `save`, which commits one abandoned job at a time. A failure part-way through a batch then
+        keeps every job already recorded (X-38), and the next tick lists only the rest."""
+        return await self._inner.list_stale_rendering(started_before, limit)
 
 
 @asynccontextmanager
@@ -342,4 +440,168 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         # `--concurrency` runs (2 in production). A backlog of 100 would take fifty lost workers
         # inside a single five-minute window, and even then the next tick takes the rest a minute
         # later. A knob nobody has a reason to turn is a knob somebody will turn wrongly.
+    )
+
+
+@asynccontextmanager
+async def export_use_case() -> AsyncIterator[tuple[RenderExportJob, AsyncSession]]:
+    """Build everything one export task needs, yield it, and tear it down (X-29…X-37).
+
+    The same shape as `tailoring_use_case`, for the same three reasons: mappings configured first
+    (beat and the queue both publish into a worker that may never have run any other task, so nothing
+    else is guaranteed to have imported them), **one engine per task invocation** built inside the
+    loop `asyncio.run` opened and disposed before that loop closes, and the session yielded so
+    `tasks/export.py` commits inside its own error boundary rather than during teardown.
+
+    **No LLM, and that is structural rather than an economy.** Exporting never calls a model — it
+    renders Markdown that was already bought and stored — so `GeminiLlm` is not built, no SDK client
+    is opened, and nothing on this path can spend money. `tailoring_use_case`'s `llm.aclose()`
+    therefore has no counterpart here, and the whole `try/finally` collapses to disposing the engine.
+
+    The renderer is the one resource here with real teardown to think about and none to do: WeasyPrint
+    and `python-docx` hold no client, no socket and no loop-bound handle, and every synchronous call
+    into them happens in `asyncio.to_thread` inside `MarkdownDocumentRenderer.render`. A thread left
+    behind by a cancelled `wait_for` outlives this function by design — it is the hard time limit's
+    problem, which is why the stale window must sit above that limit (`create_celery`'s second
+    guard).
+    """
+    settings = get_settings()
+    configure_mappings()
+
+    engine = create_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            try:
+                yield _build_export_use_case(settings, session), session
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        # Always, including on X-32's path (Postgres unavailable while recording `ready`), for the
+        # loop-binding reason in the module docstring.
+        await engine.dispose()
+
+
+def _build_export_use_case(settings: Settings, session: AsyncSession) -> RenderExportJob:
+    """Bind every port `RenderExportJob` declares — six of them, and no more.
+
+    Split out of the context manager for the reason `_build_use_case` is: this is the part a reviewer
+    checks against the port list, and it should read as a list rather than as the middle of a
+    resource-management sandwich. The two repository imports are deferred to call time for the
+    mapper-configuration reason `_build_use_case` documents, which is sharper here — `configure_
+    mappings()` runs a few lines above in the caller, so hoisting them to the top of the module would
+    move them *before* the call that makes them legal.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
+        SqlAlchemyExportJobRepository,
+    )
+    from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+        SqlAlchemyTailoringRunRepository,
+    )
+
+    return RenderExportJob(
+        # `ExportJobRepository` -> the committing wrapper. The API binds the bare
+        # `SqlAlchemyExportJobRepository` for the same port; the difference *is* the boundary, and
+        # here it is what makes `rendering` visible to a polling client while the render is still in
+        # flight.
+        jobs=CommittingExportJobRepository(SqlAlchemyExportJobRepository(session), session),
+        # `TailoringRunRepository` -> the **bare** adapter, not `CommittingTailoringRunRepository`,
+        # and that is a statement rather than an oversight: this slice never writes to a
+        # `TailoringRun`. Step 5 reads the run and compares `run.version` to `job.run_version`
+        # (X-31). Wrapping it in something whose whole purpose is to commit writes would advertise a
+        # write path that does not exist.
+        runs=SqlAlchemyTailoringRunRepository(session),
+        # `DocumentRendererPort` -> `MarkdownDocumentRenderer`, built with its **defaults**: the
+        # refusing `url_fetcher` and the real `sanitize_html`. Both are testing seams with strict
+        # defaults (the `HttpxTrafilaturaFetcher` / `GeminiLlm` pattern), and nothing under
+        # `api/src/` passes either argument — this line and `deps.get_document_renderer` are the two
+        # places that must keep not passing them, because a production binding that overrode the
+        # fetcher would be an outbound request from a render (AC-30).
+        renderer=MarkdownDocumentRenderer(settings),
+        # `FileStorePort` -> `LocalFileStore` over `settings.upload_dir`, the one directory `api` and
+        # `worker` both mount (ADR-0011). The worker writes here and the API reads it back for the
+        # download; lose the volume on either side and exports break in a way no health check sees.
+        files=LocalFileStore(settings.upload_dir),
+        # `EventPublisherPort` -> `LoggingEventPublisher`, the same binding `deps.py` makes, and the
+        # enforcement point for "an event carries ids, enums and numbers only" (AC-33).
+        events=LoggingEventPublisher(),
+        # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007).
+        clock=SystemClock(),
+        # The same window the sweep uses, so the two recovery paths cannot disagree about which jobs
+        # a worker can still be holding. `create_celery` refuses a value at or below the hard time
+        # limit before either of them runs.
+        stale_after_seconds=settings.export_stale_after_seconds,
+    )
+
+
+@asynccontextmanager
+async def abandon_stale_export_jobs_use_case() -> AsyncIterator[
+    tuple[AbandonStaleExportJobs, AsyncSession]
+]:
+    """Build what one tick of the stale-job sweep needs, yield it, and tear it down (X-29, AC-20).
+
+    `abandon_stale_runs_use_case`'s shape exactly, over the other aggregate: mappings first, one
+    engine per invocation built inside the loop and disposed before it closes, the session yielded so
+    the task commits inside its own error boundary.
+
+    **Neither a renderer nor a file store, and neither omission is an economy.** The sweep records
+    that a render was lost. It never starts one, so nothing here can open a thread, and it never
+    deletes the orphan file a killed worker may have left under the job's key — a delete on a failure
+    path is a second way to lose a file, and 1.6's orphan sweep owns that tree (X-29, ADR-0011 §4).
+    """
+    settings = get_settings()
+    # See `tailoring_use_case`: beat publishes this task to a worker that may never have run an
+    # export task, so nothing else is guaranteed to have imported the mappings.
+    configure_mappings()
+
+    engine = create_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            try:
+                yield _build_export_sweep_use_case(settings, session), session
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        # Always, including on X-38's path, for the loop-binding reason in the module docstring.
+        await engine.dispose()
+
+
+def _build_export_sweep_use_case(
+    settings: Settings, session: AsyncSession
+) -> AbandonStaleExportJobs:
+    """Bind the three ports `AbandonStaleExportJobs` declares, and no more.
+
+    Split out for the reason `_build_sweep_use_case` is, and it is the seam a task test binds to its
+    own session. The repository import is deferred for the mapper-configuration reason given there.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
+        SqlAlchemyExportJobRepository,
+    )
+
+    return AbandonStaleExportJobs(
+        # `ExportJobRepository` -> the committing wrapper, **one commit per abandoned job**, and both
+        # halves of the failure contract depend on it. A database failure part-way through a batch
+        # keeps every job already recorded (X-38), so the next tick lists only the rest. And a job a
+        # worker decided first (X-39) is counted and skipped without taking the batch's earlier
+        # writes back with it — which the SAVEPOINT in `save` is what makes possible at all. One
+        # transaction per tick would make one conflicted row cost the whole batch.
+        jobs=CommittingExportJobRepository(SqlAlchemyExportJobRepository(session), session),
+        # `EventPublisherPort` -> `LoggingEventPublisher`: each abandonment's `ExportFailed` is the
+        # per-job line X-29 asks for (`export_job_id`, `reason=abandoned`).
+        events=LoggingEventPublisher(),
+        # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007). Read once per batch by the
+        # use case, so every `completed_at` written in one tick is the same instant.
+        clock=SystemClock(),
+        # The same window `_build_export_use_case` passes to `RenderExportJob`'s own stale check. One
+        # window, both recovery paths.
+        stale_after_seconds=settings.export_stale_after_seconds,
+        # `batch_limit` is left at the use case's default of 100, and **not made a setting**, for the
+        # run sweep's reason: a job is only `rendering` while a worker slot holds it, so one lost
+        # worker strands at most `--concurrency` jobs (2 in production). A backlog of 100 would take
+        # fifty lost workers inside a single five-minute window, and even then the next tick takes
+        # the rest a minute later. A knob nobody has a reason to turn is a knob somebody will turn
+        # wrongly.
     )
