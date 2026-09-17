@@ -27,7 +27,8 @@ asks for work to happen later; it does not import Celery.
 - An export is an `ExportJob` aggregate with an explicit state (`queued` / `rendering` / `ready` /
   `failed`) that the client polls. The state lives in Postgres, not only in Celery's result backend:
   the result backend is an implementation detail with a TTL, and "where is my file" must survive a
-  Redis flush.
+  Redis flush. **(2026-09-17)** That sentence describes the exports that *leave the request* — `pdf`
+  and `docx`. `md` and `txt` are representations of the document and leave no row; see ADR-0016 §1.
 - The worker runs with `--max-tasks-per-child` so a renderer leak is recycled rather than accumulated.
 
 ## Alternatives

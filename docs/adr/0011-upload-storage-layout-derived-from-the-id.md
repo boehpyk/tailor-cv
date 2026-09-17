@@ -3,6 +3,10 @@
 - **Status:** Accepted
 - **Date:** 2026-09-07
 - **Extends:** ADR-0006 §4 (files on a local named volume behind `FileStorePort`). Supersedes nothing.
+- **Amended 2026-09-17 by [ADR-0016](./0016-an-export-is-a-job-keyed-on-run-document-format-and-run-version.md)**
+  ("Amendment to ADR-0011"): `FileRef.for_export(job_id, format)` is the second constructor,
+  `export_job.file_key` is the row column that carries it, and the two guarantees 1.6 consumes —
+  the cascade and `file_key == for_export(id, format).key` — are named there.
 
 ## Context
 
