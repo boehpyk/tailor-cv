@@ -6,7 +6,7 @@ column type and the round-trip logic without following an abstraction, and the s
 (a `UUID`, two closed enums, two large nullable `Text`s, two short nullable provenance strings) that
 a factory would be a thin wrapper hiding the one interesting line in each.
 
-**Six of the seven are nullable, and the `None` guard on the way out is load-bearing here rather
+**Six of the first seven are nullable, and the `None` guard on the way out is load-bearing here rather
 than boilerplate.** A `TailoringRun` spends its whole `queued`/`running` life with `failure_reason`,
 both documents and both provenance columns `NULL` — those are the ordinary rows, not the edge case —
 so `process_result_value` really does receive `None` on most reads, and a missing guard would call
@@ -24,6 +24,11 @@ that neither is a mapped attribute at all — the aggregate stores seven private
 the two composites on read. `mapping/tailoring/tailoring_run.py` carries the full reasoning at the
 seam; the three plain `INTEGER` metric columns therefore need no decorator, because an `int` is
 already an `int`.
+
+**The eighth decorator, `TailoredDocumentKindType`, is the one this module lends out.** It is added
+in slice 1.5 for `export_job.document` — a column in a *different* bounded context — and it lives
+here because the enum it round-trips is `tailoring`'s. Its own docstring carries the placement
+argument and why no column needed it until 1.5.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ from tailorcraft.domain.tailoring.value_objects import (
     ModelName,
     PromptVersion,
     TailoredCv,
+    TailoredDocumentKind,
     TailoringFailureReason,
     TailoringRunId,
     TailoringRunStatus,
@@ -227,3 +233,46 @@ class PromptVersionType(TypeDecorator[PromptVersion]):
         if value is None:
             return None
         return PromptVersion(value)
+
+
+class TailoredDocumentKindType(TypeDecorator[TailoredDocumentKind]):
+    """`export_job.document` — `VARCHAR(16)`, never `NULL`. **The one decorator two contexts share.**
+
+    It lives here, in the `tailoring` context's type module, and is imported by
+    `mapping/export/export_job.py`. The placement is deliberate and worth the sentence:
+    `TailoredDocumentKind` is declared in `domain/tailoring/value_objects.py` because a document is
+    an *address into a run* (ADR-0015 §1), not an export concept — so its column type belongs beside
+    the enum it round-trips, not beside the table that first needed one. Filing it under
+    `types/export.py` would put the `tailoring` context's vocabulary in the `export` context's
+    module the moment a third table wants the same column.
+
+    **It arrives in slice 1.5 rather than 1.4, and that is not an oversight.** 1.4 used the kind in
+    exactly two places, and neither was a column: the URL path segment of
+    `PUT /api/tailoring-runs/{id}/documents/{kind}`, and the `kind` field on the
+    `TailoredDocumentRevised` event. A run's two documents are two named columns on `tailoring_run`,
+    so the discriminator was never stored — 1.5's `export_job` is the first row that has to say
+    *which* document it rendered.
+
+    16 rather than the enum's own 12 (`cover_letter`), the same headroom every other short enum
+    column in this schema carries. Round-tripping through the enum on the way out keeps a loaded
+    job's `_document` an actual `TailoredDocumentKind`: the DOCX and PDF walkers title a CV and a
+    letter differently by matching on members, and `download_filename` is a `match` with
+    `assert_never` — both are `False` for a bare string that compares equal.
+    """
+
+    impl = String(16)
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: TailoredDocumentKind | None, dialect: Dialect
+    ) -> str | None:
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(
+        self, value: Any | None, dialect: Dialect
+    ) -> TailoredDocumentKind | None:
+        if value is None:
+            return None
+        return TailoredDocumentKind(value)
