@@ -8,8 +8,12 @@ FROM python:3.13-slim AS base
 # WeasyPrint renders PDFs (ADR-0005) and needs real system libraries — Pango, Cairo, HarfBuzz and
 # fontconfig. This is the least obvious dependency in the stack: without them the import succeeds
 # and the *first render* fails at runtime, in the worker, where nobody is watching. Fonts matter
-# too — a PDF rendered on a box with no fonts is a page of boxes. Mirrored in .github/workflows/ci.yml;
-# keep the two lists in step.
+# too — a PDF rendered on a box with no fonts is a page of boxes.
+#
+# KEEP THIS LIST IN STEP WITH `.github/workflows/ci.yml`'s "WeasyPrint system libraries" step
+# (search that file for this same sentence). The two drifted once already — CI was missing
+# `fonts-liberation` and `libffi8` — and a missing package there fails silently too: `ruff`,
+# `mypy` and every non-rendering test stay green, and only a PDF-rendering test (AC-46) notices.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 libgdk-pixbuf-2.0-0 \
         libffi8 shared-mime-info fonts-dejavu-core fonts-liberation \
