@@ -13,13 +13,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.domain.export.errors import TailoringRunNotExportable, TooManyExportJobs
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
+from tailorcraft.domain.tailoring.value_objects import (
+    TailoredDocumentKind,
+    TailoringRunId,
+    TailoringRunStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,4 +175,52 @@ class RequestExport:
         self._max_per_session = max_per_session
 
     async def __call__(self, cmd: RequestExportCommand) -> RequestExportResult:
-        raise NotImplementedError
+        # Step 1. The composed read carries the authorization rule and the 404 collapse; this use
+        # case never sees a run repository, so it cannot forget either (see the class docstring).
+        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)
+
+        # Step 2. The aggregate's own status, not `current_documents is not None`: equivalent, but
+        # this one says what it means and is the value the error carries to the client (X-14).
+        if run.status is not TailoringRunStatus.SUCCEEDED:
+            raise TailoringRunNotExportable(run.status)
+
+        # Step 3. **Cross-aggregate, therefore here and not on `ExportJob`.** It compares a job's
+        # `run_version` to a *run*'s `version`, and no `ExportJob` instance can see a run;
+        # `was_requested_for` is as far as the aggregate can go. Soft on purpose (X-23): two
+        # genuinely concurrent requests may both miss, which is cheaper than a lock on a render
+        # nobody paid for.
+        existing = await self._jobs.find_latest_for_key(run.id, cmd.document, cmd.format)
+        if (
+            existing is not None
+            and existing.status is not ExportJobStatus.FAILED
+            and existing.was_requested_for(run.version)
+        ):
+            # X-16: 200 with the job already in flight (or already ready). No row, no task.
+            return RequestExportResult(export_job=existing, created=False)
+
+        # Step 4. **Cross-aggregate policy, therefore here too.** The rule spans every job the
+        # session owns, which no single `ExportJob` can see; reaching for it from inside `request`
+        # would mean a repository call in a constructor (ADR-0014 §4). It runs *after* step 3 on
+        # purpose: a visitor at the cap who asks again for a job that already exists is handed that
+        # job, rather than a 409 that would be true and useless (X-18).
+        if await self._jobs.count_for_session(cmd.guest_session_id) >= self._max_per_session:
+            raise TooManyExportJobs(str(cmd.guest_session_id))
+
+        # Step 5. `ExportFormatNotQueued` propagates from here (X-15) — the second lock behind the
+        # boundary's literal type. `run_version` is read off the run, never taken from the caller.
+        job = ExportJob.request(
+            id=self._jobs.next_identity(),
+            guest_session_id=cmd.guest_session_id,
+            tailoring_run_id=run.id,
+            document=cmd.document,
+            format=cmd.format,
+            run_version=run.version,
+            requested_at=self._clock.now(),
+        )
+
+        # Step 6. Add, then publish. **No enqueue** — that is the router's, after the commit
+        # (ADR-0014 §5); the class docstring says why the other order is broken rather than merely
+        # less tidy.
+        await self._jobs.add(job)
+        await self._events.publish(*job.release_events())
+        return RequestExportResult(export_job=job, created=True)

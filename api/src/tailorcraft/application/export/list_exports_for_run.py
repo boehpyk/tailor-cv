@@ -88,4 +88,16 @@ class ListExportsForRun:
     async def __call__(
         self, run_id: TailoringRunId, guest_session_id: GuestSessionId
     ) -> ExportListing:
-        raise NotImplementedError
+        # Step 1. The authorization, inherited whole — session resolution, the ownership link, and
+        # the collapse of "not mine" into "not found" (X-3). No `TailoringRunNotExportable` here:
+        # listing the exports of a run that has none is a good question whose answer is `[]`.
+        run = await self._get_tailoring_run(run_id, guest_session_id)
+
+        # Step 2. `run.id` — the id this use case just authorized, never the id the caller supplied.
+        # For a listing that *is* the authorization rule, and it is enforced by there being nothing
+        # else worth passing.
+        jobs = await self._jobs.list_for_run(run.id)
+
+        # Step 3. Newest first is the repository's job, in SQL. Re-sorting here would be a second
+        # ordering free to disagree with the first.
+        return ExportListing(jobs=jobs, run_version=run.version)

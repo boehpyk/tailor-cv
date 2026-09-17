@@ -23,6 +23,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tailorcraft.application.identity.resolve_guest_session import (
+    resolve_active_guest_session,
+)
+from tailorcraft.domain.export.errors import ExportJobNotFound, ExportJobNotOwnedBySession
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportJobId
@@ -113,4 +117,27 @@ class GetExportJobForSession:
     async def __call__(
         self, job_id: ExportJobId, guest_session_id: GuestSessionId
     ) -> ExportJobLookup:
-        raise NotImplementedError
+        # Step 1. Defence in depth: the API's cookie dependency has already resolved this session,
+        # and this use case is still safe to call from anywhere because it resolves it again.
+        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
+
+        # Step 2. `get`, not `find`: an id that names nothing is an error on a read, and the
+        # repository raises the same type step 3 raises.
+        job = await self._jobs.get(job_id)
+
+        if job.guest_session_id != session.id:
+            # "Not mine" must be indistinguishable from "does not exist" at this boundary (X-43,
+            # AC-24): the public exception is `ExportJobNotFound`, the same type `jobs.get` raises
+            # for an id that was never issued, because a 403 here would confirm to someone
+            # enumerating handles that the id is real — and an export job id is both a polling
+            # handle and a download handle, so it is the id most worth guessing, with a file
+            # behind it. The distinction survives only on `__cause__`, where this use case's own
+            # tests can see it and nothing that crosses the wire can.
+            raise ExportJobNotFound(str(job_id)) from ExportJobNotOwnedBySession(str(job_id))
+
+        # Step 4. **`find`, not `get`**: a run that has gone is an ordinary answer here rather than
+        # an exception, because the job is the thing being read and it still exists. `None` becomes
+        # `run_version_now=None`, which the boundary renders as `current: false` — a job whose run
+        # is gone is certainly not the document as it stands.
+        run = await self._runs.find(job.tailoring_run_id)
+        return ExportJobLookup(job=job, run_version_now=run.version if run is not None else None)

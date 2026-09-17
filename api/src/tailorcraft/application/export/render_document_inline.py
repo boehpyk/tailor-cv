@@ -12,11 +12,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.domain.export.errors import (
+    ExportFormatNotInline,
+    TailoringRunNotExportable,
+)
+from tailorcraft.domain.export.events import DocumentRenderedInline
 from tailorcraft.domain.export.ports import DocumentRendererPort
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
+from tailorcraft.domain.tailoring.value_objects import (
+    TailoredDocumentKind,
+    TailoringRunId,
+    TailoringRunStatus,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,10 +136,66 @@ class RenderDocumentInline:
         get_tailoring_run: GetTailoringRunForSession,
         renderer: DocumentRendererPort,
         events: EventPublisherPort,
+        clock: Clock,
     ) -> None:
         self._get_tailoring_run = get_tailoring_run
         self._renderer = renderer
         self._events = events
+        # **The `Clock` the technical plan's constructor list omitted, and the omission was real.**
+        # This is the only use case in the codebase that *constructs* an event rather than
+        # releasing one an aggregate recorded (step 6 explains why), and `DomainEvent.occurred_at`
+        # has no default — deliberately, so that no event can ever be stamped from a hidden
+        # `datetime.now()`. So the one use case that builds its own event is the one that must be
+        # handed a clock. Every other use case here gets its instants from an aggregate that was
+        # already given one.
+        self._clock = clock
 
     async def __call__(self, cmd: RenderDocumentInlineCommand) -> RenderedInlineDocument:
-        raise NotImplementedError
+        # Step 1. The authorization rule and the 404 collapse are the composed read's, inherited
+        # rather than written a fifth time (X-2, X-3).
+        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)
+
+        # Step 2. The aggregate's own status, as in `RequestExport` step 2 (X-4).
+        documents = run.current_documents
+        if run.status is not TailoringRunStatus.SUCCEEDED or documents is None:
+            raise TailoringRunNotExportable(run.status)
+
+        # Step 3. It asks `format.delivery`, never `cmd.format in (MD, TXT)`: "which formats are
+        # inline" is `ExportFormat`'s fact to hold (AC-1), and a membership test written out here
+        # would be a second copy of it that a fifth format could walk straight past. This is the
+        # second lock behind the query parameter's literal type (X-1).
+        if cmd.format.delivery is not ExportDelivery.INLINE:
+            raise ExportFormatNotInline(cmd.format)
+
+        # Step 4. The revision if one exists, else the draft (ADR-0015 §1, X-8) — this use case
+        # does not choose, it reads the one the aggregate calls current.
+        source = documents.cv if cmd.document is TailoredDocumentKind.CV else documents.cover_letter
+
+        # Step 5. **`DocumentRenderFailed` propagates from here, and that is the deliberate opposite
+        # of `RenderExportJob`**, which catches the identical exception family and records it on the
+        # job. ADR-0014 §2 again — *was anything spent, and is there an artifact to own?* On this
+        # path, nothing and none: no money, no worker second, no row, no file. A failure has nowhere
+        # to be recorded and nothing to be recorded *on*, so manufacturing a row to hold it would be
+        # the shape ADR-0013 rejected for a failed fetch. The router maps the two reasons the
+        # boundary can see: `DocumentRenderError` → 500 (X-5), `DocumentRenderTimedOut` → 503 (X-6).
+        # An application test asserts the **propagation**, so catching it here turns that test red.
+        data = await self._renderer.render(source.value, document=cmd.document, format=cmd.format)
+
+        # Step 6. Published **after** the render, never before: a publish on the way in would
+        # announce a rendering that a `DocumentRenderFailed` is about to make untrue, and nothing
+        # here rolls back to take it back. This is an event no aggregate recorded — the deliberate
+        # exception to "events are released from an aggregate after a successful save", safe for
+        # exactly the reason that rule exists: there is no transaction to fail. It is the
+        # cost-and-size line for a path that has no row at all, and it carries `byte_size` and
+        # **never the text**, which on this path is the entire response body and therefore the
+        # easiest thing in the slice to attach by accident.
+        await self._events.publish(
+            DocumentRenderedInline(
+                tailoring_run_id=run.id,
+                document=cmd.document,
+                format=cmd.format,
+                byte_size=len(data),
+                occurred_at=self._clock.now(),
+            )
+        )
+        return RenderedInlineDocument(data=data, format=cmd.format, document=cmd.document)

@@ -12,8 +12,11 @@ Each of those leaves a job `rendering` for ever behind a control that says *Prep
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
+from tailorcraft.domain.export.errors import ExportJobConcurrentlyModified
 from tailorcraft.domain.export.ports import ExportJobRepository
+from tailorcraft.domain.export.value_objects import ExportFailureReason
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -164,4 +167,44 @@ class AbandonStaleExportJobs:
         self._batch_limit = batch_limit
 
     async def __call__(self) -> AbandonStaleExportJobsResult:
-        raise NotImplementedError
+        # Step 1. Read the instant once: the listing, every re-check and every `completed_at` share
+        # it, so a tick cannot disagree with itself about what "now" is.
+        now = self._clock.now()
+        stale_after = timedelta(seconds=self._stale_after_seconds)
+
+        # Step 2. Bounded and oldest first, by the port's contract; the next tick takes the rest.
+        # `examined == batch_limit` is therefore the backlog signal — there is no `skipped` field
+        # because skips are `examined - swept - conflicts`.
+        candidates = await self._jobs.list_stale_rendering(
+            started_before=now - stale_after, limit=self._batch_limit
+        )
+
+        swept = 0
+        conflicts = 0
+        for job in candidates:
+            # Step 3. The aggregate decides, not the query. `is_stale` is `False` for a decided job
+            # too, and nothing is awaited between this check and `mark_failed`, which is why there
+            # is no `except ExportAlreadyDecided` below — it could never fire, and dead code
+            # wearing a docstring about a race is worse than no code at all.
+            if not job.is_stale(now, stale_after):
+                continue
+            job.mark_failed(ExportFailureReason.ABANDONED, now)
+            # Save strictly before publish, as in `RenderExportJob._record_failure`.
+            try:
+                await self._jobs.save(job)
+            except ExportJobConcurrentlyModified:
+                # A redelivered `RenderExportJob` decided this job between the listing and this
+                # write (X-39). Whichever wrote first stands: neither overwrite it nor abort the
+                # batch over it. Nothing is published — the save never landed, so there is no fact
+                # to announce — and the in-memory copy, `mark_failed` and all, is dropped with the
+                # loop variable. The committing repository in the beat task's composition root is
+                # what keeps this refusal inside a SAVEPOINT, so the candidates still held by this
+                # loop keep their loaded state (CLAUDE.md's expired-identity-map lesson).
+                conflicts += 1
+                continue
+            await self._events.publish(*job.release_events())
+            swept += 1
+
+        return AbandonStaleExportJobsResult(
+            swept=swept, conflicts=conflicts, examined=len(candidates)
+        )

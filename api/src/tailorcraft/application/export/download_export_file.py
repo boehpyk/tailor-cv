@@ -11,8 +11,9 @@ would be a fourth copy of a rule, guarding the one thing in this slice that is a
 from __future__ import annotations
 
 from tailorcraft.application.export.get_export_job import GetExportJobForSession
+from tailorcraft.domain.export.errors import ExportNotReady
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportJobId
+from tailorcraft.domain.export.value_objects import ExportJobId, ExportJobStatus
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.files import FileStorePort
 
@@ -73,4 +74,30 @@ class DownloadExportFile:
     async def __call__(
         self, job_id: ExportJobId, guest_session_id: GuestSessionId
     ) -> tuple[ExportJob, bytes]:
-        raise NotImplementedError
+        # Step 1. `GuestSessionExpired`, and `ExportJobNotFound` for both "absent" and "not mine"
+        # (X-43), inherited whole from the composed read.
+        lookup = await self._get_export_job(job_id, guest_session_id)
+        job = lookup.job
+
+        # Step 2. 409 for a `queued` or `rendering` job (X-44) and for a `failed` one (X-45), with
+        # the reason carried so the boundary can render the failure copy rather than a generic "not
+        # ready". A `ready` job whose run has moved on (`current: false`) is **served**, not refused
+        # (X-46): the file is the user's own, and refusing it buys nothing — the UI is what declines
+        # to offer it, and offers *Export again* instead. Note there is no `current` check here at
+        # all, which is that decision made by omission.
+        if job.status is not ExportJobStatus.READY:
+            raise ExportNotReady(job.status, job.failure_reason)
+
+        # Step 3. **`storage_ref`, the computed key, not `file_key`, the recorded one.** They are
+        # equal after `mark_ready` and AC-5 asserts it rather than assuming it; using the
+        # computation keeps this path working from an id alone and keeps `file_key | None` from
+        # needing a narrowing that only a `ready` status justifies.
+        #
+        # `StoredFileMissing` and `FileStoreUnavailable` **propagate**, deliberately and with no
+        # `mark_failed` anywhere near them: a read that cannot find the file is a fact about the
+        # *store*, not a new outcome of the render, and rewriting the row from a `GET` would make a
+        # download mutate the thing it downloads. The router separates them — 410 vs 503 (X-47,
+        # X-48) — and the subclass relationship is what makes the order of those two `except`
+        # clauses load-bearing there.
+        data = await self._files.get(job.storage_ref)
+        return job, data

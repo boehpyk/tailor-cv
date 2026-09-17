@@ -327,7 +327,12 @@ async def test_rendering_job_past_the_stale_window_is_recorded_abandoned(
     clock: FixedClock,
 ) -> None:
     session_id = _a_session_id()
-    run = succeeded_run(session_id=session_id)
+    # The run completes 400 s ago rather than at `succeeded_run`'s default of 300 s, because
+    # `_a_queued_job` requests the job at `run.completed_at` and this test then starts it 301 s ago:
+    # with the default the job would be *started* one second before it was *requested*, which XJ-5
+    # forbids and the aggregate refuses. The 300 s window this test is about is measured from
+    # `started_at`, so moving the run back leaves the thing under test untouched.
+    run = succeeded_run(session_id=session_id, completed_at=clock.now() - timedelta(seconds=400))
     runs = FakeTailoringRunRepository()
     await runs.add(run)
     job = _a_queued_job(run=run, document=TailoredDocumentKind.CV, format=ExportFormat.PDF)

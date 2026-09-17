@@ -68,7 +68,7 @@ def _use_case(
     clock: FixedClock,
 ) -> RenderDocumentInline:
     get_tailoring_run = GetTailoringRunForSession(runs, sessions, clock)
-    return RenderDocumentInline(get_tailoring_run, renderer, events)
+    return RenderDocumentInline(get_tailoring_run, renderer, events, clock)
 
 
 # --- Happy path, both document kinds ------------------------------------------------------------

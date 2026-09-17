@@ -236,8 +236,14 @@ async def test_a_conflict_on_the_middle_job_is_counted_and_the_batch_continues(
     assert last.id in failed_by_job
     assert contested.id not in failed_by_job
 
-    still_rendering = await jobs.get(contested.id)
-    assert still_rendering.status is ExportJobStatus.RENDERING
+    # The conflicting write never landed. Asserted on `saved`, not on `get(contested.id).status`:
+    # the fake hands back the same object the sweep mutated, so its status reads `FAILED` in memory
+    # even though the save was refused — a real session would discard that object on rollback and
+    # the row would hold whatever the winning writer wrote. `saved` is the fake's record of what
+    # actually reached the store, which is the fact X-39 is about.
+    # `test_abandon_stale_tailoring_runs.py` carries the identical assertion and the identical
+    # comment; this test originally asserted the status and so was testing the fake.
+    assert contested not in jobs.saved
 
 
 # --- 6. Save strictly before publish -------------------------------------------------------------

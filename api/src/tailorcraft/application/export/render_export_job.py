@@ -8,15 +8,30 @@ other. `ExecuteTailoringRun` and `RequestTailoringRun` draw the identical contra
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import StrEnum
 
+from tailorcraft.domain.export.errors import (
+    DocumentRenderFailed,
+    ExportJobConcurrentlyModified,
+)
+from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import DocumentRendererPort, ExportJobRepository
-from tailorcraft.domain.export.value_objects import ExportJobId
+from tailorcraft.domain.export.value_objects import (
+    ExportFailureReason,
+    ExportJobId,
+    ExportJobStatus,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.shared.files import FileStorePort
+from tailorcraft.domain.shared.files import FileStorePort, FileStoreUnavailable
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
+from tailorcraft.domain.tailoring.value_objects import (
+    TailoredDocumentKind,
+    TailoringRunStatus,
+)
 
 # **This layer does not log** — the convention `application/tailoring/execute_tailoring_run.py`
 # writes out in full, and this slice keeps it. The application layer's channel for saying what
@@ -217,4 +232,157 @@ class RenderExportJob:
         self._stale_after_seconds = stale_after_seconds
 
     async def __call__(self, cmd: RenderExportJobCommand) -> RenderExportJobOutcome:
-        raise NotImplementedError
+        # Step 1. `find`, not `get`: absence is an ordinary branch for the worker, not an exception.
+        # The 24-hour purge (ADR-0006) cascades a job away while its message is still in Redis, and
+        # `task_acks_late=True` makes redelivery of an already-purged id real rather than
+        # theoretical (X-33).
+        job = await self._jobs.find(cmd.export_job_id)
+        if job is None:
+            return RenderExportJobOutcome.MISSING
+
+        # Step 2. A decided job is done, for good (XJ-4). Returning *before* the render is AC-18:
+        # a redelivery cannot buy a second render. The aggregate would refuse `mark_started`
+        # anyway; this branch makes the refusal a return value rather than an exception the task
+        # would have to interpret (X-34).
+        if job.status in (ExportJobStatus.READY, ExportJobStatus.FAILED):
+            return RenderExportJobOutcome.SKIPPED
+
+        now = self._clock.now()
+        stale_after = timedelta(seconds=self._stale_after_seconds)
+
+        # Step 3. A job that is already `RENDERING` has two very different explanations, and the
+        # stale window is the only thing that tells them apart: a worker is mid-render right now
+        # (leave it alone), or a worker died holding it and nobody is coming back (X-29). The rule
+        # lives on the aggregate — `ExportJob.is_stale` is its one home, shared with the beat
+        # sweep — so the two can never disagree about which jobs are dead.
+        if job.status is ExportJobStatus.RENDERING:
+            if job.is_stale(now, stale_after):
+                await self._record_failure(job, ExportFailureReason.ABANDONED, now)
+                return RenderExportJobOutcome.ABANDONED
+            return RenderExportJobOutcome.SKIPPED
+
+        # Step 4. **The first of two transactions.** `rendering` has to be durable *before* the
+        # render, not with its outcome: the client polls throughout, and a single transaction would
+        # show `queued` for the whole render and then jump to a terminal status — indistinguishable
+        # from a job nobody ever picked up, which is exactly the "still working" vs. "this failed"
+        # distinction the frontend owes the user. Committing is the caller's job
+        # (`ExportJobRepository.save` says nothing about transactions on purpose); the worker's
+        # composition root closes this one here.
+        job.mark_started(now)
+        try:
+            await self._jobs.save(job)
+        except ExportJobConcurrentlyModified:
+            # Two deliveries of one job in flight at once (X-30, AC-6). The aggregate cannot see
+            # the race — both copies read `queued` and both pass `ExportAlreadyStarted` against
+            # themselves — so only the repository's version check settles it. The loser returns
+            # **before** the render, so the fake renderer's call count stays 1. Nothing is
+            # published: the start did not happen, and the `ExportStarted` that `mark_started`
+            # recorded is dropped with this in-memory copy.
+            return RenderExportJobOutcome.SKIPPED
+        await self._events.publish(*job.release_events())
+
+        # Step 5. Straight to the repository, with no ownership check — see the class docstring:
+        # the job already encodes the authorization decision made at request time, and re-asking
+        # against a session that may have expired since would fail a render for a reason that has
+        # nothing to do with rendering.
+        run = await self._runs.find(job.tailoring_run_id)
+        if run is None:
+            # Effectively unreachable: the only way a run disappears is the guest-session purge,
+            # which cascades this job row away with it, so step 1 would have returned `MISSING`
+            # already. Handled as `MISSING` rather than as a failure reason **because there would
+            # be no job left to record a failure on** (X-35).
+            return RenderExportJobOutcome.MISSING
+
+        # Unreachable by state — a run is `succeeded` when the job is created and terminal
+        # thereafter — but recorded rather than left to fall through, so an impossibility that
+        # becomes possible shows up as a reason in the failure breakdown instead of as a job stuck
+        # `rendering` until the sweep (X-35). The `documents is None` arm is the *same*
+        # impossibility spelled the other way (TR-2: succeeded iff documents), folded into this
+        # guard rather than asserted below it: one branch, no `assert` in production code, and the
+        # narrowing `mypy` needs for step 6 comes free — 1.3's step 5 narrows `extracted_text` the
+        # same way, by handling the impossible value rather than by claiming it cannot happen.
+        documents = run.current_documents
+        if run.status is not TailoringRunStatus.SUCCEEDED or documents is None:
+            await self._record_failure(job, ExportFailureReason.SOURCE_UNAVAILABLE, now)
+            return RenderExportJobOutcome.FAILED
+
+        if not job.was_requested_for(run.version):
+            # X-31. **Before the render**, because it is the cheapest check in the sequence and it
+            # invalidates everything after it: rendering first would pay worker seconds for output
+            # already known to be stale. Nothing is ever re-pointed at the new version (XJ-9) —
+            # *Export again* creates a new job at the version the user can now see.
+            await self._record_failure(job, ExportFailureReason.SOURCE_CHANGED, now)
+            return RenderExportJobOutcome.FAILED
+
+        # Step 6. `current_documents` is the revision if one exists, else the draft (ADR-0015 §1)
+        # — this use case does not choose, it reads the one the aggregate calls current. Narrowed
+        # by the guard above.
+        source = documents.cv if job.document is TailoredDocumentKind.CV else documents.cover_letter
+
+        # Step 7. **`DocumentRenderFailed` is caught here, and that is the deliberate opposite of
+        # `RenderDocumentInline`**, which lets the identical exception family propagate to a 500 and
+        # records nothing. ADR-0014 §2 draws the line — *was anything spent, and is there an
+        # artifact to own?* Here: yes and yes. A worker second has gone and a row exists that the
+        # client is polling, so the job owns the fact that it happened and the reason it produced
+        # nothing (X-25…X-27, X-37, AC-19).
+        #
+        # The base class, not a tuple of its four subclasses: `DocumentRenderFailed` is what carries
+        # `.reason`, and an allow-list of subclasses would be the same bet the extraction sweep
+        # lost. For whoever is tempted to simplify this into a propagating error: the application
+        # tests assert the **recording**, not the propagation, so that change turns them red.
+        #
+        # `perf_counter`, not the `Clock`: the port is whole-second by contract (ADR-0007) and
+        # cannot measure a two-second render at all — 1.3's `llm_duration_ms` argument, unchanged.
+        # Measured here rather than in the adapter because the number is this use case's to record
+        # on the aggregate; an adapter returning a duration beside its bytes would be reporting on
+        # itself, and `DocumentRendererPort` deliberately has no field for it.
+        started = time.perf_counter()
+        try:
+            data = await self._renderer.render(
+                source.value, document=job.document, format=job.format
+            )
+        except DocumentRenderFailed as exc:
+            await self._record_failure(job, exc.reason, self._clock.now())
+            return RenderExportJobOutcome.FAILED
+        render_duration_ms = int((time.perf_counter() - started) * 1000)
+
+        # Step 8. **File before row** (ADR-0006 §2). The bytes are stored *before* `mark_ready`
+        # writes the key, so the crash window between the two leaves an **orphan file** — findable
+        # by id, swept by 1.6 — rather than a `ready` row pointing at nothing, which is a 410 for a
+        # file the user can see in their list. Choose the crash window whose survivor is
+        # recoverable (X-28).
+        try:
+            await self._files.put(job.storage_ref, data)
+        except FileStoreUnavailable:
+            await self._record_failure(
+                job, ExportFailureReason.FILE_STORE_UNAVAILABLE, self._clock.now()
+            )
+            return RenderExportJobOutcome.FAILED
+
+        # Step 9. The second transaction. `clock.now()` is read again rather than reused from step
+        # 4 — the whole point of two timestamps is that the gap between them is the render.
+        job.mark_ready(
+            byte_size=len(data), render_duration_ms=render_duration_ms, at=self._clock.now()
+        )
+        await self._jobs.save(job)
+        await self._events.publish(*job.release_events())
+        return RenderExportJobOutcome.READY
+
+    async def _record_failure(
+        self, job: ExportJob, reason: ExportFailureReason, at: datetime
+    ) -> None:
+        """Record a decided-as-failed job: `mark_failed`, save, then publish — in that order.
+
+        The five failure paths above (`ABANDONED`, `SOURCE_UNAVAILABLE`, `SOURCE_CHANGED`, every
+        `DocumentRenderFailed` and a failed `put`) differ only in the reason and the instant, so the
+        save/publish ordering is written once. Publishing strictly **after** the save is the rule
+        `ExecuteTailoringRun._record_failure` states: a publish that ran first would announce a fact
+        a failed save is about to un-happen.
+
+        `byte_size`, `render_duration_ms` and `file_key` are deliberately not touched. `mark_failed`
+        already guarantees they stay `None` on every path (XJ-3), and a partially-filled row would
+        show up in a byte or latency total as a real number nothing produced.
+        """
+        job.mark_failed(reason, at)
+        await self._jobs.save(job)
+        await self._events.publish(*job.release_events())
