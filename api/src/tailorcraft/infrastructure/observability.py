@@ -84,7 +84,49 @@ from tailorcraft.infrastructure.settings import Settings
 # message. The adapter does not stream today; that is the `httpcore` argument above exactly: the
 # library never gets to speak, true rather than true-today. The spec's privacy item 4 won over T34's
 # "no change needed".
-_SILENCED_VENDOR_LOGGERS = ("pypdf", "docx", "httpx", "httpcore", "google_genai", "google.genai")
+#
+# **`weasyprint` and `fontTools` were added by slice 1.5, and they are here for two DIFFERENT
+# reasons. Do not collapse them into one.** A reader who assumes both are noise control will one day
+# re-enable the wrong one.
+#
+# `weasyprint` is a **privacy requirement** — 1.2's `httpx` lesson, second instance. It logs a failed
+# resource load at **ERROR**, with the URL interpolated into the message. Measured at I15 against a
+# hostile fixture carrying a remote stylesheet and a remote image:
+#
+#     ERROR weasyprint  Failed to load stylesheet at http://jane-doe-private.example/x.css: UrlFetchRefused: This renderer fetches nothing.
+#     ERROR weasyprint  Failed to load image at 'http://jane-doe-private.example/portrait-jane-doe.png': UrlFetchRefused: This renderer fetches nothing.
+#
+# That URL came out of a stranger's CV, and a URL a user typed can carry their name — which is
+# exactly X-54's PII case, and exactly why `refuse_every_url` logs `export.url_fetch_refused` with
+# the **scheme only** and raises a constant message that names no URL. None of that adapter-side care
+# survives the library logging the whole URL one frame away: a vendor's log line is a leak a clean
+# adapter cannot prevent, so the library does not get to speak. Its exceptions still reach us, and
+# `PDF_DOCUMENT_ERRORS` translates them (`export/pdf.py`). `weasyprint.progress` is a child logger
+# and is covered by this one entry through `getEffectiveLevel()`.
+#
+# `fontTools` is **noise control**, and the number is what justifies it. WeasyPrint subsets every
+# embedded font through `fontTools`, which narrates the work: measured at I15, **327 records for one
+# render** of the model-CV corpus fixture (111 INFO + 216 DEBUG, across `fontTools.subset`,
+# `fontTools.subset.timer` and `fontTools.ttLib.ttFont`), and more on a document using more faces —
+#
+#     INFO  fontTools.subset        maxp pruned
+#     DEBUG fontTools.ttLib.ttFont  Reading 'cmap' table from disk
+#     DEBUG fontTools.subset.timer  Took 0.000s to prune 'maxp'
+#
+# — none of it carrying document content, all of it about the font files WE ship. It is silenced
+# because an export's four useful log lines should not be buried under three hundred, not because
+# anything in it is dangerous. If a font bug ever needs debugging, dropping this ONE name from the
+# tuple is the right move; dropping `weasyprint` is not.
+_SILENCED_VENDOR_LOGGERS = (
+    "pypdf",
+    "docx",
+    "httpx",
+    "httpcore",
+    "google_genai",
+    "google.genai",
+    "weasyprint",
+    "fontTools",
+)
 
 
 def configure_logging(settings: Settings) -> None:

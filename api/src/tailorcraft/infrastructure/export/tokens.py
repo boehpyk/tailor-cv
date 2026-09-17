@@ -10,14 +10,12 @@ database, no network. That purity is why AC-28 can be a table of hostile fixture
 microseconds, and it is worth defending: the moment this module needs a `Settings` it has stopped
 being the thing a table can exhaustively cover.
 
-**SKELETON (I1).** The three function bodies raise `NotImplementedError`; I3 fills them in after
-`qa` has recorded the red. This module is red-first *even though it is infrastructure*, which is a
-deliberate exception to the tier table in docs/sdlc.md §2 — the same exception `posting/
-address_policy.py` took in slice 1.2 and `llm/parsing.py` took in 1.3, for the same reason. The
-test-after tiers are the ones whose shape is *discovered against a library*; the contract here is
-fixed by the specification in advance (AC-28, X-51 … X-53, X-56), so it is written down as tests
-first. `GRAMMAR_RULES`, by contrast, is written whole below: a constant **is** its value, so there
-is no body for a red to discriminate against, and its test is green on arrival.
+This module was built **red-first even though it is infrastructure**, a deliberate exception to the
+tier table in docs/sdlc.md §2 — the same exception `posting/address_policy.py` took in slice 1.2 and
+`llm/parsing.py` took in 1.3, for the same reason. The test-after tiers are the ones whose shape is
+*discovered against a library*; the contract here was fixed by the specification in advance (AC-28,
+X-51 … X-53, X-56), so it was written down as tests first. `GRAMMAR_RULES` is the exception to the
+exception: a constant **is** its value, so there was no body for a red to discriminate against.
 
 The two obligations this module owns, and the line between them:
 

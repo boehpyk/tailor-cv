@@ -18,12 +18,13 @@ is the pointer to it.
 `base_url=None` is the other half of the same guarantee: with no base, a relative reference in the
 document cannot be resolved into a local file path either.
 
-**SKELETON (I1).** `refuse_every_url` and `render_pdf` raise `NotImplementedError`; I3 writes both
-bodies. `weasyprint` is deliberately **not imported yet** — the import arrives with the body it
-serves, so that this commit adds no vendor dependency to a module that does not yet use one.
-`STYLESHEET` and `UrlFetchRefused`, by contrast, are written whole: a constant is its value, the way
-`GRAMMAR_RULES` is, so the grep assertion over the stylesheet is green on arrival rather than a
-skipped red.
+`STYLESHEET` is a constant for the same reason `GRAMMAR_RULES` is: it carries no `@import`, no
+`url()` and no `@font-face`, so the one document WeasyPrint is handed points at nothing remote
+before a stranger's Markdown is even added to it.
+
+**This module is the only one allowed to import `weasyprint`** (ADR-0017's adapter table), which is
+why `PDF_DOCUMENT_ERRORS` — the library's own exception types, swept from the installed version —
+is exported from here for the adapter to catch by name.
 """
 
 from __future__ import annotations

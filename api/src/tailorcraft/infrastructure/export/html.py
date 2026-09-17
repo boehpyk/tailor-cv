@@ -20,11 +20,9 @@ signature. `render(markdown, *, document, format) -> bytes` mentions no HTML, no
 size — "Markdown" there is the domain's own format, whereas HTML is one adapter's intermediate for
 one format, and it stays inside.
 
-**SKELETON (I1).** Both bodies raise `NotImplementedError`; I3 writes the emitter and the exact
-`nh3.clean` call after `qa` has recorded the red. The three constants below are written whole, for
-the reason `GRAMMAR_RULES` is: a constant is its value, so AC-29's assertions over them are green on
-arrival and nothing was deferred. `nh3` is deliberately **not imported yet** — the import arrives
-with the body it serves, in I3.
+The three constants below — the tag allow-list, the attribute allow-list and the URL schemes — are
+the whole of `sanitize_html`'s policy, written as data so AC-29 can assert over them directly rather
+than infer them from behaviour.
 """
 
 from __future__ import annotations
