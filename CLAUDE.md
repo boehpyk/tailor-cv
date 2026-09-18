@@ -18,9 +18,10 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: four slices shipped (2026-09-16).** Phase 1 is under way. The architecture now carries
-> a paid external call, a worker, a scheduled job, and the first unauthenticated *write* to a PII
-> row on a timer.
+> **Status: four slices shipped; slice 1.5 implemented and awaiting `/verify` (2026-09-18).**
+> Phase 1 is under way. The architecture now carries a paid external call, a worker, two scheduled
+> jobs, an unauthenticated *write* to a PII row on a timer, and — new in 1.5 — **a stranger's CV
+> rendered into HTML and written to disk as a file**.
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
@@ -28,53 +29,61 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
 > - **1.3 `tailoring-generate-documents`** (PR #4) — one button returns a tailored CV and a cover
 >   letter: queued, executed by a Celery worker behind `LlmPort` (Gemini), polled by the client;
->   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat. Eval run 4: p95
->   `llm_duration_ms` 6.4 s.
-> - **1.4 `workspace-progress-and-editor`** (PR #5) — the tabbed workspace, the three-stage
->   progress stepper, React Router, and a TipTap editor over both documents with debounced autosave.
->   - The edit is a **revision on the run**, stored as Markdown; the aggregate owns the version and
->     the mapper only checks it (`version_id_generator=False`) — one column refuses a stale edit
->     **and** closes 1.3's concurrent duplicate delivery (ADR-0015).
->   - The editor renders **no HTML**: Markdown → tokens (`html: false`) → ProseMirror nodes. The one
->     residual is a URL attribute, gated to three schemes at both entrances. 1.5 owns the HTML path.
->   - `PUT /api/tailoring-runs/{id}/documents/{kind}` with `expected_version`; 409 on a conflict,
->     resolved by comparison on the client — never a silent overwrite, never a "keep mine" nobody
->     clicked.
->   - `/verify` took four review rounds. The first three each found something real — a serializer
->     emitting autolink syntax its own parser refuses; a failed flush expiring the sweep's whole
->     identity map; a queued save winning a detected conflict — and the third still left gaps
->     *between* the autosave hook's six refs. The owner chose to re-model the hook as **one pure
->     state machine** (`features/editor/autosaveMachine.ts`, `step(machine, event) → {next,
->     effects}`, a 10 × 11 table with a mechanised default-branch sweep) rather than pin the gaps;
->     the fourth round PASSed it. Every finding was a red test before its fix.
+>   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat.
+> - **1.4 `workspace-progress-and-editor`** (PR #5) — the tabbed workspace, the progress stepper,
+>   React Router, and a TipTap editor over both documents with debounced autosave. The edit is a
+>   revision on the run (ADR-0015); one version column refuses a stale edit **and** closes 1.3's
+>   concurrent duplicate delivery. `/verify` took four rounds and ended by re-modelling the autosave
+>   hook as one pure state machine.
+> - **1.5 `export-multi-format-download`** (branch, no PR yet) — four formats. `md` and `txt` are a
+>   `GET` on a representation of the document and leave **no row**; `pdf` and `docx` are an
+>   `ExportJob`, a Celery task on a third queue, a file on the uploads volume and a polled client
+>   (**ADR-0016**). The pipeline is Markdown → tokens (`html=False`) → grammar normalization →
+>   {plain text | DOCX | HTML → `nh3` → WeasyPrint}, with a `url_fetcher` that refuses every URL
+>   (**ADR-0017**). **1293 backend and 486 frontend tests**, green twice. Measured: inline p95
+>   **11 ms** (budget 500 ms), `POST` → `ready` p95 **0.17 s** over 40 real renders (budget 10 s),
+>   corpus **28/28** across four formats.
 >
-> **921 backend and 431 frontend tests**, green twice in a row. Every gate was verified by running
-> it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, **`tsc -b`**, ESLint,
-> Prettier, Vitest, `vite build`. **The TypeScript gate had checked zero files since 1.1** — a bare
-> `tsc --noEmit` on a solution-style `tsconfig.json` compiles nothing; it passed
-> `const x: number = "nope"` for four slices and was found by the editor skeleton. `make eval`
-> measures prompt quality and latency against the real API. It is not a test, and it costs money.
+> **Every gate was verified by running it**: Ruff, mypy `--strict`, import-linter (3 contracts, now
+> with `weasyprint`, `nh3`, `markdown_it` and `docx` on both forbidden lists), pytest, `tsc -b`,
+> ESLint, Prettier, Vitest, `vite build`. `make eval` measures prompt quality against the real API.
+> It is not a test, and it costs money.
 >
-> **Carried out of 1.4, each with an owner and a trigger:**
-> - **Startup refusals never exit under `uvicorn --workers N`.** The API-key guard and the
->   stale-window guard both leave the API respawning. Owner: `devops`, before the deploy SSH secrets
->   are set. Import the composition root once and exit non-zero before `exec uvicorn`.
-> - **Very long CVs** (about 14,000+ characters) can exceed the 12 s per-attempt timeout. They are
->   recorded `llm_timed_out`, with two calls charged. Accepted; fix in a later slice, measured first.
-> - **Beat is invisible to `/health/ready`**, because `control.ping` reaches workers only. Slice 1.6's
->   heartbeat covers it.
-> - **The editor is not lazy-loaded.** TipTap, ProseMirror and markdown-it are 530 kB of the 894 kB
->   bundle (four cache-stable chunks; 1.3 shipped 236 kB) and load on the workspace, where nobody
->   edits. A `React.lazy` in `RunPage` with a chunk-load failure path is a decision for whoever next
->   measures first paint. Noted in `vite.config.ts`.
-> - **1.5's three obligations** are written in ADR-0015 §2 and E-13: render Markdown with
->   `html=False`, sanitize with `nh3` on the grammar's allow-list, give WeasyPrint a `url_fetcher`
->   that refuses everything. 1.4 sanitized nothing — it rendered nodes.
-> - **Closed this slice:** the duplicate delivery (ADR-0015 §3), the `render_item` hook, the raising
->   downgrade, the typed sweep ids.
+> **What 1.5 found that no unit test could:**
+> - **A plain-function `url_fetcher` aborts the whole render in WeasyPrint 70.** The library reads
+>   `url_fetcher._fail_on_errors` *inside its own `except`* to choose between a per-resource failure
+>   and a fatal one; a function has no such attribute, so our refusal came back out as an
+>   `AttributeError` and the `except Exception` floor would have recorded `render_error` saying
+>   nothing. Every fetcher now passes through a wrapper carrying that attribute.
+> - **`weasyprint.urls.FatalURLFetchingError` subclasses `BaseException`, not `Exception`** — a hole
+>   in every floor, found by walking the installed package rather than reading a changelog. Caught by
+>   name; the floor stays `Exception`, so `CancelledError` still cancels.
+> - **`sanitize_html(render_html(...))` deletes the document shell and keeps the title's text**,
+>   putting a stray "Tailored CV" line above the name in every PDF. `html`/`head`/`title`/`body` are
+>   not on the allow-list, correctly. Sanitize the fragment, **then** wrap.
+> - **`beat` crash-loops on the production image.** `/var/lib/tailorcraft/state` did not exist in the
+>   image, so Docker created the volume's mount point **root-owned**, and `beat` runs unprivileged in
+>   production but not in dev. Invisible in development by construction.
+> - **markdown-it does not hand back a link without an `href`** — a refused scheme fails the whole
+>   rule and leaves the literal `[text](javascript:…)` as one text token.
+>
+> **Carried out of 1.5, each with an owner and a trigger:**
+> - **Startup refusals never exit under `uvicorn --workers N`** — now **three** guards (the API key,
+>   the tailoring stale window, the export stale window). Owner: `devops`, before the deploy SSH
+>   secrets are set.
+> - **The refused-link text helper** rewrites every text token and has a known false positive on a
+>   `[1](note)` citation, with no tests of its own. Open at `/verify`.
+> - **AC-37 forces an a11y regression** (the ticking count cannot hide in an `aria-hidden` span), and
+>   **AC-42's 401 copy ships without its link home**. Both recorded in the spec.
+> - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
+>   today (counts, not text). Same "clean today" argument as the `httpcore` note.
+> - **The production image has no `pytest`**, so AC-50's in-image render check needs a per-invocation
+>   install. A `test` build target on `production` is the call; nobody has made it.
+> - **Still open from 1.4:** very long CVs can exceed the per-attempt LLM timeout; beat is invisible
+>   to `/health/ready`; the editor is not lazy-loaded (530 kB of TipTap on a page where nobody edits).
 >
 > **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
-> passes and pushes images to GHCR.
+> pushes images to GHCR.
 >
 > **The deploy path is still unproven, and one part of it is worse than unproven.** There is no VDS,
 > so `deploy` fails at the SSH sync — expected. But the `production` environment has **zero
@@ -84,11 +93,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > required reviewer on the `production` environment before setting the SSH secrets**, or the first
 > merge after they land deploys unattended.
 >
-> Three ADRs were added by 1.2, two of them tracked in git for the first time: `.gitignore` excluded
-> all of `docs/`, which meant ADR-0012 — the contract the SSRF adapter was built against — was
-> absent from its own review. `docs/adr/**` and `docs/constitution.md` are now tracked; the PRD,
-> the specs and the infra notes stay local. **The repository is public**, so anything added to
-> `docs/adr/` is published the moment it lands.
+> `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, the specs and the infra notes stay
+> local. **The repository is public**, so anything added to `docs/adr/` is published the moment it
+> lands.
 >
 > The harness was ported from the muzbar.com project's SDLC and adapted to this stack. Four things
 > were changed deliberately rather than copied, each because of a documented failure there: the
