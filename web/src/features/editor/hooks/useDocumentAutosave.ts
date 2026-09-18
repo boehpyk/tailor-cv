@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'r
 
 import { ApiError } from '@/api/client';
 import { reviseTailoredDocument } from '@/api/tailoringRuns';
+import { exportJobsQueryKey } from '@/features/export/hooks/useExportJobs';
 import {
   tailoringRunQueryKey,
   tailoringRunQueryOptions,
@@ -303,6 +304,14 @@ export function useDocumentAutosave(
     onSuccess: (run) => {
       queryClient.setQueryData(tailoringRunQueryKey(runId), run);
       void queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey });
+      // A save moved the run's `version`, which is what every export job's `current` is compared
+      // against on the server (AC-41). Without this line a PDF rendered a minute ago keeps offering
+      // *Download PDF* for a document the user has since edited — the file is real, it is simply of
+      // the wrong version, and only a fresh list says so. Invalidated rather than patched, for the
+      // reason `useCreateJobPosting` gives: `current` is the server's comparison, not ours to
+      // recompute here. Harmless when nothing has been exported — an invalidation with no observer
+      // fetches nothing.
+      void queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(runId) });
       // `store` is the `const` below; this callback runs when an answer arrives, long after the
       // render that declared both — and a `PUT` can only have been sent through the store.
       store.dispatch({ type: 'landed200', textNow: () => handle.serialize() });
