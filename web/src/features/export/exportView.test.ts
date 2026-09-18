@@ -5,7 +5,7 @@ import { ApiError } from '@/api/client';
 import { makeExportJob, makeExportMutations } from './test/fixtures';
 import { viewOfExport } from './exportView';
 
-import type { ExportTarget } from './exportView';
+import type { ExportMutations, ExportTarget } from './exportView';
 
 /**
  * F5 RED — `viewOfExport`'s own table (feature-spec AC-37; technical-plan "The per-format state
@@ -390,6 +390,117 @@ describe('viewOfExport — AC-37', () => {
         kind: 'downloadFailed',
         message: 'Your session has expired',
         nextAction: 'download',
+      });
+    });
+  });
+
+  describe('requestFailed — MAJOR 1 (/verify slice 1.5, iteration 2): a rejected POST /exports must reach the user', () => {
+    /**
+     * `ExportMutations` has no `requestFailure` member yet (that is this finding's whole point), so
+     * `makeExportMutations`'s `Partial<ExportMutations>` parameter cannot accept one without an
+     * excess-property error — a genuine `tsc -b` failure, not a runtime discrimination. The cast
+     * here is scoped to this one helper, exactly as `ExportBar.test.tsx`'s MAJOR 2 fix used a
+     * whole-object `toEqual` on the *read* side to survive the same widening: this is the *write*
+     * side of the identical problem, because `requestFailure` is new input, not a wider return type.
+     * `viewOfExport` itself only ever reads what's on the (today, narrower) type it was compiled
+     * against, so passing the extra field through is inert until the implementer widens
+     * `ExportMutations` — which is exactly why every case below reds on a real mismatch and not on
+     * a compile error.
+     */
+    function withRequestFailure(target: ExportTarget, error: Error): ExportMutations {
+      return {
+        ...makeExportMutations(),
+        requestFailure: { target, error },
+      } as ExportMutations;
+    }
+
+    // Every "User sees" cell from the five failure-contract rows the reviewer found undelivered,
+    // copied verbatim from feature-spec.md (X-14, X-18, X-19, X-21, X-22) — never imported from
+    // `exportCopy.ts`, for the same reason every other row in this file is copied by hand.
+    const REQUEST_FAILURE_CASES: ReadonlyArray<{
+      readonly name: string;
+      readonly code: string;
+      readonly message: string;
+      readonly retryable: boolean;
+    }> = [
+      {
+        name: 'X-14 tailoring_run_not_exportable — the run has no current documents',
+        code: 'tailoring_run_not_exportable',
+        message: 'This run has no documents to download yet.',
+        retryable: false,
+      },
+      {
+        name: 'X-18 too_many_export_jobs — the session already owns the cap',
+        code: 'too_many_export_jobs',
+        message: "You've reached the download limit for this session.",
+        retryable: false,
+      },
+      {
+        name: 'X-19 rate_limited — 30/h/session or 60/h/IP',
+        code: 'rate_limited',
+        message: 'Too many exports — try again in a few minutes.',
+        retryable: true,
+      },
+      {
+        name: 'X-21 service_unavailable — Postgres down, or the commit failed before the enqueue',
+        code: 'service_unavailable',
+        message: 'Something went wrong. Try again.',
+        retryable: true,
+      },
+      {
+        name: 'X-22 queue_unavailable — the enqueue failed after the row was committed',
+        code: 'queue_unavailable',
+        message: "We couldn't start preparing your file. Try again.",
+        retryable: true,
+      },
+    ];
+
+    it.each(REQUEST_FAILURE_CASES)('$name', ({ code, message, retryable }) => {
+      const mutations = withRequestFailure(PDF_TARGET, new ApiError(409, 'server prose', code));
+
+      const view = viewOfExport(PDF_TARGET, [], mutations, NOW_MS);
+
+      expect(view).toEqual({ kind: 'requestFailed', message, retryable });
+    });
+
+    it('the five sentences are mutually distinct — AC-38: a user who cannot tell two states apart clicks again', () => {
+      const messages = REQUEST_FAILURE_CASES.map((c) => c.message);
+
+      expect(new Set(messages).size).toBe(messages.length);
+    });
+
+    it('a request failure for a DIFFERENT target does not surface on this one', () => {
+      const mutations = withRequestFailure(
+        { document: 'cv', format: 'docx' },
+        new ApiError(409, 'server prose', 'tailoring_run_not_exportable'),
+      );
+
+      const view = viewOfExport(PDF_TARGET, [], mutations, NOW_MS);
+
+      expect(view).toEqual({ kind: 'idle' });
+    });
+
+    it("a request failure outranks a stale, already-failed job for the same target — the browser's own last request is fresher than what the poll last said", () => {
+      const jobs = [
+        makeExportJob({
+          document: 'cv',
+          format: 'pdf',
+          status: 'failed',
+          failure_reason: 'render_error',
+          retryable: true,
+        }),
+      ];
+      const mutations = withRequestFailure(
+        PDF_TARGET,
+        new ApiError(429, 'server prose', 'rate_limited'),
+      );
+
+      const view = viewOfExport(PDF_TARGET, jobs, mutations, NOW_MS);
+
+      expect(view).toEqual({
+        kind: 'requestFailed',
+        message: 'Too many exports — try again in a few minutes.',
+        retryable: true,
       });
     });
   });

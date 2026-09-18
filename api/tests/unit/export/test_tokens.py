@@ -301,6 +301,36 @@ def test_strip_refused_link_markup_leaves_a_no_scheme_destination_byte_identical
     assert strip_refused_link_markup(literal) == literal
 
 
+# --- the drive-letter half: a one-character "scheme" is not a URL attempt at all -------------------
+#
+# `urlsplit("C:/Users/me/cv.docx").scheme == "c"`, so today this reduces to "docs" exactly like a
+# genuinely refused URL — there was no test pinning either answer, so the behaviour was an accident
+# rather than a decision. Pinned here per the reviewer's argument at /verify slice 1.5 (iteration 2),
+# which the harm is asymmetric on: over-stripping **deletes the author's characters** (MAJOR 1's own
+# harm, in the table above); under-stripping merely shows inert text the parser already refused, with
+# **zero** security consequence, because by the time this helper runs the link is a `text` token and
+# there is no `href` left to exploit. No IANA-registered scheme is a single character, so a
+# one-character scheme is a drive letter, not a URL — `_is_refused_url` needs a `len(scheme) > 1`
+# guard, and this table is red until it has one.
+
+
+def test_strip_refused_link_markup_leaves_a_windows_path_byte_identical() -> None:
+    """A Windows path in a CV (`C:/Users/me/cv.docx`) must not be treated as a refused URL scheme —
+    `urlsplit` parses the drive letter as `scheme="c"`, which is one character, and no IANA-registered
+    scheme is. Red until `_is_refused_url` gains a `len(scheme) > 1` guard."""
+    literal = "[docs](C:/Users/me/cv.docx)"
+
+    assert strip_refused_link_markup(literal) == literal
+
+
+def test_strip_refused_link_markup_still_strips_a_genuine_multi_character_refused_scheme() -> None:
+    """The other edge of the same guard, in the same table: `len(scheme) > 1` must not be so wide
+    that it lets a real refused scheme back through. This is what keeps the drive-letter allowance
+    from being widened into uselessness — already green, and must stay green once the guard lands."""
+    assert strip_refused_link_markup("[click me](javascript:alert(1))") == "click me"
+    assert strip_refused_link_markup("[x](vbscript:msgbox(1))") == "x"
+
+
 _ACCEPTED_SCHEME_LITERALS = [
     "See [example](https://example.com) for more.",
     "Email [me](mailto:person@example.com) directly.",

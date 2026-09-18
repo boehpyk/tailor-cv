@@ -711,4 +711,144 @@ describe('ExportBar', () => {
     });
     expect(screen.getByRole('button', { name: 'PDF' })).not.toBeDisabled();
   });
+
+  /**
+   * MAJOR 1 (/verify slice 1.5, iteration 2): `requestExport.isError` / `.error` are read **nowhere**
+   * in `ExportBar` — a rejected `POST /exports` returns the control to `idle` with no trace. Five
+   * failure-contract rows (X-14, X-18, X-19, X-21, X-22) have a "User sees" cell nothing delivers;
+   * X-18, X-19 and X-21 create **no row** (ADR-0014 §2), so there is nothing for the poller to
+   * surface either — the click silently does nothing, and the natural response is to click again,
+   * which for the 429 and the session cap is exactly the behaviour the limit exists to stop.
+   *
+   * Written against the design decided at `/verify`: a `requestFailure` field on `ExportMutations`,
+   * a `requestFailed` member on `ExportView`, and a code-keyed copy map beside
+   * `DOWNLOAD_FAILURE_BY_CODE`. `ExportBar.tsx` reads none of `useRequestExport`'s error state today,
+   * so every case below reds on the message never appearing — not on a compile error, and not on the
+   * pure-function layer already covered by `exportView.test.ts`'s own `requestFailed` table.
+   */
+  describe('MAJOR 1 (/verify slice 1.5, iteration 2): a rejected POST /exports reaches the user', () => {
+    const REQUEST_FAILURE_CASES: ReadonlyArray<{
+      readonly name: string;
+      readonly status: number;
+      readonly code: string;
+      readonly message: string;
+      readonly retryable: boolean;
+    }> = [
+      {
+        name: 'X-14 tailoring_run_not_exportable',
+        status: 409,
+        code: 'tailoring_run_not_exportable',
+        message: 'This run has no documents to download yet.',
+        retryable: false,
+      },
+      {
+        name: 'X-18 too_many_export_jobs',
+        status: 409,
+        code: 'too_many_export_jobs',
+        message: "You've reached the download limit for this session.",
+        retryable: false,
+      },
+      {
+        name: 'X-19 rate_limited',
+        status: 429,
+        code: 'rate_limited',
+        message: 'Too many exports — try again in a few minutes.',
+        retryable: true,
+      },
+      {
+        name: 'X-21 service_unavailable',
+        status: 503,
+        code: 'service_unavailable',
+        message: 'Something went wrong. Try again.',
+        retryable: true,
+      },
+      {
+        name: 'X-22 queue_unavailable',
+        status: 503,
+        code: 'queue_unavailable',
+        message: "We couldn't start preparing your file. Try again.",
+        retryable: true,
+      },
+    ];
+
+    for (const { name, status, code, message, retryable } of REQUEST_FAILURE_CASES) {
+      it(`${name}: clicking PDF shows "${message}" on the PDF control only${retryable ? ', with Export again' : ', with no retry'}`, async () => {
+        stubExportFetch(EXPORT_RUN_ID, {
+          exportJobs: () => Promise.resolve(jsonResponse(200, { items: [] })),
+          requestExport: () =>
+            Promise.resolve(jsonResponse(status, { error: { code, message: 'server prose' } })),
+        });
+
+        renderBar();
+        await screen.findByRole('button', { name: 'PDF' });
+        fireEvent.click(screen.getByRole('button', { name: 'PDF' }));
+
+        const notice = await screen.findByText(message);
+        const pdfButton = screen.getByRole('button', { name: 'PDF' });
+        expect(pdfButton.parentElement).toContainElement(notice);
+
+        // Not on the docx control — a rejection is a fact about the request that was clicked, not
+        // about every control of this format's kind.
+        const docxButton = screen.getByRole('button', { name: 'Word' });
+        expect(
+          within(docxButton.parentElement as HTMLElement).queryByText(message),
+        ).not.toBeInTheDocument();
+
+        const pdfRegion = pdfButton.parentElement as HTMLElement;
+        if (retryable) {
+          expect(
+            within(pdfRegion).getByRole('button', { name: /export again/i }),
+          ).toBeInTheDocument();
+        } else {
+          expect(
+            within(pdfRegion).queryByRole('button', { name: /export again/i }),
+          ).not.toBeInTheDocument();
+        }
+      });
+    }
+
+    it('the five sentences are mutually distinct (AC-38): a user who cannot tell two states apart clicks again', () => {
+      const messages = REQUEST_FAILURE_CASES.map((c) => c.message);
+
+      expect(new Set(messages).size).toBe(messages.length);
+    });
+
+    it('X-21 service_unavailable: the retry beside the message asks again — a second POST, not a no-op', async () => {
+      const fetchMock = stubExportFetch(EXPORT_RUN_ID, {
+        exportJobs: () => Promise.resolve(jsonResponse(200, { items: [] })),
+        requestExport: (callNumber) =>
+          callNumber === 1
+            ? Promise.resolve(
+                jsonResponse(503, { error: { code: 'service_unavailable', message: 'down' } }),
+              )
+            : Promise.resolve(
+                jsonResponse(
+                  202,
+                  makeExportJob({ format: 'pdf', status: 'queued', byte_size: null }),
+                ),
+              ),
+      });
+
+      renderBar();
+      await screen.findByRole('button', { name: 'PDF' });
+      fireEvent.click(screen.getByRole('button', { name: 'PDF' }));
+
+      const notice = await screen.findByText('Something went wrong. Try again.');
+      const pdfButton = screen.getByRole('button', { name: 'PDF' });
+      const pdfRegion = pdfButton.parentElement as HTMLElement;
+      expect(pdfRegion).toContainElement(notice);
+
+      fireEvent.click(within(pdfRegion).getByRole('button', { name: /export again/i }));
+
+      const exportsPath = `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`;
+      await waitFor(() => {
+        const posts = fetchMock.mock.calls.filter(
+          (call) =>
+            (call[0] as string) === exportsPath &&
+            ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'POST',
+        );
+        expect(posts).toHaveLength(2);
+      });
+    });
+  });
 });
