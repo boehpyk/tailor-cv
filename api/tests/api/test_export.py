@@ -1355,6 +1355,19 @@ async def test_privacy_no_document_text_or_bytes_leak_across_success_every_failu
     write_fail_marker = "QA_PRIVACY_WRITE_FAIL_TOKEN"
     rendered_bytes_marker = b"QA_PRIVACY_RENDERED_BYTES_TOKEN"
 
+    # This test calls `_create_succeeded_run` six times under ONE guest session (one success, two
+    # failure-reason runs, one store-unavailable run, one inline-failure run, one write-failure run)
+    # — each uploads a real base CV through `POST /api/base-cvs` (`_advance_to_running`'s own
+    # technique). `max_base_cvs_per_session` defaults to 5, so the sixth upload answered 409
+    # `too_many_base_cvs` and the fixture died at `_upload_ready_base_cv`'s own `assert 201` before
+    # this test's actual subject — the privacy assertions below — was ever reached. Postings (six
+    # against a cap of 10) and the upload/posting rate limits (six against 10/hr and 20/hr) all stay
+    # under their own caps unmodified; only this one cap needs raising, using the same
+    # `_override_settings` + `model_copy` pattern `test_export_inline.py`'s AC-11 test already
+    # establishes for an unrelated cap. No assertion below changes — the setup was broken, not the
+    # thing it exists to prove.
+    _override_settings(app, settings, max_base_cvs_per_session=10)
+
     _install_queue(app)
 
     with caplog.at_level(logging.INFO):
