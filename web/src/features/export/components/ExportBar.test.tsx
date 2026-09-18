@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { jsonResponse } from '@/test/fixtures';
@@ -188,6 +188,23 @@ describe('ExportBar', () => {
       expect(screen.getByRole('button', { name })).not.toBeDisabled();
     }
     expect(screen.getAllByRole('status')).toHaveLength(4);
+  });
+
+  it('AC-36: the four controls render in the order Markdown, Plain text, PDF, Word', async () => {
+    stubExportFetch(EXPORT_RUN_ID, {
+      exportJobs: () => Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+
+    const { container } = renderBar();
+    await screen.findByRole('button', { name: 'PDF' });
+
+    const buttons = within(container).getAllByRole('button');
+    expect(buttons.map((button) => button.textContent)).toEqual([
+      'Markdown',
+      'Plain text',
+      'PDF',
+      'Word',
+    ]);
   });
 
   it('AC-37/AC-38: a queued PDF job shows "Waiting for a worker…" and offers no retry control', async () => {
@@ -388,6 +405,25 @@ describe('ExportBar', () => {
     renderBar({ saveState: { kind: 'expired' } });
 
     expect(await screen.findByText('Your session has expired')).toBeInTheDocument();
+  });
+
+  it('AC-40: the disabled reason renders once, beside the four controls, never inside one of their own live regions', async () => {
+    stubExportFetch(EXPORT_RUN_ID, {
+      exportJobs: () => Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+
+    renderBar({ saveState: { kind: 'saving' } });
+
+    // Exactly once: four copies of this sentence beside four disabled buttons would be the same
+    // reason shouted four times, which is precisely what `ExportBar`'s docstring says the bar-level
+    // placement (rather than a per-control one) is for.
+    expect(await screen.findAllByText('Save your changes first — Saving…')).toHaveLength(1);
+
+    // And it is not one of the four per-control status regions saying it: each of those stays
+    // empty while the gate is the reason nothing is offered.
+    for (const status of screen.getAllByRole('status')) {
+      expect(status).not.toHaveTextContent('Save your changes first');
+    }
   });
 
   it('AC-40: controls disable before the debounce fires (dirty), stay disabled while saving, and re-enable once saved', async () => {
