@@ -498,10 +498,11 @@ describe('ExportBar', () => {
     expect(createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('AC-42: 410 export_file_gone maps to "That file is no longer available — Export again"', async () => {
+  it('AC-42: 410 export_file_gone maps to "That file is no longer available — Export again", and the recovery the copy promises is reachable — MAJOR 2 (/verify slice 1.5)', async () => {
     stubObjectUrl();
     spyOnAnchorClicks();
-    stubExportFetch(EXPORT_RUN_ID, {
+    const exportsPath = `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`;
+    const fetchMock = stubExportFetch(EXPORT_RUN_ID, {
       exportJobs: () =>
         Promise.resolve(
           jsonResponse(200, {
@@ -516,6 +517,20 @@ describe('ExportBar', () => {
             jsonResponse(410, { error: { code: 'export_file_gone', message: 'gone' } }),
           ),
       },
+      // The retry this test drives must land here, on the exports resource, as a new request — not
+      // on `exportFile['job-410']` again, which would just 410 a second time for the same reason.
+      requestExport: () =>
+        Promise.resolve(
+          jsonResponse(
+            202,
+            makeExportJob({
+              id: 'job-410-retry',
+              format: 'pdf',
+              status: 'queued',
+              byte_size: null,
+            }),
+          ),
+        ),
     });
 
     renderBar();
@@ -525,6 +540,29 @@ describe('ExportBar', () => {
     expect(
       await screen.findByText('That file is no longer available — Export again'),
     ).toBeInTheDocument();
+
+    // Before MAJOR 2's fix, `primaryActionFor` decides a click's meaning from the job ROW, which a
+    // 410 never changes — `job.status === 'ready' && job.current` is still true, so the button stays
+    // wired to the identical `downloadExportFile('job-410')` call that just 410'd. Clicking "Try
+    // again" must instead issue a NEW export request: X-47's stated recovery ("re-exporting does")
+    // has to be something a click can actually do.
+    fireEvent.click(screen.getByRole('button', { name: /try again/i }));
+
+    await waitFor(() => {
+      const postsToExports = fetchMock.mock.calls.filter(
+        (call) =>
+          (call[0] as string) === exportsPath &&
+          ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'POST',
+      );
+      expect(postsToExports).toHaveLength(1);
+    });
+
+    // And the retry must NOT be a second GET on the file that already 410'd — that would be the bug
+    // this test exists to catch, passing anyway because nobody checked what the click did.
+    const fileCalls = fetchMock.mock.calls.filter(
+      (call) => (call[0] as string) === '/api/export-jobs/job-410/file',
+    );
+    expect(fileCalls).toHaveLength(1);
   });
 
   it('AC-42: 401 guest_session_expired maps to the session-expired copy', async () => {

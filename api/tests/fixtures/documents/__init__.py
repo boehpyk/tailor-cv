@@ -107,7 +107,17 @@ MODEL_LETTER_FIXTURE_MARKDOWN = (
 # A source certain to normalize on the way through a round trip (`__bold__` -> `**bold**`).
 NORMALIZATION_FIXTURE_MARKDOWN = "A paragraph with __bold__ text that should normalize.\n"
 
-# The full corpus AC-47's every-format-renders test iterates — the same seven documents the
+# A `[label](destination)` shape whose destination has no scheme at all — never a link attempt, and
+# never reachable by `_allow_three_schemes` as anything but "not allowed" (MAJOR 1, /verify slice
+# 1.5). `strip_refused_link_markup` must leave this byte-identical: "$100k" written by an author as
+# "[100k](150k)" is a salary range, not a refused URL, and "[1](note)" is a citation, not an attack.
+NO_SCHEME_BRACKET_FIXTURE_MARKDOWN = (
+    "## Compensation\n"
+    "\n"
+    "Negotiated salary range [100k](150k) after the offer, cited as [1](note) in the report.\n"
+)
+
+# The full corpus AC-47's every-format-renders test iterates — the same eight documents the
 # editor's own `markdownFixtureCorpus` exports, in the same order.
 MARKDOWN_FIXTURE_CORPUS: tuple[MarkdownFixture, ...] = (
     MarkdownFixture("every grammar element", GRAMMAR_FIXTURE_MARKDOWN),
@@ -117,4 +127,7 @@ MARKDOWN_FIXTURE_CORPUS: tuple[MarkdownFixture, ...] = (
     MarkdownFixture("a model-shaped cover letter", MODEL_LETTER_FIXTURE_MARKDOWN),
     MarkdownFixture("a [url](url) self-describing link", SELF_DESCRIBING_LINK_FIXTURE_MARKDOWN),
     MarkdownFixture("certain normalisation (__bold__ -> **bold**)", NORMALIZATION_FIXTURE_MARKDOWN),
+    MarkdownFixture(
+        "a non-URL bracket-paren pair (salary range, citation)", NO_SCHEME_BRACKET_FIXTURE_MARKDOWN
+    ),
 )

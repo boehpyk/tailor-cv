@@ -213,7 +213,7 @@ describe('viewOfExport — AC-37', () => {
     expect(view).toEqual({ kind: 'downloading' });
   });
 
-  it('a rejected download for this target is "downloadFailed", over a ready job, mapped from the ApiError', () => {
+  it('a rejected download for this target is "downloadFailed", over a ready job, mapped from the ApiError — nextAction is "download" for a 5xx (the file may still be there)', () => {
     const jobs = [
       makeExportJob({
         document: 'cv',
@@ -232,13 +232,38 @@ describe('viewOfExport — AC-37', () => {
 
     const view = viewOfExport(PDF_TARGET, jobs, mutations, NOW_MS);
 
-    if (view.kind !== 'downloadFailed') {
-      throw new Error(`expected downloadFailed, got ${view.kind}`);
-    }
-    expect(view.message).toBe("Couldn't download");
+    // A single `toEqual` on the whole object, not a `.kind` narrow followed by a property read:
+    // `nextAction` does not exist on `ExportView['downloadFailed']` yet (that is MAJOR 2's whole
+    // point), and reading a field that is not on the type would be a compile error, not a runtime
+    // red — exactly the kind of false failure the RED tier's own rules rule out.
+    //
+    // MAJOR 2 (/verify slice 1.5): a 5xx says nothing about whether the file still exists, so the
+    // retry must repeat the same download rather than paying for a render nobody asked for.
+    expect(view).toEqual({
+      kind: 'downloadFailed',
+      message: "Couldn't download",
+      nextAction: 'download',
+    });
   });
 
-  it('a 404 export_job_not_found download failure maps to "We couldn\'t find that file"', () => {
+  it('a network failure (not an ApiError) is downloadFailed with nextAction "download"', () => {
+    const mutations = makeExportMutations({
+      downloadFailure: {
+        target: PDF_TARGET,
+        error: new TypeError('Failed to fetch'),
+      },
+    });
+
+    const view = viewOfExport(PDF_TARGET, [], mutations, NOW_MS);
+
+    expect(view).toEqual({
+      kind: 'downloadFailed',
+      message: "Couldn't download",
+      nextAction: 'download',
+    });
+  });
+
+  it('a 404 export_job_not_found download failure maps to "We couldn\'t find that file" — nextAction is "request", because the job itself is gone and only a new export can help', () => {
     const mutations = makeExportMutations({
       downloadFailure: {
         target: PDF_TARGET,
@@ -248,10 +273,14 @@ describe('viewOfExport — AC-37', () => {
 
     const view = viewOfExport(PDF_TARGET, [], mutations, NOW_MS);
 
-    expect(view).toEqual({ kind: 'downloadFailed', message: "We couldn't find that file" });
+    expect(view).toEqual({
+      kind: 'downloadFailed',
+      message: "We couldn't find that file",
+      nextAction: 'request',
+    });
   });
 
-  it('a 410 export_file_gone download failure maps to "That file is no longer available — Export again"', () => {
+  it('a 410 export_file_gone download failure maps to "That file is no longer available — Export again" — nextAction is "request", the MAJOR 2 fix (/verify slice 1.5): the row still says ready, but the file is gone, so repeating the same GET can only 410 again', () => {
     const mutations = makeExportMutations({
       downloadFailure: {
         target: PDF_TARGET,
@@ -264,6 +293,7 @@ describe('viewOfExport — AC-37', () => {
     expect(view).toEqual({
       kind: 'downloadFailed',
       message: 'That file is no longer available — Export again',
+      nextAction: 'request',
     });
   });
 
@@ -339,7 +369,7 @@ describe('viewOfExport — AC-37', () => {
       expect(downloadingView).toEqual({ kind: 'downloading' });
     });
 
-    it('a rejected inline download is downloadFailed, mapped the same way as a queued one', () => {
+    it('a rejected inline download is downloadFailed, mapped the same way as a queued one — nextAction is "download" for a 401 (there is no job to abandon, only a session to prove again)', () => {
       const mutations = makeExportMutations({
         downloadFailure: {
           target: MD_TARGET,
@@ -353,6 +383,14 @@ describe('viewOfExport — AC-37', () => {
         throw new Error(`expected downloadFailed, got ${view.kind}`);
       }
       expect(view.message).toMatch(/session has expired/i);
+      // A second, whole-object assertion for `nextAction` rather than `view.nextAction` after the
+      // narrow above: the field does not exist on `ExportView['downloadFailed']` yet (MAJOR 2,
+      // `/verify` slice 1.5), and reading it here would be a compile error, not a runtime red.
+      expect(view).toEqual({
+        kind: 'downloadFailed',
+        message: 'Your session has expired',
+        nextAction: 'download',
+      });
     });
   });
 });

@@ -21,11 +21,13 @@ from collections.abc import Sequence
 import pytest
 from markdown_it.token import Token
 
+from tailorcraft.infrastructure.export.plain_text import render_plain_text
 from tailorcraft.infrastructure.export.tokens import (
     GRAMMAR_RULES,
     _allow_three_schemes,
     normalize_to_grammar,
     parse_document,
+    strip_refused_link_markup,
 )
 
 # --- GRAMMAR_RULES: written whole in the skeleton, so this table is green on arrival ---------------
@@ -216,3 +218,139 @@ def test_table_fence_blockquote_hr_and_code_survive_as_literal_text() -> None:
     assert "a blockquote" in rendered
     assert "inline code" in rendered
     assert "strikethrough" in rendered
+
+
+# --- strip_refused_link_markup: pinned directly, both halves of X-9 / X-52 (MAJOR 1, /verify 1.5) --
+#
+# `strip_refused_link_markup` had no test of its own before this file — only three transitive
+# `javascript:` cases in `test_plain_text.py`, `test_html.py` and `test_docx.py`, which cannot
+# discriminate "refuse a URL" from "strip anything that merely looks like `[x](y)`". Measured
+# end-to-end through `parse_document -> normalize_to_grammar -> render_plain_text`:
+#
+#     'Negotiated salary range [100k](150k)'  ->  'Negotiated salary range 100k'
+#     'Refactored array[0](index) lookups'    ->  'Refactored array0 lookups'
+#     'Cited [1](note) in the report'         ->  'Cited 1 in the report'
+#
+# The rule this table encodes comes from X-9 and X-52, not from the code above: a destination with
+# **no scheme at all** (`note`, `150k`, `index`, `b`) was never a URL attempt — markdown-it's own
+# link rule refused it before this helper ever runs, on the same footing as any other syntax it does
+# not recognise — so the author's literal characters must survive byte-identical. A destination that
+# **has** a scheme the allow-list refuses (`javascript:`, `data:`, `file:`, `vbscript:`), or is
+# protocol-relative (no scheme under `urlsplit`, and the wire test below distinguishes it from a bare
+# word only by the fixture, not the rule), is a refused *URL* and must be reduced to its label alone.
+#
+# `_allow_three_schemes` cannot currently tell these two apart — it answers `False` for both "no
+# scheme" and "a disallowed scheme" — so `strip_refused_link_markup` conflates them today. The two
+# tables below are written from the rule above, not from a read-back of the shipped behaviour, which
+# is exactly why the second one is red on arrival.
+
+# --- the stripping half: an actually-refused URL loses its destination, keeps its label -----------
+
+_REFUSED_SCHEME_LITERALS = [
+    ("[click me](javascript:alert(1))", "click me"),
+    ("[x](data:text/html,%3Cb%3E)", "x"),
+    ("[secret](file:///etc/passwd)", "secret"),
+    ("[x](vbscript:msgbox(1))", "x"),
+    ("[evil](//evil.example.com/cv.pdf)", "evil"),
+    ("[x](ftp://example.com/cv.pdf)", "x"),
+]
+
+_REFUSED_SCHEME_IDS = [
+    "javascript_stripped",
+    "data_stripped",
+    "file_stripped",
+    "vbscript_stripped",
+    "protocol_relative_stripped",
+    "unknown_scheme_stripped",
+]
+
+
+@pytest.mark.parametrize(("literal", "expected"), _REFUSED_SCHEME_LITERALS, ids=_REFUSED_SCHEME_IDS)
+def test_strip_refused_link_markup_reduces_a_refused_scheme_to_its_label(
+    literal: str, expected: str
+) -> None:
+    assert strip_refused_link_markup(literal) == expected
+
+
+# --- the narrow half: nothing currently pins this, and it is where the bug lives -------------------
+
+_NO_SCHEME_LITERALS = [
+    "Cited [1](note) in the report",
+    "Negotiated salary range [100k](150k)",
+    "Refactored array[0](index) lookups",
+    "[a](b)",
+]
+
+_NO_SCHEME_IDS = [
+    "citation_note",
+    "salary_range",
+    "array_index",
+    "minimal_no_scheme",
+]
+
+
+@pytest.mark.parametrize("literal", _NO_SCHEME_LITERALS, ids=_NO_SCHEME_IDS)
+def test_strip_refused_link_markup_leaves_a_no_scheme_destination_byte_identical(
+    literal: str,
+) -> None:
+    """A destination with no scheme at all was never a URL attempt, so the label-only reduction the
+    refused-scheme table above exercises must NOT apply here — the literal must come back exactly as
+    written, brackets, parenthesised text and all. A widening of `_LINK_MARKUP` that started matching
+    more destinations, or a narrowing of `_allow_three_schemes` that started treating "no scheme" the
+    same as "refused scheme", must fail this test."""
+    assert strip_refused_link_markup(literal) == literal
+
+
+_ACCEPTED_SCHEME_LITERALS = [
+    "See [example](https://example.com) for more.",
+    "Email [me](mailto:person@example.com) directly.",
+]
+
+_ACCEPTED_SCHEME_IDS = ["https_untouched", "mailto_untouched"]
+
+
+@pytest.mark.parametrize("literal", _ACCEPTED_SCHEME_LITERALS, ids=_ACCEPTED_SCHEME_IDS)
+def test_strip_refused_link_markup_leaves_an_accepted_scheme_literal_untouched(
+    literal: str,
+) -> None:
+    """The only way such a literal reaches this helper is that the author escaped the brackets
+    (`\\[text\\](https://example.com)`) and meant to see them — the module's own docstring."""
+    assert strip_refused_link_markup(literal) == literal
+
+
+# --- end to end: the walker's own call to the helper, not just the helper in isolation -------------
+
+_END_TO_END_NO_SCHEME_DOCUMENTS = [
+    (
+        "Negotiated salary range [100k](150k) after the offer.\n",
+        "Negotiated salary range [100k](150k) after the offer.",
+    ),
+    (
+        "Refactored array[0](index) lookups for the migration.\n",
+        "Refactored array[0](index) lookups for the migration.",
+    ),
+    (
+        "Cited [1](note) in the report.\n",
+        "Cited [1](note) in the report.",
+    ),
+]
+
+_END_TO_END_IDS = ["salary_range_end_to_end", "array_index_end_to_end", "citation_end_to_end"]
+
+
+@pytest.mark.parametrize(
+    ("markdown", "expected"), _END_TO_END_NO_SCHEME_DOCUMENTS, ids=_END_TO_END_IDS
+)
+def test_render_plain_text_preserves_a_no_scheme_bracket_pair_through_the_full_pipeline(
+    markdown: str, expected: str
+) -> None:
+    """End to end through `parse_document -> normalize_to_grammar -> render_plain_text`, so the
+    walker's own call to `strip_refused_link_markup` is covered, not only the helper called
+    directly. `[100k](150k)` is never a link attempt — `validateLink` refuses `150k` for having no
+    scheme, the same answer it gives `javascript:alert(1)` — but the two are not the same kind of
+    refusal, and only one of them may destroy the author's text (MAJOR 1, /verify slice 1.5)."""
+    tokens = normalize_to_grammar(parse_document(markdown))
+
+    text = render_plain_text(tokens)
+
+    assert text == expected

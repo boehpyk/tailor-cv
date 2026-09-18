@@ -122,6 +122,20 @@ export const normalizationFixtureMarkdown = `A paragraph with __bold__ text that
 /** Hand-transcribed, not captured — see the module docstring. */
 export const normalizationFixtureExpected = 'A paragraph with **bold** text that should normalize.';
 
+/**
+ * A `[label](destination)` shape whose destination has no scheme at all — never a link attempt, and
+ * never reachable by the server's `_allow_three_schemes` as anything but "not allowed" (MAJOR 1,
+ * `/verify` slice 1.5, mirrored from `api/tests/fixtures/documents/__init__.py`'s
+ * `NO_SCHEME_BRACKET_FIXTURE_MARKDOWN`). "$100k" written by an author as "[100k](150k)" is a salary
+ * range, not a refused URL, and "[1](note)" is a citation, not an attack — the server's
+ * `strip_refused_link_markup` must leave this document byte-identical, which is exactly what it does
+ * not do today.
+ */
+export const noSchemeBracketFixtureMarkdown = `## Compensation
+
+Negotiated salary range [100k](150k) after the offer, cited as [1](note) in the report.
+`;
+
 /** The full corpus AC-29's round-trip-stability test iterates. */
 export const markdownFixtureCorpus: readonly MarkdownFixture[] = [
   { name: 'every grammar element', markdown: grammarFixtureMarkdown },
@@ -131,4 +145,8 @@ export const markdownFixtureCorpus: readonly MarkdownFixture[] = [
   { name: 'a model-shaped cover letter', markdown: modelLetterFixtureMarkdown },
   { name: 'a [url](url) self-describing link', markdown: selfDescribingLinkFixtureMarkdown },
   { name: 'certain normalisation (__bold__ → **bold**)', markdown: normalizationFixtureMarkdown },
+  {
+    name: 'a non-URL bracket-paren pair (salary range, citation)',
+    markdown: noSchemeBracketFixtureMarkdown,
+  },
 ];
