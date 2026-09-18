@@ -98,7 +98,11 @@ describe('AC-42: the not-found and expired download-failure copies', () => {
   it('"We couldn\'t find that file" sits in the status region, ahead of Try again', () => {
     renderControl({
       format: 'pdf',
-      view: { kind: 'downloadFailed', message: "We couldn't find that file" },
+      view: {
+        kind: 'downloadFailed',
+        message: "We couldn't find that file",
+        nextAction: 'request',
+      },
     });
 
     const status = screen.getByRole('status');
@@ -116,7 +120,7 @@ describe('AC-42: the not-found and expired download-failure copies', () => {
   it('"Your session has expired" sits in the status region, ahead of Try again', () => {
     renderControl({
       format: 'pdf',
-      view: { kind: 'downloadFailed', message: 'Your session has expired' },
+      view: { kind: 'downloadFailed', message: 'Your session has expired', nextAction: 'download' },
     });
 
     const status = screen.getByRole('status');
@@ -130,7 +134,11 @@ describe('AC-42: the not-found and expired download-failure copies', () => {
     const onPrimary = vi.fn();
     renderControl({
       format: 'pdf',
-      view: { kind: 'downloadFailed', message: "We couldn't find that file" },
+      view: {
+        kind: 'downloadFailed',
+        message: "We couldn't find that file",
+        nextAction: 'request',
+      },
       onPrimary,
     });
 

@@ -10,7 +10,7 @@
  * `SaveState['kind']` — so a tenth failure reason on the server, or a ninth save state in the
  * editor, is a TypeScript error here (at the one place that must write a sentence for it) rather
  * than a blank box in somebody's browser. The third, the download-failure map, cannot be: its keys
- * are the API's error `code`s, an open set, so it is a lookup with a fallback sentence and that
+ * are the API's error `code`s, an open set, so it is a lookup with a fallback entry and that
  * fallback is the thing the tests pin.
  */
 
@@ -170,28 +170,90 @@ export function exportFailureCopyFor(
 export const DOWNLOAD_FAILED_NOTE = "Couldn't download";
 
 /**
- * The API's error `code` → the sentence that control shows (AC-42).
+ * What the *Try again* beside a failed download has to do to have a chance of working.
+ *
+ * - `'download'` — **fetch the same bytes again.** The file, as far as anyone here knows, is still
+ *   on the server: a 5xx, a dropped connection, a 401 whose session the user can renew. Repeating a
+ *   `GET` is cheap and idempotent, and paying a worker for a fresh render would be spending money to
+ *   fix a problem that was never about the file.
+ * - `'request'` — **ask for a new export.** The file or the job it belonged to is gone (410 / 404).
+ *   The `GET` that just failed can only fail the same way for the same reason, so a retry wired to
+ *   it is a button that reproduces its own error. Only a new render can produce something to
+ *   download.
+ */
+export type ExportNextAction = 'download' | 'request';
+
+/**
+ * A rejected download, as the control shows it: the sentence, **and what the retry beside it does**.
+ *
+ * The two travel together deliberately. Before this, the sentence lived here and the action was
+ * re-derived in `ExportBar` from the job row — and they disagreed exactly where it mattered: a 410
+ * leaves the row saying `ready`, so the copy read *"That file is no longer available — Export
+ * again"* over a button that re-issued the identical `GET` that had just 410'd (`/verify` slice 1.5,
+ * MAJOR 2). One record per failure makes that disagreement unspellable: the words and the recovery
+ * they promise are one literal.
+ */
+export interface DownloadFailureView {
+  readonly message: string;
+  readonly nextAction: ExportNextAction;
+}
+
+/**
+ * The three named failures, written once and looked up two ways below.
+ *
+ * `export_file_gone` and `export_job_not_found` are the `'request'` pair, and note that their copy
+ * says so — *Export again* is in the 410's sentence. That is the sentence promising the action, so
+ * the action is in the same object as the sentence.
+ */
+const SESSION_EXPIRED_FAILURE: DownloadFailureView = {
+  message: 'Your session has expired',
+  nextAction: 'download',
+};
+const JOB_NOT_FOUND_FAILURE: DownloadFailureView = {
+  message: "We couldn't find that file",
+  nextAction: 'request',
+};
+const FILE_GONE_FAILURE: DownloadFailureView = {
+  message: 'That file is no longer available — Export again',
+  nextAction: 'request',
+};
+
+/**
+ * The API's error `code` → what that control shows and offers (AC-42).
  *
  * Keyed on `code` and not on `message`: `code` is the contract, `message` is prose for a human and
  * can be reworded without notice. The status is only a fallback, for a proxy that answered with no
  * envelope at all.
  */
-const DOWNLOAD_FAILURE_COPY: Readonly<Partial<Record<string, string>>> = {
-  guest_session_expired: 'Your session has expired',
-  export_job_not_found: "We couldn't find that file",
-  export_file_gone: 'That file is no longer available — Export again',
-};
-
-/** The same three, reachable when the body was not the error envelope (`code` is then `null`). */
-const DOWNLOAD_FAILURE_COPY_BY_STATUS: Readonly<Partial<Record<number, string>>> = {
-  401: 'Your session has expired',
-  404: "We couldn't find that file",
-  410: 'That file is no longer available — Export again',
+const DOWNLOAD_FAILURE_BY_CODE: Readonly<Partial<Record<string, DownloadFailureView>>> = {
+  guest_session_expired: SESSION_EXPIRED_FAILURE,
+  export_job_not_found: JOB_NOT_FOUND_FAILURE,
+  export_file_gone: FILE_GONE_FAILURE,
 };
 
 /**
- * Turn a rejected download into the sentence its control shows — or `null` when the control should
- * show **nothing of its own** and fall back to whatever the poller says the job is.
+ * The same three, reachable when the body was not the error envelope (`code` is then `null`).
+ *
+ * They carry the same `nextAction` as their coded twins, which is the point of sharing the objects
+ * rather than repeating the literals: a 410 that arrives from a proxy with no JSON envelope is still
+ * a file that is gone, and a retry that downloaded instead would 410 again just as surely.
+ */
+const DOWNLOAD_FAILURE_BY_STATUS: Readonly<Partial<Record<number, DownloadFailureView>>> = {
+  401: SESSION_EXPIRED_FAILURE,
+  404: JOB_NOT_FOUND_FAILURE,
+  410: FILE_GONE_FAILURE,
+};
+
+/** Anything unrecognised: say so plainly, and let the retry repeat the download (see above). */
+const UNKNOWN_DOWNLOAD_FAILURE: DownloadFailureView = {
+  message: DOWNLOAD_FAILED_NOTE,
+  nextAction: 'download',
+};
+
+/**
+ * Turn a rejected download into the sentence its control shows and the action its retry takes — or
+ * `null` when the control should show **nothing of its own** and fall back to whatever the poller
+ * says the job is.
  *
  * That `null` is AC-42's 409 `export_not_ready` row, and it is the interesting one. It means the
  * click lost a race: the file was ready when the button was drawn and is not ready now (the run was
@@ -199,17 +261,19 @@ const DOWNLOAD_FAILURE_COPY_BY_STATUS: Readonly<Partial<Record<number, string>>>
  * *is* the answer, and it is already on its way — so the failure is dropped rather than rendered.
  * Any other outcome would be the client inventing an error out of a stale click.
  */
-export function downloadFailureCopyFor(error: Error): string | null {
+export function downloadFailureFor(error: Error): DownloadFailureView | null {
   if (!(error instanceof ApiError)) {
-    return DOWNLOAD_FAILED_NOTE;
+    // A `TypeError` from `fetch` — the network went away mid-request. Nothing was said about the
+    // file, so the retry asks for it again.
+    return UNKNOWN_DOWNLOAD_FAILURE;
   }
   if (error.code === 'export_not_ready') {
     return null;
   }
   return (
-    (error.code === null ? undefined : DOWNLOAD_FAILURE_COPY[error.code]) ??
-    DOWNLOAD_FAILURE_COPY_BY_STATUS[error.status] ??
-    DOWNLOAD_FAILED_NOTE
+    (error.code === null ? undefined : DOWNLOAD_FAILURE_BY_CODE[error.code]) ??
+    DOWNLOAD_FAILURE_BY_STATUS[error.status] ??
+    UNKNOWN_DOWNLOAD_FAILURE
   );
 }
 

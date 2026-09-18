@@ -43,7 +43,7 @@ import {
   downloadFilenameFor,
   exportGateReasonFor,
 } from '../exportCopy';
-import { latestExportJobFor, viewOfExport } from '../exportView';
+import { viewOfExport } from '../exportView';
 import { useDownload } from '../hooks/useDownload';
 import { useExportJobs } from '../hooks/useExportJobs';
 import { useRequestExport } from '../hooks/useRequestExport';
@@ -238,17 +238,25 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
   };
 
   /**
-   * What one control's click means — **decided from the job list, not from the view**, because the
-   * two states that offer a click are not the two that carry the job id.
+   * What one control's click means — **decided from the view, not from the job row**.
    *
-   * An inline format always downloads: there is nothing to queue. A queued format downloads only
-   * the file it would be lying about otherwise — `ready` *and* `current` — and otherwise pays for a
-   * render. That single rule covers every clickable state at once: *idle* and *failed* request,
-   * *stale* requests (the old file is still on the server, but what the user asked for by clicking
-   * a control labelled *Export again* is a new one), *ready* downloads, and *Try again* after a
-   * failed download repeats whichever of the two it was.
+   * It used to read the row (`status === 'ready' && current` → download, otherwise request), and
+   * that is the bug `/verify` found in slice 1.5. A 410 `export_file_gone` does not change the row:
+   * the download endpoint refuses and writes nothing, which is correct, so the row goes on saying
+   * *ready* while the file it names is gone. The control therefore stayed wired to the identical
+   * `GET` for ever — copy that read *"That file is no longer available — Export again"* above a
+   * button that 410'd again on every press, and a reload that came back to *Download PDF* → 410.
+   *
+   * The view already knows all of it, because `viewOfExport` saw the rejection: it is the one place
+   * that holds both what the server last said *and* what this browser's own request just found out.
+   * Reading it here also deletes the second derivation — the row was being interrogated twice, once
+   * for what to render and once for what a click does, and those two answers are exactly what
+   * disagreed.
+   *
+   * An inline format always downloads: there is nothing to queue, and no job for a 404/410 to be
+   * about.
    */
-  function primaryActionFor(spec: ExportControlSpec, target: ExportTarget): () => void {
+  function primaryActionFor(spec: ExportControlSpec, view: ExportView): () => void {
     if (spec.delivery === 'inline') {
       const format = spec.format;
       return () => {
@@ -262,9 +270,14 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
     }
 
     const format = spec.format;
-    const job = latestExportJobFor(target, jobs);
-    if (job !== undefined && job.status === 'ready' && job.current) {
-      const jobId = job.id;
+
+    /** Pay a worker for a fresh render of this (document, format). */
+    function requestAgain(): void {
+      requestExport.mutate({ document, format });
+    }
+
+    /** Fetch one export job's bytes and save them under this format's constant filename. */
+    function downloadJob(jobId: string): () => void {
       return () => {
         download.mutate({
           document,
@@ -274,9 +287,51 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         });
       };
     }
-    return () => {
-      requestExport.mutate({ document, format });
-    };
+
+    switch (view.kind) {
+      case 'ready':
+        // The one state that offers the file, and the jobId comes from the view rather than a
+        // second lookup — `viewOfExport` chose this member *from* that row.
+        return downloadJob(view.jobId);
+      case 'downloadFailed':
+        if (view.nextAction === 'download') {
+          // 401, 5xx, a dropped connection: nothing was said about the file, so *Try again* repeats
+          // the request that failed. `download.variables` **is** that request — the same thunk over
+          // the same job id — which is why nothing is rebuilt here from `jobs`.
+          const lastDownload = download.variables;
+          if (lastDownload !== undefined) {
+            return () => {
+              download.mutate(lastDownload);
+            };
+          }
+        }
+        // 410 / 404, and the unreachable case above: the file or its job is gone, and repeating the
+        // same `GET` can only fail the same way. Only a new export can produce something to
+        // download, which is what the copy already promises the user.
+        //
+        // The rejection is cleared first, and it must be: `downloadFailed` outranks the job in
+        // `viewOfExport` (it is a fact about this browser, which the server does not know yet), so
+        // leaving it on the mutation would keep *"That file is no longer available"* on screen over
+        // the render this click just paid for. It is scoped to this branch rather than to every
+        // request, because one `useDownload` sits behind four controls and resetting it from a
+        // different control would wipe a failure notice the user has not answered.
+        return () => {
+          download.reset();
+          requestAgain();
+        };
+      case 'idle':
+      case 'requesting':
+      case 'queued':
+      case 'rendering':
+      case 'stale':
+      case 'downloading':
+      case 'failed':
+        // *stale* requests rather than downloads on purpose: the old file is still on the server,
+        // but what the user asked for by clicking a control labelled *Export again* is a new one.
+        // The four working states are unclickable anyway (`isControlDisabled`); they are listed so
+        // that a tenth view member is a compile error here instead of a silent `default`.
+        return requestAgain;
+    }
   }
 
   return (
@@ -295,7 +350,7 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
               view={view}
               disabled={isControlDisabled(view, spec, gates)}
               secondsOnPage={secondsOnPage}
-              onPrimary={primaryActionFor(spec, target)}
+              onPrimary={primaryActionFor(spec, view)}
             />
           );
         })}

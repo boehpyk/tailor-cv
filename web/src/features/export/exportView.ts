@@ -7,8 +7,9 @@
  * which is what lets AC-37's table drive it row by row.
  */
 
-import { downloadFailureCopyFor } from './exportCopy';
+import { downloadFailureFor } from './exportCopy';
 
+import type { ExportNextAction } from './exportCopy';
 import type { ExportFailureReason, ExportFormat, ExportJob } from './types';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
@@ -133,8 +134,28 @@ export type ExportView =
       readonly reason: ExportFailureReason | null;
       readonly retryable: boolean;
     }
-  /** The blob fetch rejected — *Couldn't download* with *Try again*, on this control only. */
-  | { readonly kind: 'downloadFailed'; readonly message: string };
+  /**
+   * The blob fetch rejected — *Couldn't download* with *Try again*, on this control only.
+   *
+   * **`nextAction` is what makes the retry reachable, and it is on the view rather than re-derived
+   * at the click** (`/verify` slice 1.5, MAJOR 2). A 410 `export_file_gone` does not change the job
+   * row — the download endpoint deliberately writes nothing when it cannot find the file — so a
+   * control that asked the row what a click means went on answering *download this ready file* for
+   * ever: the copy read *"That file is no longer available — Export again"*, the button re-issued
+   * the identical `GET`, it 410'd again, and a reload put the user back on *Download PDF* → 410. An
+   * error state whose only affordance reproduces the error has no failure path at all.
+   *
+   * So the *meaning* of the click is decided here, in the same pure function and from the same
+   * rejection that chose the sentence, and `ExportBar` reads it rather than re-deriving it from
+   * `jobs`. `exportCopy`'s `DownloadFailureView` is where the mapping lives, because the 410's
+   * sentence literally promises the action ("— Export again") and a sentence and the recovery it
+   * promises should not be two decisions in two modules.
+   */
+  | {
+      readonly kind: 'downloadFailed';
+      readonly message: string;
+      readonly nextAction: ExportNextAction;
+    };
 
 /**
  * The most recent job for one (document, format), or `undefined` when there is none.
@@ -143,9 +164,11 @@ export type ExportView =
  * scan for the largest `requested_at`. Sorting here would be this client re-deciding an order the
  * server already chose, and the two would disagree the first time two jobs shared a second.
  *
- * Exported because `ExportBar` needs the same job to decide what a click *does* — download the file
- * or pay for a new render — and a second copy of this filter in the container is a second answer to
- * "which job is this control about".
+ * Exported for its table test only, and **no longer for `ExportBar`**. The bar used to call it a
+ * second time to decide what a click *does*, which is precisely how the row could be asked one
+ * question and the view another and the two could disagree (`/verify` slice 1.5, MAJOR 2: a 410
+ * leaves the row `ready`). The bar now reads the view it already rendered, so this filter has one
+ * caller — `viewOfExport`, below — and "which job is this control about" has one answer.
  */
 export function latestExportJobFor(
   target: ExportTarget,
@@ -190,7 +213,7 @@ function elapsedSecondsSince(isoTimestamp: string, nowMs: number): number {
  *    still perfectly ready. This is the one place the view deliberately hides a true server fact,
  *    because the user's question right now is "did my click work", not "does the file exist".
  * 3. **`downloadFailed`** — the last blob fetch for this control rejected. With one exception: a
- *    409 `export_not_ready` is a lost race rather than an error (`downloadFailureCopyFor` returns
+ *    409 `export_not_ready` is a lost race rather than an error (`downloadFailureFor` returns
  *    `null` for it and the docstring there explains why), and the control falls through to the
  *    job's own polled state.
  *
@@ -236,11 +259,14 @@ export function viewOfExport(
 
   const failure = mutations.downloadFailure;
   if (failure !== null && isSameTarget(failure.target, target)) {
-    const message = downloadFailureCopyFor(failure.error);
+    const downloadFailure = downloadFailureFor(failure.error);
     // `null` is the 409 `export_not_ready` race: not this control's error to show, so it falls
     // through to the job's own state below rather than being reported as a download failure.
-    if (message !== null) {
-      return { kind: 'downloadFailed', message };
+    if (downloadFailure !== null) {
+      // Spread rather than copied field by field: the sentence and the `nextAction` it promises are
+      // one decision, made in `exportCopy`, and picking them apart here would be the seam where they
+      // start to disagree again.
+      return { kind: 'downloadFailed', ...downloadFailure };
     }
   }
 
