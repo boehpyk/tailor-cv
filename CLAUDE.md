@@ -225,6 +225,9 @@ make check               # all of the above — run before every commit
 make check.static        # every gate EXCEPT pytest/vitest — the RED commit of a TDD cycle only
 
 # Guest retention (ADR-0006) — rehearse, do not discover. See docs/infrastructure.md.
+# Unlinks rows AND files; since slice 1.5 the file half includes rendered exports (PDF/DOCX) next
+# to uploads, so the backlog count below reads higher after that slice than it used to for the
+# same number of guest sessions — not itself a sign of anything wrong.
 make purge.dry                                     # report only; deletes nothing
 make purge limit=50                                # a small, explicit bite
 make purge                                         # a full run
@@ -345,7 +348,15 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `infrastructure/tasks/app.py`'s comment). **A local mutation test of a queue declaration re-poisons
   the dev broker too**, because `watchmedo` restarts the worker on the edited file. At `/verify` that
   happened to an agent that already knew about this trap. After any change to `task_queues`, compare
-  `_kombu.binding.*` against the new declarations.
+  the broker's binding sets against the new declarations — but read them correctly: kombu names a
+  binding set after the **exchange**, not the queue, so with all queues on the one default `celery`
+  exchange (`task_default_exchange`, unchanged through slice 1.5's third queue), the healthy state is
+  **three members in the single set `_kombu.binding.celery`** — `_kombu.binding.tailoring` and
+  `_kombu.binding.export` do not exist at all, and finding "one member each in three sets" describes a
+  broker with three exchanges, not this one. A stale binding is a **fourth** member of
+  `_kombu.binding.celery`, which is exactly the shape the `SREM` example above deletes. Also:
+  `CELERY_BROKER_URL` is db `/1` — `redis-cli` without `-n 1` reads db `0`, where every set is empty,
+  which reads as a clean broker for the wrong reason.
 - **Every container running application code appears in the deploy's `pull` list and in the
   image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
   neither and ran a stale image for four releases; the only symptom was behaviour not matching the
