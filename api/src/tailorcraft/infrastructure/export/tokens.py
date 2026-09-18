@@ -39,9 +39,17 @@ when `validateLink` returns `False` the *whole link rule fails*, so `[click me](
 is not a `link_open` without an attribute — it is a single `text` token carrying the literal
 characters `[click me](javascript:alert(1))`, brackets, URL and all. Safe (it is text, and nothing
 renders it as markup), but it is not what X-9 and X-52 promise the user: "the text alone, no URL".
-`strip_refused_link_markup` below is where that promise is kept, and the two walkers that render
+`strip_refused_link_markup` below is where that promise is kept, and the three walkers that render
 human-facing text call it. The spec won over the parser's default; the parser's behaviour is
 recorded here so the next reader does not "fix" the helper away.
+
+**And it is a promise about URLs only.** The same literal shape comes out of the parser for text
+that was never a link attempt — `[100k](150k)` is a salary range in a CV, `[1](note)` is a citation,
+`array[0](index)` is code — because markdown-it refuses a schemeless destination on exactly the same
+footing as `javascript:`. Collapsing those to their labels would delete the author's own characters
+from the document this product delivers, so the helper asks `_is_refused_url`, not
+`_allow_three_schemes`. Those two predicates disagree on the schemeless case deliberately; the
+reason is written at both of them.
 """
 
 from __future__ import annotations
@@ -252,17 +260,74 @@ def strip_refused_link_markup(text: str) -> str:
     say what the reader must get in that case ("the text alone, no URL"), so the walkers that
     render for a human call this on every text token.
 
-    Narrow on purpose. A destination whose scheme the parser *would* have accepted is left exactly
-    as it is, because the only way such a literal reaches the stream is that the author escaped it
+    **It asks `_is_refused_url`, not `_allow_three_schemes`, and the difference is the whole point.**
+    Those two predicates disagree on exactly one input — a destination with *no scheme at all* — and
+    that disagreement is deliberate rather than an oversight to be tidied away:
+
+    - `_allow_three_schemes` is the **parser's** gate. It answers "may this become an `href`?", and
+      for a schemeless `150k` the answer is of course no.
+    - this helper runs over **text markdown-it has already refused**, and its question is different:
+      "was this ever a URL, such that showing it would show a URL?". `[100k](150k)` in a CV is a
+      salary range, `[1](note)` is a citation, `array[0](index)` is code. Reducing those to their
+      labels deletes the author's own characters from the one document this product exists to
+      deliver — measured at /verify on slice 1.5, where `Negotiated salary range [100k](150k)` came
+      out of every PDF, DOCX and text export as `Negotiated salary range 100k`.
+
+    So: a destination that **has a scheme** (any scheme the allow-list refuses) or is
+    **protocol-relative** is a refused *URL* and collapses to its label; a destination with no
+    scheme is not a URL attempt at all and survives **byte-identical**, brackets and parentheses
+    included. A destination whose scheme the parser *would* have accepted is also left exactly as it
+    is, because the only way such a literal reaches the stream is that the author escaped it
     (`\\[not a link\\](https://example.com)`) and meant to see it.
     """
 
     def replace(match: re.Match[str]) -> str:
-        if _allow_three_schemes(match["destination"]):
-            return match[0]
-        return match["label"]
+        if _is_refused_url(match["destination"]):
+            return match["label"]
+        return match[0]
 
     return _LINK_MARKUP.sub(replace, text)
+
+
+def _is_refused_url(destination: str) -> bool:
+    """Was this destination a URL attempt that the allow-list refused? (X-9, X-52.)
+
+    Not the same question as `_allow_three_schemes`, and the contradiction is on purpose — see
+    `strip_refused_link_markup`. This one says **"yes, and it was refused"** only for a destination
+    that tried to be a URL:
+
+    - `destination.startswith("//")` — **protocol-relative, and X-52 names it explicitly.** It has
+      no scheme under `urlsplit`, so scheme alone cannot see it, yet `//evil.example.com/cv.pdf` is
+      unambiguously a URL: a browser would fetch it over the page's own scheme. It is the one case
+      that would otherwise slip through the schemeless branch below, which is why it is checked
+      first and by hand rather than left to the parse.
+    - a non-empty `scheme` outside `ALLOWED_LINK_SCHEMES` — `javascript:`, `data:`, `file:`,
+      `vbscript:` and every scheme nobody has thought of yet. Written as "not in the allow-list"
+      rather than as a deny-list for the reason every gate in this codebase is: an unknown scheme
+      must be refused, not permitted by omission.
+    - an empty `scheme` — **not a URL attempt**, so `False`. This is the branch the salary range,
+      the citation and the array index take.
+
+    The reasoning behind `_LINK_MARKUP` staying untouched: its no-backtracking property is a checked
+    fact about a pattern that runs over a stranger's text (see the comment on the constant), and the
+    distinction this function draws is about *meaning*, not about shape. A regex that tried to match
+    "only destinations that look like URLs" would be a second, weaker copy of `urlsplit`.
+
+    **It never raises**, for `_allow_three_schemes`' reason one line further down: `urlsplit` raises
+    `ValueError` on a malformed IPv6 literal such as `http://[`, and this runs on whatever a
+    stranger typed between `(` and `)`. A destination we cannot parse is treated as a **refused
+    URL** — it got far enough to look like one, and the safe answer to "is this a URL?" when the URL
+    parser itself cannot tell is yes.
+    """
+    if destination.startswith("//"):
+        return True
+    try:
+        scheme = urlsplit(destination).scheme
+    except ValueError:
+        return True
+    if not scheme:
+        return False
+    return scheme not in ALLOWED_LINK_SCHEMES
 
 
 def _allow_three_schemes(url: str) -> bool:

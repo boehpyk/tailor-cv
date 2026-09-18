@@ -670,6 +670,15 @@ async def request_export(
             # `scope` and `namespace` only. No identifier, and no job id — there is no job yet.
             log.info("rate_limit.exceeded", scope=scope, namespace=rate_limiter.namespace)
         retry_after = max(decision.retry_after_seconds for _scope, decision in denied)
+        # **Seconds, and X-19's "Too many exports — try again in N minutes" is a different string.**
+        # /verify flagged the two as disagreeing; the seconds won, and here is why rather than a
+        # rewording. `message` is never shown to anyone: `exportCopy.ts` keys its sentences on
+        # `code` on purpose ("`code` is the contract, `message` is prose for a human and can be
+        # reworded without notice"), so the minutes in the spec's *User sees* column are the
+        # frontend's copy to write, exactly as G-11's are in `apiErrorCopy.ts`. What this string
+        # does have to agree with is `Retry-After`, which HTTP defines in seconds and which is the
+        # only number a client can act on — and with the four sibling routers, which all say
+        # seconds. Rounding it to minutes here would put a second unit on one fact.
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             detail={

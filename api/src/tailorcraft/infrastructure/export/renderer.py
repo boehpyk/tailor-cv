@@ -169,6 +169,16 @@ class MarkdownDocumentRenderer:
                 timeout_seconds,
             )
         except TimeoutError as exc:
+            # **This clause is not only the deadline, and the name is why.** Since 3.11
+            # `asyncio.TimeoutError` *is* the builtin `TimeoutError`, which is an `OSError`
+            # subclass — so a socket or file timeout raised **inside the thread** lands here too and
+            # is recorded `render_timed_out` with a `timeout_seconds` field that had nothing to do
+            # with it. Unreachable today by construction: the pipeline opens no socket and reads no
+            # file (`refuse_every_url` is the proof for the one library that would), which is why
+            # this is a note and not a code change. The day a renderer touches the network, tell the
+            # two apart before trusting this reason — the honest discriminator is elapsed time
+            # against `timeout_seconds`, not the exception's type.
+            #
             # `wait_for` cancels the *await*; the thread running the synchronous library keeps going
             # until it returns or the task's hard time limit recycles the child. That is why the
             # stale window has to sit above the hard limit, and why `create_celery` refuses to start

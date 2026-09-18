@@ -207,7 +207,21 @@ class _NonFatalFetcher:
     def __init__(self, fetch: UrlFetcher) -> None:
         self._fetch = fetch
 
-    def __call__(self, url: str) -> NoReturn:
+    # **The signature matches `refuse_every_url`'s, and that is not cosmetic.** Measured on
+    # weasyprint 70.0: `weasyprint.urls.fetch` calls `url_fetcher(url)` **positionally, with no
+    # timeout**, so a narrower `(self, url)` is unreachable today — and unreachable is the whole
+    # problem. A version bump that starts passing `timeout=` would make this wrapper raise
+    # `TypeError` *inside* the library's own `except`, where `_fail_on_errors = False` turns it into
+    # an ordinary non-fatal fetch failure: the render would quietly succeed, the
+    # `export.url_fetch_refused` log line would never be written and `UrlFetchRefused` would never
+    # be raised. The refusal would still hold (nothing is fetched), but the evidence that it held
+    # would be gone. Accepting the argument costs nothing and removes the trap.
+    #
+    # Accepted and **not forwarded**, deliberately: `UrlFetcher` is `Callable[[str], NoReturn]`, so
+    # a substitute — AC-30's recording wrapper — takes one argument, and `refuse_every_url` ignores
+    # its own `timeout` anyway because it raises before it could use one. A fetcher that fetches
+    # nothing has no deadline to honour.
+    def __call__(self, url: str, timeout: float | None = None) -> NoReturn:
         self._fetch(url)
 
 
