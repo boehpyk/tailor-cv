@@ -1,6 +1,7 @@
 import { Link, useNavigate, useParams } from 'react-router';
 
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
+import { ExportBar } from '@/features/export/components/ExportBar';
 import { ProgressStepper } from '@/features/workspace/components/ProgressStepper';
 import { progressOfRun } from '@/features/workspace/progress';
 
@@ -70,6 +71,20 @@ function BackToWorkspace(): React.JSX.Element {
  * and the stepper above still shows stage 3 done. The workspace keys its editors on the run id,
  * and its error boundary (AC-35) is what turns a document the bridge cannot parse into 1.3's
  * read-only preview rather than a blank page.
+ *
+ * **The downloads live here, above the tabs — there is no completion screen** (OQ-11). PRD §6's
+ * "Completion View" is realized on the page the user is already on: 1.4 opens a succeeded run
+ * straight into the editor, so the editor *is* the Edit button and the four download controls sit
+ * above it. The alternative — a `/runs/:id/done` route the page redirects to — would be a second
+ * place that has to render this run's loading, its 404, its 401 and its expiry, and it would put a
+ * navigation between "my CV is ready" and "let me fix this line", which is the move every user
+ * makes next. It would also cut the one wire this slice depends on: the export gate reads the
+ * **visible editor's** save state (AC-40), which does not exist on a page with no editor.
+ *
+ * `document={documentSegment}` is the URL's segment, so switching tabs switches which document the
+ * four controls act on (AC-36) — the same single source of truth the editor reads for which pane is
+ * visible. `saveState` arrives through the workspace's `renderAbove`, which hands the bar the
+ * visible document's state where that state already lives instead of lifting it up here.
  */
 export function RunPage(): React.JSX.Element {
   const params = useParams<'runId' | 'document'>();
@@ -154,7 +169,12 @@ export function RunPage(): React.JSX.Element {
           so the view never says `succeeded` from one), hence `data` is set; the narrowing is for
           the type, the same as `onRetry` above. */}
       {view.kind === 'succeeded' && watched.data !== undefined && (
-        <DocumentWorkspace run={watched.data} />
+        <DocumentWorkspace
+          run={watched.data}
+          renderAbove={(saveState) => (
+            <ExportBar runId={runId} document={documentSegment} saveState={saveState} />
+          )}
+        />
       )}
 
       {rejection !== null && (
