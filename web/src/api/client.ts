@@ -92,6 +92,38 @@ function isErrorEnvelope(value: unknown): value is ErrorEnvelope {
   );
 }
 
+/**
+ * Turn a non-2xx `Response` and its already-read body into the `ApiError` a caller will see.
+ *
+ * Extracted so that `request` and `requestBlob` cannot disagree about what a failure *is*. They
+ * differ only in how they read a **success** — JSON versus bytes — and a second hand-written copy
+ * of the envelope handling in the blob path is exactly how a 409 `export_not_ready` would arrive
+ * with `code: null` on one path and `code: 'export_not_ready'` on the other, which is the fact the
+ * export bar branches on.
+ *
+ * The `parsed` argument is whatever the body turned out to be (`null` when there was none or it
+ * would not parse), never the raw text: the envelope check is a shape check, and doing it here
+ * keeps `isErrorEnvelope` the single definition of that shape.
+ */
+function apiErrorFor(response: Response, path: string, parsed: unknown): ApiError {
+  // Prefer the server's own code and message (the `{"error": {...}}` envelope) when the body has
+  // that shape; fall back to a synthesized message for endpoints that predate it (`/health/ready`)
+  // or a transport-level failure with no parseable body at all.
+  if (isErrorEnvelope(parsed)) {
+    // The rest of the envelope is kept, not dropped: some codes carry a fact the caller acts on
+    // (a 409 `tailoring_already_running` names the active run). See `ApiError.details`.
+    const { code, message, ...details } = parsed.error;
+    return new ApiError(response.status, message, code, details, retryAfterSecondsOf(response));
+  }
+  return new ApiError(
+    response.status,
+    `${String(response.status)} for ${path}`,
+    null,
+    {},
+    retryAfterSecondsOf(response),
+  );
+}
+
 interface RequestOptions {
   readonly signal?: AbortSignal;
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -143,23 +175,66 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
 
   const accepted = response.ok || (options.acceptStatuses?.includes(response.status) ?? false);
   if (!accepted) {
-    // Prefer the server's own code and message (the `{"error": {...}}` envelope) when the body has
-    // that shape; fall back to a synthesized message for endpoints that predate it (`/health/ready`)
-    // or a transport-level failure with no parseable body at all.
-    if (isErrorEnvelope(parsed)) {
-      // The rest of the envelope is kept, not dropped: some codes carry a fact the caller acts on
-      // (a 409 `tailoring_already_running` names the active run). See `ApiError.details`.
-      const { code, message, ...details } = parsed.error;
-      throw new ApiError(response.status, message, code, details, retryAfterSecondsOf(response));
-    }
-    throw new ApiError(
-      response.status,
-      `${String(response.status)} for ${path}`,
-      null,
-      {},
-      retryAfterSecondsOf(response),
-    );
+    throw apiErrorFor(response, path, parsed);
   }
 
   return parsed as T;
+}
+
+/** What a blob request may carry. A download is a `GET` with no body — there is nothing else. */
+interface BlobRequestOptions {
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Perform a `GET` whose **success** is bytes, not JSON, and whose **failure** is JSON like every
+ * other endpoint's.
+ *
+ * That asymmetry is the whole reason this function exists beside `request`. TailorCraft's two
+ * download endpoints — the inline render and an export job's file — answer `200` with a
+ * `Content-Type` of `application/pdf` or `text/markdown` and a `Content-Disposition`, and answer
+ * every rejection with the ordinary `{"error": {"code", "message"}}` envelope. A single function
+ * cannot parse both, and a caller must not have to know which it got: it gets a `Blob` or it gets
+ * an `ApiError` with a `code`, exactly as it would from `request`.
+ *
+ * **This is why there is no `<a href="/api/…" download>` anywhere in the app** (AC-42). An anchor
+ * has no error path: the browser follows it, the server answers 401 `guest_session_expired`, and
+ * the user's Downloads folder receives a 60-byte JSON document named `tailored-cv.pdf`. A failure
+ * that a user only discovers by opening the file is worse than one the UI states. Routing the
+ * bytes through `fetch` costs an object URL and buys a real rejection.
+ *
+ * **The `Content-Disposition` filename is not read here.** Parsing it would mean re-implementing
+ * RFC 6266 (quoting, `filename*`, encodings) to recover a value the client can name for itself
+ * from `(document, format)` — and the server's is a constant, never the user's text. The caller
+ * passes the filename to `saveBlob`.
+ *
+ * The response body is **read once**: `response.blob()` on success, `response.text()` on failure.
+ * A rejection body is normally the envelope, but a proxy's 502 is HTML and a cut connection is
+ * nothing at all, so the parse is guarded and falls through to the synthesized message rather than
+ * replacing the server's status with a `SyntaxError`.
+ */
+export async function requestBlob(path: string, options: BlobRequestOptions = {}): Promise<Blob> {
+  // `credentials: 'include'` for `request`'s reason: the refresh token is an HttpOnly cookie
+  // (ADR-0008), and the guest session that authorizes this download is a cookie too.
+  const response = await fetch(path, {
+    method: 'GET',
+    credentials: 'include',
+    ...(options.signal ? { signal: options.signal } : {}),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    let parsed: unknown = null;
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        // Not JSON — a proxy's error page, say. `apiErrorFor` synthesizes a message from the status.
+        parsed = null;
+      }
+    }
+    throw apiErrorFor(response, path, parsed);
+  }
+
+  return response.blob();
 }
