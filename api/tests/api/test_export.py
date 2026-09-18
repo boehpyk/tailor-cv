@@ -622,7 +622,9 @@ async def test_happy_path_returns_202_with_the_job_and_a_location_header(
     assert response.status_code == 202, response.text
     body = response.json()
     assert body["status"] == "queued"
-    assert body["run_version"] == 1
+    assert body["run_version"] == await _current_run_version(session, run_id), (
+        "AC-12: run_version equal to the run's version"
+    )
     assert body["current"] is True
     assert body["file_url"] is None
     assert body["byte_size"] is None
@@ -693,6 +695,8 @@ async def test_a_new_job_is_created_after_the_runs_version_moved_old_job_becomes
     assert first.status_code == 202, first.text
     first_id = first.json()["id"]
 
+    first_run_version = first.json()["run_version"]
+
     await _revise_cv(
         client,
         run_id,
@@ -704,7 +708,12 @@ async def test_a_new_job_is_created_after_the_runs_version_moved_old_job_becomes
 
     assert second.status_code == 202, second.text
     assert second.json()["id"] != first_id, "X-17: a stale-version job must not be handed back"
-    assert second.json()["run_version"] == 2
+    assert second.json()["run_version"] == await _current_run_version(session, run_id), (
+        "the new job's run_version must equal the run's version after the revision"
+    )
+    assert second.json()["run_version"] > first_run_version, (
+        "X-17: the run's version must have moved on from the first job's"
+    )
 
     old_job = await client.get(f"/api/export-jobs/{first_id}")
     assert old_job.status_code == 200, old_job.text
