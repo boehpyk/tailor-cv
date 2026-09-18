@@ -57,8 +57,9 @@ export interface ExportMutations {
  *
  * A `isLoading` boolean beside a `job` field would let a control render *Preparing your PDF…* and
  * *Download PDF* in the same frame, and eventually it would. Each member carries exactly what its
- * branch needs, already narrowed, so the JSX never re-checks a nullable field — `ready` has a
- * `byteSize` that is a `number`, where the wire type is `number | null`.
+ * branch needs — but **only what the wire can actually guarantee**: two of those fields stay
+ * nullable, because narrowing them here would be this function inventing a fact rather than
+ * carrying one (see `ready.byteSize` and `failed.reason` below).
  *
  * **The transitions are the server's.** The client never moves a view from `rendering` to `ready`;
  * the next poll does. What the client owns is `requesting`, `downloading` and `downloadFailed`,
@@ -81,8 +82,25 @@ export type ExportView =
   | { readonly kind: 'queued'; readonly elapsedSeconds: number }
   /** A worker is rendering it — *Preparing your PDF… 3s* */
   | { readonly kind: 'rendering'; readonly elapsedSeconds: number }
-  /** The file exists and is the document as it stands — *Download PDF · 84 KB* */
-  | { readonly kind: 'ready'; readonly jobId: string; readonly byteSize: number }
+  /**
+   * The file exists and is the document as it stands — *Download PDF · 84 KB*.
+   *
+   * **`byteSize` is nullable, and that is the wire's doing, not this union's.** One Pydantic model
+   * (`ExportJobResponse`) serves all four statuses, so `byte_size` is `number | null` on *every*
+   * response, a `ready` one included. The database does guarantee it there — `export_job` carries a
+   * `CHECK` that a `ready` row has a byte size (XJ-3) — and that guarantee is exactly what makes a
+   * `!` or a cast tempting at the one line in F6 that reads it.
+   *
+   * It is ruled out anyway, for the reason **1.3 already settled one context over**: `RunView`'s
+   * `failed` takes a nullable `TailoringFailureReason` and `TailoringFailureNotice` renders a
+   * generic sentence for `null`, rather than asserting a column constraint from TypeScript. A `!`
+   * here would be a client-side claim about a server-side invariant — a second authority that is
+   * silently wrong the day the constraint changes (Constitution §4.5), and whose failure mode is
+   * *NaN KB* in a stranger's browser. F6's copy degrades instead: no *· 84 KB* clause when the size
+   * is `null`, and the download is offered either way, because the bytes do not depend on knowing
+   * how many there are.
+   */
+  | { readonly kind: 'ready'; readonly jobId: string; readonly byteSize: number | null }
   /**
    * The file exists but the run has moved on since it was made (`current: false`) — *Your document
    * changed — Export again*. The file is still downloadable; it is simply of an older version.
@@ -93,8 +111,24 @@ export type ExportView =
   /**
    * The job failed. `reason` chooses the sentence and `retryable` decides whether *Export again* is
    * offered — **both read from the server**, never re-derived here (Constitution §4.5).
+   *
+   * **`reason` is nullable for the same reason `ready.byteSize` is**: `failure_reason` is
+   * `ExportFailureReason | null` on every `ExportJobResponse`, whatever its status, because one
+   * schema serves all four. The `CHECK` on a `failed` row makes the `null` unreachable in practice
+   * and that is precisely the trap — an unreachable branch asserted away with `!` is an unreachable
+   * branch until someone adds a fifth status.
+   *
+   * The precedent is literal here rather than analogous: `RunView`'s `failed` is
+   * `TailoringFailureReason | null` and `failureCopyFor(null)` already returns a generic headline.
+   * F6's `exportCopy` map does the same — exhaustive over the nine reasons, with one more sentence
+   * for `null` — so the user of a job that failed for a reason nobody can name still reads a
+   * sentence rather than an empty box.
    */
-  | { readonly kind: 'failed'; readonly reason: ExportFailureReason; readonly retryable: boolean }
+  | {
+      readonly kind: 'failed';
+      readonly reason: ExportFailureReason | null;
+      readonly retryable: boolean;
+    }
   /** The blob fetch rejected — *Couldn't download* with *Try again*, on this control only. */
   | { readonly kind: 'downloadFailed'; readonly message: string };
 
