@@ -27,8 +27,9 @@ from tailorcraft.infrastructure.export.html import (
     ALLOWED_ATTRIBUTES,
     ALLOWED_TAGS,
     ALLOWED_URL_SCHEMES,
-    render_html,
+    render_body_fragment,
     sanitize_html,
+    wrap_in_document,
 )
 
 _GRAMMAR_RULES = (
@@ -47,6 +48,17 @@ _GRAMMAR_RULES = (
 def _tokens(markdown: str) -> list[Token]:
     parser = MarkdownIt("zero", {"html": False}).enable(list(_GRAMMAR_RULES))
     return parser.parse(markdown)
+
+
+def _render_document(tokens: list[Token], document: TailoredDocumentKind) -> str:
+    """`wrap_in_document(sanitize_html(render_body_fragment(tokens)), document)` — the exact
+    composition `renderer.py` uses (`fragment = render_body_fragment(...)`, then
+    `wrap_in_document(self._sanitize(fragment), document)`), not `render_html`'s own composition,
+    which skips the sanitize seam and has zero production callers (I3's measured defect: it is what
+    let `sanitize_html(render_html(...))` delete the document shell and keep the title's text).
+    Re-pointing here so these three assertions exercise the composition a user can actually reach —
+    coverage `render_html` never delivered, per /verify slice 1.5 (iteration 2, task 3)."""
+    return wrap_in_document(sanitize_html(render_body_fragment(tokens)), document)
 
 
 # --- The three constants: written whole in the skeleton, so these are green on arrival -------------
@@ -107,7 +119,7 @@ _FULL_GRAMMAR_FIXTURE = (
 
 
 def test_render_html_body_uses_only_the_eleven_allowed_tags() -> None:
-    html = render_html(_tokens(_FULL_GRAMMAR_FIXTURE), TailoredDocumentKind.CV)
+    html = _render_document(_tokens(_FULL_GRAMMAR_FIXTURE), TailoredDocumentKind.CV)
 
     body_start = html.index("<body>") + len("<body>")
     body_end = html.index("</body>")
@@ -120,7 +132,7 @@ def test_render_html_body_uses_only_the_eleven_allowed_tags() -> None:
 
 def test_render_html_wraps_the_fragment_in_the_constant_document_shell() -> None:
     """The exact shell string from the technical plan's "The render, step by step" §3."""
-    html = render_html(_tokens("# Heading\n"), TailoredDocumentKind.CV)
+    html = _render_document(_tokens("# Heading\n"), TailoredDocumentKind.CV)
 
     assert html.startswith(
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
@@ -133,7 +145,7 @@ def test_render_html_title_is_a_constant_never_the_documents_own_first_line() ->
     """X-55, one layer up: a `Content-Disposition`-style injection attempt in the source must never
     end up somewhere the document could pass for metadata — the title is fixed per document kind,
     never derived from the text."""
-    html = render_html(
+    html = _render_document(
         _tokens('"; filename="evil.exe\n\nOther content.\n'), TailoredDocumentKind.CV
     )
 

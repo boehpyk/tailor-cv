@@ -563,6 +563,16 @@ describe('ExportBar', () => {
       (call) => (call[0] as string) === '/api/export-jobs/job-410/file',
     );
     expect(fileCalls).toHaveLength(1);
+
+    // The gap the reviewer flagged: `primaryActionFor`'s `downloadFailed` branch calls
+    // `download.reset()` before `requestAgain()`. Without it, `downloadFailed` outranks the job row
+    // in `viewOfExport` (it is a fact about this browser the server does not know yet), so the 410's
+    // sentence would keep showing over a job that is actively rendering — a smaller instance of the
+    // very defect MAJOR 2 fixed, introduced by its own fix. Observed failing with `download.reset()`
+    // removed: the 410 sentence never left the screen (see the RED commit body for the exact output).
+    expect(
+      screen.queryByText('That file is no longer available — Export again'),
+    ).not.toBeInTheDocument();
   });
 
   it('AC-42: 401 guest_session_expired maps to the session-expired copy', async () => {
