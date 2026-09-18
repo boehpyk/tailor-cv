@@ -1,33 +1,57 @@
 /**
- * The export bar — **SKELETON (F4). It is deliberately non-functional.**
+ * The export bar — **the container**, and the only component in this feature that talks to the
+ * network.
  *
- * What ships here is four `<button>`s in AC-36's order, carrying AC-36's labels, and a
- * `role="status"` for each of the two queued formats. That is the whole component. There is **no**
- * `useExportJobs`, no `useRequestExport`, no `useDownload`, no `viewOfExport`, no elapsed tick, no
- * save-state gate, no AC-35 sentence and no loading / error / empty branch. Every one of those is
- * **F6**.
+ * It owns three things and derives everything else:
  *
- * ## Why this file does nothing
+ * 1. **The run's export jobs**, through `useExportJobs` — server state, in TanStack Query, polled
+ *    while anything is in flight and never copied into `useState`. There is no `job`, no `view` and
+ *    no `Blob` in this component's state; ask it what the PDF control shows and the honest answer
+ *    is "whatever `viewOfExport` says about the cache right now".
+ * 2. **Two mutations**, whose `variables` say *which* control is requesting or downloading. One
+ *    `useRequestExport` and one `useDownload` sit behind four controls, so `isPending` alone would
+ *    put all four into the same state at once.
+ * 3. **One `useState`, ticked by one `setInterval`** — the wall clock, which is genuinely outside
+ *    React and the one thing here a `useEffect` is for (1.3's `TailoringProgress` made the same
+ *    call, and its docstring has the long version of the argument).
  *
- * The red-first tiers (docs/sdlc.md §2) make the loading / error / empty / success contract a test
- * written *before* its implementation — and a test is only worth the failure you watched it
- * produce. A red that says "unable to find an element with the role status" proves the file is
- * missing; it says nothing about whether the assertion discriminates the state it claims to guard.
+ * ## The three bar-level notices, and why they are not per control
  *
- * Four slices have now paid for that distinction the expensive way. **1.1's T33/T34, 1.3's T40,
- * 1.4's F5 and F8** each shipped a frontend skeleton that already worked, so `qa`'s tests passed on
- * arrival: they were never observed failing, and a test nobody has seen fail is a claim nobody has
- * checked. F5 — the table over every view state, the polling-stops assertion, the save gate, the
- * blob path — is the most valuable test on this frontend, and it is worth nothing if this bar
- * already renders what it asserts.
+ * *Checking your downloads…*, *We couldn't check your downloads.* and the save-gate reason are
+ * rendered **once**, on the bar. They are statements about the whole bar — one list query, one save
+ * state — and four copies of *Save your changes first — Saving…* beside four disabled buttons is
+ * the same sentence shouted four times. The per-control `role="status"` regions stay for what is
+ * genuinely per control: that format's own job.
  *
- * So: real roles, real accessible names, real props. Absent behaviour. F5 reds on every row that
- * matters, and F6 turns it green.
+ * ## What the list error does and does not disable
+ *
+ * A failed list query disables `pdf` and `docx` only. **The two inline controls do not depend on
+ * the list** (AC-43): Markdown and plain text are rendered inside the request and leave no job, so
+ * there is nothing about them the list could have told us. Taking them down with it would be the
+ * bar punishing the user for an outage in a part of the system their click does not touch.
  */
 
+import { useEffect, useState } from 'react';
+
+import { downloadDocument, downloadExportFile } from '@/api/exports';
+
+import {
+  EXPORT_LIST_ERROR_ACTION,
+  EXPORT_LIST_ERROR_NOTE,
+  EXPORT_LIST_LOADING_NOTE,
+  EXPORT_PRIVACY_NOTE,
+  downloadFilenameFor,
+  exportGateReasonFor,
+} from '../exportCopy';
+import { latestExportJobFor, viewOfExport } from '../exportView';
+import { useDownload } from '../hooks/useDownload';
+import { useExportJobs } from '../hooks/useExportJobs';
+import { useRequestExport } from '../hooks/useRequestExport';
+import { isActiveExportStatus } from '../types';
 import { ExportControl } from './ExportControl';
 
-import type { ExportControlProps } from './ExportControl';
+import type { ExportMutations, ExportTarget, ExportView } from '../exportView';
+import type { ExportJob, InlineExportFormat, QueuedExportFormat } from '../types';
 import type { SaveState } from '@/features/editor/saveState';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
@@ -40,8 +64,8 @@ export interface ExportBarProps {
    * construction. The one judgement a `TailoringRun` could contribute here is
    * `job.run_version === run.version`, which is the cross-aggregate comparison the API already made
    * and shipped as `ExportJob.current` — a `run` prop would be a standing invitation to re-derive
-   * it in TypeScript (Constitution §4.5). `viewOfExport` dropped the same parameter at F3, for the
-   * same reason.
+   * it in TypeScript (Constitution §4.5). `viewOfExport` dropped the same parameter, for the same
+   * reason.
    */
   readonly runId: string;
   /**
@@ -58,43 +82,260 @@ export interface ExportBarProps {
    *
    * It is the AC-40 gate: exports are offered only while the state is `saved`, because the server
    * renders the text *it* holds, and exporting a document the user is still typing into produces a
-   * file that silently does not match the screen. F6 implements the gate; here the prop exists only
-   * so that F5 can render this component with the signature F6 will honour.
+   * file that silently does not match the screen.
    */
   readonly saveState: SaveState;
 }
 
 /**
- * The four controls, in AC-36's order, each with the delivery that decides its roles.
+ * The four controls, in AC-36's order, each with the delivery that decides what its click does.
  *
- * A table rather than four hand-written elements: the order is specified (*Markdown*, *Plain text*,
- * *PDF*, *Word* — the two free, instant formats first, then the two that cost a worker), and a
- * table keeps the order and the queued/inline split in one readable place instead of spread across
- * four call sites. Typed as `ExportControlProps` so the two lists cannot drift apart.
+ * **A discriminated union, not a `format` beside a loose `delivery` string.** Narrowing on
+ * `delivery` narrows `format` with it, so the `md`/`txt` branch below can call `downloadDocument`
+ * (whose parameter is `InlineExportFormat`) and the `pdf`/`docx` branch can call `requestExport`
+ * (whose body types `QueuedExportFormat`) with no cast and no runtime check. The API's two endpoints
+ * disagree about which formats they accept; this table is that disagreement, spelled once.
  */
-const EXPORT_CONTROLS: readonly ExportControlProps[] = [
-  { format: 'md', delivery: 'inline' },
-  { format: 'txt', delivery: 'inline' },
-  { format: 'pdf', delivery: 'queued' },
-  { format: 'docx', delivery: 'queued' },
+type ExportControlSpec =
+  | { readonly delivery: 'inline'; readonly format: InlineExportFormat }
+  | { readonly delivery: 'queued'; readonly format: QueuedExportFormat };
+
+const EXPORT_CONTROLS: readonly ExportControlSpec[] = [
+  { delivery: 'inline', format: 'md' },
+  { delivery: 'inline', format: 'txt' },
+  { delivery: 'queued', format: 'pdf' },
+  { delivery: 'queued', format: 'docx' },
 ];
 
-export function ExportBar(props: ExportBarProps): React.JSX.Element {
-  // Declared and deliberately unread — `noUnusedParameters` is on, and renaming these to `_props`
-  // would hide the signature from whoever reads this next. Discarding the value explicitly says
-  // "the contract is fixed, the behaviour is F6" in a way that cannot be mistaken for an oversight.
-  // F6 deletes this line by using all three fields. (`exportView.ts`'s stub made the same call,
-  // including this disable: the rule is right in general — `void` on something that is not a call
-  // discards nothing — and this is the one situation where discarding nothing is exactly the
-  // intent. Disabled by name, for one line, rather than weakened in `eslint.config.js`.)
-  // eslint-disable-next-line @typescript-eslint/no-meaningless-void-operator
-  void props;
+/** A stable empty list, so that "no data yet" and "no jobs" are the same object every render. */
+const NO_JOBS: readonly ExportJob[] = [];
+
+const TICK_MS = 1000;
+
+/**
+ * The wall clock, re-read once a second while any job of this run is still working.
+ *
+ * **This is the one legitimate `useEffect` in the feature.** An effect synchronizes React with
+ * something outside it; nothing re-renders when a second passes unless something subscribes to the
+ * clock, so this subscribes, writes only local state, touches no server state and unsubscribes on
+ * unmount. The poller next door does *not* qualify and does not have one: the job list is server
+ * state, TanStack Query owns its timer, and a `setInterval` fetching would be a worse second copy.
+ *
+ * `Date.now()` is re-read on every tick rather than a counter being incremented, because browsers
+ * throttle background intervals: a counter comes back from another tab claiming three seconds
+ * passed after three minutes. The interval decides only *when* to look at the clock.
+ *
+ * **The subscription is conditional on there being something to count**, which is the difference
+ * from 1.3's version. `TailoringProgress` is mounted only while a run is working, so an
+ * unconditional interval was free; this bar is mounted for as long as the workspace is open, and an
+ * unconditional interval would re-render it once a second for the entire session to animate a
+ * number nobody is looking at. The clock is also re-read the moment the subscription starts, so a
+ * job that was already running when the list arrived does not show a stale count for one second.
+ */
+function useNowMs(isCounting: boolean): number {
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!isCounting) {
+      return undefined;
+    }
+    setNowMs(Date.now());
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, TICK_MS);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [isCounting]);
+
+  return nowMs;
+}
+
+/**
+ * Whether a control is unusable, and the three quite different reasons it can be.
+ *
+ * The last of them is AC-38, which is the distinction this whole slice exists to get right: a
+ * *working* view offers **no control at all**. A user who reads *Preparing…* as *Failed* clicks
+ * another format, and now two renders are queued and two workers are paid.
+ */
+function isControlDisabled(
+  view: ExportView,
+  spec: ExportControlSpec,
+  { isGated, isListPending, isListError }: ExportBarGates,
+): boolean {
+  if (isGated || isListPending) {
+    return true;
+  }
+  if (isListError && spec.delivery === 'queued') {
+    return true;
+  }
+  switch (view.kind) {
+    case 'idle':
+    case 'ready':
+    case 'stale':
+      return false;
+    // The four working states are AC-38 itself. `failed` and `downloadFailed` join them because
+    // they put their own retry control *inside* the status region, next to the words explaining
+    // what went wrong; a bare enabled button above them would offer the same click with none of the
+    // explanation.
+    case 'requesting':
+    case 'queued':
+    case 'rendering':
+    case 'downloading':
+    case 'failed':
+    case 'downloadFailed':
+      return true;
+  }
+}
+
+interface ExportBarGates {
+  readonly isGated: boolean;
+  readonly isListPending: boolean;
+  readonly isListError: boolean;
+}
+
+export function ExportBar({ runId, document, saveState }: ExportBarProps): React.JSX.Element {
+  const jobsQuery = useExportJobs(runId);
+  const requestExport = useRequestExport(runId);
+  const download = useDownload();
+
+  const jobs = jobsQuery.data?.items ?? NO_JOBS;
+  const nowMs = useNowMs(jobs.some((job) => isActiveExportStatus(job.status)));
+  // When this bar first appeared, so a control can tell "this job is old" from "this user has been
+  // waiting". Lazy `useState` rather than `useRef`, because it is read during render and never
+  // written again — a constant for the lifetime of the mount, which is exactly what it means.
+  const [mountedAtMs] = useState(() => Date.now());
+  const secondsOnPage = Math.max(0, Math.floor((nowMs - mountedAtMs) / 1000));
+
+  // What this browser's own two requests are doing, narrowed to what the derivation needs. Read
+  // from the mutations' `variables` — the record of what was asked for — rather than from a
+  // `useState` holding the pending format, which would be a second copy of a fact TanStack holds.
+  const requestVariables = requestExport.variables;
+  const downloadVariables = download.variables;
+  const mutations: ExportMutations = {
+    requesting:
+      requestExport.isPending && requestVariables !== undefined
+        ? { document: requestVariables.document, format: requestVariables.format }
+        : null,
+    downloading:
+      download.isPending && downloadVariables !== undefined
+        ? { document: downloadVariables.document, format: downloadVariables.format }
+        : null,
+    downloadFailure:
+      download.isError && downloadVariables !== undefined
+        ? {
+            target: { document: downloadVariables.document, format: downloadVariables.format },
+            error: download.error,
+          }
+        : null,
+  };
+
+  const gateReason = exportGateReasonFor(saveState);
+  const gates: ExportBarGates = {
+    isGated: gateReason !== null,
+    isListPending: jobsQuery.isPending,
+    isListError: jobsQuery.isError,
+  };
+
+  /**
+   * What one control's click means — **decided from the job list, not from the view**, because the
+   * two states that offer a click are not the two that carry the job id.
+   *
+   * An inline format always downloads: there is nothing to queue. A queued format downloads only
+   * the file it would be lying about otherwise — `ready` *and* `current` — and otherwise pays for a
+   * render. That single rule covers every clickable state at once: *idle* and *failed* request,
+   * *stale* requests (the old file is still on the server, but what the user asked for by clicking
+   * a control labelled *Export again* is a new one), *ready* downloads, and *Try again* after a
+   * failed download repeats whichever of the two it was.
+   */
+  function primaryActionFor(spec: ExportControlSpec, target: ExportTarget): () => void {
+    if (spec.delivery === 'inline') {
+      const format = spec.format;
+      return () => {
+        download.mutate({
+          document,
+          format,
+          filename: downloadFilenameFor(document, format),
+          fetchBlob: () => downloadDocument(runId, document, format),
+        });
+      };
+    }
+
+    const format = spec.format;
+    const job = latestExportJobFor(target, jobs);
+    if (job !== undefined && job.status === 'ready' && job.current) {
+      const jobId = job.id;
+      return () => {
+        download.mutate({
+          document,
+          format,
+          filename: downloadFilenameFor(document, format),
+          fetchBlob: () => downloadExportFile(jobId),
+        });
+      };
+    }
+    return () => {
+      requestExport.mutate({ document, format });
+    };
+  }
 
   return (
-    <div>
-      {EXPORT_CONTROLS.map((control) => (
-        <ExportControl key={control.format} {...control} />
-      ))}
-    </div>
+    <section
+      aria-label="Download this document"
+      className="space-y-3 rounded-md border border-slate-200 bg-white px-4 py-3"
+    >
+      <div className="flex flex-wrap gap-4">
+        {EXPORT_CONTROLS.map((spec) => {
+          const target: ExportTarget = { document, format: spec.format };
+          const view = viewOfExport(target, jobs, mutations, nowMs);
+          return (
+            <ExportControl
+              key={spec.format}
+              format={spec.format}
+              view={view}
+              disabled={isControlDisabled(view, spec, gates)}
+              secondsOnPage={secondsOnPage}
+              onPrimary={primaryActionFor(spec, target)}
+            />
+          );
+        })}
+      </div>
+
+      {/*
+        Neither bar-level line is a `role="status"`, and that is the amendment's point rather than an
+        oversight: AC-36 asks for **four** live regions, one per control, and a fifth that comes and
+        goes would have a screen reader announce the bar's own bookkeeping alongside the four states
+        a user actually asked about. The gate reason is on screen before any control can be clicked,
+        and the loading line describes a render that is about to be replaced.
+      */}
+      {gateReason !== null && <p className="text-sm text-slate-700">{gateReason}</p>}
+
+      {gateReason === null && jobsQuery.isPending && (
+        <p className="text-sm text-slate-600">{EXPORT_LIST_LOADING_NOTE}</p>
+      )}
+
+      {gateReason === null && jobsQuery.isError && (
+        // `role="alert"`, not `status`: this one is assertive because the user is about to click a
+        // control that cannot work, and it carries the only thing that can fix it. It is also a
+        // different role, so the four per-control live regions stay four.
+        <div role="alert" className="text-sm text-rose-800">
+          {EXPORT_LIST_ERROR_NOTE}{' '}
+          <button
+            type="button"
+            onClick={() => {
+              // The rejection is already the query's error state — it is rendered right here — so
+              // there is nothing for a `.catch` to do, and an unhandled rejection would be noise in
+              // the console for a failure the UI has fully accounted for.
+              void jobsQuery.refetch();
+            }}
+            className="rounded-md px-1.5 py-0.5 font-medium underline underline-offset-2 hover:bg-rose-100"
+          >
+            {EXPORT_LIST_ERROR_ACTION}
+          </button>
+        </div>
+      )}
+
+      <p className="text-xs text-slate-500">{EXPORT_PRIVACY_NOTE}</p>
+    </section>
   );
 }

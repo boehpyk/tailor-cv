@@ -1,9 +1,13 @@
 /**
- * The per-format state machine of the export bar — **declared here, derived in F6.**
+ * The per-format state machine of the export bar — the pure derivation the whole bar is built on.
  *
- * `viewOfExport` below is a **deliberate stub**: it returns `{ kind: 'idle' }` and contains no
- * derivation whatsoever. Read the docstring on the function before "finishing" it.
+ * `viewOfExport` at the bottom of this file takes the run's export jobs (server state, held by
+ * TanStack Query), what this browser's own two requests are doing, and a clock reading, and returns
+ * one of nine mutually exclusive states. It holds nothing, fetches nothing and reads no wall clock,
+ * which is what lets AC-37's table drive it row by row.
  */
+
+import { downloadFailureCopyFor } from './exportCopy';
 
 import type { ExportFailureReason, ExportFormat, ExportJob } from './types';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
@@ -45,7 +49,7 @@ export interface ExportMutations {
    *
    * The raw `Error` rather than a finished sentence: turning an `ApiError`'s `code` into copy (401
    * → the session-expired line, 410 `export_file_gone` → *that file is no longer available*, …) is
-   * `exportCopy`'s job and F6's work, and doing it at the call site would put that mapping in a
+   * `exportCopy`'s job, and doing it at the call site would put that mapping in a
    * component instead of in the pure function AC-37 asks to be table-tested.
    */
   readonly downloadFailure: { readonly target: ExportTarget; readonly error: Error } | null;
@@ -89,14 +93,14 @@ export type ExportView =
    * (`ExportJobResponse`) serves all four statuses, so `byte_size` is `number | null` on *every*
    * response, a `ready` one included. The database does guarantee it there — `export_job` carries a
    * `CHECK` that a `ready` row has a byte size (XJ-3) — and that guarantee is exactly what makes a
-   * `!` or a cast tempting at the one line in F6 that reads it.
+   * `!` or a cast tempting at the one line in `exportCopy` that reads it.
    *
    * It is ruled out anyway, for the reason **1.3 already settled one context over**: `RunView`'s
    * `failed` takes a nullable `TailoringFailureReason` and `TailoringFailureNotice` renders a
    * generic sentence for `null`, rather than asserting a column constraint from TypeScript. A `!`
    * here would be a client-side claim about a server-side invariant — a second authority that is
    * silently wrong the day the constraint changes (Constitution §4.5), and whose failure mode is
-   * *NaN KB* in a stranger's browser. F6's copy degrades instead: no *· 84 KB* clause when the size
+   * *NaN KB* in a stranger's browser. The copy degrades instead: no *· 84 KB* clause when the size
    * is `null`, and the download is offered either way, because the bytes do not depend on knowing
    * how many there are.
    */
@@ -120,7 +124,7 @@ export type ExportView =
    *
    * The precedent is literal here rather than analogous: `RunView`'s `failed` is
    * `TailoringFailureReason | null` and `failureCopyFor(null)` already returns a generic headline.
-   * F6's `exportCopy` map does the same — exhaustive over the nine reasons, with one more sentence
+   * `exportCopy`'s map does the same — exhaustive over the nine reasons, with one more sentence
    * for `null` — so the user of a job that failed for a reason nobody can name still reads a
    * sentence rather than an empty box.
    */
@@ -133,43 +137,71 @@ export type ExportView =
   | { readonly kind: 'downloadFailed'; readonly message: string };
 
 /**
+ * The most recent job for one (document, format), or `undefined` when there is none.
+ *
+ * **The list is newest-first**, as the API documents it, so "latest" is the first match and not a
+ * scan for the largest `requested_at`. Sorting here would be this client re-deciding an order the
+ * server already chose, and the two would disagree the first time two jobs shared a second.
+ *
+ * Exported because `ExportBar` needs the same job to decide what a click *does* — download the file
+ * or pay for a new render — and a second copy of this filter in the container is a second answer to
+ * "which job is this control about".
+ */
+export function latestExportJobFor(
+  target: ExportTarget,
+  jobs: readonly ExportJob[],
+): ExportJob | undefined {
+  return jobs.find((job) => job.document === target.document && job.format === target.format);
+}
+
+/** Whether a mutation's variables are about this control. `null` (nothing in flight) never is. */
+function isSameTarget(candidate: ExportTarget | null, target: ExportTarget): boolean {
+  return (
+    candidate !== null &&
+    candidate.document === target.document &&
+    candidate.format === target.format
+  );
+}
+
+/**
+ * Whole seconds between a server timestamp and the client's clock, never negative.
+ *
+ * The clamp is not decoration: these are two different machines' clocks, and a browser a few
+ * seconds behind the server would otherwise render *Preparing your PDF… -2s*. Flooring rather than
+ * rounding means the count reads 0s for the first second, which is what a stopwatch does.
+ */
+function elapsedSecondsSince(isoTimestamp: string, nowMs: number): number {
+  return Math.max(0, Math.floor((nowMs - Date.parse(isoTimestamp)) / 1000));
+}
+
+/**
  * Decide one control's view from the run's export jobs and the client's own two requests. Pure — no
- * hooks, no state, no JSX.
+ * hooks, no state, no JSX, no `Date.now()`.
  *
- * ---
+ * ## The order of the branches is the specification
  *
- * # THIS IS A STUB, ON PURPOSE. DO NOT IMPLEMENT IT HERE.
+ * Three of the nine states are facts about *this browser* and outrank anything the server has said,
+ * because the server does not know about them yet:
  *
- * It returns `{ kind: 'idle' }` for every input, and that is the entire content of task F3. The
- * derivation is **F6**, written to make `qa`'s F5 tests go from red to green.
+ * 1. **`requesting`** — the `POST` is in flight, so whatever job the last poll returned is about to
+ *    be replaced. A control that kept showing *failed* under the click that is re-requesting it
+ *    reads as "the click did nothing".
+ * 2. **`downloading`** — a blob fetch is in flight for this control, over a `ready` job that is
+ *    still perfectly ready. This is the one place the view deliberately hides a true server fact,
+ *    because the user's question right now is "did my click work", not "does the file exist".
+ * 3. **`downloadFailed`** — the last blob fetch for this control rejected. With one exception: a
+ *    409 `export_not_ready` is a lost race rather than an error (`downloadFailureCopyFor` returns
+ *    `null` for it and the docstring there explains why), and the control falls through to the
+ *    job's own polled state.
  *
- * The reason is a lesson this project has now paid for four times. A SKELETON exists so that a test
- * fails **on its assertion** rather than on an `ImportError` — a red that proves a file is absent
- * proves nothing about whether the assertion discriminates (docs/sdlc.md §2). Slices 1.1 (T33/T34),
- * 1.3 (T40) and 1.4 (F5/F8) each shipped a frontend skeleton that **already worked**, so the tests
- * written against it passed the moment they arrived. A test that has never been observed failing is
- * a test nobody has checked, and every one of those bought exactly nothing.
+ * Everything below that is the server's, carried through untouched: `status` chooses the member,
+ * `ready` splits on the server's `current` into `ready` and `stale`, and `failed` passes on
+ * `failure_reason` and `retryable` exactly as sent (Constitution §4.5 — the client never re-derives
+ * either). **The client never moves a view from `rendering` to `ready`; the next poll does.**
  *
- * So: the types below and above are real, because **a type is data** — a union's member list is a
- * field list, like a frozen dataclass's, and there is no body in it to defer (the same call
- * `domain/export/events.py` made at T1 and the pipeline's constants made at I1). The *logic* is
- * absent, and F5's table will red on every row but the trivially-idle one.
- *
- * ---
- *
- * ## What F6 implements here
- *
- * Pick the latest job of `jobs` matching `target`, then, in the order the union is declared:
- * a request in flight for this target outranks everything (there is no job yet); a download in
- * flight or a download that rejected is about *this* control only; otherwise the job's `status`
- * chooses, with `ready` splitting on the server's `current` into `ready` and `stale`, and `failed`
- * carrying the server's `failure_reason` and `retryable` through untouched. No job at all, and an
- * inline format in its resting state, are both `idle`.
- *
- * `elapsedSeconds` comes from `nowMs` against `requested_at` (for `queued`) or `started_at` (for
- * `rendering`) — which is what F4's bar ticks once a second with its one `setInterval`, and the
- * reason this function takes a clock reading instead of calling `Date.now()` itself: a function
- * that reads the wall clock cannot be table-tested.
+ * For an inline format (`md`, `txt`) no job can match, because a job row only ever exists for `pdf`
+ * and `docx` — so the six queued-only members are simply unreachable and the machine is the
+ * three-state one the plan describes, without a second union to say so.
  *
  * ## Signature note — two deviations from the plan, both deliberate
  *
@@ -177,18 +209,12 @@ export type ExportView =
  * `viewOfExport(jobs, run, mutations)`. Those two disagree with each other, and neither has
  * anywhere to put "what time is it now", which the two elapsed-seconds members need. So:
  *
- * 1. **`nowMs` is added.** There is no honest way to produce `elapsedSeconds` without it.
- * 2. **`run` is dropped.** The plan's own state table says the bar reads the run "for nothing but
- *    the id (`current` comes from the server)", and that is the point: the one comparison a run
- *    could contribute here is `job.run_version === run.version`, which is exactly the cross-
- *    aggregate judgement the API already made and put in `current` (Constitution §4.5). A `run`
- *    parameter would be a standing invitation to re-derive it in TypeScript — a second authority
- *    that drifts the first time the server's definition of "current" changes. Leaving it out makes
- *    that impossible rather than discouraged.
- *
- * `target` replaces the loose `format` and pre-filtered `jobsForDocument`, so the function does its
- * own picking (as the plan's prose describes: "picks the latest job for (document, format)") and
- * compares one value against the mutations' variables instead of matching two fields by hand.
+ * 1. **`nowMs` is added.** There is no honest way to produce `elapsedSeconds` without it, and a
+ *    function that reads the wall clock itself cannot be table-tested.
+ * 2. **`run` is dropped.** The one comparison a run could contribute here is
+ *    `job.run_version === run.version`, which is exactly the cross-aggregate judgement the API
+ *    already made and shipped as `current`. A `run` parameter would be a standing invitation to
+ *    re-derive it in TypeScript; leaving it out makes that impossible rather than discouraged.
  *
  * @param target which document and format this control acts on
  * @param jobs the run's export jobs, as `useExportJobs` holds them — all documents, all formats
@@ -201,22 +227,44 @@ export function viewOfExport(
   mutations: ExportMutations,
   nowMs: number,
 ): ExportView {
-  // Read and discarded. The parameters are real — they are the contract F5's tests call through
-  // and F6 derives from — but nothing uses them yet, and `noUnusedParameters` is on. Renaming them
-  // to `_target` and friends to silence the compiler would hide the signature from the reader who
-  // arrives next; discarding them explicitly says "declared, not yet used" in a way that is
-  // impossible to mistake for an oversight. F6 deletes these four lines by using all four values.
-  //
-  // The rule below is right in general — `void` on something that is not a call discards nothing —
-  // and wrong for this one case, which is the only situation it exists to catch and also the only
-  // situation where discarding nothing is exactly the intent. Disabled by name, for four lines,
-  // with the reason attached, rather than by weakening the rule in `eslint.config.js`.
-  /* eslint-disable @typescript-eslint/no-meaningless-void-operator */
-  void target;
-  void jobs;
-  void mutations;
-  void nowMs;
-  /* eslint-enable @typescript-eslint/no-meaningless-void-operator */
+  if (isSameTarget(mutations.requesting, target)) {
+    return { kind: 'requesting' };
+  }
+  if (isSameTarget(mutations.downloading, target)) {
+    return { kind: 'downloading' };
+  }
 
-  return { kind: 'idle' };
+  const failure = mutations.downloadFailure;
+  if (failure !== null && isSameTarget(failure.target, target)) {
+    const message = downloadFailureCopyFor(failure.error);
+    // `null` is the 409 `export_not_ready` race: not this control's error to show, so it falls
+    // through to the job's own state below rather than being reported as a download failure.
+    if (message !== null) {
+      return { kind: 'downloadFailed', message };
+    }
+  }
+
+  const job = latestExportJobFor(target, jobs);
+  if (job === undefined) {
+    return { kind: 'idle' };
+  }
+
+  switch (job.status) {
+    case 'queued':
+      return { kind: 'queued', elapsedSeconds: elapsedSecondsSince(job.requested_at, nowMs) };
+    case 'rendering':
+      // `started_at` is set the moment a worker picks the job up, and the wire types it nullable
+      // because one schema serves all four statuses. Falling back to `requested_at` keeps the
+      // count honest (it over-reports, never under-reports) instead of asserting the column.
+      return {
+        kind: 'rendering',
+        elapsedSeconds: elapsedSecondsSince(job.started_at ?? job.requested_at, nowMs),
+      };
+    case 'ready':
+      return job.current
+        ? { kind: 'ready', jobId: job.id, byteSize: job.byte_size }
+        : { kind: 'stale', jobId: job.id };
+    case 'failed':
+      return { kind: 'failed', reason: job.failure_reason, retryable: job.retryable };
+  }
 }

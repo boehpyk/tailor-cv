@@ -1,19 +1,17 @@
 /**
- * What a control says when its job ended in `failed` — **SKELETON (F4). It renders nothing.**
+ * What a control says when its job ended in `failed`.
  *
- * The props are the contract; the body is empty. No sentence, no *Export again*, not even the
- * container element — because **where** a failure is announced (its own `role="alert"`, or the
- * words placed inside the queued control's existing `role="status"` region) is a decision that
- * belongs with the copy it announces, and both are F6.
- *
- * The bar does not render this component yet, and cannot: nothing in F4 derives a view, so nothing
- * knows a job failed. That is the SKELETON's whole point — F5's failure rows must red on the
- * sentence they assert, not on a missing import. Four slices (**1.1's T33/T34, 1.3's T40, 1.4's F5
- * and F8**) shipped a working frontend skeleton and made `qa`'s tests pass on arrival; this one does
- * not.
+ * It renders **into** the control's `role="status"` region rather than wrapping itself in one: it
+ * returns a fragment, so the sentence becomes a text node of that live region and the retry button
+ * its sibling. That is why there is no container element here. A second live region nested inside
+ * the control's own would announce the same words twice to a screen reader, and a `role="alert"`
+ * would interrupt whatever the user was doing for a failure that is four seconds old and sits next
+ * to three other controls.
  */
 
-import type { ExportFailureReason } from '../types';
+import { EXPORT_AGAIN_ACTION, exportFailureCopyFor } from '../exportCopy';
+
+import type { ExportFailureReason, ExportFormat } from '../types';
 
 export interface ExportFailureNoticeProps {
   /**
@@ -26,6 +24,11 @@ export interface ExportFailureNoticeProps {
    */
   readonly reason: ExportFailureReason | null;
   /**
+   * Which format failed — the sentence names it (*"…into a PDF"*), so the user reading four
+   * controls at once knows which one is talking.
+   */
+  readonly format: ExportFormat;
+  /**
    * Whether *Export again* is worth offering — **the API's answer, read, never re-derived**
    * (AC-24). Which failures are worth paying a second worker render for is a business rule;
    * `render_failed`, `output_too_large` and `source_unavailable` are `false` because the same input
@@ -37,12 +40,24 @@ export interface ExportFailureNoticeProps {
   readonly onRetry: () => void;
 }
 
-export function ExportFailureNotice(props: ExportFailureNoticeProps): React.JSX.Element {
-  // Declared and deliberately unread; `noUnusedParameters` is on and `_props` would hide the
-  // signature. F6 deletes this line by using all three fields. The rule below is right in general
-  // and wrong for the one case it exists to catch, so it is disabled by name, for one line.
-  // eslint-disable-next-line @typescript-eslint/no-meaningless-void-operator
-  void props;
-
-  return <></>;
+export function ExportFailureNotice({
+  reason,
+  format,
+  retryable,
+  onRetry,
+}: ExportFailureNoticeProps): React.JSX.Element {
+  return (
+    <>
+      {exportFailureCopyFor(reason, format)}
+      {retryable && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="ml-2 rounded-md px-1.5 py-0.5 font-medium text-amber-800 underline underline-offset-2 hover:bg-amber-100"
+        >
+          {EXPORT_AGAIN_ACTION}
+        </button>
+      )}
+    </>
+  );
 }

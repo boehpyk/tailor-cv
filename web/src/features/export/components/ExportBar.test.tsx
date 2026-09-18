@@ -181,7 +181,9 @@ describe('ExportBar', () => {
 
     renderBar();
 
-    await screen.findByRole('button', { name: 'PDF' });
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'PDF' })).not.toBeDisabled();
+    });
     for (const name of ['Markdown', 'Plain text', 'PDF', 'Word']) {
       expect(screen.getByRole('button', { name })).not.toBeDisabled();
     }
@@ -411,7 +413,7 @@ describe('ExportBar', () => {
       id: 'job-ac41',
       format: 'pdf',
       status: 'ready',
-      byte_size: 1,
+      byte_size: 86016,
     });
     stubExportFetch(EXPORT_RUN_ID, {
       exportJobs: (callNumber) =>
@@ -437,7 +439,9 @@ describe('ExportBar', () => {
       exportJobs: () =>
         Promise.resolve(
           jsonResponse(200, {
-            items: [makeExportJob({ id: 'job-404', format: 'pdf', status: 'ready', byte_size: 1 })],
+            items: [
+              makeExportJob({ id: 'job-404', format: 'pdf', status: 'ready', byte_size: 86016 }),
+            ],
           }),
         ),
       exportFile: {
@@ -465,7 +469,9 @@ describe('ExportBar', () => {
       exportJobs: () =>
         Promise.resolve(
           jsonResponse(200, {
-            items: [makeExportJob({ id: 'job-410', format: 'pdf', status: 'ready', byte_size: 1 })],
+            items: [
+              makeExportJob({ id: 'job-410', format: 'pdf', status: 'ready', byte_size: 86016 }),
+            ],
           }),
         ),
       exportFile: {
@@ -492,7 +498,9 @@ describe('ExportBar', () => {
       exportJobs: () =>
         Promise.resolve(
           jsonResponse(200, {
-            items: [makeExportJob({ id: 'job-401', format: 'pdf', status: 'ready', byte_size: 1 })],
+            items: [
+              makeExportJob({ id: 'job-401', format: 'pdf', status: 'ready', byte_size: 86016 }),
+            ],
           }),
         ),
       exportFile: {
@@ -517,7 +525,9 @@ describe('ExportBar', () => {
       exportJobs: () =>
         Promise.resolve(
           jsonResponse(200, {
-            items: [makeExportJob({ id: 'job-503', format: 'pdf', status: 'ready', byte_size: 1 })],
+            items: [
+              makeExportJob({ id: 'job-503', format: 'pdf', status: 'ready', byte_size: 86016 }),
+            ],
           }),
         ),
       exportFile: {
