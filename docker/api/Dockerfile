@@ -39,8 +39,15 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Uploaded and generated files live on a volume shared with the worker (ADR-0006).
-RUN mkdir -p /var/lib/tailorcraft/uploads
+# Uploaded and generated files live on a volume shared with the worker (ADR-0006). `state` is
+# beat's schedule database (docker-compose.yml's `beat_state` volume). Both are pre-created here,
+# in the image, so that when Compose mounts an EMPTY named volume over them Docker seeds the
+# volume from the image directory's own ownership instead of creating the mount point as root:root.
+# Without this, `state` doesn't exist in the image at all, the volume mounts as root-owned, and
+# beat — which runs as `USER app` below, unlike the dev target — crash-loops on
+# `PermissionError: [Errno 13] Permission denied: '.../celerybeat-schedule'`. Caught at /verify
+# (slice 1.5, V1): invisible in dev because the dev override never switches off root.
+RUN mkdir -p /var/lib/tailorcraft/uploads /var/lib/tailorcraft/state
 
 # ---------------------------------------------------------------------------
 FROM base AS deps
@@ -73,7 +80,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Run as a non-root user. This process writes uploaded CVs — files whose names come from strangers —
 # into a mounted volume. Root is not the account that should be doing that.
 RUN useradd --create-home --uid 1000 app \
-    && chown -R app:app /app /opt/venv /var/lib/tailorcraft/uploads
+    && chown -R app:app /app /opt/venv /var/lib/tailorcraft/uploads /var/lib/tailorcraft/state
 USER app
 
 EXPOSE 8000
