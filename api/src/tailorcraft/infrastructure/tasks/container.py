@@ -46,12 +46,12 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.export.abandon_stale_export_jobs import AbandonStaleExportJobs
 from tailorcraft.application.export.render_export_job import RenderExportJob
+from tailorcraft.application.retention.purge_expired_guest_sessions import PurgeExpiredGuestSessions
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
@@ -59,7 +59,8 @@ from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
-from tailorcraft.domain.retention.value_objects import ExpiringGuestSession
+from tailorcraft.domain.retention.value_objects import ExpiringGuestSession, RetentionWindow
+from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
@@ -679,14 +680,142 @@ def _build_export_sweep_use_case(
     )
 
 
-if TYPE_CHECKING:
-    # `CommittingTailoringRunRepository` and `CommittingExportJobRepository` need no assertion like
-    # this one: each is passed to a use case whose constructor is annotated with the Protocol, so
-    # `mypy --strict` already checks them at the builder that wires them. `CommittingExpiredGuestDataAdapter`
-    # has no builder yet — the purge's composition roots are a later task in this slice — and a
-    # wrapper nothing wires is a wrapper nothing type-checks. This assertion stands in until one
-    # exists; it is never executed, and it costs nothing at runtime.
-    def _assert_implements_expired_guest_data_port(
-        adapter: CommittingExpiredGuestDataAdapter,
-    ) -> None:
-        _: ExpiredGuestDataPort = adapter
+class OverdueBacklog:
+    """How many guest sessions are still expired-and-present, asked with the purge's own predicate.
+
+    **This exists because `PurgeReport` deliberately does not carry `overdue_after`** and must not
+    grow it: its field set is pinned by AC-4, and every field on it is a count of what *this run*
+    did. "How much is still overdue" is a different question — it is a fact about the data, not
+    about the run — and `ExpiredGuestDataPort.count_expired` is where the codebase already asks it
+    (`/health/ready`'s `overdue` asks the identical question of the identical index). Widening the
+    use case's return to carry it would give one value two producers, which is the 1.5 lesson about
+    a second derivation, and it would put a number in the report that the report cannot vouch for:
+    a concurrent purge or a fresh session can change it between the last delete and the count.
+
+    So the entry point asks, after the run, and the backlog is what ADR-0018 decision 4 says to
+    trust: a log line, a heartbeat and a run row can all be written by a job that is not working;
+    a falling `overdue` cannot be faked by one. The line is a *snapshot taken after this run*, not a
+    subtraction from `examined`.
+
+    **The cutoff derivation lives here rather than in the task**, for the same one-derivation
+    reason: `RetentionWindow.expiry_cutoff` is the rule for what "expired" means, and an entry point
+    that re-derived it could drift from the listing it is reporting on.
+    """
+
+    def __init__(self, data: ExpiredGuestDataPort, clock: Clock, window: RetentionWindow) -> None:
+        self._data = data
+        self._clock = clock
+        self._window = window
+
+    async def count(self) -> int:
+        """The backlog **now** — a fresh instant, not the run's.
+
+        The purge's `now` is the instant its batch was selected at; by the time it finishes, minutes
+        of sessions may have expired. Reporting the run's instant would understate a backlog on a
+        box that is behind, which is exactly the box an operator is reading the line on.
+        """
+        return await self._data.count_expired(self._window.expiry_cutoff(self._clock.now()))
+
+
+@asynccontextmanager
+async def purge_expired_guest_sessions_use_case() -> AsyncIterator[
+    tuple[PurgeExpiredGuestSessions, OverdueBacklog, AsyncSession]
+]:
+    """Build one guest-purge run, yield it with its backlog reader, and tear it down (T22, AC-28).
+
+    The two sweeps' shape, with two differences worth naming rather than diffing out:
+
+    **It yields a second object.** The task's one log line owes `overdue_after` (AC-21) and the use
+    case cannot supply it — see `OverdueBacklog`. Binding it here keeps the entry point thin: the
+    task asks a question, it does not compose a query.
+
+    **The engine is built inside this function**, in the loop `asyncio.run` just opened, and
+    disposed before that loop closes. Not an economy and not a style: an asyncpg connection is bound
+    to the loop that created it, so a module-level engine in a worker presents as "it worked in
+    development and died under load" — pytest-asyncio's two loop scopes taught this codebase the
+    same lesson from the other end (CLAUDE.md).
+
+    **No `OrphanFileScannerPort` is bound, and the omission is the design** (ADR-0018, technical
+    plan §3's wiring table). The orphan sweep is operator-run only, never on beat: it walks a volume
+    and deletes files a database cross-check says nothing references, and a mistake there is the one
+    irreversible loss this feature can cause. It gets its root in the CLI, where a human typed the
+    command; nothing in this worker can start one.
+
+    The session is yielded so the **task** commits inside its own error boundary, the convention
+    every other entry point here follows. The load-bearing commits are not that one: they happen
+    inside the run, one per deleted session, through `CommittingExpiredGuestDataAdapter`. This
+    commit closes the read transaction the listing and the backlog count opened — which on a tick
+    that found nothing overdue is the only transaction there was.
+    """
+    settings = get_settings()
+    # See `tailoring_use_case`: beat publishes this task to a worker that may never have run any
+    # other task, so nothing else is guaranteed to have imported the mapping modules. The purge's
+    # own SQL is Core, but `FileRefType` and the tables it names are built at mapping import.
+    configure_mappings()
+
+    engine = create_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            try:
+                purge, backlog = _build_purge_use_case(settings, session)
+                yield purge, backlog, session
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        # Always, including on R-1's path, for the loop-binding reason in the module docstring.
+        await engine.dispose()
+
+
+def _build_purge_use_case(
+    settings: Settings, session: AsyncSession
+) -> tuple[PurgeExpiredGuestSessions, OverdueBacklog]:
+    """Bind the four ports `PurgeExpiredGuestSessions` declares, and the backlog reader beside it.
+
+    Split out for the reason the other builders are: this is the part a reviewer checks against the
+    port list. The adapter import is deferred to call time for the mapper-configuration reason
+    `_build_use_case` documents — `configure_mappings()` runs in the function above, so hoisting it
+    would move the import before the call that makes it legal.
+    """
+    from tailorcraft.infrastructure.persistence.retention.expired_guest_data import (
+        SqlAlchemyExpiredGuestData,
+    )
+
+    # `ExpiredGuestDataPort` -> the committing wrapper, **one commit per deleted session**. It is
+    # what makes "rows first, *committed*, then files" a statement about durability rather than
+    # about ordering (ADR-0018 decision 2): the unlink that follows a `delete_session` is allowed to
+    # rely on that row being gone for good. One transaction per run would make a mid-batch failure
+    # un-partial and would unlink the files of sessions whose rows then came back.
+    #
+    # One adapter instance, shared by the use case and the backlog reader: the same session, the
+    # same predicate, no second connection for a `COUNT`. `count_expired` is a read and the wrapper
+    # does not commit it.
+    data = CommittingExpiredGuestDataAdapter(SqlAlchemyExpiredGuestData(session), session)
+
+    # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007). The use case reads it **once**
+    # per run (AC-6), so a batch cannot disagree with itself about when "now" was.
+    clock = SystemClock()
+
+    # `RetentionWindow` wraps `settings.guest_retention_hours` here and nowhere else — the one place
+    # `os.environ`'s value becomes the type three readers share. A non-positive window is refused by
+    # the value object at construction, which is why no startup guard is needed for it either.
+    window = RetentionWindow(hours=settings.guest_retention_hours)
+
+    purge = PurgeExpiredGuestSessions(
+        data=data,
+        # `FileStorePort` -> `LocalFileStore`, the same root `api` writes uploads and exports to and
+        # the same one the renderer reads (ADR-0011). `delete` is `missing_ok` by contract, which is
+        # half of why a re-run of this job is safe.
+        files=LocalFileStore(settings.upload_dir),
+        clock=clock,
+        window=window,
+        # `batch_limit` stays at the use case's default of 100 and is **not** a setting, for the
+        # sweeps' reason. The bound exists so one tick cannot hold a worker slot for an hour; it is
+        # not a throughput knob, because a tick that hits the bound is followed by another in an
+        # hour and the backlog is visible on `/health/ready` the whole time. A box that stays behind
+        # wants the CLI (`make purge`, which loops batches), not a bigger number here.
+        # `dry_run` likewise stays False: a scheduled purge that deletes nothing would keep the
+        # promise on paper only, and the dry run belongs to the operator's rehearsal.
+    )
+    return purge, OverdueBacklog(data, clock, window)
