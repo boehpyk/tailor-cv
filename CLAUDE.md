@@ -142,13 +142,20 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
 > pushes images to GHCR.
 >
-> **The deploy path is still unproven, and one part of it is worse than unproven.** There is no VDS,
-> so `deploy` fails at the SSH sync — expected. But the `production` environment has **zero
-> protection rules**, so the "manual-gated deploy" this file and `docs/cicd.md` both describe does
-> not exist: the job has the `environment:` hook and nothing attached to it. Today a missing
-> `SSH_KEY` is what stops a release, which is an accident rather than a control. **Configure a
-> required reviewer on the `production` environment before setting the SSH secrets**, or the first
-> merge after they land deploys unattended.
+> **The deploy path is still unproven, but the gate is now real.** There is no VDS, so `deploy` would
+> fail at the SSH sync — expected. **Corrected 2026-09-19, by reading the API rather than this file:**
+> the `production` environment now carries **two protection rules** — a `required_reviewers` rule
+> naming the repository owner, and a `branch_policy` limiting deployments to protected branches. The
+> "manual-gated deploy" this file and `docs/cicd.md` describe therefore **does** exist. An earlier
+> revision of this paragraph said the environment had zero protection rules and that a missing
+> `SSH_KEY` was the only thing stopping a release; that was true when written and **was repeated for
+> a whole slice after it stopped being true**. The repo also currently holds **no secrets at all**
+> (`gh secret list` is empty), so a merge to `main` runs `build` and then *waits* for a human.
+>
+> The standing rule that produced the original warning still holds and is worth keeping: **a control
+> nobody has verified is a belief, not a control.** Check it with
+> `gh api repos/<owner>/<repo>/environments/production` before trusting either this file or the
+> deploy docs — including this sentence.
 >
 > `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, the specs and the infra notes stay
 > local. **The repository is public**, so anything added to `docs/adr/` is published the moment it

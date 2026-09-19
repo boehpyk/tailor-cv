@@ -2204,8 +2204,12 @@ Still carried from earlier slices:
   edits. Whoever next measures first paint decides.
 - **A paused document whose author leaves** sends into the 429 window and may lose the text if refused
   again; a `leaving`-with-timer state is the model if it is ever wanted. Noted in the machine.
-- **The deploy path is still unproven.** Configure a required reviewer on the `production` environment
-  before adding the SSH secrets.
+- **The deploy path is still unproven, but the gate is real** — corrected on 2026-09-19 by reading
+  the GitHub API instead of these notes. The `production` environment carries a required-reviewer
+  rule and a protected-branch policy, and the repo holds no secrets at all, so a merge to `main`
+  builds and then waits for a human. The earlier note here said the opposite, and it was repeated
+  through an entire slice after it had stopped being true. The habit that caused it is the one worth
+  naming: a control you have read about is not a control you have checked.
 
 Next is 1.6: retention. It is the slice that finally deletes things, and 1.5 handed it two
 guarantees to build on — every export row cascades from its guest session, and every file's key is a
