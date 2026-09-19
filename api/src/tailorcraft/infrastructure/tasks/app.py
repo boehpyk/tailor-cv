@@ -64,9 +64,29 @@ STALE_EXPORT_SWEEP_INTERVAL_SECONDS: Final = 60.0
 STALE_EXPORT_SWEEP_EXPIRES_SECONDS: Final = 55.0
 
 # The hard time limit: the pool child running a task is killed at this many seconds. Named because
-# two things read it, the config below and the stale-window check at the top of `create_celery`,
-# and a limit written twice is a limit that drifts from the check guarding it.
+# three things read it now — the config below, the stale-window check at the top of `create_celery`,
+# and `PURGE_LOCK_TTL_SECONDS` immediately underneath — and a limit written twice is a limit that
+# drifts from the check guarding it.
 TASK_TIME_LIMIT_SECONDS: Final = 180
+
+# How long the guest purge's Redis lock lives before Redis expires it on its own (slice 1.6,
+# ADR-0018 decision 7). It must outlast the longest run that can possibly still be holding it, and
+# that bound is the hard time limit above: a pool child is killed at 180 s, so a purge task cannot
+# still be working at 240 s. The minute of headroom covers the gap between the kill and the `finally`
+# that would have released the lock — a SIGKILLed holder releases nothing, and R-9 then costs exactly
+# one skipped hourly tick.
+#
+# **Deliberately not a setting.** A setting would need a startup guard refusing a TTL at or below the
+# time limit, and that would be the *fourth* refusal in this codebase that cannot exit the container
+# under `uvicorn --workers N` — a known, measured, still-open bug carried since slice 1.3 (AC-30).
+# A constant derived from the very limit it must exceed cannot be misconfigured. The best guard is
+# the one you do not need.
+#
+# It lives here, beside the limit it derives from, rather than in `infrastructure/retention/lock.py`:
+# a derivation split from its input is a derivation that stops being one. The lock module does **not**
+# import it — it takes the TTL as a constructor argument, so that taking a lock does not oblige a
+# process to build a Celery app (see that module's `__init__`); the composition roots pass this.
+PURGE_LOCK_TTL_SECONDS: Final = TASK_TIME_LIMIT_SECONDS + 60
 
 
 def create_celery() -> Celery:
