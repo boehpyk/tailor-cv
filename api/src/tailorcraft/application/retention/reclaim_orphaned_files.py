@@ -27,10 +27,11 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from tailorcraft.domain.retention.errors import OrphanScanAborted
 from tailorcraft.domain.retention.ports import ExpiredGuestDataPort, OrphanFileScannerPort
 from tailorcraft.domain.retention.value_objects import OrphanScanReport, RetentionWindow
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.files import FileStorePort
+from tailorcraft.domain.shared.files import FileRef, FileStorePort, FileStoreUnavailable
 
 
 class ReclaimOrphanedFiles:
@@ -226,4 +227,144 @@ class ReclaimOrphanedFiles:
         had already been unlinked stays unlinked — which is safe, because everything this sweep
         unlinks was already unreferenced when it asked.
         """
-        raise NotImplementedError
+        # Step 1. One instant for the whole sweep, from the `Clock` port (never `datetime.now()`),
+        # so a run cannot disagree with itself about when "now" was.
+        now = self._clock.now()
+
+        # **The floor is computed from `self._window.hours` DIRECTLY, and `RetentionWindow.
+        # expiry_cutoff` is deliberately not called here.** This is the single caller in the
+        # codebase that genuinely subtracts the window, and `expiry_cutoff` is the method whose
+        # *name* sounds right for it — which is exactly why this comment is at the line rather
+        # than only in the docstring above. `expiry_cutoff` returns `now` **unchanged**, on
+        # purpose (its own docstring argues it at length: the window was already applied once, at
+        # `GuestSession.start`, and subtracting it a second time would silently double the
+        # retention promise). Reaching for it here would make this floor `now` itself, every file
+        # on the volume would be "old enough", and the sweep would offer the entire volume up to
+        # the cross-check — one database hiccup away from reclaiming a live user's CV. The window
+        # *plus* the grace period is the margin in which "older than the window" and "nothing
+        # references it" have had time to stop disagreeing; step 3 is what actually decides.
+        cutoff = now - (timedelta(hours=self._window.hours) + self._grace)
+
+        # Step 2. The directory walk, which the adapter performs in a thread (AC-42). **Not
+        # wrapped in anything** (R-15): a scan that cannot read the volume means the sweep never
+        # found out what is there, and that must fail the command rather than return a clean-
+        # looking report of zeroes.
+        scanned = await self._scanner.scan_older_than(cutoff)
+
+        # `limit` bounds how many of those entries *this run considers*, applied here rather than
+        # pushed into the port: `scan_older_than` asks a question about the volume ("what is older
+        # than this?") and the answer to that question does not depend on how big a bite an
+        # operator chose to take. `None` — the honest default for a sweep with no next tick — is
+        # the whole volume. Everything below, `scanned` included, is a statement about `entries`,
+        # so the five counts in the report always partition exactly what this run looked at.
+        entries = list(scanned)[: self._limit]
+
+        too_young = 0
+        unrecognized = 0
+        # Every entry that survived both filters, in scan order, carrying its `is_partial` flag —
+        # the two kinds step 4 may unlink.
+        considered: list[tuple[FileRef, bool]] = []
+
+        for entry in entries:
+            # The floor first, and before the `ref is None` test, because it is a property of the
+            # entry rather than of what the entry turned out to be: an entry the adapter handed
+            # back that is not past the floor was not considered *at all*, whatever its name looks
+            # like (R-34). An unrecognised file that is also too young is therefore counted
+            # `too_young` this run and `unrecognized` on a later one — it is still sitting there,
+            # and the count that prompts a human look is not lost, merely deferred until the
+            # sweep would actually have been willing to act.
+            if entry.created_at > cutoff:
+                too_young += 1
+                continue
+            # R-37. `ScannedFile` has no name field at all, so an unrecognised filename — the one
+            # thing on this volume that might be a person's name — structurally cannot be logged,
+            # reported or deleted from here. It is counted and left alone.
+            if entry.ref is None:
+                unrecognized += 1
+                continue
+            considered.append((entry.ref, entry.is_partial))
+
+        # Step 3. **One batched cross-check, and the batch excludes `.part` files.** Nothing ever
+        # references a `.part` (it is `LocalFileStore`'s write-then-rename temporary, ADR-0011
+        # §5), so asking the database about one is a round trip whose answer cannot change a
+        # decision — which is precisely why `is_partial` is a flag on the element rather than a
+        # second port method (R-36).
+        #
+        # The keys are also **pre-filtered by age**, by construction of `considered` above: an
+        # entry we have already decided not to touch is not made safer by asking the database
+        # about it, and the narrowest question is the one whose failure has the smallest blast
+        # radius — this call failing aborts the whole sweep (below), so it should be asked about
+        # as few keys as can possibly matter.
+        referenced_keys: frozenset[FileRef] = frozenset()
+        keys = [ref for ref, is_partial in considered if not is_partial]
+        if keys:
+            try:
+                referenced_keys = await self._data.which_are_referenced(keys)
+            except Exception:
+                # **The one catch in this module, and it re-raises** (R-33, AC-23). It is
+                # broad for the reason the purge's R-3 catch is broad: `which_are_referenced`
+                # documents no failure type, and an allow-list would be a bet that we named
+                # every way a driver can refuse a read — losing that bet here means deleting
+                # files because we could not ask whether anything points at them, which is
+                # the one irreversible mistake this tool can make. It is **not** the floor
+                # R-15 forbids: a floor wraps the whole run and reports zeroes, while this is
+                # scoped to one `await` and converts it into a type the CLI exits 1 on.
+                # `Exception`, never `BaseException`: a cancelled sweep must still cancel.
+                #
+                # **`from None`, not `from exc`** — the codebase's convention wherever the
+                # original could quote data (`rate_limit.py`, `posting/fetching.py`, the two
+                # repositories, `llm/parsing.py`). A failed read carries its data out through
+                # three layers, and the `raise … from` chain is the third: asyncpg quotes
+                # values and PostgreSQL's `DETAIL: Failing row contains (…)` is the whole row
+                # — here, rows of a CV-owning table, keyed by storage keys. Cutting the chain
+                # keeps that out of anything Celery or Sentry renders. The entry point logs
+                # the count of keys it never got an answer for, which it already has.
+                raise OrphanScanAborted() from None
+
+        # Step 4. In scan order, so the report and the volume agree about which entries a
+        # `--limit` run acted on.
+        referenced = 0
+        reclaimed = 0
+        failed = 0
+
+        for ref, is_partial in considered:
+            # A `.part` skips this test entirely; it was never in the batch above, so it could not
+            # be in the answer. The sweep deletes what is **not** in the referenced set, which is
+            # why the port returns that direction: an adapter bug that returns too few keys can
+            # only spare files, never delete them (R-35).
+            if not is_partial and ref in referenced_keys:
+                referenced += 1
+                continue
+
+            # R-39, AC-22. Every count above and below is computed exactly as it would be for a
+            # real run — that identity is the whole point, since this report is what an operator
+            # reads before authorising the real one — but no `files.delete` call is made at all.
+            # The *absence* of the side effect is the acceptance criterion, so the branch sits at
+            # the single call site rather than being trusted to a caller.
+            if self._dry_run:
+                reclaimed += 1
+                continue
+
+            try:
+                await self._files.delete(ref)
+            except FileStoreUnavailable:
+                # R-38. Counted, not swallowed, and the sweep continues: one file the volume will
+                # not give up must not abandon the rest of it.
+                failed += 1
+                continue
+            # As in the purge, `reclaimed` means *keys we asked the store to remove* — `delete` is
+            # `missing_ok` by contract, so nothing here can honestly claim the bytes were there
+            # (R-5).
+            reclaimed += 1
+
+        # Step 5. The report is this layer's only output: `retention` publishes no domain event
+        # and this layer does not log.
+        return OrphanScanReport(
+            scanned=len(entries),
+            referenced=referenced,
+            too_young=too_young,
+            unrecognized=unrecognized,
+            reclaimed=reclaimed,
+            failed=failed,
+            dry_run=self._dry_run,
+        )
