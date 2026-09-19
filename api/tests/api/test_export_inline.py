@@ -829,15 +829,24 @@ async def test_txt_rendering_separates_blocks_by_one_blank_line(
 # same property this AC has always meant to guard, without needing 20 sessions this suite's
 # fixtures do not provide.
 #
-# **Sizing, measured rather than guessed (ADR-0009's method).** A single render of a
-# ~20,000-character document takes roughly 10-50 ms in a worker thread, so 20 concurrent single-shot
-# renders finish the whole batch in well under 100 ms — too little wall-clock time for the 1 ms-paced
-# hammer loop below to collect the 20-sample floor this measurement needs to mean anything (measured:
-# 3 samples on a real run, an early draft of this test). Each of the 20 concurrent workers below
-# therefore renders the document **twelve times in a row** rather than once, stretching the batch to
-# roughly 0.5-2 s — comfortably enough for 20+ samples — while keeping the same 20-way *concurrency*
-# AC-11 asks for; this mirrors `test_posting_fetcher_event_loop.py`'s own choice to size its fixture
-# page so "the whole test finishes in a few seconds" rather than reproduce a specific vendor number.
+# **Sizing is a guarantee now, not a guess (CI flake found 2026-09-19).** The first version of this
+# test gave each of the 20 workers a fixed twelve renders, sized against one machine's measured
+# per-render cost so the batch would "probably" run long enough for the 1 ms-paced hammer loop to
+# collect its 20-sample floor. That coupled a *test precondition* to how fast the renders happened to
+# finish, which is not something the test controls: a slow box can still blow the p50 budget (the
+# property this test exists to guard), but a genuinely FAST one finishes twelve rounds per worker
+# before the hammer reaches 20 samples at all — CI hit exactly this, 16 samples collected against a
+# 20-sample floor, with a p50 in the sub-millisecond range (the loop was, if anything, unusually
+# responsive). The flake is therefore bidirectional: too slow trips the p50 assertion, too fast trips
+# the sample-floor precondition, and neither failure is a property of this router or this adapter.
+#
+# The fix makes "enough samples" something the test *guarantees* rather than hopes for: the 20 workers
+# below render **until the hammer says it has its floor**, not a fixed number of times each. A single
+# shared `asyncio.Event` is the stop signal for both loops — the hammer sets it the instant it has
+# collected `_SAMPLE_FLOOR` latencies, and every worker checks it before starting its next render.
+# The batch's wall-clock duration becomes an *output* of the measurement rather than an assumption
+# baked into an iteration count, so it can no longer drift out of date as either the renderer or the
+# machine running it gets faster.
 #
 # **Claims this test still makes**: with 20 workers concurrently driving
 # `MarkdownDocumentRenderer.render(..., format=TXT)` against documents at `TailoredCv`'s
@@ -877,28 +886,42 @@ def _document_at_the_ceiling() -> str:
     return text[:19_900]
 
 
-async def _hammer_health_live(client: AsyncClient, *, stop: asyncio.Event) -> list[float]:
-    """See `test_posting_fetcher_event_loop.py::_hammer_health_live` for the full account of why
-    the trailing sleep is load-bearing against an in-process ASGI transport with no real I/O."""
+# The sample-size floor this measurement needs before a p50 means anything — see the section banner's
+# "Sizing is a guarantee now, not a guess" paragraph. Shared by both loops below: it is the ONE number
+# that decides when the batch is over, rather than a guess at how many renders that takes.
+_SAMPLE_FLOOR = 20
+
+
+async def _hammer_health_live_until_floor(
+    client: AsyncClient, *, enough: asyncio.Event, floor: int
+) -> list[float]:
+    """Sample `/health/live` until `floor` samples are collected, then signal `enough` — the single
+    stop condition both this loop and every render worker below check.
+
+    See `test_posting_fetcher_event_loop.py::_hammer_health_live` for the full account of why the
+    trailing sleep is load-bearing against an in-process ASGI transport with no real I/O. This
+    version additionally *drives* the batch's end rather than merely obeying an externally-set `stop`
+    — it is what turns "enough samples" from an assumption into a guarantee (see the section banner).
+    """
     latencies: list[float] = []
-    while not stop.is_set():
+    while not enough.is_set():
         started = time.perf_counter()
         response = await client.get("/health/live")
         latencies.append(time.perf_counter() - started)
         assert response.status_code == 200
+        if len(latencies) >= floor:
+            enough.set()
         await asyncio.sleep(0.001)
     return latencies
 
 
-# A single render of `_document_at_the_ceiling()` takes roughly 10-50 ms; 12 in a row per worker
-# stretches the 20-way-concurrent batch to a wall-clock duration long enough for the 1 ms-paced
-# hammer loop to collect a meaningful sample (see the section banner's "Sizing, measured rather than
-# guessed" paragraph for the measurement that this number is chosen against).
-_RENDERS_PER_WORKER = 12
-
-
-async def _render_repeatedly(renderer: MarkdownDocumentRenderer, document: str) -> None:
-    for _ in range(_RENDERS_PER_WORKER):
+async def _render_until_enough_samples(
+    renderer: MarkdownDocumentRenderer, document: str, *, enough: asyncio.Event
+) -> None:
+    """Keep rendering until the hammer has its floor, checked before every render rather than after —
+    an in-flight render is always allowed to finish, never cancelled, so `enough` being set mid-render
+    costs at most one extra render per worker, not a torn result."""
+    while not enough.is_set():
         result = await renderer.render(
             document, document=TailoredDocumentKind.CV, format=ExportFormat.TXT
         )
@@ -912,23 +935,36 @@ async def test_health_live_stays_responsive_during_twenty_concurrent_txt_renders
 ) -> None:
     """AC-11, reshaped — see the section banner above for the full account of why this drives
     `MarkdownDocumentRenderer` directly instead of the HTTP route, why each of the 20 concurrent
-    workers renders more than once, and exactly which of the original claims survive."""
+    workers renders until told to stop rather than a fixed number of times, and exactly which of the
+    original claims survive."""
     renderer = MarkdownDocumentRenderer(settings)
     document = _document_at_the_ceiling()
 
-    stop = asyncio.Event()
-    hammer_task = asyncio.ensure_future(_hammer_health_live(client, stop=stop))
-    await asyncio.sleep(0)
+    enough = asyncio.Event()
+    hammer_task = asyncio.ensure_future(
+        _hammer_health_live_until_floor(client, enough=enough, floor=_SAMPLE_FLOOR)
+    )
+    await asyncio.sleep(0)  # let the hammering task actually start before the renders begin
 
-    try:
-        await asyncio.gather(*(_render_repeatedly(renderer, document) for _ in range(20)))
-    finally:
-        stop.set()
+    # A generous but finite ceiling, not a tuned number: `enough` is set by the hammer itself the
+    # instant it has its floor, so this bounds only the pathological case where that never happens
+    # (a bug in the hammer, or an event loop so stalled that `/health/live` never gets a turn at all)
+    # rather than deciding how long a healthy run takes, the way the old fixed iteration count did.
+    await asyncio.wait_for(
+        asyncio.gather(
+            *(_render_until_enough_samples(renderer, document, enough=enough) for _ in range(20))
+        ),
+        timeout=30,
+    )
     latencies = await asyncio.wait_for(hammer_task, timeout=15)
 
-    assert len(latencies) >= 20, (
+    # No longer a precondition that can fail on its own — `_hammer_health_live_until_floor` does not
+    # return until it has collected `_SAMPLE_FLOOR` samples, so this is a self-check on that
+    # invariant rather than a race against however long the renders happened to take.
+    assert len(latencies) >= _SAMPLE_FLOOR, (
         f"only {len(latencies)} /health/live samples were taken during the 20 concurrent "
-        "renders — too few to say anything about event-loop liveness"
+        "renders — the hammer loop returned before reaching its own floor, which should be "
+        "impossible; see _hammer_health_live_until_floor"
     )
     p50 = statistics.median(latencies)
     # No `max(latencies) < ...` assertion here — see the section banner's claim #2 for the measured
