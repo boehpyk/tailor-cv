@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.files import FileRef
 
 
@@ -47,7 +48,8 @@ class RetentionWindow:
         (`domain.shared.errors`) is the error; it is the one an unconstructable state gets
         everywhere else in this codebase.
         """
-        raise NotImplementedError
+        if self.hours <= 0:
+            raise InvariantViolated("hours must be > 0 (a retention window is a positive span)")
 
     def expiry_cutoff(self, now: datetime) -> datetime:
         """The instant a session's `expires_at` must be at or before for it to count as expired.
@@ -60,8 +62,33 @@ class RetentionWindow:
         The comparison this feeds is **inclusive** at the boundary: a session whose `expires_at` is
         exactly the cutoff is expired and is selected (R-18), matching `GuestSession.is_expired`'s
         own `at >= expires_at` rather than inventing a second, subtly different rule one layer up.
+
+        **This returns `now` unchanged, and ignores `self.hours` on purpose. Do not "fix" it.**
+        The window is applied exactly *once*, at `GuestSession.start`, which freezes it into that
+        session's `expires_at`. By the time the purge runs, the question is already
+        `expires_at <= now`; there is nothing left to subtract, and subtracting here would apply the
+        same window a second time. The plausible-looking edit —
+        `return now - timedelta(hours=self.hours)` — turns a 24-hour retention promise into a
+        48-hour one, and **nothing would look broken**: the job still runs on schedule, still logs,
+        still deletes sessions, just a day later than the UI promises. No error, no alert, no
+        symptom — only the privacy commitment in FR-6 quietly ceasing to be true. That is why the
+        contradiction is spelled out here rather than left for a reader to rediscover.
+
+        Three tests in `tests/unit/retention/test_value_objects.py` go red if anyone tries:
+        `test_expiry_cutoff_returns_the_instant_handed_to_it_regardless_of_the_windows_hours`,
+        parametrized `1h`, `24h` and `999h` over one identical `now` — three different windows must
+        produce the identical cutoff, which is a property no subtraction can satisfy.
+
+        *Then why does `hours` exist at all, if this method never reads it?* For three jobs that are
+        not this one. It is the **validated** window — `__post_init__` is the only place a
+        non-positive retention policy is refused. It is the floor the orphan sweep computes from:
+        `ReclaimOrphanedFiles` subtracts `hours + grace` from `now` itself, in the application layer
+        (technical plan §2), because that sweep genuinely is asking "how old is old enough". And it
+        is the one type three readers of a single promise will eventually share — the purge's
+        cutoff, `StartGuestSession`'s `expires_at` and the session cookie's `Max-Age` (OQ-7). A bare
+        `int` handed between those three is exactly how they drift out of agreement.
         """
-        raise NotImplementedError
+        return now
 
 
 @dataclass(frozen=True, slots=True)
