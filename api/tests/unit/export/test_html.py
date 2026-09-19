@@ -103,12 +103,13 @@ def test_allowed_url_schemes_is_the_same_three_schemes_as_the_parser_gate() -> N
     assert ALLOWED_URL_SCHEMES == _EXPECTED_ALLOWED_URL_SCHEMES
 
 
-# --- render_html: only the eleven tags, on a full-grammar fixture -----------------------------------
+# --- render_body_fragment: only the eleven tags, on a full-grammar fixture, unmediated by nh3 -------
 
 _FULL_GRAMMAR_FIXTURE = (
     "# Heading One\n\n"
     "## Heading Two\n\n"
     "### Heading Three\n\n"
+    "#### Heading Four\n\n"
     "A paragraph with **bold** and *italic* text, a hard break  \n"
     "and a [link](https://example.com).\n\n"
     "- bullet one\n"
@@ -118,19 +119,37 @@ _FULL_GRAMMAR_FIXTURE = (
 )
 
 
-def test_render_html_body_uses_only_the_eleven_allowed_tags() -> None:
-    html = _render_document(_tokens(_FULL_GRAMMAR_FIXTURE), TailoredDocumentKind.CV)
+def test_render_body_fragment_uses_only_the_eleven_allowed_tags() -> None:
+    """The FIRST lock's own promise, unmediated by the second one.
 
-    body_start = html.index("<body>") + len("<body>")
-    body_end = html.index("</body>")
-    fragment = html[body_start:body_end]
+    Found at `/verify` (slice 1.5, iteration 2): this test used to call `_render_document`, i.e.
+    `wrap_in_document(sanitize_html(render_body_fragment(tokens)), document)`, and `sanitize_html`
+    emits only `ALLOWED_TAGS` **by construction** against this same eleven-element set — so
+    `found_tags <= _EXPECTED_ALLOWED_TAGS` could no longer fail for any emitter output at all.
+    Measured: breaking `_heading_tag`'s clamp (`return token.tag`, unconditionally) still left this
+    test green, because `sanitize_html` quietly deleted the leaked `<h4>` tag along with its markup.
+    It had become a duplicate of `test_sanitize_html_strips_every_tag_outside_the_allow_list`, and the
+    module's own docstring is explicit about exactly this trap: "`nh3` is the second lock, not the
+    first... A test that only ever fed it the emitter's output would pass for the wrong reason
+    forever." This was that sentence's mirror image — the first lock's only independent test, testing
+    the second lock instead.
+
+    So this calls `render_body_fragment` directly: no `wrap_in_document`, no `sanitize_html`, no
+    `<body>` shell to slice out. The fixture carries a `####` heading (deeper than `_HEADING_TAGS`
+    allows) so the emitter's own clamp — not `normalize_to_grammar`'s, which this file's local
+    `_tokens()` never runs — is what a broken `_heading_tag` would leak past.
+    """
+    fragment = render_body_fragment(_tokens(_FULL_GRAMMAR_FIXTURE))
 
     found_tags = {tag.lower() for tag in re.findall(r"<\s*/?\s*([a-zA-Z0-9]+)", fragment)}
-    assert found_tags, "the fixture must produce at least one tag in the body"
+    assert found_tags, "the fixture must produce at least one tag in the fragment"
     assert found_tags <= _EXPECTED_ALLOWED_TAGS
 
 
-def test_render_html_wraps_the_fragment_in_the_constant_document_shell() -> None:
+# --- render_body_fragment + wrap_in_document: the shell `renderer.py` actually composes it into -----
+
+
+def test_render_document_wraps_the_fragment_in_the_constant_document_shell() -> None:
     """The exact shell string from the technical plan's "The render, step by step" §3."""
     html = _render_document(_tokens("# Heading\n"), TailoredDocumentKind.CV)
 
@@ -141,7 +160,7 @@ def test_render_html_wraps_the_fragment_in_the_constant_document_shell() -> None
     assert html.endswith("</body></html>")
 
 
-def test_render_html_title_is_a_constant_never_the_documents_own_first_line() -> None:
+def test_render_document_title_is_a_constant_never_the_documents_own_first_line() -> None:
     """X-55, one layer up: a `Content-Disposition`-style injection attempt in the source must never
     end up somewhere the document could pass for metadata — the title is fixed per document kind,
     never derived from the text."""
