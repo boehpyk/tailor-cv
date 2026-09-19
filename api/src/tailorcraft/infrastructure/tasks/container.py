@@ -46,6 +46,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,6 +58,9 @@ from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
+from tailorcraft.domain.retention.value_objects import ExpiringGuestSession
+from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -271,6 +275,74 @@ class CommittingExportJobRepository:
         `save`, which commits one abandoned job at a time. A failure part-way through a batch then
         keeps every job already recorded (X-38), and the next tick lists only the rest."""
         return await self._inner.list_stale_rendering(started_before, limit)
+
+
+class CommittingExpiredGuestDataAdapter:
+    """The purge's `ExpiredGuestDataPort`: the ordinary one, except that **`delete_session`
+    commits.**
+
+    This is the class that makes *"rows first, **committed**, then files"* a true statement about
+    durability rather than about intent. `PurgeExpiredGuestSessions` deletes a session's row and
+    only then unlinks its files, so that a crash between the two leaves a file with no row — an
+    orphan the sweep reclaims — instead of a row pointing at bytes that are gone, which is the
+    failure a user meets as a 410 on a download. That ordering is worth nothing if the `DELETE` is
+    still sitting in an uncommitted transaction when the `unlink` happens, and the use case cannot
+    say so: `ExpiredGuestDataPort.delete_session` names no transaction and `application/` may not
+    name one either (ADR-0002). The boundary is therefore this file's, exactly as the "two commits"
+    boundary for tailoring and export is.
+
+    **One commit per session, not one per run**, and that is the same decision as the two sweeps'.
+    A run is deliberately partial (R-3, R-4): a refused `DELETE` costs one `sessions_failed` and the
+    batch continues, so every session already deleted must stay deleted when the run later fails
+    part-way through. A single commit at the end would make a run all-or-nothing, and a batch that
+    contains one permanently bad row would then purge nothing, for ever, while the backlog count
+    climbed and the heartbeat kept saying `ok`.
+
+    **Delegation rather than a subclass of `SqlAlchemyExpiredGuestData`**, for the import-order
+    reason `CommittingTailoringRunRepository` documents at length: the adapter modules under
+    `persistence/` read mapped attributes and build `Table` objects at *import* time, and a
+    `class X(SqlAlchemyExpiredGuestData)` statement is a top-level import by another name. The four
+    pass-throughs are the price; `mypy --strict` checking this against the `ExpiredGuestDataPort`
+    Protocol is what keeps them from drifting.
+
+    **No `expunge` before the inner `begin_nested()`**, unlike the two repositories above, and the
+    difference is not an oversight. Those wrap a *repository*: a use case mutates an aggregate and
+    then calls `save`, so the session is dirty on entry and `begin_nested()`'s unconditional entry
+    flush would flush it outside the SAVEPOINT. This adapter loads no aggregate and adds nothing to
+    the session — its `DELETE` is Core SQL — and the purge's composition roots hand it a session
+    nothing else writes through, so there is never anything dirty to flush. The moment a root shares
+    that session with a repository, the assumption breaks; that is a note on the root, not a
+    defensive `expunge` here for an object this class cannot name.
+    """
+
+    def __init__(self, inner: ExpiredGuestDataPort, session: AsyncSession) -> None:
+        self._inner = inner
+        self._session = session
+
+    async def count_expired(self, as_of: datetime) -> int:
+        """A read, so **no commit** — the same rule as the repositories' read pass-throughs."""
+        return await self._inner.count_expired(as_of)
+
+    async def list_expired(self, as_of: datetime, limit: int) -> Sequence[ExpiringGuestSession]:
+        """A read, so **no commit**. The batch is collected before anything is deleted (ADR-0006 §2)
+        and the deletes that follow each commit on their own."""
+        return await self._inner.list_expired(as_of, limit)
+
+    async def delete_session(self, session_id: GuestSessionId) -> None:
+        """The inner SAVEPOINT, **then commit** — the whole reason this class exists.
+
+        The commit is what the file unlink that follows it in `PurgeExpiredGuestSessions` is allowed
+        to rely on. It is also what bounds a failure: a run that dies after this returns leaves this
+        session gone and every later candidate untouched, and the next tick lists only the rest.
+        """
+        await self._inner.delete_session(session_id)
+        await self._session.commit()
+
+    async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
+        """A read, so **no commit** — and the one read whose *failure* is load-bearing. It must
+        propagate untouched, because `ReclaimOrphanedFiles` turns any exception here into
+        `OrphanScanAborted` and unlinks nothing (R-33, AC-23)."""
+        return await self._inner.which_are_referenced(keys)
 
 
 @asynccontextmanager
@@ -605,3 +677,16 @@ def _build_export_sweep_use_case(
         # the rest a minute later. A knob nobody has a reason to turn is a knob somebody will turn
         # wrongly.
     )
+
+
+if TYPE_CHECKING:
+    # `CommittingTailoringRunRepository` and `CommittingExportJobRepository` need no assertion like
+    # this one: each is passed to a use case whose constructor is annotated with the Protocol, so
+    # `mypy --strict` already checks them at the builder that wires them. `CommittingExpiredGuestDataAdapter`
+    # has no builder yet — the purge's composition roots are a later task in this slice — and a
+    # wrapper nothing wires is a wrapper nothing type-checks. This assertion stands in until one
+    # exists; it is never executed, and it costs nothing at runtime.
+    def _assert_implements_expired_guest_data_port(
+        adapter: CommittingExpiredGuestDataAdapter,
+    ) -> None:
+        _: ExpiredGuestDataPort = adapter
