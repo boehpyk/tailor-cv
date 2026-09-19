@@ -1886,24 +1886,240 @@ rather than measured. And in every one, the thing that found it was the same: so
 the real version, on the real image, and read what actually came back — instead of reasoning about what
 should have.
 
+## Day fifteen: the verify that found three
+
+Slice 1.5 arrived at `/verify` looking finished. 1293 backend tests and 486 frontend tests, green
+twice in a row. Every budget measured rather than assumed. A production image built and started.
+Three ADRs. A failure contract with fifty-seven numbered rows, each one traced to a test.
+
+`/verify` found three MAJOR defects. All three were in code that the green suite was perfectly happy
+with, and all three were the kind a user would have met in the first week.
+
+That is not a criticism of the suite. It is the single most useful thing this file records about
+testing: **a test suite tells you the code does what the tests say. It cannot tell you the tests say
+the right thing.** Everything below is a variation on that.
+
+### The helper that deleted the salary range
+
+The worst one first. A CV containing
+
+> Negotiated salary range [100k](150k) for the team
+
+came out of every PDF, every DOCX and every plain-text export as
+
+> Negotiated salary range 100k
+
+The range was gone. Silently, from the one document this product exists to produce, for a user who
+is unemployed and about to attach it to an application.
+
+The mechanism is almost elegant in how reasonable each half looks. Markdown-it refuses `150k` as a
+link destination — correctly, it is not a URL — and, as day fourteen's notes already record, a
+refused link does not come back as a link without an `href`. It comes back as the author's literal
+characters: one text token reading `[100k](150k)`. So a helper walks every text token and recovers
+the label, because the failure contract says a refused URL must never be shown to the reader.
+
+To decide "was this refused?", the helper asked `_allow_three_schemes` — the same predicate the
+parser uses. And that is the bug, in one line: **those two functions are asking different
+questions.** The parser's question is *"may this become an `href`?"*, and for `150k` the answer is
+rightly no. The helper's question is *"was this ever a URL, such that showing it would show a URL?"*
+— and for `150k` the answer is also no, but it is a *different* no, and collapsing them deletes the
+user's text.
+
+The fix is a second predicate, `_is_refused_url`, that says yes only for a destination that *tried*
+to be a URL: a scheme outside the allow-list, or a protocol-relative `//host`. No scheme at all
+means it was never a URL attempt, and the literal survives byte for byte.
+
+**Why no test caught it.** There is a fixture corpus, and the acceptance criterion requires 100 % of
+it to render to all four formats. It scored 28/28. But the corpus's only link fixtures were an
+accepted `https://` one and a `javascript:` one — and for `javascript:` stripping the destination is
+*correct*. The corpus contained no `[label](plain-word)` anywhere, so a 100 % pass rate was measuring
+a document shape the bug could not affect. It does now, mirrored into both the Python fixtures and
+the TypeScript ones, so this class of document travels with the project.
+
+### A one-character scheme is a drive letter
+
+The fix introduced a smaller version of itself, which is worth recording because the reasoning that
+settled it is reusable.
+
+`urlsplit("C:/Users/me/cv.docx").scheme` is `"c"`. So a Windows path in a CV has a scheme, takes the
+refused branch, and `[docs](C:/Users/me/cv.docx)` still collapses to `docs`.
+
+The first instinct — mine, and the implementing agent's — was to accept it: a scheme-shaped
+destination *is* a URL attempt by the grammar's own rule, and a Windows path in a CV is rare. The
+reviewer argued the other way and was right, on a principle worth keeping:
+
+**The harm is asymmetric, and only one side of it is recoverable.** Over-stripping deletes the
+author's characters and the reader never learns anything was removed. Under-stripping merely shows
+inert text — by the time this helper runs the link is already a text token, there is no `href`, and
+nothing can be clicked, so the security cost of being wrong in *that* direction is exactly zero.
+
+When a heuristic must be wrong somewhere, put its error on the side that shows too much rather than
+the side that silently deletes. No IANA-registered scheme is one character, so the guard is
+`len(scheme) > 1`, and the case is pinned from both directions — the Windows path survives, and
+`javascript:` is still stripped, so the guard cannot be quietly widened into uselessness.
+
+### An error state whose only exit reproduced the error
+
+The export bar has nine states and a pure function that derives them. One of them says, in these
+words: *"That file is no longer available — Export again."*
+
+The button under that sentence re-issued the download that had just failed.
+
+A 410 `export_file_gone` does not change the job row. That is deliberate and correct — the download
+endpoint refuses and writes nothing. But the control decided what a click *meant* by asking the row:
+`status === 'ready' && current` → download. The row still said `ready`, because nothing had told it
+otherwise. So the button downloaded, got another 410, and displayed the same sentence again. A
+reload did not help: the view derived to `ready` and offered *Download PDF*, which 410'd.
+
+The copy promised a recovery the UI could not perform. The failure contract's own row says the next
+action is to re-export; there was no way to re-export.
+
+The root cause is not the 410 handling. It is that **the row was being interrogated twice** — once
+for what to render, once for what a click does — and the two answers could disagree. The fix moves
+the click's meaning onto the view, which is the one place that holds both what the server last said
+*and* what this browser's own request just found out. The second derivation is deleted, so the two
+can no longer disagree.
+
+The test that existed asserted the sentence appeared. It asserted nothing about what the button did.
+A docblock claiming a recovery its assertion cannot deliver is the same defect one level up.
+
+### Five sentences nobody could read
+
+Then the reviewer pulled the thread further and found the same defect one step earlier, worse.
+
+`requestExport.isError` was read **nowhere** in the feature. The mutation was consulted for
+`isPending` and `variables` and nothing else. So a refused `POST /exports` — five distinct rows of
+the failure contract, each with a written *"User sees"* sentence — rendered nothing at all. The
+control went from *Starting…* back to *PDF*, and the click looked as though it had not happened.
+
+Three of those five commit **no row** by design: the per-session cap, the rate limit, and a database
+failure before the enqueue. So there was nothing for the poller to surface either. The silence was
+not first, it was permanent.
+
+And the natural human response to a button that appears to do nothing is to press it again — which,
+for the 429 and the session cap, is precisely the behaviour those limits exist to stop, and which
+can never succeed.
+
+A failure contract's *"User sees"* column is a promise. Fifty-seven rows were enumerated, and five
+of them were promises to nobody. The enumeration was not the problem; nothing checked that the
+enumerated sentences had a route to a screen.
+
+### The test that could no longer fail
+
+The last one I caused myself, which makes it the most instructive.
+
+`render_html` was dead code — zero production callers — and it was the one function that built the
+HTML document shell *without* the sanitize step, i.e. exactly the composition that day fourteen's
+"sanitizer that ate its own document" proved wrong. Deleting it was right.
+
+But three tests hung off it, and they had to be re-pointed somewhere. My instruction named the wrong
+target; the agent noticed my wording was inconsistent, chose the sanitize-inclusive composition that
+production actually uses, and I approved it. For two of the three tests that was an improvement. For
+the third it was a disaster in slow motion.
+
+That third test asserted *"the emitter produces only the eleven allowed tags"*. Run through
+`sanitize_html`, that assertion is applied to the output of a function that emits only those eleven
+tags **by construction**, against the same eleven-element set. It could no longer fail for any
+emitter output whatsoever.
+
+The proof took two minutes and is the only kind that counts: I broke the emitter's heading clamp so
+it would write `<h4>`, and ran the file. **Thirteen passed.** With the clamp still broken, on a raw
+token stream:
+
+```
+emitter output      : '<h4>Leaked</h4>'
+after sanitize_html : 'Leaked'
+```
+
+The sanitizer removed the leaked tag along with its markup, so the subset assertion held trivially.
+
+The module's own docstring had warned about this in advance, from the other direction: *"nh3 is the
+second lock, not the first, and that is load-bearing… A test that only ever fed it the emitter's
+output would pass for the wrong reason forever."* I had created the mirror image of the exact trap
+the file warns about, three inches below the warning.
+
+There is a second lesson underneath. Fixing it needed a fixture with `#### Heading Four` *and* a
+parse that bypasses the pipeline's normalization — because `normalize_to_grammar` clamps `h4` to
+`h3` upstream, so a Markdown fixture alone can never reach the emitter's own clamp. The emitter's
+docstring promises the property holds *"for any stream anybody ever hands it"*. **Testing a promise
+made about the back door requires going in through the back door.** A test that only enters the
+front can never check it.
+
+### Working with agents that get cut off, a third time
+
+The session limit hit mid-round again, this time killing an agent before it wrote a single line. The
+project already had a precedent for this from slice 1.3 — the coordinator finishes the work — so I
+implemented both remaining changes myself.
+
+That creates a different risk, and it is worth naming: the implementer and the coordinator became
+the same party, which removes exactly the independence the review step exists to provide. The
+mitigation was to say so explicitly when handing the work to the reviewer and ask it to judge the
+code rather than the process note. It passed on the merits, and the vacuous-test defect I had caused
+was caught by the reviewer, not by me — which is the argument for keeping that step honest even when
+it is inconvenient.
+
+The other discipline that paid off all round: **the implementer never edits a test.** Three times an
+agent stopped and reported rather than touching one, and each time the test really was wrong. Once
+it was six tests clicking a *disabled* button — `findByRole` resolves on the pending render, where
+the control is still disabled, so the click was a no-op and no request ever fired. Those six had
+produced a red that looked convincing (`Unable to find an element with the text…`) but proved only
+an absence, exactly as an `ImportError` red does. What made them trustworthy afterwards was mutation
+testing: corrupt one sentence and flip one `retryable`, and confirm exactly those two tests fail.
+
+I did edit two test files myself, and said so in the commit bodies rather than hoping nobody looked.
+The reviewer checked all three such edits across four rounds and confirmed no assertion moved. One
+of them is worth keeping as a rule: a cast written to let a RED test compile against a type that
+does not exist yet is legitimate scaffolding — and **a RED-phase escape hatch that outlives its RED
+is indistinguishable from a suppressed error.** Remove it in the GREEN.
+
+### The common thread, an eighth time
+
+Day fourteen's bugs lived between a contract and the thing on the other side of it. This round's
+lived between **a test and the thing it claimed to be about**.
+
+A corpus that scored 100 % on documents the bug could not affect. A test that asserted a sentence
+appeared and nothing about what its button did. Fifty-seven enumerated failure rows, five of whose
+promised sentences had no route to a screen. An assertion moved one function downstream and rendered
+incapable of failing.
+
+Every one of them was green. Every one of them was measuring something adjacent to the thing it was
+named after. The tool that found each one was the same, and it is the only one that works: **take
+the thing the test claims to guard, break it on purpose, and check that the test notices.** Four
+times this round that check was run. Four times it changed the answer.
+
 ## What's next
 
-Slice 1.5 is implemented on its branch: **1293 backend and 486 frontend tests**, green twice in a row,
-the production image verified by building it and starting all three containers on it, and every budget
-measured rather than assumed — inline downloads at a p95 of 11 ms against a 500 ms budget, `POST` to a
-finished PDF at a p95 of 0.17 s against 10 s, and 100 % of the fixture corpus rendering to all four
-formats. `/verify` has not been run yet, and the branch has no pull request.
+Slice 1.5 is **verified and in review**: **1314 backend and 504 frontend tests**, green twice in a
+row, the production image verified by building it and starting all three containers on it, and every
+budget measured rather than assumed — inline downloads at a p95 of 11 ms against a 500 ms budget,
+`POST` to a finished PDF at a p95 of 0.17 s against 10 s, and 100 % of the fixture corpus rendering to
+all four formats. `/verify` took four rounds, found three MAJOR defects in a suite that was already
+green, and the pull request is open.
 
 Open, and named rather than quietly carried:
-- **The refused-link text helper** rewrites every text token to recover a label from
-  `[text](refused:url)`. It has a known false positive on a `[1](note)`-shaped citation and no tests of
-  its own. It exists because one criterion pins the parser's strict `validateLink` and a failure row
-  pins the output; if either moves, this can go.
 - **AC-37 forces an accessibility regression.** Pinning *"Preparing your PDF… 3s"* as one contiguous
   string means the count cannot hide in an `aria-hidden` span the way slice 1.3 hides it, so it is
   announced every second. Fixing it properly means relaxing the criterion.
-- **AC-42's 401 copy ships without its link home**, because the view's `downloadFailed` carries only a
-  message and its shape is pinned by a `toEqual`.
+- **AC-42's 401 copy ships without its link home.** Still blocked, and for a sharper reason than
+  before: the view's union *was* widened during `/verify` — but the new tests re-pinned it with a
+  whole-object `toEqual` in the same commit, so adding a link means editing a test again. A shape
+  loosened and re-tightened in one motion is no looser than it started.
+- **X-46's stale-download log line is unbuilt.** The contract promises a line when the API knowingly
+  serves an older file; the router logs nothing. Building it means widening a use case's return type
+  to carry a cross-aggregate fact, for one log line. The reviewer's recommendation is to strike the
+  cell instead — `current` is already reported on every one-second poll, so the line would be a
+  *derived copy* that can disagree with the resource. If the operational question is ever genuinely
+  asked, a domain event is the vehicle.
+- **A test lies to a settings field.** `model_copy` writes a float into an `int`, and does not
+  validate, so the render-timeout branch is proved against a value the type forbids. A field a test
+  must lie about is a field that wants to be a float.
+- **A timing assertion sits in the Definition-of-Done chain.** AC-11's loop-liveness test measures a
+  p50 while twenty CPU-bound renders compete, and it failed once during this round's `make check`,
+  then passed five times running with nothing changed. It is a genuine guard — a synchronous parse on
+  the event loop would destroy p50, not just the tail — so deleting it would lose something real. But
+  a wall-clock assertion in a gate everyone runs before every commit will eventually fail on a busy
+  laptop, and the person it fails for will believe it. A looser bound or an opt-in mark; someone has
+  to choose.
 - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
   today — its debug records are counts, not text. That is the same "clean today" argument the
   `httpcore` note already makes, on the one library holding the document.

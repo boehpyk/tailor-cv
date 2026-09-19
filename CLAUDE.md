@@ -18,7 +18,7 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: four slices shipped; slice 1.5 implemented and awaiting `/verify` (2026-09-18).**
+> **Status: four slices shipped; slice 1.5 verified and in review (2026-09-19).**
 > Phase 1 is under way. The architecture now carries a paid external call, a worker, two scheduled
 > jobs, an unauthenticated *write* to a PII row on a timer, and — new in 1.5 — **a stranger's CV
 > rendered into HTML and written to disk as a file**.
@@ -35,14 +35,15 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   revision on the run (ADR-0015); one version column refuses a stale edit **and** closes 1.3's
 >   concurrent duplicate delivery. `/verify` took four rounds and ended by re-modelling the autosave
 >   hook as one pure state machine.
-> - **1.5 `export-multi-format-download`** (branch, no PR yet) — four formats. `md` and `txt` are a
+> - **1.5 `export-multi-format-download`** (PR open) — four formats. `md` and `txt` are a
 >   `GET` on a representation of the document and leave **no row**; `pdf` and `docx` are an
 >   `ExportJob`, a Celery task on a third queue, a file on the uploads volume and a polled client
 >   (**ADR-0016**). The pipeline is Markdown → tokens (`html=False`) → grammar normalization →
 >   {plain text | DOCX | HTML → `nh3` → WeasyPrint}, with a `url_fetcher` that refuses every URL
->   (**ADR-0017**). **1293 backend and 486 frontend tests**, green twice. Measured: inline p95
+>   (**ADR-0017**). **1314 backend and 504 frontend tests**, green twice. Measured: inline p95
 >   **11 ms** (budget 500 ms), `POST` → `ready` p95 **0.17 s** over 40 real renders (budget 10 s),
->   corpus **28/28** across four formats.
+>   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
+>   all of them in code a green suite of 1293 tests was happy with — see below.
 >
 > **Every gate was verified by running it**: Ruff, mypy `--strict`, import-linter (3 contracts, now
 > with `weasyprint`, `nh3`, `markdown_it` and `docx` on both forbidden lists), pytest, `tsc -b`,
@@ -67,14 +68,58 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > - **markdown-it does not hand back a link without an `href`** — a refused scheme fails the whole
 >   rule and leaves the literal `[text](javascript:…)` as one text token.
 >
+> **What `/verify` found on top of that, in code 1293 green tests were happy with:**
+> - **The refused-link helper deleted the author's own characters.** `Negotiated salary range
+>   [100k](150k)` came out of every PDF, DOCX and TXT as `…range 100k`. One predicate was being asked
+>   two different questions: `_allow_three_schemes` is the *parser's* gate ("may this become an
+>   `href`?"), while the helper runs over text markdown-it has **already refused** and must ask "was
+>   this ever a URL?". A destination with no scheme was never a URL attempt. **`_is_refused_url` is
+>   the second question**, and the corpus now carries a `[label](plain-word)` fixture — its absence is
+>   why AC-47's 28/28 could not see this.
+>   **A one-character scheme is a drive letter, not a scheme** (`urlsplit("C:/…").scheme == "c"`), so
+>   the guard is `len(scheme) > 1`. The argument for that is worth more than the line: **the harm is
+>   asymmetric.** Over-stripping deletes text and the reader never learns anything went; under-
+>   stripping shows inert text the parser already refused, with *zero* security cost, because by then
+>   there is no `href`. Put a heuristic's error on the side that shows too much.
+> - **An error state whose only affordance reproduced the error.** A 410 `export_file_gone` does not
+>   change the job row — the download endpoint writes nothing, correctly — so a control that asked
+>   the *row* what a click meant went on answering "download this ready file" for ever, under copy
+>   reading *"no longer available — Export again"*. The click's meaning now comes from the **view**,
+>   which deletes the second derivation that was the actual cause.
+> - **Five failure-contract rows reached nobody.** `requestExport.isError` was read nowhere, so X-14,
+>   X-18, X-19, X-21 and X-22 all rendered silence. Three of them **commit no row** (ADR-0014 §2), so
+>   the poll could never surface them either — and the obvious response to silence is to click again,
+>   which for the 429 and the session cap is exactly what the limit exists to stop.
+> - **A test that could no longer fail.** Deleting the unsanitized `render_html` was right; re-pointing
+>   its three assertions at the sanitized composition was right for two of them and made the third
+>   vacuous, because `sanitize_html` emits only the allow-list *by construction*. Break the emitter's
+>   heading clamp and all 13 tests stayed green. **The emitter's promise is "for any stream anybody
+>   hands it", so testing it requires a stream the pipeline would never produce** — the fixture needs
+>   a raw `h4` that `normalize_to_grammar` would have clamped away.
+>
 > **Carried out of 1.5, each with an owner and a trigger:**
 > - **Startup refusals never exit under `uvicorn --workers N`** — now **three** guards (the API key,
 >   the tailoring stale window, the export stale window). Owner: `devops`, before the deploy SSH
 >   secrets are set.
-> - **The refused-link text helper** rewrites every text token and has a known false positive on a
->   `[1](note)` citation, with no tests of its own. Open at `/verify`.
 > - **AC-37 forces an a11y regression** (the ticking count cannot hide in an `aria-hidden` span), and
->   **AC-42's 401 copy ships without its link home**. Both recorded in the spec.
+>   **AC-42's 401 copy ships without its link home** — the latter still blocked, because the view's
+>   union was **re-pinned** by `toEqual` in the same commit that widened it. Both recorded in the spec.
+> - **X-46's stale-download log line is unbuilt** — deliberately. The reviewer's recommendation is to
+>   strike the row's "Logged" cell instead: `current` is already reported on every one-second poll, so
+>   a log line would be a *derived copy* that can disagree with the resource. If the operational
+>   question is ever genuinely wanted, a domain event is the vehicle, not a widened use-case return.
+> - **`test_document_renderer.py` writes a float into an `int` settings field** via `model_copy`,
+>   which does not validate. The timeout branch is proved against a value the type forbids. A settings
+>   field a test must lie about is a hint the field wants to be a float.
+> - **AC-11's loop-liveness test is load-sensitive and has failed once in `make check`.** It asserts a
+>   **p50** of `/health/live` latency while 20 CPU-bound renders run, and on a loaded host that p50
+>   can drift past its 5 ms bound. Observed: one failure inside a full-suite run, then five passes
+>   (four isolated, one full-suite) with nothing changed. The max-latency clause was already struck
+>   for the same underlying reason — GIL contention among genuinely concurrent CPU-bound threads. It
+>   is a real guard (a synchronous parse *on* the loop would destroy p50, not merely the tail), so the
+>   answer is not to delete it; but a timing assertion in the Definition-of-Done chain will eventually
+>   fail on someone's busy laptop and be believed. Whoever next touches it should decide between a
+>   looser bound and a `slow`/opt-in mark.
 > - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
 >   today (counts, not text). Same "clean today" argument as the `httpcore` note.
 > - **The production image has no `pytest`**, so AC-50's in-image render check needs a per-invocation
