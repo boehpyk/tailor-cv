@@ -95,6 +95,29 @@ class LocalFileStore:
             log.error("file_store.delete_failed", errno=exc.errno, root=str(self._root))
             raise FileStoreUnavailable("could not delete file") from exc
 
+    async def delete_partial(self, ref: FileRef) -> None:
+        """Remove `<key>.part` — the incomplete write beside `ref`, never `ref` itself.
+
+        The sibling of `put`'s temporary file, built the same way (`final_path.with_name(name +
+        ".part")`) so the two cannot drift: if `put`'s naming ever changes, this breaks in the same
+        edit rather than silently sweeping the wrong path for ever.
+
+        It exists because `FileRef` cannot express a `.part` name (the grammar ends
+        `\\.(pdf|docx|txt)$`), so the orphan sweep carries a partial as *the base ref plus a flag* —
+        and before slice 1.6's T18b it called plain `delete` for both, which unlinked the **final**
+        key. The `.part` survived and was reported reclaimed; worse, where a live file sat at that
+        key it was deleted, and partials are excluded from the reference cross-check by design, so
+        nothing could catch it.
+
+        Missing is not an error, as for `delete`: another writer's `os.replace` consuming the
+        `.part` first leaves the world in the state the caller wanted.
+        """
+        try:
+            await asyncio.to_thread(self._delete_partial_sync, ref)
+        except OSError as exc:
+            log.error("file_store.delete_partial_failed", errno=exc.errno, root=str(self._root))
+            raise FileStoreUnavailable("could not delete partial file") from exc
+
     # -- synchronous helpers, run only via `asyncio.to_thread` above ---------
 
     def _put_sync(self, ref: FileRef, data: bytes) -> None:
@@ -114,6 +137,13 @@ class LocalFileStore:
 
     def _delete_sync(self, ref: FileRef) -> None:
         self._resolve_contained(ref).unlink(missing_ok=True)
+
+    def _delete_partial_sync(self, ref: FileRef) -> None:
+        # The same construction `_put_sync` uses for its temporary file. Written as one expression
+        # in both places on purpose: a `.part` suffix assembled two different ways is a sweep that
+        # silently stops finding anything the day one of them changes.
+        final_path = self._resolve_contained(ref)
+        final_path.with_name(final_path.name + ".part").unlink(missing_ok=True)
 
     def _resolve_contained(self, ref: FileRef) -> Path:
         """Belt-and-braces path containment: `FileRef`'s own grammar (`domain/shared/files.py`)

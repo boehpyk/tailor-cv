@@ -120,6 +120,27 @@ class FileStorePort(Protocol):
 
     async def delete(self, ref: FileRef) -> None: ...
 
+    async def delete_partial(self, ref: FileRef) -> None:
+        """Remove the **incomplete write beside** `ref`'s key — never the key itself.
+
+        A second method rather than `delete(ref, *, partial: bool)`, and the reason is the bug that
+        produced it (slice 1.6, T18b). `put` writes `<key>.part`, fsyncs it and `os.replace`s it onto
+        `<key>`; a crash in between leaves a `.part` for the orphan sweep. But **`FileRef`'s grammar
+        cannot represent a `.part` name at all** — it ends `\\.(pdf|docx|txt)$` — so a partial is
+        carried as *the base ref plus a separate flag*, and the sweep called plain `delete(ref)` for
+        both. That unlinked the **final** key: the `.part` survived and was reported reclaimed, and
+        where a live file sat at that key it was deleted instead, with the reference cross-check
+        structurally unable to save it (partials are excluded from it by design).
+
+        A boolean parameter would have fixed that case and left the shape that caused it: one call
+        site, one flag threaded from a variable, and the wrong value silently deletes a stranger's
+        document. Two names cannot be confused by a caller that forgot which way the flag pointed.
+
+        Missing is not an error, exactly as for `delete`: a `.part` that another writer's
+        `os.replace` already consumed leaves the world in the state the caller wanted.
+        """
+        ...
+
 
 class FileStoreUnavailable(DomainError):
     """The store could not complete a read or write — disk full, permissions, filesystem gone. The

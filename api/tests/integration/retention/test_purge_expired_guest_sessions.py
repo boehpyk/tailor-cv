@@ -183,6 +183,13 @@ class _RecordingFileStorePort:
             raise FileStoreUnavailable("disk full")
         self.log.entries.append(("delete", ref))
 
+    async def delete_partial(self, ref: FileRef) -> None:
+        # T9's `PurgeExpiredGuestSessions` never sweeps `.part` files — that is
+        # `ReclaimOrphanedFiles`' job (T12/T18b) — so a call here would mean the use case reached
+        # outside its own contract, and this guard fails the test on that call rather than silently
+        # recording it as if it were a normal `delete`.
+        raise AssertionError("delete_partial() should not be reached by the purge sweep")
+
 
 def _use_case(
     data: _RecordingExpiredGuestDataPort,

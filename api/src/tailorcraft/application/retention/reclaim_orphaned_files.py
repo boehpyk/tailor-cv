@@ -346,7 +346,18 @@ class ReclaimOrphanedFiles:
                 continue
 
             try:
-                await self._files.delete(ref)
+                # **A partial and a final file are two different paths, so they are two different
+                # calls** (T18b). `FileRef`'s grammar cannot express a `.part` name, so a partial
+                # reaches here as *the base ref plus a flag* — and calling plain `delete(ref)` for
+                # both unlinked the **final** key: the `.part` survived and was reported reclaimed,
+                # and where a live file sat at that key it was deleted, with the cross-check
+                # structurally unable to save it because partials are excluded from it by design.
+                # The flag decides the method here, once, rather than being threaded into one call
+                # as a boolean a caller can point the wrong way.
+                if is_partial:
+                    await self._files.delete_partial(ref)
+                else:
+                    await self._files.delete(ref)
             except FileStoreUnavailable:
                 # R-38. Counted, not swallowed, and the sweep continues: one file the volume will
                 # not give up must not abandon the rest of it.

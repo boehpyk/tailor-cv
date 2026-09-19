@@ -109,6 +109,42 @@ async def test_put_translates_enospc_to_file_store_unavailable_without_logging_t
     assert "content that must never be logged" not in log_output
 
 
+# --- `delete_partial`: the sibling of `put`'s temporary file (T18c) --------------------------------
+
+
+async def test_delete_partial_removes_the_dot_part_sibling_and_leaves_the_final_key_alone(
+    tmp_path: Path,
+) -> None:
+    """The fix for T18b's reclaim bug (see `domain/shared/files.py::FileStorePort.delete_partial`'s
+    docstring): a `.part` and its final key are two different files on disk, so `delete_partial` must
+    remove only the former. Written directly against `<key>.part` — built the same way
+    `LocalFileStore._delete_partial_sync` does — rather than through `put`, since `put` always
+    finishes its `os.replace` and never leaves a `.part` behind on a successful run."""
+    store = LocalFileStore(tmp_path)
+    ref = _ref()
+    final_path = tmp_path / ref.key
+    part_path = final_path.with_name(final_path.name + ".part")
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    final_path.write_bytes(b"the live, referenced file")
+    part_path.write_bytes(b"an abandoned partial write")
+
+    await store.delete_partial(ref)
+
+    assert not part_path.exists()
+    assert final_path.exists()
+    assert final_path.read_bytes() == b"the live, referenced file"
+
+
+async def test_delete_partial_on_a_missing_dot_part_is_not_an_error(tmp_path: Path) -> None:
+    """Mirrors `delete`'s `missing_ok=True` convention: another writer's `os.replace` may already
+    have consumed the `.part` by the time the sweep gets to it, and that is the state the caller
+    wanted, not a failure."""
+    store = LocalFileStore(tmp_path)
+    ref = _ref()  # never put, so neither the final key nor a `.part` exists
+
+    await store.delete_partial(ref)  # must not raise
+
+
 # --- `get`: the two-way failure split (X-47, X-48) -------------------------------------------------
 
 

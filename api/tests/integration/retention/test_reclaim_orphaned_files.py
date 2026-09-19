@@ -132,11 +132,20 @@ class _RecordingExpiredGuestDataPort:
 
 @dataclass
 class _RecordingFileStorePort:
-    """A recording `FileStorePort` fake. `fail_on` makes `delete` raise `FileStoreUnavailable` for
-    exactly those refs (R-38); every other `delete` call succeeds and is appended to `deleted`, in
-    call order, so a test can assert exactly which keys were unlinked."""
+    """A recording `FileStorePort` fake. `fail_on` makes `delete` **or** `delete_partial` raise
+    `FileStoreUnavailable` for exactly those refs (R-38); every other call succeeds and is appended
+    to `deleted` or `deleted_partial` respectively, in call order — **two separate lists, one per
+    method**, so an assertion can see which method the use case actually called rather than infer it
+    from a single merged list (T18c). Before T18c this fake had one `deleted` list fed by `delete`
+    alone, which could not tell a correct `delete_partial(part_ref)` apart from the bug this slice
+    fixed — a plain `delete(part_ref)` that unlinked the *final* key while leaving the `.part` behind
+    and still landed `part_ref` in `deleted`, because the fake could not distinguish the two calls
+    either. Two tests below asserted `part_ref in files.deleted` and so passed against both the bug
+    and the fix; they are corrected in the same commit that adds this second list.
+    """
 
     deleted: list[FileRef] = field(default_factory=list)
+    deleted_partial: list[FileRef] = field(default_factory=list)
     fail_on: frozenset[FileRef] = field(default_factory=frozenset)
 
     async def put(self, ref: FileRef, data: bytes) -> None:
@@ -149,6 +158,11 @@ class _RecordingFileStorePort:
         if ref in self.fail_on:
             raise FileStoreUnavailable("disk full")
         self.deleted.append(ref)
+
+    async def delete_partial(self, ref: FileRef) -> None:
+        if ref in self.fail_on:
+            raise FileStoreUnavailable("disk full")
+        self.deleted_partial.append(ref)
 
 
 def _use_case(
@@ -216,6 +230,15 @@ async def test_a_mixed_volume_produces_the_right_report_and_reclaims_only_true_o
     field of `OrphanScanReport` is asserted, and exactly which keys were unlinked is asserted by
     identity, not by count alone — a `reclaimed == 2` that quietly unlinked the wrong two files would
     still satisfy a bare count assertion.
+
+    **Corrected in T18c.** This used to assert `set(files.deleted) == {part_ref, orphan_ref}` —
+    i.e. that the sweep called plain `delete()` for the `.part` entry. That was wrong: it was written
+    against a fake that fed both `delete` and a partial's deletion into the same list, so it could
+    not tell `delete(part_ref)` apart from `delete_partial(part_ref)` and ended up ratifying the T18b
+    bug (plain `delete(ref)` for a partial unlinks the *final* key, not the `.part`, while being
+    reported reclaimed). The use case won: a partial goes to `delete_partial`, a final key goes to
+    `delete`, and the two are now asserted against separate lists so the distinction is visible here
+    rather than inferred.
     """
     old = clock.now() - timedelta(hours=60)
     young = clock.now() - timedelta(hours=1)
@@ -247,7 +270,8 @@ async def test_a_mixed_volume_produces_the_right_report_and_reclaims_only_true_o
         failed=0,
         dry_run=False,
     )
-    assert set(files.deleted) == {part_ref, orphan_ref}
+    assert files.deleted == [orphan_ref]
+    assert files.deleted_partial == [part_ref]
 
 
 # --- 3. R-36: a .part file is reclaimed without entering the cross-check -------------------------
@@ -259,10 +283,17 @@ async def test_a_partial_file_past_the_floor_is_reclaimed_without_entering_the_c
     """R-36. `.part` files are never referenced by any row (ADR-0011 §5), so asking the database
     about one would be a pointless round trip — and the class docstring is explicit that
     `is_partial` is a flag on the element *instead of* a second port method for exactly this reason.
-    The positive assertion is the reclaim (`files.deleted == [part_ref]`); the absence assertion is
-    that `part_ref` never appears in any `which_are_referenced` call, asserted by checking every
-    call this sweep made, not just the first — a bug that cross-checks it on a *later* batched call
-    would slip past a check of only `which_are_referenced_calls[0]`.
+    The positive assertion is the reclaim (`files.deleted_partial == [part_ref]`); the absence
+    assertion is that `part_ref` never appears in any `which_are_referenced` call, asserted by
+    checking every call this sweep made, not just the first — a bug that cross-checks it on a
+    *later* batched call would slip past a check of only `which_are_referenced_calls[0]`.
+
+    **Corrected in T18c.** This used to assert `files.deleted == [part_ref]`, i.e. that the sweep's
+    unlink for a `.part` entry was a plain `delete(part_ref)` call — the T18b bug itself, which
+    unlinks the *final* key and leaves the `.part` on disk while still reporting it reclaimed. The
+    use case won: `FileStorePort.delete_partial` exists precisely so a partial's unlink cannot be
+    confused with a final key's, so the positive assertion now names `delete_partial`, and
+    `files.deleted == []` is added to make the absence half explicit rather than merely omitted.
     """
     part_ref = _a_file_ref()
     old = clock.now() - timedelta(hours=60)
@@ -276,7 +307,8 @@ async def test_a_partial_file_past_the_floor_is_reclaimed_without_entering_the_c
     report = await use_case()
 
     assert report.reclaimed == 1
-    assert files.deleted == [part_ref]
+    assert files.deleted_partial == [part_ref]
+    assert files.deleted == []
     assert all(part_ref not in call for call in data.which_are_referenced_calls)
 
 
