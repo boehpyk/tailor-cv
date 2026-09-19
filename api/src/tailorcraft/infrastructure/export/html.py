@@ -1,4 +1,6 @@
-"""`render_html` and `sanitize_html` — the PDF's intermediate, and the second lock. ADR-0017 §2.
+"""`render_body_fragment` and `sanitize_html` — the PDF's intermediate, and the second lock.
+
+ADR-0017 §2.
 
 This is the first place in the codebase where a stranger's text becomes an **HTML string**. Slice
 1.4 could argue itself out of a sanitizer — the editor goes Markdown → tokens → ProseMirror nodes →
@@ -78,29 +80,24 @@ ALLOWED_URL_SCHEMES: Final[set[str]] = {"http", "https", "mailto"}
 _HEADING_TAGS: Final[frozenset[str]] = frozenset({"h1", "h2", "h3"})
 
 
-def render_html(tokens: Sequence[Token], document: TailoredDocumentKind) -> str:
-    """Emit the normalized token stream as an HTML document for WeasyPrint.
-
-    A constant `<!doctype html>` shell around the fragment; `<title>` is a constant per document
-    kind, **never** the source's first line (X-55's reasoning, one layer up — no user text ever
-    reaches a place where it could be mistaken for metadata).
-    """
-    return wrap_in_document(render_body_fragment(tokens), document)
-
-
 def render_body_fragment(tokens: Sequence[Token]) -> str:
     """The `<body>` contents alone — **this is what goes through `sanitize_html`**, not the document.
 
     Measured, not assumed, and it is the one composition trap in this module. `html`, `head`,
     `title` and `body` are not on `ALLOWED_TAGS` — an allow-list of a *document grammar* has no
-    reason to contain them — so `sanitize_html(render_html(...))` deletes the shell and keeps the
+    reason to contain them — so sanitizing a **whole document** deletes the shell and keeps the
     title's **text**, and the PDF comes out with a stray line reading "Tailored CV" above the name.
     The technical plan's step 3 writes the call that way in one sentence and describes the shell as
     wrapping "the sanitized fragment" in the next; the second sentence is the correct one.
 
     So the adapter composes `wrap_in_document(sanitize(render_body_fragment(tokens)), document)` —
-    sanitize the fragment, then wrap. `render_html` is that composition without the sanitize seam,
-    which is what its own test pins and what a caller wants when it is not passing a `sanitize`.
+    **sanitize the fragment, then wrap.** There is deliberately no function here that does the wrap
+    and the emit in one step: slice 1.5 shipped one (`render_html`), nothing in production ever
+    called it, and it was the single composition in this module that produced a document *without*
+    the sanitize seam — i.e. exactly the shape the measurement above proves wrong, sitting exported
+    and tested beside the right one. It was removed at that slice's `/verify`. If you are about to
+    add it back for convenience, this paragraph is the reason not to: the convenience is one
+    function call, and the cost is that the wrong composition becomes spellable again.
     """
     return _render_tokens(tokens)
 
@@ -280,8 +277,8 @@ def sanitize_html(html: str) -> str:
     (`script`, `style`), which is the one place a *dropped* tag's text content must go with it: the
     body of a `<script>` is code, not something a reader is missing.
 
-    **Feed it `render_body_fragment`'s output, never `render_html`'s** — see that function for what
-    happens to the shell otherwise.
+    **Feed it `render_body_fragment`'s output, never a whole document** — see that function for
+    what happens to the shell otherwise.
     """
     return nh3.clean(
         html,

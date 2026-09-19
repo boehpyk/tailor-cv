@@ -307,6 +307,22 @@ def _is_refused_url(destination: str) -> bool:
       must be refused, not permitted by omission.
     - an empty `scheme` — **not a URL attempt**, so `False`. This is the branch the salary range,
       the citation and the array index take.
+    - a **single-character** `scheme` — also `False`, and this one is a judgement rather than a
+      parse. `urlsplit("C:/Users/me/cv.docx").scheme == "c"`, so a Windows path in a CV would
+      otherwise take the refused branch and `[docs](C:/Users/me/cv.docx)` would come out as `docs`.
+      No IANA-registered scheme is one character, so a one-character scheme is a drive letter.
+
+      The tie-breaker is that **the harm here is asymmetric, and only one side of it is
+      recoverable.** Over-stripping deletes the author's own characters — exactly the defect
+      measured on slice 1.5 — and the reader never learns anything was removed. Under-stripping
+      merely shows inert text: by the time this helper runs the link is already a `text` token,
+      there is no `href`, and nothing can be clicked, so the security cost of the wrong answer in
+      this direction is **zero**. When a heuristic must be wrong somewhere, put its error on the
+      side that shows too much rather than the side that silently deletes.
+
+      Pinned from both directions in `test_tokens.py` — a Windows path survives byte-identical, and
+      `javascript:` / `vbscript:` are still stripped — so this stays a decision rather than
+      drifting back into an accident.
 
     The reasoning behind `_LINK_MARKUP` staying untouched: its no-backtracking property is a checked
     fact about a pattern that runs over a stranger's text (see the comment on the constant), and the
@@ -325,7 +341,7 @@ def _is_refused_url(destination: str) -> bool:
         scheme = urlsplit(destination).scheme
     except ValueError:
         return True
-    if not scheme:
+    if len(scheme) <= 1:
         return False
     return scheme not in ALLOWED_LINK_SCHEMES
 
