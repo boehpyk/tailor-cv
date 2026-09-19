@@ -396,22 +396,23 @@ describe('viewOfExport — AC-37', () => {
 
   describe('requestFailed — MAJOR 1 (/verify slice 1.5, iteration 2): a rejected POST /exports must reach the user', () => {
     /**
-     * `ExportMutations` has no `requestFailure` member yet (that is this finding's whole point), so
-     * `makeExportMutations`'s `Partial<ExportMutations>` parameter cannot accept one without an
-     * excess-property error — a genuine `tsc -b` failure, not a runtime discrimination. The cast
-     * here is scoped to this one helper, exactly as `ExportBar.test.tsx`'s MAJOR 2 fix used a
-     * whole-object `toEqual` on the *read* side to survive the same widening: this is the *write*
-     * side of the identical problem, because `requestFailure` is new input, not a wider return type.
-     * `viewOfExport` itself only ever reads what's on the (today, narrower) type it was compiled
-     * against, so passing the extra field through is inert until the implementer widens
-     * `ExportMutations` — which is exactly why every case below reds on a real mismatch and not on
-     * a compile error.
+     * At RED this carried an `as ExportMutations` cast, because `ExportMutations` had no
+     * `requestFailure` member — that absence *was* the finding — and without the cast this helper
+     * would have been an excess-property error, i.e. a `tsc -b` failure rather than a test that reds
+     * on an assertion. It was the write-side counterpart to the whole-object `toEqual` the MAJOR 2
+     * tests use on the read side, for the same reason: a test written against a type that does not
+     * exist yet has to survive its own compile step to be able to fail honestly.
+     *
+     * **The cast is gone now, and its removal is the point rather than tidying.** The field exists,
+     * so the object type-checks on its own and every future edit to `ExportMutations` is checked
+     * here — which a cast would have gone on silently swallowing. A RED-phase escape hatch that
+     * outlives its RED is indistinguishable from a suppressed error.
      */
     function withRequestFailure(target: ExportTarget, error: Error): ExportMutations {
       return {
         ...makeExportMutations(),
         requestFailure: { target, error },
-      } as ExportMutations;
+      };
     }
 
     // Every "User sees" cell from the five failure-contract rows the reviewer found undelivered,

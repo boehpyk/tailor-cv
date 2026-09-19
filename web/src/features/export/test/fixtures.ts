@@ -48,6 +48,7 @@ export function makeExportMutations(overrides: Partial<ExportMutations> = {}): E
     requesting: null,
     downloading: null,
     downloadFailure: null,
+    requestFailure: null,
     ...overrides,
   };
 }

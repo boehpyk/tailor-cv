@@ -278,6 +278,102 @@ export function downloadFailureFor(error: Error): DownloadFailureView | null {
 }
 
 /**
+ * A rejected `POST /exports`, as the control shows it: the sentence, and whether a retry can help.
+ *
+ * Sibling of `DownloadFailureView` and deliberately **not** the same type. A download's retry has
+ * two genuinely different meanings (fetch the same bytes, or render new ones), which is why that one
+ * carries an `ExportNextAction`; a request's retry has only ever one meaning — ask again — so the
+ * question here is the simpler `retryable`: *is asking again capable of succeeding?*
+ */
+export interface RequestFailureView {
+  readonly message: string;
+  readonly retryable: boolean;
+}
+
+/**
+ * The API's error `code` → what the control shows when the **request** was refused (X-14, X-18,
+ * X-19, X-21, X-22).
+ *
+ * **Why this map has to exist at all**, written here because the absence was the bug: three of these
+ * five rejections — `too_many_export_jobs`, `rate_limited` and `service_unavailable` — create **no
+ * row** (ADR-0014 §2, "no row exists on any rejection path"). There is therefore nothing for the
+ * list poll to render, ever, and before this map the control simply returned from *Starting…* to its
+ * idle label as though the click had not happened. The user's natural answer to silence is to click
+ * again, which for the 429 and the per-session cap is exactly the behaviour those limits exist to
+ * stop and which cannot ever succeed.
+ *
+ * `queue_unavailable` is the one that would self-heal — its job row *is* committed `failed` /
+ * `not_queued`, so the poll would eventually say so — but it is named here anyway, because "you will
+ * find out on the next tick" is not an error state.
+ *
+ * **`retryable` splits on whether asking again could plausibly work**, which is the same question
+ * the server answers for job failures, kept in the same words on purpose. The two `false` rows are
+ * refusals about *state*: a run that is not `succeeded` will not become exportable because the user
+ * clicked twice, and a session at its 40-job cap is at its cap. The three `true` rows are about
+ * *time* — a limit window, a database, a broker — and all three recover on their own.
+ *
+ * Keyed on `code`, never on `message`, for `DOWNLOAD_FAILURE_BY_CODE`'s reason: the server's prose
+ * is prose and may be reworded without notice. X-19 is the live example — the API says "try again in
+ * N seconds" because `Retry-After` is defined in seconds, while the sentence below says minutes,
+ * because that is what a person needs to hear. The `code` is what binds the two.
+ */
+const REQUEST_FAILURE_BY_CODE: Readonly<Partial<Record<string, RequestFailureView>>> = {
+  tailoring_run_not_exportable: {
+    message: 'This run has no documents to download yet.',
+    retryable: false,
+  },
+  too_many_export_jobs: {
+    message: "You've reached the download limit for this session.",
+    retryable: false,
+  },
+  rate_limited: {
+    message: 'Too many exports — try again in a few minutes.',
+    retryable: true,
+  },
+  service_unavailable: {
+    message: 'Something went wrong. Try again.',
+    retryable: true,
+  },
+  queue_unavailable: {
+    message: "We couldn't start preparing your file. Try again.",
+    retryable: true,
+  },
+};
+
+/**
+ * Anything unrecognised — including a network drop, which is not an `ApiError` at all.
+ *
+ * `retryable: true`, and the asymmetry with `UNKNOWN_DOWNLOAD_FAILURE` is not one: both say "we do
+ * not know what happened, so let the user try". Offering a retry that fails again costs one request;
+ * withholding one from a user whose export *would* have worked strands them on a page whose only
+ * button does nothing.
+ */
+const UNKNOWN_REQUEST_FAILURE: RequestFailureView = {
+  message: 'Something went wrong. Try again.',
+  retryable: true,
+};
+
+/**
+ * Turn a rejected `POST /exports` into the sentence its control shows and whether to offer a retry.
+ *
+ * **No `null` branch, unlike `downloadFailureFor`.** That function drops the 409 `export_not_ready`
+ * race because the job's own polled state is a better answer than anything the client could say.
+ * There is no equivalent here: a refused request left nothing to poll, so every rejection must
+ * produce a sentence or the user gets nothing at all — which was the finding.
+ *
+ * 401 is deliberately absent from the map: a dead session is the run page's own concern and it
+ * unmounts the workspace, so a per-control sentence about it would be a second, smaller answer to a
+ * question already answered one level up. It falls through to the generic line in the window before
+ * that happens.
+ */
+export function requestFailureFor(error: Error): RequestFailureView {
+  if (!(error instanceof ApiError) || error.code === null) {
+    return UNKNOWN_REQUEST_FAILURE;
+  }
+  return REQUEST_FAILURE_BY_CODE[error.code] ?? UNKNOWN_REQUEST_FAILURE;
+}
+
+/**
  * Why the four controls are disabled, or `null` when they are not (AC-40).
  *
  * **Exhaustive over `SaveState['kind']`**, so 1.4's machine cannot grow a ninth state without this

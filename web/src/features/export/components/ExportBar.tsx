@@ -184,6 +184,7 @@ function isControlDisabled(
     case 'downloading':
     case 'failed':
     case 'downloadFailed':
+    case 'requestFailed':
       return true;
   }
 }
@@ -226,6 +227,16 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         ? {
             target: { document: downloadVariables.document, format: downloadVariables.format },
             error: download.error,
+          }
+        : null,
+    // The exact twin of `downloadFailure` above, and its absence was slice 1.5's second `/verify`
+    // finding: `requestExport.isError` was read nowhere, so five refusals of `POST /exports` showed
+    // the user nothing whatever. Three of them commit no row, so the poll could never say it either.
+    requestFailure:
+      requestExport.isError && requestVariables !== undefined
+        ? {
+            target: { document: requestVariables.document, format: requestVariables.format },
+            error: requestExport.error,
           }
         : null,
   };
@@ -317,6 +328,16 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         // different control would wipe a failure notice the user has not answered.
         return () => {
           download.reset();
+          requestAgain();
+        };
+      case 'requestFailed':
+        // The refusal must be cleared before asking again, for `downloadFailed`'s reason one branch
+        // up: `requestFailed` outranks the job in `viewOfExport`, so a stale rejection would sit on
+        // top of the very request this click is making. `reset()` on the *request* mutation, not the
+        // download one — they are two mutations and two failures, and clearing the wrong one would
+        // both leave this sentence up and silently drop a download error elsewhere on the bar.
+        return () => {
+          requestExport.reset();
           requestAgain();
         };
       case 'idle':

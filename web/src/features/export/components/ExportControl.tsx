@@ -104,6 +104,7 @@ function primaryLabelFor(view: ExportView, format: ExportFormat): string {
     case 'downloading':
     case 'failed':
     case 'downloadFailed':
+    case 'requestFailed':
       return EXPORT_FORMAT_LABELS[format];
   }
 }
@@ -167,6 +168,33 @@ function statusContentFor(
           >
             {DOWNLOAD_AGAIN_ACTION}
           </button>
+        </>
+      );
+    case 'requestFailed':
+      // The same shape as `downloadFailed` above, with two deliberate differences.
+      //
+      // The action reads *Export again*, not *Try again*: nothing was ever queued, so there is no
+      // earlier attempt to repeat — the click asks for the export the user did not get.
+      //
+      // And the button is **gated on `retryable`**, which `downloadFailed`'s is not. A failed
+      // download always has something worth re-attempting; a refused request may not — a run that
+      // is not `succeeded` will not become exportable because the user clicked again, and a session
+      // at its job cap is at its cap. Offering a button that cannot work is how a user ends up
+      // pressing it until they give up, and for the 429 it is the behaviour the limit exists to
+      // stop. This is `ExportFailureNotice`'s rule for server-side job failures, applied to the
+      // client-side refusal for the same reason.
+      return (
+        <>
+          {view.message}
+          {view.retryable && (
+            <button
+              type="button"
+              onClick={onPrimary}
+              className="ml-2 rounded-md px-1.5 py-0.5 font-medium text-rose-800 underline underline-offset-2 hover:bg-rose-100"
+            >
+              {EXPORT_AGAIN_ACTION}
+            </button>
+          )}
         </>
       );
   }

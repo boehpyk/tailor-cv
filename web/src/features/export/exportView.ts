@@ -7,7 +7,7 @@
  * which is what lets AC-37's table drive it row by row.
  */
 
-import { downloadFailureFor } from './exportCopy';
+import { downloadFailureFor, requestFailureFor } from './exportCopy';
 
 import type { ExportNextAction } from './exportCopy';
 import type { ExportFailureReason, ExportFormat, ExportJob } from './types';
@@ -54,6 +54,16 @@ export interface ExportMutations {
    * component instead of in the pure function AC-37 asks to be table-tested.
    */
   readonly downloadFailure: { readonly target: ExportTarget; readonly error: Error } | null;
+  /**
+   * The last `POST /exports` that rejected — what it was for, and why. `null` when none has.
+   *
+   * The twin of `downloadFailure`, added at slice 1.5's `/verify` because nothing read
+   * `useRequestExport`'s error state at all: five failure-contract rows (X-14, X-18, X-19, X-21,
+   * X-22) promised the user a sentence and delivered silence. Three of them create **no row**, so
+   * unlike a failed download — where the job is still there to poll — there is no other route by
+   * which the user could ever learn what happened.
+   */
+  readonly requestFailure: { readonly target: ExportTarget; readonly error: Error } | null;
 }
 
 /**
@@ -155,6 +165,24 @@ export type ExportView =
       readonly kind: 'downloadFailed';
       readonly message: string;
       readonly nextAction: ExportNextAction;
+    }
+  /**
+   * The `POST /exports` was refused — this control's own sentence, and a retry only if one could
+   * work (X-14, X-18, X-19, X-21, X-22).
+   *
+   * **The state that was missing entirely**, found at slice 1.5's `/verify`. `useRequestExport`'s
+   * error was read nowhere, so a refused request put the control back to its idle label and the
+   * click looked like it had not happened. For the three rejections that create no row that silence
+   * was permanent, and the obvious response to it — click again — is precisely what the 429 and the
+   * per-session cap exist to prevent.
+   *
+   * It carries `retryable` rather than `downloadFailed`'s `nextAction` because a request's retry has
+   * only one possible meaning: ask again. The only question is whether asking again can succeed.
+   */
+  | {
+      readonly kind: 'requestFailed';
+      readonly message: string;
+      readonly retryable: boolean;
     };
 
 /**
@@ -268,6 +296,21 @@ export function viewOfExport(
       // start to disagree again.
       return { kind: 'downloadFailed', ...downloadFailure };
     }
+  }
+
+  // Below the download failure and **above the job**, and the ordering is the substance of the
+  // state rather than an implementation detail.
+  //
+  // Above the job, because this browser's own last request is a fresher fact than whatever the poll
+  // last said: a user who has just been refused a new export should read that refusal, not the
+  // reason an *older* job of theirs failed half a minute ago. For the three rejections that commit
+  // no row there is no competing job at all, which is exactly why they were invisible before.
+  //
+  // Below `requesting`, which is checked at the top: the moment a retry is in flight the failure is
+  // last time's news, and the control says *Starting…* again.
+  const refusedRequest = mutations.requestFailure;
+  if (refusedRequest !== null && isSameTarget(refusedRequest.target, target)) {
+    return { kind: 'requestFailed', ...requestFailureFor(refusedRequest.error) };
   }
 
   const job = latestExportJobFor(target, jobs);

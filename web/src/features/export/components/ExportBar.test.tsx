@@ -780,7 +780,13 @@ describe('ExportBar', () => {
         });
 
         renderBar();
-        await screen.findByRole('button', { name: 'PDF' });
+        // `findByRole` resolves the moment the button exists, disabled or not — it exists while the
+        // list query is still pending (AC-43's loading state), and a click on a disabled button is a
+        // no-op in both the DOM and jsdom. Gate on `not.toBeDisabled()`, exactly as the AC-43
+        // empty-state test above does, or the click below never issues the `POST` this test is about.
+        await waitFor(() => {
+          expect(screen.getByRole('button', { name: 'PDF' })).not.toBeDisabled();
+        });
         fireEvent.click(screen.getByRole('button', { name: 'PDF' }));
 
         const notice = await screen.findByText(message);
@@ -830,7 +836,11 @@ describe('ExportBar', () => {
       });
 
       renderBar();
-      await screen.findByRole('button', { name: 'PDF' });
+      // Same gate as above: the button exists while the list query is still pending, and a click on
+      // a disabled button never issues the POST.
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'PDF' })).not.toBeDisabled();
+      });
       fireEvent.click(screen.getByRole('button', { name: 'PDF' }));
 
       const notice = await screen.findByText('Something went wrong. Try again.');
