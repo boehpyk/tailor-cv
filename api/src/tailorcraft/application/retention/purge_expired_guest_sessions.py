@@ -24,10 +24,12 @@ report. A second logging channel opened here would emit records the privacy test
 
 from __future__ import annotations
 
+import time
+
 from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
 from tailorcraft.domain.retention.value_objects import PurgeReport, RetentionWindow
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.files import FileStorePort
+from tailorcraft.domain.shared.files import FileStorePort, FileStoreUnavailable
 
 
 class PurgeExpiredGuestSessions:
@@ -89,10 +91,21 @@ class PurgeExpiredGuestSessions:
     `LocalFileStore` implements). A **use case promises no such thing.** A floor here would convert a
     bug in a job that *deletes things* into a green exit code and a tidy-looking report of zeroes —
     the single worst failure mode this feature has, because `overdue` would keep climbing behind a
-    run that says `ok`. Exactly two failures are caught, both named, both per-item, both with a
-    count in the report that makes them visible: a refused `delete_session` (R-3) and a
-    `FileStoreUnavailable` on an unlink (R-4). Everything else escapes, fails the task or the CLI,
-    and leaves whatever had already committed committed (R-1).
+    run that says `ok`. Exactly two failures are caught, both **per-item** and both with a count in
+    the report that makes them visible: a refused `delete_session` (R-3) and a `FileStoreUnavailable`
+    on an unlink (R-4). Everything else escapes, fails the task or the CLI, and leaves whatever had
+    already committed committed (R-1).
+
+    **Only one of those two catches names its exception type, and the asymmetry is forced rather
+    than sloppy.** `FileStorePort.delete` documents `FileStoreUnavailable`, so R-4's catch is narrow.
+    `ExpiredGuestDataPort.delete_session` documents no failure type at all, and R-3's own wording —
+    "a lock timeout, a serialization failure, a constraint nobody predicted" — describes a set
+    nobody can enumerate in advance, so R-3's catch is `except Exception` around that one `await`.
+    **That is not the floor the paragraph above forbids**, and `__call__` says so again at the catch
+    site because the two spellings look identical: the forbidden floor wraps the *whole run* and
+    reports zeroes, while this one is scoped to a single call and *counts* what it caught into
+    `sessions_failed`. A failure that is counted is not a failure that is swallowed. (And
+    `except Exception` does not catch `asyncio.CancelledError`, so a cancelled purge still cancels.)
 
     **Idempotency** (AC-15, R-19). Three separate facts make a retried tick, a redelivered message
     and two concurrent runs all safe, and none of them is a lock:
@@ -193,4 +206,110 @@ class PurgeExpiredGuestSessions:
         (ADR-0018 decision 4). The next run is the retry, and it is safe because the run is
         idempotent.
         """
-        raise NotImplementedError
+        # Step 5's measurement starts before step 1, so `duration_ms` covers the whole run —
+        # `perf_counter`, not the `Clock`: the port is whole-second by contract (ADR-0007) and
+        # cannot measure a sub-second batch at all.
+        started = time.perf_counter()
+
+        # Step 1. One instant for the whole run (AC-6). `expiry_cutoff` returns `now` unchanged on
+        # purpose — the window was applied once already, at `GuestSession.start`. Its docstring
+        # spells out why subtracting `hours` here would silently double the retention promise.
+        now = self._clock.now()
+        cutoff = self._window.expiry_cutoff(now)
+
+        # Step 2. Bounded, oldest `expires_at` first, each candidate already carrying its file keys
+        # — all three by the port's contract (AC-7). **Not wrapped in anything** (R-15): a failure
+        # here means the job could not even find out what is overdue, and that must fail the task
+        # rather than return a green report of zeroes while the backlog keeps climbing.
+        candidates = await self._data.list_expired(as_of=cutoff, limit=self._batch_limit)
+
+        # Step 3. The dry run short-circuits **before any mutating call** (R-13, AC-17). Not a
+        # `delete_session`, not a `files.delete` — the absence of side effects is the acceptance
+        # criterion, so the check lives here and not inside the loop. `files_unlinked` reports what
+        # the run *would* have unlinked; `dry_run=True` is a field, so this report can never be
+        # read as a record of deletions that never happened.
+        if self._dry_run:
+            return PurgeReport(
+                examined=len(candidates),
+                sessions_deleted=0,
+                sessions_failed=0,
+                files_unlinked=sum(len(candidate.files) for candidate in candidates),
+                files_failed=0,
+                duration_ms=self._elapsed_ms(started),
+                dry_run=True,
+            )
+
+        sessions_deleted = 0
+        sessions_failed = 0
+        files_unlinked = 0
+        files_failed = 0
+
+        # Step 4. Per candidate, in the order the port handed them back; and within each candidate,
+        # the row before its files.
+        for candidate in candidates:
+            try:
+                await self._data.delete_session(candidate.session_id)
+            except Exception:
+                # **This broad catch is not the `except Exception` floor R-15 forbids, and the two
+                # look identical enough that the difference has to be written down here rather than
+                # left for a reader to "simplify" away.** The forbidden thing is a floor wrapping
+                # the *whole run*, which would turn any bug in a job that deletes things into a
+                # green report of zeroes while `overdue` kept climbing. This is the opposite: it is
+                # **scoped to one `await`** and its handler **counts the failure into
+                # `sessions_failed`**, so the refusal is visible in the report and in the entry
+                # point's log line built from it. A failure that is counted is not a failure that is
+                # swallowed.
+                #
+                # It is broad because there is nothing to key an `except` clause on.
+                # `FileStorePort.delete` names `FileStoreUnavailable`, so R-4's catch below is
+                # narrow; `ExpiredGuestDataPort.delete_session` documents no failure type at all,
+                # and R-3's own wording — "a lock timeout, a serialization failure, a constraint
+                # nobody predicted" — is a description of a set that cannot be enumerated in
+                # advance. An allow-list here would be a bet that we named every way a driver can
+                # refuse a `DELETE`, and losing that bet aborts the batch.
+                #
+                # `Exception`, never `BaseException`: a cancelled purge must still cancel.
+                sessions_failed += 1
+                # **This session's files are deliberately not unlinked** (R-3, AC-13). Its rows are
+                # still there and still name those files, so removing the bytes would manufacture
+                # exactly the row-pointing-at-nothing state the rows-first ordering exists to
+                # prevent. The batch continues, because the next candidate is still overdue.
+                continue
+
+            sessions_deleted += 1
+
+            # Only now the files: this session's row is deleted and — by the committing adapter's
+            # contract, not by anything this layer can say — committed (AC-8, ADR-0006 §2).
+            for ref in candidate.files:
+                try:
+                    await self._files.delete(ref)
+                except FileStoreUnavailable:
+                    # R-4, AC-14. The row is already gone and committed; that is the crash window
+                    # ADR-0006 §2 chose, and the survivor is an orphan file that
+                    # `ReclaimOrphanedFiles` reclaims. Nothing is rolled back and nothing is
+                    # re-raised — a full volume must not stop a purge from deleting rows — and the
+                    # session still counts deleted, because it was.
+                    files_failed += 1
+                    continue
+                # `files_unlinked` counts keys we asked the store to remove and does not claim the
+                # file existed (R-5): `delete` is `missing_ok` by contract, so nobody below this
+                # port can compute the honest version of that number.
+                files_unlinked += 1
+
+        # Step 5.
+        return PurgeReport(
+            examined=len(candidates),
+            sessions_deleted=sessions_deleted,
+            sessions_failed=sessions_failed,
+            files_unlinked=files_unlinked,
+            files_failed=files_failed,
+            duration_ms=self._elapsed_ms(started),
+            dry_run=False,
+        )
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> int:
+        """Milliseconds since `started`, from `time.perf_counter()` — `render_export_job`'s
+        `render_duration_ms` argument, unchanged: the `Clock` port is whole-second by contract
+        (ADR-0007), so it cannot measure a batch that finishes inside one second."""
+        return int((time.perf_counter() - started) * 1000)
