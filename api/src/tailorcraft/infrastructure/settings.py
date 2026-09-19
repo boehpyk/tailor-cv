@@ -92,6 +92,23 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024
     # FR-6. A privacy promise, not a tuning knob: raising it needs a reason a user would accept.
     guest_retention_hours: int = 24
+    # Whether beat carries the hourly guest purge (FR-6, ADR-0006, **ADR-0018 decision 5**).
+    # `create_celery` adds the `purge-expired-guest-sessions` entry **only** when this is true; the
+    # CLI (`purge-guests`, docs/infrastructure.md's *Guest data retention (runbook)*) ignores it
+    # entirely, because an operator who typed the command has said what they want.
+    #
+    # **It ships false, and the default is the decision.** The purge issues a `DELETE` against rows
+    # and unlinks files, and neither is reversible — there is no dry-run of a mistake made at 03:00
+    # on a schedule nobody watched. The roadmap's rehearsal (dry run → `--limit 50` → confirm the
+    # backlog fell by 50 → full run → read `jobs.guest_purge`) is what earns the flip, and the flip
+    # is the last step of slice 1.6 rather than a later chore.
+    #
+    # **No startup refusal guards this one** (AC-30). A bool cannot be misconfigured into a race the
+    # way a TTL or a stale window can, and this slice deliberately does not become the fourth
+    # refusal that cannot exit the container under `uvicorn --workers N`. The guard against a flag
+    # that silently stays false for ever is not a settings check: it is `/health/ready`'s
+    # `jobs.guest_purge.scheduled` and the words the UI renders from it.
+    guest_purge_enabled: bool = False
 
     # -- CV text extraction (ADR-0009) ---------------------------------------
     # The backstop for a pathological file, not the mechanism: the page cap below bounds the work
