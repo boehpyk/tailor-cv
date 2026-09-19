@@ -1585,28 +1585,640 @@ wrong, and in every case the fix began with someone refusing to accept my diagno
 measured it. And when three rounds of that were not enough, the answer was not a seventh ref — it was a
 table you can read.
 
+## Days thirteen and fourteen: the file at the end
+
+Four slices in, TailorCraft could take your CV, read a job posting, rewrite both documents with a
+model, and let you fix the sentences it got wrong. What it could not do was give them to you. The
+whole product ended at a text box.
+
+Slice 1.5 is the one that ends with a file in your downloads folder — four formats, two of them
+cheap enough to make while you wait and two expensive enough to leave the request. It is also the
+slice where a stranger's employment history becomes **HTML** for the first time, which is the one
+form a browser would execute, and then becomes a **PDF on a disk**, which is the most portable and
+least deletable shape it has ever had. Everything careful about this slice follows from those two
+sentences.
+
+Here is what it cost to get right.
+
+### The pipeline that was right on paper
+
+The plan for the rendering pipeline was, I think, genuinely good. One parse, one normalization, three
+walkers:
+
+```
+Markdown → tokens (html=False) → normalize to the grammar ─┬─→ plain text
+                                                            ├─→ DOCX
+                                                            └─→ HTML → nh3 → WeasyPrint → PDF
+```
+
+with four obligations, each owned by exactly one stage: the parser refuses raw HTML and any link
+scheme outside `http`/`https`/`mailto`; the normalization clamps `####` to `###` and turns everything
+outside the grammar into text; `nh3` is a **second** lock that exists for the day someone enables a
+rule; and WeasyPrint gets a `url_fetcher` that refuses every URL, so there is no outbound request to
+guard at all.
+
+Three of those four were wrong in some way that only running them revealed. Not the *ideas* — the
+ideas held. The mechanisms.
+
+### A fetcher that the library refused on its way to refusing
+
+This is the one I want you to remember.
+
+WeasyPrint reaches the network in exactly one place: a callable you hand it, which it calls for every
+image, stylesheet, `@import` and `@font-face` in the document. Ours raises on every input. That is
+the whole of "this slice makes no outbound HTTP request", and the test for it asserts that **no
+socket is opened** — not that a fetch failed.
+
+It didn't work. Feeding it hostile HTML with a remote `<img>` produced this:
+
+```
+AttributeError: 'function' object has no attribute '_fail_on_errors'
+  at weasyprint/urls.py:428, inside the library's own except handler
+```
+
+WeasyPrint's `fetch` calls your fetcher, catches the exception, and then reads
+`url_fetcher._fail_on_errors` off it to decide whether this is a per-resource problem (log it, render
+the page without that image) or a fatal one (abandon the document). A **function** has no such
+attribute. So our refusal came back out as an `AttributeError` raised *inside the library's error
+handling*, the render died completely, and the adapter's `except Exception` floor would have
+faithfully recorded `render_error` while saying nothing whatsoever about why.
+
+The fix is a five-line wrapper class carrying `_fail_on_errors = False`, which every fetcher passes
+through — a wrapper rather than an attribute bolted onto our function, because the *test's* recording
+fetcher has no more `_fail_on_errors` than a bare function does.
+
+Two lessons, and the second is the bigger one.
+
+The small one: a vendor's documented extension point can have an undocumented shape requirement, and
+the only way to find out is to run it against the version you actually installed.
+
+The big one: **the floor that makes your port's promise true is also the thing that can hide why it
+was needed.** An `except Exception` that translates everything into `DocumentRenderError` is correct
+— it is what lets the use case promise "every failure is a recorded state" — and it is exactly why
+this bug would have shipped as "some PDFs mysteriously fail" rather than as a traceback. It was
+caught because the task list said to *measure* AC-30(c) with a patched socket, not to reason about it.
+
+### An exception that is not an Exception
+
+While measuring what WeasyPrint can throw — by walking every module in the installed package and
+collecting every `BaseException` subclass, rather than reading the changelog —
+`weasyprint.urls.FatalURLFetchingError` turned out to inherit from **`BaseException`**, not
+`Exception`.
+
+Which means it goes straight through `except Exception`. Every floor in this codebase is written as
+`except Exception` on purpose, because `except BaseException` would swallow `asyncio.CancelledError`
+and break cancellation. So the floor is right and there was a hole in it, and the only fix is to catch
+that class **by name** in the specific-translation tuple above the floor.
+
+You cannot enumerate what a library can raise by intuition. You can enumerate it by import and
+`issubclass`, in about fifteen lines, and then you know.
+
+### The sanitizer that ate its own document
+
+The plan said, in one line: `sanitize_html(render_html(tokens, document))` → `render_pdf(html)`.
+
+Run it and the PDF has a stray line reading **"Tailored CV"** above the candidate's name, in every
+single document.
+
+`render_html` wraps the body in `<!doctype html><html><head><title>Tailored CV</title>…`. `nh3`'s
+allow-list contains the eleven tags the *document grammar* can produce — `p`, `h1`, `ul`, `a` and so
+on. It does not contain `html`, `head`, `title` or `body`, and it correctly should not: an allow-list
+for a document grammar has no business listing the page chrome. So `nh3` did precisely its job,
+deleted the shell, and **kept the title's text content** as a bare text node at the top of the
+fragment.
+
+The fix is to sanitize the fragment and *then* wrap it — which is what the plan's own next sentence
+said ("the shell around **the sanitized fragment**"), one line later, contradicting the code sample
+above it. I corrected the plan in place so the next reader can't re-derive the broken order.
+
+The lesson is about composition. Both functions were correct. The pipeline was wrong because
+"sanitize" and "wrap in a document" are not commutative, and nothing in either signature says so.
+
+### A link that will not lose only its href
+
+The spec says: a link whose scheme we refuse should render as **its text alone, no URL**. Reasonable.
+
+markdown-it does not do that. When `validateLink` returns `False`, the whole link rule *fails* and
+the author's literal characters stay in the stream as one text token: `[click me](javascript:alert(1))`,
+brackets and payload included. There is no configuration that yields a `link_open` without an
+attribute.
+
+So the PDF would spell out the attacker's `javascript:` URL as visible text. Not executable — nothing
+in this pipeline can execute — but it is the payload, printed, in the document the user is about to
+email to an employer.
+
+We now recover the label from the residue with a small helper that both human-facing walkers call.
+I want to flag it honestly, because it is the least comfortable thing in the slice: it is a text
+transformation applied to every text token, it has a known false positive (a legitimate `[1](note)`
+citation becomes `1`), and it exists because an acceptance criterion pinned the strict
+`validateLink` and a failure contract row pinned the output, and those two together left no other
+door. It is on the `/verify` list for exactly that reason.
+
+### Five tests that could not build themselves
+
+The most productive thing that happened in this slice happened three times: **an implementer stopped
+and said "I think these tests are wrong" instead of making them pass.**
+
+The first time, two application tests. One started an export job *one second before it was requested*,
+which the aggregate forbids — it could never have passed against a correct implementation. The other
+asserted that a job whose save was refused still reads `rendering`, which is a property of the
+in-memory fake (it hands back the very object the sweep mutated), not of the code. The sibling test
+one context over already had the right assertion **and a comment warning about this exact trap**; it
+just hadn't been carried across.
+
+The second time, two API tests — one measuring event-loop liveness through 20 concurrent HTTP requests
+that all share a single database session (SQLAlchemy refuses concurrent operations on one; it answered
+503, not 200, and no implementation could have changed that), and one privacy test that uploaded six
+base CVs under a session capped at five, so it died in its own setup before reaching the assertions it
+existed for.
+
+The third time, six frontend tests. Five asserted `Download PDF · 84 KB` for a file whose fixture said
+**one byte**. The tell was beautiful: `findByText(..., { exact: false })` means *the element's text
+contains the matcher*, so the matcher can never be longer than the text — and a sixth test in the same
+block used 86,016 bytes with the *identical* assertion and passed. Same assertion, discriminating
+correctly. That is what makes it five copy-paste fixtures and not a disagreement about formatting.
+
+Every one of those was fixed by the person who wrote the tests, never by bending the code to match.
+That distinction is the entire value of the arrangement.
+
+And one of them taught something extra: fixing the length-bound fixture let the loop-liveness test run
+past its first iteration **for the first time**, which revealed a *second* bug in the same test. The
+first crash had been hiding it. Bugs queue.
+
+### The literal that was three
+
+A test asserted that a newly created export job carries `run_version == 1`.
+
+A tailoring run is at version **3** when it succeeds — `request`, `mark_started`, `mark_succeeded`,
+one bump each — and 4 after a revision. So the assertion was simply wrong.
+
+The interesting part is what *not* to do about it. Writing `3` and `4` would pass, today, and would
+bake the tailoring run's internal transition count into an **export** test, so that changing the run's
+lifecycle would break an export test for a reason having nothing to do with exports. The acceptance
+criterion doesn't say "3". It says `run_version` **equals the run's `version`** — a *relationship*.
+So the test now reads the run's version back and compares, and for the second case asserts the new
+job's version is *greater than* the old one's, which is that row's actual claim ("the run's version
+moved").
+
+When a test has a wrong literal in it, the fix is usually not the right literal.
+
+### The measurement that overruled the acceptance criterion
+
+AC-11 asked for two things from the loop-liveness check: a p50 under 5 ms, and no stall over 50 ms.
+
+Measured over twelve trials, max latency reliably exceeded 50 ms — up to 97 ms — while p50 stayed
+under 0.15 ms every single time. That is not the event loop being blocked. That is the GIL, with
+twenty genuinely concurrent CPU-bound Python threads taking turns and occasionally starving any other
+thread, including the loop's own. The precedent test one slice back, measuring the same property for
+the posting fetcher, asserts **p50 and never max** — and its docstring names this exact mechanism.
+
+So the clause was struck, on measurement, and written up in the spec with the numbers. p50 is the
+clause that discriminates the thing the criterion exists to catch: a synchronous parse *on* the loop
+destroys p50, not merely the tail.
+
+I want to be careful about how this reads, because "the measurement overruled the spec" is also what
+it sounds like when someone quietly lowers a bar they couldn't clear. The difference is that the
+residual gap is written down: max-latency behaviour under true 20-way concurrent render load is now
+**unverified by any test**, and that is inherent to CPython at this shape rather than something a
+cleverer test would reach. A struck criterion with its replacement measured and its gap named is a
+decision. A struck criterion with neither is a lie that ships.
+
+### A binding set named after the wrong thing
+
+Slice 1.3 poisoned the dev broker by declaring two Celery queues without routing keys, so both bound
+under the key `celery` — one publish would have reached both queues, meaning two deliveries of one run
+and two paid model calls. The lesson went into CLAUDE.md, and this slice adds a third queue, so it was
+read very carefully.
+
+And it was wrong. Not the warning — the *check*. It said to confirm one member in each of
+`_kombu.binding.celery`, `.tailoring` and `.export`. But kombu names a binding set after the
+**exchange**, not the queue, and all three queues sit on the one default exchange. The healthy state
+is **three members in the single set `_kombu.binding.celery`**, and the other two keys do not exist
+at all. Following the documented check would have read a perfectly healthy broker as broken.
+
+There was a second trap underneath: the broker is Redis database **1**, and `redis-cli` without
+`-n 1` reads database 0, where all three sets are empty — which looks like a clean broker for entirely
+the wrong reason.
+
+Both are fixed in CLAUDE.md now. The uncomfortable part is that this was in the most-trusted document
+in the repository, written down *because* it had already cost a day, and it was still wrong in a way
+that would have cost another one. A footgun note is code; it needs the same scepticism.
+
+### The directory that did not exist
+
+The production image built. The PDF rendered inside it with a real embedded font. The API came up
+healthy. And `beat` crash-looped.
+
+```
+PermissionError: [Errno 13] Permission denied: '/var/lib/tailorcraft/state/celerybeat-schedule'
+```
+
+The Dockerfile pre-creates `/var/lib/tailorcraft/uploads`. It never created
+`/var/lib/tailorcraft/state`, which is where the beat schedule volume mounts. When Docker mounts an
+**empty** named volume over a path that doesn't exist in the image, it creates the mount point
+**root-owned** — and `beat` runs as an unprivileged user in the production target, though not in dev,
+because the dev override never switches off root.
+
+So: invisible in development, by construction, for the entire slice. Only a real production image with
+real volumes finds it. That is the whole argument for the verification step that builds the shipped
+image and starts all three containers, rather than trusting that a green test suite means a green
+deploy.
+
+### Working with agents that get cut off, again
+
+Three delegated agents died mid-task on rate limits this slice. Two had written nothing; one had
+written 96 KB of tests and died **before running them**.
+
+That last one mattered. Committing what was on disk would have looked entirely reasonable — 84 tests,
+collecting cleanly. Running them first showed 58 failures, of which roughly ten were not red tests at
+all but **fixtures that could not construct themselves**, and those would have survived the GREEN step
+and looked like implementation bugs a day later.
+
+The habit that saved it is small: when you inherit half-finished work, don't ask "does this look
+done". Run it, and then *classify every failure*. A census of failure reasons — how many are
+`NotImplementedError` from the right function, how many are route-missing 404s, how many are fixture
+exceptions — takes two minutes and is the difference between a red commit that means something and one
+that poisons the next step.
+
+### Smaller lessons, still worth keeping
+
+- **`exact: false` means "contains".** So the matcher can never be longer than the text, and a test
+  written that way will pass for text you did not intend and fail in a way that looks like a
+  formatting bug.
+- **An `await` that resolves on the wrong render is not a wait.** The empty-state test awaited a
+  button that the *loading* state also renders — disabled — so it proceeded immediately and asserted
+  against a pending DOM.
+- **A migration's DDL is not inside your test's rollback.** Mutation-testing a migration test
+  committed real DDL to the test database and left it two indexes short. Worse: the established
+  recovery path checks only that the table exists, so it cannot notice a schema missing indexes or
+  constraints.
+- **XML forbids control characters, and Markdown doesn't.** `\x0b` survives the parse and makes
+  `python-docx` raise, so a document that renders fine as PDF, text and Markdown fails *permanently*
+  as DOCX. Now stripped, in the one walker that needs it.
+- **PDF fonts are Type0 composite**, so a page's `/Font` has no direct `/FontDescriptor` — it carries
+  `/DescendantFonts`, with the descriptor and `/FontFile2` a level down. The first version of the
+  font-embed assertion checked the wrong level and failed against a perfectly good PDF.
+- **Two contradictory numbers in one spec table.** The column was specified as `VARCHAR(64)` and, one
+  line later, as reusing a type decorator whose implementation is `String(512)`. Reuse won — a second
+  decorator differing only in a length is how one storage grammar ends up validated by two rules.
+- **A vendor logger is a leak a clean adapter cannot prevent.** WeasyPrint logs the URL it failed to
+  fetch, at ERROR — which is the user's own typed URL, the thing our adapter deliberately logs only
+  the *scheme* of. Silencing it is a privacy control, not noise control, and the comment says so.
+  (`fontTools` is the noise: 327 records per render.)
+- **A render prop beats a callback when the state is computed during render.** Lifting the editor's
+  save state to the page through `useState` + `useEffect` would have been a second copy, one render
+  behind — stale in exactly the frame where the user just typed, which is the only frame the gate
+  cares about.
+
+### The common thread, a seventh time
+
+Day nine's bugs lived between a setting and what it does. Slice 1.4's lived between a mechanism and the
+moment it fires.
+
+This slice's lived between **a contract and the thing on the other side of it**. A fetcher we handed to
+a library that required a shape we didn't know about. A sanitizer given a document its allow-list was
+never written for. A parser asked for an output it has no way to produce. A binding check written
+against the wrong noun. A volume mounted over a directory that wasn't there. A test asserting the
+behaviour of its own fake.
+
+In every one, both halves were individually defensible and the *interface between them* was assumed
+rather than measured. And in every one, the thing that found it was the same: someone ran it against
+the real version, on the real image, and read what actually came back — instead of reasoning about what
+should have.
+
+## Day fifteen: the verify that found three
+
+Slice 1.5 arrived at `/verify` looking finished. 1293 backend tests and 486 frontend tests, green
+twice in a row. Every budget measured rather than assumed. A production image built and started.
+Three ADRs. A failure contract with fifty-seven numbered rows, each one traced to a test.
+
+`/verify` found three MAJOR defects. All three were in code that the green suite was perfectly happy
+with, and all three were the kind a user would have met in the first week.
+
+That is not a criticism of the suite. It is the single most useful thing this file records about
+testing: **a test suite tells you the code does what the tests say. It cannot tell you the tests say
+the right thing.** Everything below is a variation on that.
+
+### The helper that deleted the salary range
+
+The worst one first. A CV containing
+
+> Negotiated salary range [100k](150k) for the team
+
+came out of every PDF, every DOCX and every plain-text export as
+
+> Negotiated salary range 100k
+
+The range was gone. Silently, from the one document this product exists to produce, for a user who
+is unemployed and about to attach it to an application.
+
+The mechanism is almost elegant in how reasonable each half looks. Markdown-it refuses `150k` as a
+link destination — correctly, it is not a URL — and, as day fourteen's notes already record, a
+refused link does not come back as a link without an `href`. It comes back as the author's literal
+characters: one text token reading `[100k](150k)`. So a helper walks every text token and recovers
+the label, because the failure contract says a refused URL must never be shown to the reader.
+
+To decide "was this refused?", the helper asked `_allow_three_schemes` — the same predicate the
+parser uses. And that is the bug, in one line: **those two functions are asking different
+questions.** The parser's question is *"may this become an `href`?"*, and for `150k` the answer is
+rightly no. The helper's question is *"was this ever a URL, such that showing it would show a URL?"*
+— and for `150k` the answer is also no, but it is a *different* no, and collapsing them deletes the
+user's text.
+
+The fix is a second predicate, `_is_refused_url`, that says yes only for a destination that *tried*
+to be a URL: a scheme outside the allow-list, or a protocol-relative `//host`. No scheme at all
+means it was never a URL attempt, and the literal survives byte for byte.
+
+**Why no test caught it.** There is a fixture corpus, and the acceptance criterion requires 100 % of
+it to render to all four formats. It scored 28/28. But the corpus's only link fixtures were an
+accepted `https://` one and a `javascript:` one — and for `javascript:` stripping the destination is
+*correct*. The corpus contained no `[label](plain-word)` anywhere, so a 100 % pass rate was measuring
+a document shape the bug could not affect. It does now, mirrored into both the Python fixtures and
+the TypeScript ones, so this class of document travels with the project.
+
+### A one-character scheme is a drive letter
+
+The fix introduced a smaller version of itself, which is worth recording because the reasoning that
+settled it is reusable.
+
+`urlsplit("C:/Users/me/cv.docx").scheme` is `"c"`. So a Windows path in a CV has a scheme, takes the
+refused branch, and `[docs](C:/Users/me/cv.docx)` still collapses to `docs`.
+
+The first instinct — mine, and the implementing agent's — was to accept it: a scheme-shaped
+destination *is* a URL attempt by the grammar's own rule, and a Windows path in a CV is rare. The
+reviewer argued the other way and was right, on a principle worth keeping:
+
+**The harm is asymmetric, and only one side of it is recoverable.** Over-stripping deletes the
+author's characters and the reader never learns anything was removed. Under-stripping merely shows
+inert text — by the time this helper runs the link is already a text token, there is no `href`, and
+nothing can be clicked, so the security cost of being wrong in *that* direction is exactly zero.
+
+When a heuristic must be wrong somewhere, put its error on the side that shows too much rather than
+the side that silently deletes. No IANA-registered scheme is one character, so the guard is
+`len(scheme) > 1`, and the case is pinned from both directions — the Windows path survives, and
+`javascript:` is still stripped, so the guard cannot be quietly widened into uselessness.
+
+### An error state whose only exit reproduced the error
+
+The export bar has nine states and a pure function that derives them. One of them says, in these
+words: *"That file is no longer available — Export again."*
+
+The button under that sentence re-issued the download that had just failed.
+
+A 410 `export_file_gone` does not change the job row. That is deliberate and correct — the download
+endpoint refuses and writes nothing. But the control decided what a click *meant* by asking the row:
+`status === 'ready' && current` → download. The row still said `ready`, because nothing had told it
+otherwise. So the button downloaded, got another 410, and displayed the same sentence again. A
+reload did not help: the view derived to `ready` and offered *Download PDF*, which 410'd.
+
+The copy promised a recovery the UI could not perform. The failure contract's own row says the next
+action is to re-export; there was no way to re-export.
+
+The root cause is not the 410 handling. It is that **the row was being interrogated twice** — once
+for what to render, once for what a click does — and the two answers could disagree. The fix moves
+the click's meaning onto the view, which is the one place that holds both what the server last said
+*and* what this browser's own request just found out. The second derivation is deleted, so the two
+can no longer disagree.
+
+The test that existed asserted the sentence appeared. It asserted nothing about what the button did.
+A docblock claiming a recovery its assertion cannot deliver is the same defect one level up.
+
+### Five sentences nobody could read
+
+Then the reviewer pulled the thread further and found the same defect one step earlier, worse.
+
+`requestExport.isError` was read **nowhere** in the feature. The mutation was consulted for
+`isPending` and `variables` and nothing else. So a refused `POST /exports` — five distinct rows of
+the failure contract, each with a written *"User sees"* sentence — rendered nothing at all. The
+control went from *Starting…* back to *PDF*, and the click looked as though it had not happened.
+
+Three of those five commit **no row** by design: the per-session cap, the rate limit, and a database
+failure before the enqueue. So there was nothing for the poller to surface either. The silence was
+not first, it was permanent.
+
+And the natural human response to a button that appears to do nothing is to press it again — which,
+for the 429 and the session cap, is precisely the behaviour those limits exist to stop, and which
+can never succeed.
+
+A failure contract's *"User sees"* column is a promise. Fifty-seven rows were enumerated, and five
+of them were promises to nobody. The enumeration was not the problem; nothing checked that the
+enumerated sentences had a route to a screen.
+
+### The test that could no longer fail
+
+The last one I caused myself, which makes it the most instructive.
+
+`render_html` was dead code — zero production callers — and it was the one function that built the
+HTML document shell *without* the sanitize step, i.e. exactly the composition that day fourteen's
+"sanitizer that ate its own document" proved wrong. Deleting it was right.
+
+But three tests hung off it, and they had to be re-pointed somewhere. My instruction named the wrong
+target; the agent noticed my wording was inconsistent, chose the sanitize-inclusive composition that
+production actually uses, and I approved it. For two of the three tests that was an improvement. For
+the third it was a disaster in slow motion.
+
+That third test asserted *"the emitter produces only the eleven allowed tags"*. Run through
+`sanitize_html`, that assertion is applied to the output of a function that emits only those eleven
+tags **by construction**, against the same eleven-element set. It could no longer fail for any
+emitter output whatsoever.
+
+The proof took two minutes and is the only kind that counts: I broke the emitter's heading clamp so
+it would write `<h4>`, and ran the file. **Thirteen passed.** With the clamp still broken, on a raw
+token stream:
+
+```
+emitter output      : '<h4>Leaked</h4>'
+after sanitize_html : 'Leaked'
+```
+
+The sanitizer removed the leaked tag along with its markup, so the subset assertion held trivially.
+
+The module's own docstring had warned about this in advance, from the other direction: *"nh3 is the
+second lock, not the first, and that is load-bearing… A test that only ever fed it the emitter's
+output would pass for the wrong reason forever."* I had created the mirror image of the exact trap
+the file warns about, three inches below the warning.
+
+There is a second lesson underneath. Fixing it needed a fixture with `#### Heading Four` *and* a
+parse that bypasses the pipeline's normalization — because `normalize_to_grammar` clamps `h4` to
+`h3` upstream, so a Markdown fixture alone can never reach the emitter's own clamp. The emitter's
+docstring promises the property holds *"for any stream anybody ever hands it"*. **Testing a promise
+made about the back door requires going in through the back door.** A test that only enters the
+front can never check it.
+
+### Working with agents that get cut off, a third time
+
+The session limit hit mid-round again, this time killing an agent before it wrote a single line. The
+project already had a precedent for this from slice 1.3 — the coordinator finishes the work — so I
+implemented both remaining changes myself.
+
+That creates a different risk, and it is worth naming: the implementer and the coordinator became
+the same party, which removes exactly the independence the review step exists to provide. The
+mitigation was to say so explicitly when handing the work to the reviewer and ask it to judge the
+code rather than the process note. It passed on the merits, and the vacuous-test defect I had caused
+was caught by the reviewer, not by me — which is the argument for keeping that step honest even when
+it is inconvenient.
+
+The other discipline that paid off all round: **the implementer never edits a test.** Three times an
+agent stopped and reported rather than touching one, and each time the test really was wrong. Once
+it was six tests clicking a *disabled* button — `findByRole` resolves on the pending render, where
+the control is still disabled, so the click was a no-op and no request ever fired. Those six had
+produced a red that looked convincing (`Unable to find an element with the text…`) but proved only
+an absence, exactly as an `ImportError` red does. What made them trustworthy afterwards was mutation
+testing: corrupt one sentence and flip one `retryable`, and confirm exactly those two tests fail.
+
+I did edit two test files myself, and said so in the commit bodies rather than hoping nobody looked.
+The reviewer checked all three such edits across four rounds and confirmed no assertion moved. One
+of them is worth keeping as a rule: a cast written to let a RED test compile against a type that
+does not exist yet is legitimate scaffolding — and **a RED-phase escape hatch that outlives its RED
+is indistinguishable from a suppressed error.** Remove it in the GREEN.
+
+### The test that failed because the machine was fast
+
+This one arrived after `/verify` had already passed, from CI, which is the right place for it to
+arrive from.
+
+The export slice has a test that asks a blunt question: while twenty CPU-bound renders run
+concurrently, does the event loop still answer `/health/live` promptly? It hammers that endpoint on
+a 1 ms cadence, collects the latencies, and asserts a **p50 under 5 ms**. Before it concludes
+anything it checks it has at least twenty samples — because a p50 over three numbers is not a p50.
+
+It went red on GitHub's runner:
+
+```
+only 16 /health/live samples were taken during the 20 concurrent renders
+assert 16 >= 20
+latencies: [0.00145, 0.00050, 0.00050, 0.00051, ...]
+```
+
+Read the numbers before the message. Half a millisecond. The loop was *superb*. The property the
+test exists to guard held with enormous margin — and the test failed anyway, on its own
+precondition, because the renders finished before the sampler could take twenty ticks.
+
+Each worker rendered a fixed twelve times, a number chosen so the batch "lasts long enough for the
+sampler to collect its floor". On a fast machine, 240 renders take under 16 ms. **So the guard got
+harder to satisfy the better the machine performed.**
+
+A day earlier the same test had failed on my laptop for the opposite reason — p50 drifting past its
+bound under load — and I had written it up as "will eventually fail on a busy laptop". That was half
+right in the way that is worse than being wrong: it named a real failure mode and implied it was the
+only one. The flake was bidirectional. Slow machines trip the p50; fast machines trip the floor.
+
+The floor itself was never the problem — refusing to draw a conclusion from too little data is
+exactly right. The problem was **coupling it to how long the work happened to take**, which is
+neither controlled by the test nor related to what it measures. The renders now run until the
+sampler signals it has its twenty samples. The batch's duration became an *output* instead of an
+assumption, and the count assertion became a self-check on something guaranteed rather than a race.
+
+### The mutation that would not die
+
+Then the verification turned up something better than the fix.
+
+The rule in this project is that a test claiming to guard a regression must be observed failing when
+you reintroduce it. So: drop the `asyncio.to_thread` hop from the renderer, making the render
+synchronous on the event loop, and confirm p50 collapses.
+
+It did not collapse. It **hung** — one core at 99.9%, zero responses, for eight to ten minutes,
+until the pytest processes were killed from outside the container. The freshly-added
+`asyncio.wait_for(..., timeout=30)` never fired.
+
+The reason is worth carrying well beyond this test. A coroutine that wraps a synchronous call and
+contains **no internal `await`** has no suspension point. `asyncio`'s cancellation is cooperative:
+`CancelledError` is delivered *at* an `await` boundary. If there isn't one, there is nowhere to
+deliver it, and nothing short of an OS signal interrupts the work. `wait_for` does not "stop" a
+coroutine — it asks one to stop at its next opportunity, and a fully synchronous body never has one.
+
+Two things follow. First, this is a *stronger* proof of the property than the one we went looking
+for: not "the loop got slower" but "the loop stopped entirely, and the test harness's own timeout
+could not save it". Second, and more usefully: **a `wait_for` hang-guard around CPU-bound work
+protects only against a partial regression** — something slower, something that still yields
+occasionally. Against the total case it is decorative. Making it real needs an OS-thread watchdog
+with a hard `os._exit`, which was judged disproportionate here and written down rather than quietly
+assumed away.
+
+This is the async lesson CLAUDE.md has been warning about since slice 1.1, met in its purest form.
+"A synchronous CPU-bound call inside an async route blocks the event loop for every concurrent user"
+is the sentence. Watching a timeout fail to fire while a core pegs is the sentence with teeth.
+
+### The common thread, an eighth time
+
+Day fourteen's bugs lived between a contract and the thing on the other side of it. This round's
+lived between **a test and the thing it claimed to be about**.
+
+A corpus that scored 100 % on documents the bug could not affect. A test that asserted a sentence
+appeared and nothing about what its button did. Fifty-seven enumerated failure rows, five of whose
+promised sentences had no route to a screen. An assertion moved one function downstream and rendered
+incapable of failing.
+
+Every one of them was green. Every one of them was measuring something adjacent to the thing it was
+named after. The tool that found each one was the same, and it is the only one that works: **take
+the thing the test claims to guard, break it on purpose, and check that the test notices.** Five
+times this round that check was run. Five times it changed the answer — and the fifth ran after
+`/verify` had already passed, on a test that was failing while the thing it measured was perfect.
+
 ## What's next
 
-Slice 1.4 is verified on its branch: 921 backend and 431 frontend tests, green twice in a row, every
-acceptance criterion and failure row checked, the red-first history clean, and a reviewer PASS on the
-fourth round — the one after the autosave hook became a state machine. The branch hasn't been pushed and
-has no pull request yet.
+Slice 1.5 is **verified and in review**: **1314 backend and 504 frontend tests**, green twice in a
+row, the production image verified by building it and starting all three containers on it, and every
+budget measured rather than assumed — inline downloads at a p95 of 11 ms against a 500 ms budget,
+`POST` to a finished PDF at a p95 of 0.17 s against 10 s, and 100 % of the fixture corpus rendering to
+all four formats. `/verify` took four rounds, found three MAJOR defects in a suite that was already
+green, and the pull request is open.
 
-Carried forward, each with an owner and a trigger:
-- **Startup refusals that never exit under uvicorn** (the API-key guard and the stale-window guard):
-  `devops`, before the deploy SSH secrets are set.
+Open, and named rather than quietly carried:
+- **AC-37 forces an accessibility regression.** Pinning *"Preparing your PDF… 3s"* as one contiguous
+  string means the count cannot hide in an `aria-hidden` span the way slice 1.3 hides it, so it is
+  announced every second. Fixing it properly means relaxing the criterion.
+- **AC-42's 401 copy ships without its link home.** Still blocked, and for a sharper reason than
+  before: the view's union *was* widened during `/verify` — but the new tests re-pinned it with a
+  whole-object `toEqual` in the same commit, so adding a link means editing a test again. A shape
+  loosened and re-tightened in one motion is no looser than it started.
+- **X-46's stale-download log line is unbuilt.** The contract promises a line when the API knowingly
+  serves an older file; the router logs nothing. Building it means widening a use case's return type
+  to carry a cross-aggregate fact, for one log line. The reviewer's recommendation is to strike the
+  cell instead — `current` is already reported on every one-second poll, so the line would be a
+  *derived copy* that can disagree with the resource. If the operational question is ever genuinely
+  asked, a domain event is the vehicle.
+- **A test lies to a settings field.** `model_copy` writes a float into an `int`, and does not
+  validate, so the render-timeout branch is proved against a value the type forbids. A field a test
+  must lie about is a field that wants to be a float.
+- **`test_posting_fetcher_event_loop.py` carries the same latent shape** AC-11's liveness test just
+  had to have fixed: a "at least 20 samples" floor coupled to how long a fixed batch of work happens
+  to take. It has not flaked, probably because network I/O plus `trafilatura` is slow enough that the
+  sampler always gets there first. Fix it the same way if it ever flares.
+- **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
+  today — its debug records are counts, not text. That is the same "clean today" argument the
+  `httpcore` note already makes, on the one library holding the document.
+- **Max-latency under concurrent render load is unverified** (see the measurement that overruled the
+  criterion, above).
+- **The production image has no `pytest`**, so running the slow render check inside it needs a
+  per-invocation install. Baking test tooling into the shipped image is the wrong direction; a `test`
+  build target on top of `production` is the call, and nobody has made it.
+
+Still carried from earlier slices:
+
+- **Startup refusals that never exit under uvicorn** (now three of them — 1.5 added the export
+  stale-window guard): `devops`, before the deploy SSH secrets are set.
 - **Very long CVs** can exceed the per-attempt timeout: a later slice, measured first.
 - **Beat isn't monitored**, because `/health/ready` can't see it: slice 1.6, alongside the purge.
 - **The editor is not lazy-loaded.** 530 kB of TipTap and friends load on the workspace where nobody
   edits. Whoever next measures first paint decides.
 - **A paused document whose author leaves** sends into the 429 window and may lose the text if refused
   again; a `leaving`-with-timer state is the model if it is ever wanted. Noted in the machine.
-- **The deploy path is still unproven.** Configure a required reviewer on the `production` environment
-  before adding the SSH secrets.
+- **The deploy path is still unproven, but the gate is real** — corrected on 2026-09-19 by reading
+  the GitHub API instead of these notes. The `production` environment carries a required-reviewer
+  rule and a protected-branch policy, and the repo holds no secrets at all, so a merge to `main`
+  builds and then waits for a human. The earlier note here said the opposite, and it was repeated
+  through an entire slice after it had stopped being true. The habit that caused it is the one worth
+  naming: a control you have read about is not a control you have checked.
 
-Next is 1.5: exports. It inherits three obligations this slice wrote down rather than met — render
-Markdown with `html=False`, sanitize with `nh3` on the grammar's allow-list, and hand WeasyPrint a
-`url_fetcher` that refuses everything. 1.4 sanitized nothing; it rendered nodes. The first HTML string
-in this product's document path is 1.5's to create, and to defend.
+Next is 1.6: retention. It is the slice that finally deletes things, and 1.5 handed it two
+guarantees to build on — every export row cascades from its guest session, and every file's key is a
+pure function of the row's id and format, so the purge can find a file from a row, or reconstruct one
+from an id after the row is gone. It also handed it a new problem: the uploads volume now holds output
+as well as input, written by a different container than the one that reads it.
+
+The three obligations 1.4 wrote down rather than met are met. The first HTML string in this product's
+document path exists now, lives for the length of one function call, and never reaches a log, a row, a
+response or Sentry.
 
 The specs die when the features ship. This file doesn't.

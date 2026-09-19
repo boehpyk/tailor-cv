@@ -18,9 +18,10 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: four slices shipped (2026-09-16).** Phase 1 is under way. The architecture now carries
-> a paid external call, a worker, a scheduled job, and the first unauthenticated *write* to a PII
-> row on a timer.
+> **Status: four slices shipped; slice 1.5 verified and in review (2026-09-19).**
+> Phase 1 is under way. The architecture now carries a paid external call, a worker, two scheduled
+> jobs, an unauthenticated *write* to a PII row on a timer, and — new in 1.5 — **a stranger's CV
+> rendered into HTML and written to disk as a file**.
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
@@ -28,67 +29,137 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
 > - **1.3 `tailoring-generate-documents`** (PR #4) — one button returns a tailored CV and a cover
 >   letter: queued, executed by a Celery worker behind `LlmPort` (Gemini), polled by the client;
->   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat. Eval run 4: p95
->   `llm_duration_ms` 6.4 s.
-> - **1.4 `workspace-progress-and-editor`** (PR #5) — the tabbed workspace, the three-stage
->   progress stepper, React Router, and a TipTap editor over both documents with debounced autosave.
->   - The edit is a **revision on the run**, stored as Markdown; the aggregate owns the version and
->     the mapper only checks it (`version_id_generator=False`) — one column refuses a stale edit
->     **and** closes 1.3's concurrent duplicate delivery (ADR-0015).
->   - The editor renders **no HTML**: Markdown → tokens (`html: false`) → ProseMirror nodes. The one
->     residual is a URL attribute, gated to three schemes at both entrances. 1.5 owns the HTML path.
->   - `PUT /api/tailoring-runs/{id}/documents/{kind}` with `expected_version`; 409 on a conflict,
->     resolved by comparison on the client — never a silent overwrite, never a "keep mine" nobody
->     clicked.
->   - `/verify` took four review rounds. The first three each found something real — a serializer
->     emitting autolink syntax its own parser refuses; a failed flush expiring the sweep's whole
->     identity map; a queued save winning a detected conflict — and the third still left gaps
->     *between* the autosave hook's six refs. The owner chose to re-model the hook as **one pure
->     state machine** (`features/editor/autosaveMachine.ts`, `step(machine, event) → {next,
->     effects}`, a 10 × 11 table with a mechanised default-branch sweep) rather than pin the gaps;
->     the fourth round PASSed it. Every finding was a red test before its fix.
+>   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat.
+> - **1.4 `workspace-progress-and-editor`** (PR #5) — the tabbed workspace, the progress stepper,
+>   React Router, and a TipTap editor over both documents with debounced autosave. The edit is a
+>   revision on the run (ADR-0015); one version column refuses a stale edit **and** closes 1.3's
+>   concurrent duplicate delivery. `/verify` took four rounds and ended by re-modelling the autosave
+>   hook as one pure state machine.
+> - **1.5 `export-multi-format-download`** (PR open) — four formats. `md` and `txt` are a
+>   `GET` on a representation of the document and leave **no row**; `pdf` and `docx` are an
+>   `ExportJob`, a Celery task on a third queue, a file on the uploads volume and a polled client
+>   (**ADR-0016**). The pipeline is Markdown → tokens (`html=False`) → grammar normalization →
+>   {plain text | DOCX | HTML → `nh3` → WeasyPrint}, with a `url_fetcher` that refuses every URL
+>   (**ADR-0017**). **1314 backend and 504 frontend tests**, green twice. Measured: inline p95
+>   **11 ms** (budget 500 ms), `POST` → `ready` p95 **0.17 s** over 40 real renders (budget 10 s),
+>   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
+>   all of them in code a green suite of 1293 tests was happy with — see below.
 >
-> **921 backend and 431 frontend tests**, green twice in a row. Every gate was verified by running
-> it: Ruff, mypy `--strict`, import-linter (3 contracts kept), pytest, **`tsc -b`**, ESLint,
-> Prettier, Vitest, `vite build`. **The TypeScript gate had checked zero files since 1.1** — a bare
-> `tsc --noEmit` on a solution-style `tsconfig.json` compiles nothing; it passed
-> `const x: number = "nope"` for four slices and was found by the editor skeleton. `make eval`
-> measures prompt quality and latency against the real API. It is not a test, and it costs money.
+> **Every gate was verified by running it**: Ruff, mypy `--strict`, import-linter (3 contracts, now
+> with `weasyprint`, `nh3`, `markdown_it` and `docx` on both forbidden lists), pytest, `tsc -b`,
+> ESLint, Prettier, Vitest, `vite build`. `make eval` measures prompt quality against the real API.
+> It is not a test, and it costs money.
 >
-> **Carried out of 1.4, each with an owner and a trigger:**
-> - **Startup refusals never exit under `uvicorn --workers N`.** The API-key guard and the
->   stale-window guard both leave the API respawning. Owner: `devops`, before the deploy SSH secrets
->   are set. Import the composition root once and exit non-zero before `exec uvicorn`.
-> - **Very long CVs** (about 14,000+ characters) can exceed the 12 s per-attempt timeout. They are
->   recorded `llm_timed_out`, with two calls charged. Accepted; fix in a later slice, measured first.
-> - **Beat is invisible to `/health/ready`**, because `control.ping` reaches workers only. Slice 1.6's
->   heartbeat covers it.
-> - **The editor is not lazy-loaded.** TipTap, ProseMirror and markdown-it are 530 kB of the 894 kB
->   bundle (four cache-stable chunks; 1.3 shipped 236 kB) and load on the workspace, where nobody
->   edits. A `React.lazy` in `RunPage` with a chunk-load failure path is a decision for whoever next
->   measures first paint. Noted in `vite.config.ts`.
-> - **1.5's three obligations** are written in ADR-0015 §2 and E-13: render Markdown with
->   `html=False`, sanitize with `nh3` on the grammar's allow-list, give WeasyPrint a `url_fetcher`
->   that refuses everything. 1.4 sanitized nothing — it rendered nodes.
-> - **Closed this slice:** the duplicate delivery (ADR-0015 §3), the `render_item` hook, the raising
->   downgrade, the typed sweep ids.
+> **What 1.5 found that no unit test could:**
+> - **A plain-function `url_fetcher` aborts the whole render in WeasyPrint 70.** The library reads
+>   `url_fetcher._fail_on_errors` *inside its own `except`* to choose between a per-resource failure
+>   and a fatal one; a function has no such attribute, so our refusal came back out as an
+>   `AttributeError` and the `except Exception` floor would have recorded `render_error` saying
+>   nothing. Every fetcher now passes through a wrapper carrying that attribute.
+> - **`weasyprint.urls.FatalURLFetchingError` subclasses `BaseException`, not `Exception`** — a hole
+>   in every floor, found by walking the installed package rather than reading a changelog. Caught by
+>   name; the floor stays `Exception`, so `CancelledError` still cancels.
+> - **`sanitize_html(render_html(...))` deletes the document shell and keeps the title's text**,
+>   putting a stray "Tailored CV" line above the name in every PDF. `html`/`head`/`title`/`body` are
+>   not on the allow-list, correctly. Sanitize the fragment, **then** wrap.
+> - **`beat` crash-loops on the production image.** `/var/lib/tailorcraft/state` did not exist in the
+>   image, so Docker created the volume's mount point **root-owned**, and `beat` runs unprivileged in
+>   production but not in dev. Invisible in development by construction.
+> - **markdown-it does not hand back a link without an `href`** — a refused scheme fails the whole
+>   rule and leaves the literal `[text](javascript:…)` as one text token.
+>
+> **What `/verify` found on top of that, in code 1293 green tests were happy with:**
+> - **The refused-link helper deleted the author's own characters.** `Negotiated salary range
+>   [100k](150k)` came out of every PDF, DOCX and TXT as `…range 100k`. One predicate was being asked
+>   two different questions: `_allow_three_schemes` is the *parser's* gate ("may this become an
+>   `href`?"), while the helper runs over text markdown-it has **already refused** and must ask "was
+>   this ever a URL?". A destination with no scheme was never a URL attempt. **`_is_refused_url` is
+>   the second question**, and the corpus now carries a `[label](plain-word)` fixture — its absence is
+>   why AC-47's 28/28 could not see this.
+>   **A one-character scheme is a drive letter, not a scheme** (`urlsplit("C:/…").scheme == "c"`), so
+>   the guard is `len(scheme) > 1`. The argument for that is worth more than the line: **the harm is
+>   asymmetric.** Over-stripping deletes text and the reader never learns anything went; under-
+>   stripping shows inert text the parser already refused, with *zero* security cost, because by then
+>   there is no `href`. Put a heuristic's error on the side that shows too much.
+> - **An error state whose only affordance reproduced the error.** A 410 `export_file_gone` does not
+>   change the job row — the download endpoint writes nothing, correctly — so a control that asked
+>   the *row* what a click meant went on answering "download this ready file" for ever, under copy
+>   reading *"no longer available — Export again"*. The click's meaning now comes from the **view**,
+>   which deletes the second derivation that was the actual cause.
+> - **Five failure-contract rows reached nobody.** `requestExport.isError` was read nowhere, so X-14,
+>   X-18, X-19, X-21 and X-22 all rendered silence. Three of them **commit no row** (ADR-0014 §2), so
+>   the poll could never surface them either — and the obvious response to silence is to click again,
+>   which for the 429 and the session cap is exactly what the limit exists to stop.
+> - **A test that could no longer fail.** Deleting the unsanitized `render_html` was right; re-pointing
+>   its three assertions at the sanitized composition was right for two of them and made the third
+>   vacuous, because `sanitize_html` emits only the allow-list *by construction*. Break the emitter's
+>   heading clamp and all 13 tests stayed green. **The emitter's promise is "for any stream anybody
+>   hands it", so testing it requires a stream the pipeline would never produce** — the fixture needs
+>   a raw `h4` that `normalize_to_grammar` would have clamped away.
+>
+> **Carried out of 1.5, each with an owner and a trigger:**
+> - **Startup refusals never exit under `uvicorn --workers N`** — now **three** guards (the API key,
+>   the tailoring stale window, the export stale window). Owner: `devops`, before the deploy SSH
+>   secrets are set.
+> - **AC-37 forces an a11y regression** (the ticking count cannot hide in an `aria-hidden` span), and
+>   **AC-42's 401 copy ships without its link home** — the latter still blocked, because the view's
+>   union was **re-pinned** by `toEqual` in the same commit that widened it. Both recorded in the spec.
+> - **X-46's stale-download log line is unbuilt** — deliberately. The reviewer's recommendation is to
+>   strike the row's "Logged" cell instead: `current` is already reported on every one-second poll, so
+>   a log line would be a *derived copy* that can disagree with the resource. If the operational
+>   question is ever genuinely wanted, a domain event is the vehicle, not a widened use-case return.
+> - **`test_document_renderer.py` writes a float into an `int` settings field** via `model_copy`,
+>   which does not validate. The timeout branch is proved against a value the type forbids. A settings
+>   field a test must lie about is a hint the field wants to be a float.
+> - **A timing test's precondition can scale inversely with machine speed — AC-11's did, and it went
+>   red in CI.** The loop-liveness test asserts a **p50** of `/health/live` latency while 20 CPU-bound
+>   renders run, behind a floor of "at least 20 samples". The flake was **bidirectional**: a loaded
+>   host drifts p50 past its bound, and a *fast* host finishes the fixed 240-render batch inside 16
+>   sampler ticks and trips the floor instead. GitHub's runner hit the second — with sampled latencies
+>   of **0.5 ms**, i.e. the property under test holding comfortably while its scaffolding failed.
+>   The floor was right; **coupling it to how long the work happened to take was not**. The renders now
+>   run until the sampler signals it has its 20 samples, so the batch duration is an *output* rather
+>   than an assumption, and the count is a self-check on an invariant instead of a race.
+>   **`tests/integration/adapters/test_posting_fetcher_event_loop.py` has the identical latent shape**
+>   — the same `len(latencies) >= 20` floor, coupled to a four-fetch batch. It has not flaked, probably
+>   because network I/O plus `trafilatura` is slow enough; fix it the same way if it ever does.
+> - **Dropping `asyncio.to_thread` from the renderer does not slow the loop — it hangs the process,
+>   uninterruptibly.** Measured while mutation-testing the above. A coroutine wrapping a synchronous
+>   call has **no internal suspension point**, so there is no `await` boundary for a `CancelledError`
+>   to land on: `asyncio.wait_for` cannot preempt it, the timeout never fires, and one core sits at
+>   99.9% until the process is killed from outside the container. This is worth knowing twice over.
+>   It is a *stronger* proof that the loop was blocked than an elevated p50 would be — and it means a
+>   `wait_for` hang-guard around such a batch protects only against a **partial** regression (one that
+>   still yields occasionally), never against the total case. Closing that properly needs an OS-thread
+>   watchdog with a hard `os._exit`; judged disproportionate, and recorded rather than assumed away.
+> - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
+>   today (counts, not text). Same "clean today" argument as the `httpcore` note.
+> - **The production image has no `pytest`**, so AC-50's in-image render check needs a per-invocation
+>   install. A `test` build target on `production` is the call; nobody has made it.
+> - **Still open from 1.4:** very long CVs can exceed the per-attempt LLM timeout; beat is invisible
+>   to `/health/ready`; the editor is not lazy-loaded (530 kB of TipTap on a page where nobody edits).
 >
 > **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
-> passes and pushes images to GHCR.
+> pushes images to GHCR.
 >
-> **The deploy path is still unproven, and one part of it is worse than unproven.** There is no VDS,
-> so `deploy` fails at the SSH sync — expected. But the `production` environment has **zero
-> protection rules**, so the "manual-gated deploy" this file and `docs/cicd.md` both describe does
-> not exist: the job has the `environment:` hook and nothing attached to it. Today a missing
-> `SSH_KEY` is what stops a release, which is an accident rather than a control. **Configure a
-> required reviewer on the `production` environment before setting the SSH secrets**, or the first
-> merge after they land deploys unattended.
+> **The deploy path is still unproven, but the gate is now real.** There is no VDS, so `deploy` would
+> fail at the SSH sync — expected. **Corrected 2026-09-19, by reading the API rather than this file:**
+> the `production` environment now carries **two protection rules** — a `required_reviewers` rule
+> naming the repository owner, and a `branch_policy` limiting deployments to protected branches. The
+> "manual-gated deploy" this file and `docs/cicd.md` describe therefore **does** exist. An earlier
+> revision of this paragraph said the environment had zero protection rules and that a missing
+> `SSH_KEY` was the only thing stopping a release; that was true when written and **was repeated for
+> a whole slice after it stopped being true**. The repo also currently holds **no secrets at all**
+> (`gh secret list` is empty), so a merge to `main` runs `build` and then *waits* for a human.
 >
-> Three ADRs were added by 1.2, two of them tracked in git for the first time: `.gitignore` excluded
-> all of `docs/`, which meant ADR-0012 — the contract the SSRF adapter was built against — was
-> absent from its own review. `docs/adr/**` and `docs/constitution.md` are now tracked; the PRD,
-> the specs and the infra notes stay local. **The repository is public**, so anything added to
-> `docs/adr/` is published the moment it lands.
+> The standing rule that produced the original warning still holds and is worth keeping: **a control
+> nobody has verified is a belief, not a control.** Check it with
+> `gh api repos/<owner>/<repo>/environments/production` before trusting either this file or the
+> deploy docs — including this sentence.
+>
+> `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, the specs and the infra notes stay
+> local. **The repository is public**, so anything added to `docs/adr/` is published the moment it
+> lands.
 >
 > The harness was ported from the muzbar.com project's SDLC and adapted to this stack. Four things
 > were changed deliberately rather than copied, each because of a documented failure there: the
@@ -225,6 +296,9 @@ make check               # all of the above — run before every commit
 make check.static        # every gate EXCEPT pytest/vitest — the RED commit of a TDD cycle only
 
 # Guest retention (ADR-0006) — rehearse, do not discover. See docs/infrastructure.md.
+# Unlinks rows AND files; since slice 1.5 the file half includes rendered exports (PDF/DOCX) next
+# to uploads, so the backlog count below reads higher after that slice than it used to for the
+# same number of guest sessions — not itself a sign of anything wrong.
 make purge.dry                                     # report only; deletes nothing
 make purge limit=50                                # a small, explicit bite
 make purge                                         # a full run
@@ -345,7 +419,15 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `infrastructure/tasks/app.py`'s comment). **A local mutation test of a queue declaration re-poisons
   the dev broker too**, because `watchmedo` restarts the worker on the edited file. At `/verify` that
   happened to an agent that already knew about this trap. After any change to `task_queues`, compare
-  `_kombu.binding.*` against the new declarations.
+  the broker's binding sets against the new declarations — but read them correctly: kombu names a
+  binding set after the **exchange**, not the queue, so with all queues on the one default `celery`
+  exchange (`task_default_exchange`, unchanged through slice 1.5's third queue), the healthy state is
+  **three members in the single set `_kombu.binding.celery`** — `_kombu.binding.tailoring` and
+  `_kombu.binding.export` do not exist at all, and finding "one member each in three sets" describes a
+  broker with three exchanges, not this one. A stale binding is a **fourth** member of
+  `_kombu.binding.celery`, which is exactly the shape the `SREM` example above deletes. Also:
+  `CELERY_BROKER_URL` is db `/1` — `redis-cli` without `-n 1` reads db `0`, where every set is empty,
+  which reads as a clean broker for the wrong reason.
 - **Every container running application code appears in the deploy's `pull` list and in the
   image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
   neither and ran a stale image for four releases; the only symptom was behaviour not matching the

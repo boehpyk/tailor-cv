@@ -119,18 +119,35 @@ export interface WorkspaceStubs {
   readonly createRun?: () => Promise<Response>;
   /** Keyed by run id. Each handler receives the 1-based call number for THAT id. */
   readonly runDetail?: Record<string, (callNumber: number) => Promise<Response>>;
+  /**
+   * `GET /api/tailoring-runs/{id}/exports` — the export bar's own list query, keyed by run id like
+   * `runDetail`. **Defaults to a resolved `{ items: [] }`, not an unhandled-call rejection**: F8
+   * found that every `RunPage` test whose run reaches `succeeded` mounts `ExportBar`
+   * (`RunPage.tsx` renders it above `DocumentWorkspace` on that one status), and before this
+   * default existed every such test silently exercised the bar's *"We couldn't check your
+   * downloads"* error state instead of the idle one, because the call fell through to this stub's
+   * catch-all rejection. A test that wants a specific export list — jobs in flight, an error, a
+   * particular byte size — still overrides this per run id.
+   *
+   * **Resolved, not "fall through and let the caller supply it"**: `useExportJobs`'s `retry` is a
+   * function, not `false` (its own docstring says so — it overrides the test client's default), so
+   * an unstubbed rejection here would retry three times with backoff and could leave a timer
+   * in flight after a test that never awaited it ends.
+   */
+  readonly exports?: Record<string, (callNumber: number) => Promise<Response>>;
 }
 
 /**
- * A `fetch` stub routing on URL and method, covering the five endpoints the workspace and the run
+ * A `fetch` stub routing on URL and method, covering the six endpoints the workspace and the run
  * page read between them: the two intake/posting lists (unchanged since 1.1/1.2), the run list, run
- * creation, and one run's detail while polling. Each stub defaults to an empty/never-called
- * response so a test only wires the endpoints it actually exercises, and an unhandled call rejects
- * loudly rather than hanging — the same shape `TailorPanel.test.tsx`'s `stubFetch` used, generalised
- * beyond one panel's needs.
+ * creation, one run's detail while polling, and one run's export list. Each stub defaults to an
+ * empty/never-called response so a test only wires the endpoints it actually exercises, and an
+ * unhandled call rejects loudly rather than hanging — the same shape `TailorPanel.test.tsx`'s
+ * `stubFetch` used, generalised beyond one panel's needs.
  */
 export function stubWorkspaceFetch(stubs: WorkspaceStubs): ReturnType<typeof vi.fn> {
   const detailCallCounts = new Map<string, number>();
+  const exportsCallCounts = new Map<string, number>();
   const fetchMock = vi.fn((input: string | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
     const method = init?.method ?? 'GET';
@@ -159,6 +176,20 @@ export function stubWorkspaceFetch(stubs: WorkspaceStubs): ReturnType<typeof vi.
       }
       const callNumber = (detailCallCounts.get(id) ?? 0) + 1;
       detailCallCounts.set(id, callNumber);
+      return handler(callNumber);
+    }
+    const exportsMatch = /^\/api\/tailoring-runs\/([^/]+)\/exports$/.exec(url);
+    if (exportsMatch) {
+      const id = decodeURIComponent(exportsMatch[1] ?? '');
+      const handler = stubs.exports?.[id];
+      if (handler === undefined) {
+        // The documented default (see `WorkspaceStubs.exports`'s docstring): resolved, not
+        // rejected, and scoped to this one path — never a catch-all, which would also answer
+        // `/health/ready` and take `SystemStatus` down through the route tree's error boundary.
+        return Promise.resolve(jsonResponse(200, { items: [] }));
+      }
+      const callNumber = (exportsCallCounts.get(id) ?? 0) + 1;
+      exportsCallCounts.set(id, callNumber);
       return handler(callNumber);
     }
     return Promise.reject(new Error(`unhandled fetch: ${method} ${url}`));

@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
-from tailorcraft.infrastructure.api.routers import health, intake, posting, tailoring
+from tailorcraft.infrastructure.api.routers import export, health, intake, posting, tailoring
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -210,6 +210,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(intake.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
+    # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and
+    # spells full paths for two resource shapes, so it overlaps `tailoring`'s prefix. Starlette
+    # matches in registration order, and no route here shadows one above — every export path
+    # under `/api/tailoring-runs/...` ends in a segment (`/exports`, `/download`) that the
+    # tailoring router has no route for. Adding a route to either, check that again.
+    app.include_router(export.router)
 
     return app
 

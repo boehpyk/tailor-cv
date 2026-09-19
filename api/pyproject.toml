@@ -21,6 +21,7 @@ dependencies = [
     "structlog>=24.4",
     "sentry-sdk[fastapi,celery]>=2.19",
     "pypdf>=5.1",
+    # Imported by exactly one module: tailorcraft.infrastructure.export.docx.
     "python-docx>=1.1",
     # FastAPI's own multipart parser (Starlette's `request.form()`) is a thin wrapper over this
     # library and raises at import time without it — required as of T24, the first endpoint that
@@ -56,6 +57,19 @@ dependencies = [
     # constraint on our web server picked up from an unrelated library. Worth remembering the next
     # time a `uv lock` moves a package nobody named.
     "google-genai>=2.23",
+    # The rendering pipeline (ADR-0017) — Markdown to normalized tokens to sanitized HTML to PDF,
+    # the same tokens to DOCX and plain text. Added by slice 1.5, the slice that first renders a
+    # tailored document to a downloadable file.
+    #
+    # Imported by exactly one module: tailorcraft.infrastructure.export.pdf.
+    "weasyprint>=63",
+    # The parser itself (`MarkdownIt`) is imported by exactly one module:
+    # tailorcraft.infrastructure.export.tokens. Its `Token` type is the pipeline's own data type, so
+    # the three walkers import that one name for their signatures — which is the opposite of a
+    # vendor leak: it is what lets the parse happen once, in one place.
+    "markdown-it-py>=3.0",
+    # Imported by exactly one module: tailorcraft.infrastructure.export.html.
+    "nh3>=0.2",
 ]
 
 [dependency-groups]
@@ -155,6 +169,15 @@ ignore_missing_imports = true
 module = ["trafilatura.*"]
 ignore_missing_imports = true
 
+# WeasyPrint 70 ships no py.typed and has no stubs on typeshed (checked, not assumed — `markdown_it`
+# and `nh3` both DO ship type information, so only this one needs an entry). The import is confined
+# to `infrastructure/export/pdf.py`, whose two functions are fully annotated, and the one value that
+# crosses back out of the untyped surface — `write_pdf`'s return — is narrowed with an `isinstance`
+# rather than a `cast`, so `Any` stops inside that module.
+[[tool.mypy.overrides]]
+module = ["weasyprint.*"]
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------------------
 # pytest
 # ---------------------------------------------------------------------------
@@ -226,6 +249,7 @@ forbidden_modules = [
     "celery", "redis", "kombu",
     "httpx", "requests", "structlog", "sentry_sdk",
     "google",
+    "weasyprint", "nh3", "markdown_it", "docx",
 ]
 
 [[tool.importlinter.contracts]]
@@ -238,4 +262,5 @@ forbidden_modules = [
     "celery", "redis", "kombu",
     "httpx", "requests", "sentry_sdk",
     "google",
+    "weasyprint", "nh3", "markdown_it", "docx",
 ]

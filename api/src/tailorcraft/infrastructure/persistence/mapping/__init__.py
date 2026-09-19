@@ -21,13 +21,20 @@ def load_all() -> None:
     table (the mapping module records both reasons), so its position after `intake` and `posting`
     here is alphabetical tidiness rather than a dependency — only its position after
     `identity.guest_session` is load-bearing.
+
+    `export_job` is the same shape one slice later: it names a `tailoring_run_id` with no foreign key
+    to `tailoring_run`, and its only real dependency is the `guest_session_table.c.id` its cascading
+    FK references. It is imported **last** rather than alphabetically first, so that this list reads
+    in the order the schema was built — and so that the one import whose position matters
+    (`guest_session`, still first) keeps looking like the rule rather than the exception.
     """
     from tailorcraft.infrastructure.persistence.mapping.identity import guest_session
     from tailorcraft.infrastructure.persistence.mapping.intake import base_cv
     from tailorcraft.infrastructure.persistence.mapping.posting import job_posting
     from tailorcraft.infrastructure.persistence.mapping.tailoring import tailoring_run
+    from tailorcraft.infrastructure.persistence.mapping.export import export_job  # isort: skip
 
     # Imported for their side effect (each module calls `map_imperatively` at import time); the
     # assignment silences "unused import". A module missing from this list is silently unmapped —
     # which is why the list is explicit rather than a directory scan.
-    _ = (guest_session, base_cv, job_posting, tailoring_run)
+    _ = (guest_session, base_cv, job_posting, tailoring_run, export_job)

@@ -24,6 +24,11 @@ from celery import Celery
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from tailorcraft.application.export.download_export_file import DownloadExportFile
+from tailorcraft.application.export.get_export_job import GetExportJobForSession
+from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
+from tailorcraft.application.export.render_document_inline import RenderDocumentInline
+from tailorcraft.application.export.request_export import RequestExport
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
 from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
@@ -35,6 +40,11 @@ from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunF
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
+from tailorcraft.domain.export.ports import (
+    DocumentRendererPort,
+    ExportJobRepository,
+    ExportQueuePort,
+)
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
@@ -56,6 +66,8 @@ from tailorcraft.infrastructure.api.guest_session import (
 )
 from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
+from tailorcraft.infrastructure.export.queue import CeleryExportQueue
+from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
@@ -651,3 +663,198 @@ def get_revise_tailored_document(
 
 
 ReviseTailoredDocumentDep = Annotated[ReviseTailoredDocument, Depends(get_revise_tailored_document)]
+
+
+# ---------------------------------------------------------------------------------------------
+# export — I16. Same rule as every section above: **a port with no binding is a bug.** This slice
+# adds three ports — `ExportJobRepository`, `DocumentRendererPort`, `ExportQueuePort` — and they
+# are checked against *both* composition roots, because the boundaries split them differently:
+#
+#   * `ExportJobRepository` is bound in both. Here, the bare adapter; in
+#     `tasks/container.py`, `CommittingExportJobRepository`. Same port, two units of work.
+#   * `DocumentRendererPort` is bound in both, and for two different deliveries. Here it renders
+#     `md`/`txt` **inside the request**; in the worker it renders `pdf`/`docx`. One adapter, one
+#     set of defaults, two callers — and that is why `MarkdownDocumentRenderer(settings)` is
+#     written identically in both places, with neither passing the `url_fetcher`/`sanitize` seams.
+#   * `ExportQueuePort` is bound **here only**. The API publishes; the worker consumes. A worker
+#     that could enqueue its own renders is a loop nobody asked for.
+#
+# Neither file is the whole list; technical-plan.md's port list is, and it is checked against both.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_export_job_repository(session: SessionDep) -> ExportJobRepository:
+    """Binds `ExportJobRepository` -> `SqlAlchemyExportJobRepository` (ADR-0007).
+
+    Deferred import, for the same mapper-configuration reason `get_base_cv_repository` and
+    `get_tailoring_run_repository` both document: that module reads `ExportJob._id` as a plain
+    attribute at *import* time to build its `InstrumentedAttribute` casts, and those only exist once
+    `configure_mappings()` has run — which in tests is a session-scoped fixture that runs long after
+    `tests/conftest.py` has imported this module. By request time, when this function is actually
+    called, mappings are always configured.
+
+    The **bare** adapter — not `tasks/container.py`'s `CommittingExportJobRepository`. The unit of
+    work here is the request (`get_session` commits once, at the end); in the worker it is the
+    individual write, because `RenderExportJob` must make `rendering` visible to a polling client
+    before it spends seconds inside WeasyPrint. Same port, two boundaries, and the difference
+    between the two bindings *is* the boundary.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
+        SqlAlchemyExportJobRepository,
+    )
+
+    return SqlAlchemyExportJobRepository(session)
+
+
+ExportJobRepositoryDep = Annotated[ExportJobRepository, Depends(get_export_job_repository)]
+
+
+def get_document_renderer(settings: SettingsDep) -> DocumentRendererPort:
+    """Binds `DocumentRendererPort` -> `MarkdownDocumentRenderer` (ADR-0017).
+
+    **The strict defaults are the binding**, exactly as `get_llm` refuses to pass its `generate`
+    seam. `MarkdownDocumentRenderer.__init__` takes an optional `url_fetcher` (default
+    `refuse_every_url`) and an optional `sanitize` (default `sanitize_html`); this line passes
+    neither, and neither does the worker's `_build_export_use_case`. Those two lines are the only
+    production constructions of this adapter in the codebase, and a wiring that could reach the
+    network — or skip the sanitizer — from a keyword argument would be a wiring where "WeasyPrint
+    fetches nothing" is a claim rather than a fact (AC-30).
+
+    **The API binds this for the inline half only** (`md`, `txt`): a render inside a request, in a
+    thread, under a 5-second deadline. `pdf` and `docx` are structurally unreachable from here —
+    the query parameter's `Literal["md", "txt"]` and `ExportFormatNotInline` are the two locks — and
+    that is ADR-0005's rule made physical: the cost of the work decides where it runs.
+    """
+    return MarkdownDocumentRenderer(settings)
+
+
+DocumentRendererDep = Annotated[DocumentRendererPort, Depends(get_document_renderer)]
+
+
+def get_export_queue(celery: CeleryDep, settings: SettingsDep) -> ExportQueuePort:
+    """Binds `ExportQueuePort` -> `CeleryExportQueue` (ADR-0005, ADR-0016 (d)).
+
+    Both arguments are passed explicitly because the adapter's constructor has no defaults, which is
+    itself deliberate — `get_tailoring_queue`'s reasoning, one context over:
+    `settings.export_queue_name` is the single place the queue's name is written, and the worker's
+    consumed-queue list (`tasks/app.py`'s `task_queues`) is derived from the same field. A producer
+    publishing to `export` while a worker consumes only `celery` and `tailoring` is a job that
+    queues for ever behind a green health check.
+    """
+    return CeleryExportQueue(celery, settings.export_queue_name)
+
+
+ExportQueueDep = Annotated[ExportQueuePort, Depends(get_export_queue)]
+
+
+def get_export_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds export requests per session and per client IP. **Fails open** — `fail_open=True`.
+
+    The rule from 1.1 (OQ-7), generalized by 1.2 (OQ-8) and applied here for the fourth time: *fail
+    open when the cost is ours and bounded; fail closed when the cost is money or somebody else's
+    infrastructure.* A render costs worker seconds and disk of ours — bounded on three sides by
+    `max_export_jobs_per_session` (40), the 20 MiB output cap and the 24-hour purge — and there is
+    no invoice at the end of it. Redis being down must not stop a person downloading their own CV.
+
+    This is the **middle** of that spectrum, not either end: `get_tailoring_rate_limiter` fails
+    closed because a run spends money on every call; `get_tailoring_revise_rate_limiter` fails open
+    because a save is one `UPDATE`. An export is heavier than a save and free, so it lands here, and
+    X-20 says what a failed-open limiter does: nothing the user can see, one
+    `rate_limiter.unavailable` log line with the namespace and the error type and **never the
+    identifier**.
+
+    Both scopes, unlike the revise limiter's session-only: an export is expensive enough that a
+    script minting fresh sessions is worth bounding by address as well (30/h/session, 60/h/IP).
+    """
+    return RedisFixedWindowRateLimiter(redis, namespace="export:create", fail_open=True)
+
+
+ExportRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_export_rate_limiter)]
+
+
+def get_request_export(
+    jobs: ExportJobRepositoryDep,
+    get_tailoring_run: GetTailoringRunDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RequestExport:
+    """Note the second argument: the `GetTailoringRunForSession` *use case*, not a run repository.
+
+    `RequestExport` reads the run through the use case that already owns "what authorizes access is
+    the link to the session", so the rule is inherited rather than written a sixth time (ADR-0008,
+    X-13) — `get_request_tailoring_run` and `get_revise_tailored_document` give the argument in
+    full. It is also why this provider never mentions `TailoringRunRepositoryDep`: the use case
+    cannot reach a run any other way, so it cannot forget the check.
+    """
+    return RequestExport(
+        jobs,
+        get_tailoring_run,
+        events,
+        clock,
+        max_per_session=settings.max_export_jobs_per_session,
+    )
+
+
+RequestExportDep = Annotated[RequestExport, Depends(get_request_export)]
+
+
+def get_render_document_inline(
+    get_tailoring_run: GetTailoringRunDep,
+    renderer: DocumentRendererDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> RenderDocumentInline:
+    """The one use case in this codebase that **constructs** a domain event rather than releasing
+    one an aggregate recorded — an inline export writes no row, so there is no aggregate to record
+    it — which is why it is handed a `Clock` when the technical plan's constructor list omitted one.
+    `DomainEvent.occurred_at` has no default, deliberately, so that no event can be stamped from a
+    hidden `datetime.now()`."""
+    return RenderDocumentInline(get_tailoring_run, renderer, events, clock)
+
+
+RenderDocumentInlineDep = Annotated[RenderDocumentInline, Depends(get_render_document_inline)]
+
+
+def get_get_export_job(
+    jobs: ExportJobRepositoryDep,
+    runs: TailoringRunRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    clock: ClockDep,
+) -> GetExportJobForSession:
+    """The run repository is here, and it is the exception that proves `get_request_export`'s rule.
+
+    This use case reads a **job**, and it reads the run only to learn one integer — the version the
+    run is at right now, which is what makes `current` computable at the boundary (AC-24). It uses
+    `runs.find`, not `runs.get`: a run that has gone is an ordinary answer on a read of a job that
+    still exists. There is no authorization to inherit from a run here, because the job carries its
+    own `guest_session_id` and *that* is what this use case checks (X-43).
+    """
+    return GetExportJobForSession(jobs, runs, sessions, clock)
+
+
+GetExportJobDep = Annotated[GetExportJobForSession, Depends(get_get_export_job)]
+
+
+def get_list_exports_for_run(
+    jobs: ExportJobRepositoryDep,
+    get_tailoring_run: GetTailoringRunDep,
+) -> ListExportsForRun:
+    return ListExportsForRun(jobs, get_tailoring_run)
+
+
+ListExportsForRunDep = Annotated[ListExportsForRun, Depends(get_list_exports_for_run)]
+
+
+def get_download_export_file(
+    get_export_job: GetExportJobDep,
+    files: FileStoreDep,
+) -> DownloadExportFile:
+    """The first argument is the `GetExportJobForSession` *use case*: the download inherits the
+    poll's authorization and its collapse of "not mine" into "not found" whole (X-43), rather than
+    repeating an ownership check beside a file read — which is the one place in this slice where
+    forgetting it would hand a stranger a stranger's CV."""
+    return DownloadExportFile(get_export_job, files)
+
+
+DownloadExportFileDep = Annotated[DownloadExportFile, Depends(get_download_export_file)]

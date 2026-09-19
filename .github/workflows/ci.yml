@@ -52,13 +52,18 @@ jobs:
 
       - name: WeasyPrint system libraries
         # PDF rendering needs Pango/Cairo/HarfBuzz at RUNTIME. Without them the import succeeds and
-        # the first render fails — so an export test would fail here in a way that looks like a code
-        # bug. Mirrors docker/api/Dockerfile; keep the two in step.
+        # the first render fails — in the worker, where nobody is watching — so an export test would
+        # fail here in a way that looks like a code bug. Fonts matter too: a PDF rendered on a box
+        # with no fonts is a page of boxes.
+        #
+        # KEEP THIS LIST IN STEP WITH `docker/api/Dockerfile`'s WeasyPrint apt-get install (search
+        # that file for this same sentence). This list was missing `fonts-liberation` and `libffi8`
+        # until AC-45/AC-46 caught it — every other gate here stays green with either one missing.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 \
-            libgdk-pixbuf-2.0-0 shared-mime-info fonts-dejavu-core
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 libgdk-pixbuf-2.0-0 \
+            libffi8 shared-mime-info fonts-dejavu-core fonts-liberation
 
       - uses: astral-sh/setup-uv@v5
         with:

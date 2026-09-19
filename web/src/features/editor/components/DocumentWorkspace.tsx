@@ -14,9 +14,32 @@ import type { SaveState } from '../saveState';
 import type { TailoredDocumentKind, TailoringRun } from '@/features/tailoring/types';
 import type { BlockerFunction } from 'react-router';
 
+/**
+ * What a caller may render above the document tabs, as a function of the visible document's save
+ * state. Named because two components declare it and the name says what the argument is for.
+ */
+export type RenderAboveTabs = (saveState: SaveState) => React.ReactNode;
+
 export interface DocumentWorkspaceProps {
   /** A `succeeded` run — both documents present (TR-5). The caller keys this component on `run.id`. */
   readonly run: TailoringRun;
+  /**
+   * Rendered directly above the document tabs, given the **visible** document's `SaveState`
+   * (AC-36, AC-40). `RunPage` passes the export bar; nothing else uses it, and it is optional so
+   * that every 1.4 test which mounts this component unchanged still mounts it unchanged.
+   *
+   * **A render prop rather than an `onSaveStateChange` callback, and the reason is the whole
+   * point of this seam.** The save state is computed by 1.4's machine inside `useDocumentAutosave`,
+   * during render, from a reducer this component does not own. A callback could only hand it
+   * upwards *after* that render, so the parent would need a `useState` to hold it and a
+   * `useEffect` to push it there — a second copy of the state, one render behind the first, which
+   * is the exact pattern the React conventions in CLAUDE.md forbid ("`useEffect` is for
+   * synchronizing with something outside React — not deriving"). It would also re-render the whole
+   * run page on every keystroke's `dirty`, and it would make the gate lie for one frame at the
+   * worst possible moment: the frame in which the user just typed. The render prop moves the
+   * *consumer* to where the state already is, so the state moves nowhere at all.
+   */
+  readonly renderAbove?: RenderAboveTabs;
 }
 
 /** The AC-36 sentence, byte for byte: where the CV now lives, said where it is now written. */
@@ -80,11 +103,18 @@ function holdsUnsavedText(state: SaveState): boolean {
  *
  * `key={run.id}` is on `DocumentEditors`, the component that owns the instances: a different run
  * is a different pair of editors, and nothing recreates an editor because a prop changed.
+ *
+ * `renderAbove` goes **inside** the boundary, because what it renders is a function of the save
+ * state and the save state only exists where the autosave hooks are. So a document the bridge
+ * cannot parse takes the export bar down with the editor: E-29's fallback is read-only, its save
+ * state is not "saved" but *absent*, and a bar rendered there would have to invent one — the one
+ * input AC-40's gate exists to respect. The fallback keeps its own job, which is to put the text
+ * on screen so it can be copied out.
  */
-export function DocumentWorkspace({ run }: DocumentWorkspaceProps): React.JSX.Element {
+export function DocumentWorkspace({ run, renderAbove }: DocumentWorkspaceProps): React.JSX.Element {
   return (
     <EditorErrorBoundary fallback={<EditorFallback run={run} />}>
-      <DocumentEditors key={run.id} run={run} />
+      <DocumentEditors key={run.id} run={run} renderAbove={renderAbove} />
     </EditorErrorBoundary>
   );
 }
@@ -171,7 +201,16 @@ function visibleDocumentOf(segment: string | undefined): TailoredDocumentKind {
  * gone from the server — so the footer becomes the notice that says so, with the link home; the
  * text stays on screen above it for copying out, and nothing navigates by itself.
  */
-function DocumentEditors({ run }: { readonly run: TailoringRun }): React.JSX.Element {
+function DocumentEditors({
+  run,
+  renderAbove,
+}: {
+  readonly run: TailoringRun;
+  // `| undefined` explicitly, because `exactOptionalPropertyTypes` distinguishes "absent" from
+  // "present and undefined", and this is the latter: `DocumentWorkspace` always passes the prop on,
+  // whether or not its own caller supplied one.
+  readonly renderAbove: RenderAboveTabs | undefined;
+}): React.JSX.Element {
   const params = useParams<'document'>();
   const visible = visibleDocumentOf(params.document);
 
@@ -260,6 +299,10 @@ function DocumentEditors({ run }: { readonly run: TailoringRun }): React.JSX.Ele
 
   return (
     <div>
+      {/* The visible document's state, read out of the same record the tabs and the indicator
+          read. It is passed, never lifted: this component still owns nothing it did not own
+          before, and the caller holds no copy of it. */}
+      {renderAbove?.(states[visible])}
       <DocumentTabs runId={run.id} selected={visible} states={states} />
       <SaveIndicator state={states[visible]} />
       <DocumentEditor handle={cv} kind="cv" hidden={visible !== 'cv'} />

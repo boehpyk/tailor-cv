@@ -1,5 +1,5 @@
 """`DomainError` -> `HTTPException` translation for this API's whole HTTP surface — `identity`,
-`intake`, `posting` and `tailoring`.
+`intake`, `posting`, `tailoring` and `export`.
 
 The domain never raises `HTTPException` and never carries a status code (CLAUDE.md, ADR-0004) — this
 is the one module that assigns one, for every `DomainError` this slice's use cases can raise.
@@ -21,6 +21,17 @@ from typing import assert_never
 
 from fastapi import HTTPException, status
 
+from tailorcraft.domain.export.errors import (
+    DocumentRenderFailed,
+    DocumentRenderTimedOut,
+    ExportFormatNotInline,
+    ExportFormatNotQueued,
+    ExportJobNotFound,
+    ExportNotQueued,
+    ExportNotReady,
+    TailoringRunNotExportable,
+    TooManyExportJobs,
+)
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.intake.errors import BaseCvNotFound, InvalidFilename, TooManyBaseCvs
 from tailorcraft.domain.posting.errors import (
@@ -34,7 +45,7 @@ from tailorcraft.domain.posting.errors import (
 )
 from tailorcraft.domain.posting.value_objects import FetchFailureReason
 from tailorcraft.domain.shared.errors import DomainError
-from tailorcraft.domain.shared.files import FileStoreUnavailable
+from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
     BaseCvNotReadyForTailoring,
     EmptyTailoredDocument,
@@ -260,6 +271,37 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
             },
         )
 
+    # **NARROW FIRST, and this ordering is the whole branch.** `StoredFileMissing` is a *subclass*
+    # of `FileStoreUnavailable` (`domain/shared/files.py` says why it is a subclass rather than a
+    # sibling), so the generic 503 below would swallow it and X-47's 410 would never be reachable —
+    # the identical trap `LocalFileStore.get` hit at I8, where `FileNotFoundError` is an `OSError`
+    # and the existing floor caught it first. Two `isinstance` checks in the wrong order is all it
+    # takes, which is why the narrow one is pinned above the wide one with this note between them.
+    #
+    # Mapped here rather than in `routers/export.py::download_export_file`'s own `except` (I16's
+    # open decision #1) because **this slice is the codebase's first caller of `FileStorePort.get`
+    # at all**: no existing response can change, there is exactly one route that can produce either
+    # error today, and putting the pair one line apart in one function is what keeps the ordering
+    # visible to the next reader. A second route that reads the store inherits both answers for
+    # free; a handler-local `except` would have had to remember them.
+    #
+    # 410, not 404: the job resource is right there and answers a poll — it is the *file* that is
+    # gone, and the honest next action is *Export again* rather than "that id does not exist".
+    if isinstance(exc, StoredFileMissing):
+        return HTTPException(
+            status.HTTP_410_GONE,
+            detail={
+                "code": "export_file_gone",
+                "message": "That file is no longer available. Export it again.",
+            },
+        )
+
+    # X-48 / AC-26 **decided: the code is `storage_unavailable`, not `service_unavailable`.** The
+    # spec named the generic one and this branch — already shipped, already asserted green by
+    # `tailoring`'s tests — names the specific one. One condition gets one code, and the specific
+    # code beats the generic: a client that sees `storage_unavailable` knows the store is the part
+    # that is down, where `service_unavailable` (which this API also returns for a dead Postgres)
+    # would say only "something". The spec has been corrected rather than this branch.
     if isinstance(exc, FileStoreUnavailable):
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -327,6 +369,173 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         # `expected_version`.
         return _document_version_conflict(current_version=None)
 
+    # -- export (slice 1.5, ADR-0016 / ADR-0017) ------------------------------------------------
+    # Again a branch in the SAME function, for the reason this module's docstring gives: `deps.py`
+    # and all four routers share one mapping, and one mapping is what keeps four 401s from becoming
+    # four messages.
+    #
+    # The `isinstance` union below IS the specification of what this slice's use cases can raise
+    # across an HTTP boundary, which is why it is written whole at the skeleton stage while the
+    # statuses and codes behind it are not: the tuple is a signature, `_export_error_to_http`'s body
+    # is behaviour. I18 fills it in against the failure contract:
+    #
+    #   TailoringRunNotExportable -> 409 `tailoring_run_not_exportable` (+ `status`)   X-4, X-14
+    #   TooManyExportJobs         -> 409 `too_many_export_jobs` (no number in the body) X-18
+    #   ExportFormatNotQueued     -> 422 `validation_error`                            X-15
+    #   ExportFormatNotInline     -> 422 `validation_error`                            X-1
+    #   ExportJobNotFound         -> 404 `export_job_not_found`                        X-43
+    #   ExportNotReady            -> 409 `export_not_ready` (+ `status`, + `failure_reason`)
+    #                                                                                  X-44, X-45
+    #   ExportNotQueued           -> 503 `queue_unavailable`                           X-22
+    #   DocumentRenderTimedOut    -> 503 `render_timed_out`                            X-6
+    #   DocumentRenderFailed      -> 500 `render_failed` — the floor, and the ONE deliberate 500
+    #                                in this codebase. Order matters: the timeout is a subclass.
+    #                                                                                  X-5
+    #
+    # **Note which two export errors are NOT in this union, and that both absences are structural.**
+    # `StoredFileMissing` (X-47 -> 410) and `FileStoreUnavailable` (X-48 -> 503 `storage_unavailable`)
+    # are mapped *above*, beside the `tailoring` branch that already owned the wider of the two, and
+    # both of I16's open decisions are resolved there with the reasons written at the branches
+    # themselves: the narrow type is pinned above the wide one, and `storage_unavailable` won over
+    # `service_unavailable`.
+    if isinstance(
+        exc,
+        TailoringRunNotExportable
+        | TooManyExportJobs
+        | ExportFormatNotQueued
+        | ExportFormatNotInline
+        | ExportJobNotFound
+        | ExportNotReady
+        | ExportNotQueued
+        | DocumentRenderFailed,
+    ):
+        return _export_error_to_http(exc)
+
+    raise exc
+
+
+def _export_error_to_http(exc: DomainError) -> HTTPException:
+    """Map one `export` `DomainError` to its status and `code` (X-4 … X-22, X-43 … X-45).
+
+    Split out of `domain_error_to_http_exception` for length alone — the union that reaches it is
+    declared at the call site and is the specification of what this slice's use cases can raise
+    across an HTTP boundary. Two orderings inside are load-bearing and neither is arbitrary:
+
+    * `DocumentRenderTimedOut` is tested **before** its `DocumentRenderFailed` base. The subclass
+      ordering is the whole difference between a 503 that invites a retry that can work (X-6) and
+      the 500 that admits a bug (X-5).
+    * The floor is `DocumentRenderFailed` -> **500 `render_failed`**, and it is the one deliberate
+      500 in this codebase. Only the *inline* path can reach it: `RenderExportJob` catches the same
+      family and records it on a committed row, so by the time a render failure crosses HTTP there
+      is no row, nothing was spent, and nothing about the request was wrong. Not a 4xx (the client
+      sent a valid document), not a 503 (a retry renders the same string through the same parser
+      and fails the same way — the code would be a lie the UI would act on). Sentry sees it, with
+      no locals. **Do not "fix" this row into a 503.**
+    """
+    if isinstance(exc, TailoringRunNotExportable):
+        # X-4 / X-14. 409, not 422: the request was well-formed and named a run the caller owns —
+        # it is the run's *state* that conflicts, exactly `tailoring_run_not_editable`'s reasoning
+        # one aggregate over. `status` rides in the body so the client tells "still working, keep
+        # polling" apart from "there is nothing to download" without a second read.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_run_not_exportable",
+                "message": "This run has no documents to export yet.",
+                "status": exc.status.value,
+            },
+        )
+
+    if isinstance(exc, TooManyExportJobs):
+        # X-18. **No number in the body**, unlike `too_many_tailoring_runs`: the cap is an operational
+        # bound on a runaway loop, not a budget the visitor is meant to plan against, and a number on
+        # the wire is a number the UI will eventually render as a quota.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_export_jobs",
+                "message": "You have reached the maximum number of exports for this session.",
+            },
+        )
+
+    if isinstance(exc, ExportFormatNotQueued | ExportFormatNotInline):
+        # X-15 / X-1 — the use cases' own second lock behind each endpoint's literal query/body type.
+        # Reaching this branch means a caller got past the boundary's type, which today is possible
+        # only from a non-HTTP caller; the answer is the **same** generic `validation_error` FastAPI
+        # itself produces for the first lock, so the two locks are indistinguishable on the wire and
+        # neither the code nor a message names the format the caller sent (AC-10's "the honest client
+        # never sends one" — the sentence naming the exports endpoint was struck on 2026-09-17).
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "validation_error",
+                "message": "The request could not be validated.",
+            },
+        )
+
+    if isinstance(exc, ExportJobNotFound):
+        # X-43. The same 404 for "no such id" and "not yours" — the use case collapses the two into
+        # one type for exactly this, because an export job id is both the polling handle and the
+        # download handle, so it is the id worth enumerating and a 403 would say when a guess landed.
+        return HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "export_job_not_found",
+                "message": "No export was found with that id.",
+            },
+        )
+
+    if isinstance(exc, ExportNotReady):
+        # X-44 / X-45. `status` always, `failure_reason` only when it failed — and the key is absent
+        # rather than `null` on a `queued`/`rendering` job, because `ExportNotReady` carries `None`
+        # for every status but `failed` and a present-but-null key would invite the client to read it.
+        detail: dict[str, str] = {
+            "code": "export_not_ready",
+            "message": "That export is not ready to download.",
+            "status": exc.status.value,
+        }
+        if exc.failure_reason is not None:
+            detail["failure_reason"] = exc.failure_reason.value
+        return HTTPException(status.HTTP_409_CONFLICT, detail=detail)
+
+    if isinstance(exc, ExportNotQueued):
+        # X-22, and the twin of `TailoringNotQueued` above with the money removed. 503 and not 500:
+        # nothing about the request was wrong and trying again later is the right advice. By the time
+        # this is raised the job row is committed and re-recorded `failed`/`not_queued` by the
+        # router's second transaction, so the client is not left polling a job that can never run.
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "queue_unavailable",
+                "message": "We couldn't start your export. Please try again.",
+            },
+        )
+
+    if isinstance(exc, DocumentRenderTimedOut):
+        # X-6 — **above** the `DocumentRenderFailed` floor, because it IS one. "It is taking too
+        # long" and "it will not render" are different facts with different next actions, and this
+        # is the one of the two where a retry can genuinely work.
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "render_timed_out",
+                "message": "Preparing that document took too long. Please try again.",
+            },
+        )
+
+    if isinstance(exc, DocumentRenderFailed):
+        # X-5 — see this function's docstring. The one deliberate 500.
+        return HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "render_failed",
+                "message": "We couldn't prepare that document in that format.",
+            },
+        )
+
+    # Unreachable through the union at the call site, and re-raised rather than smoothed into a
+    # plausible 4xx for the reason `domain_error_to_http_exception`'s own floor gives: a type this
+    # mapping does not know about is a bug, and a real 500 is the honest answer to it.
     raise exc
 
 

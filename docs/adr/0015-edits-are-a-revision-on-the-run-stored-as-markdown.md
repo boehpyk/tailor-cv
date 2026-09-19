@@ -196,4 +196,7 @@ path's sanitizer (`nh3`) is 1.5's obligation, handed on the way G-33 handed this
 - **A transition that forgets `_version += 1` is silent.** TR-8's table-driven test is the only
   thing that makes it loud; keep it exhaustive over every named transition, including new ones.
 - **1.5's TXT export** must decide whether "plain text" is the Markdown itself or a marker-stripped
-  rendering. Not decided here.
+  rendering. Not decided here — **decided 2026-09-17 in
+  [ADR-0017](./0017-the-rendering-pipeline-markdown-to-tokens-to-four-formats.md) §3**: a
+  marker-stripped rendering, with `- ` bullets and `1.` numbers kept as plain-text structure.
+  ADR-0017 also executes §2's three obligations and names the owner of each.

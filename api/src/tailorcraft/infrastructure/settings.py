@@ -265,6 +265,40 @@ class Settings(BaseSettings):
     # long render starving a tailoring run. One line now; expensive to retrofit.
     tailoring_queue_name: str = "tailoring"
 
+    # -- Export rendering, limits, caps & queue (slice 1.5, ADR-0016/0017) ----
+    # TXT and Markdown render inline (string manipulation); PDF and DOCX are the expensive ones and
+    # go to the worker on their own named queue, for the same reason `tailoring_queue_name` got one
+    # in 1.3: a long render must not starve a tailoring run sharing the worker's slots.
+    export_queue_name: str = "export"
+    # Per QUEUED render (PDF/DOCX, on the worker). Must sit under the task's soft limit (120) and
+    # hard limit (180) — see the ordering note on `export_stale_after_seconds` below, and the
+    # second `create_celery` guard that makes the hard limit non-negotiable.
+    export_render_timeout_seconds: int = 60
+    # Per INLINE render (TXT/Markdown, in the API request). A 20,000-character document parses in
+    # milliseconds, so this is the backstop for something pathological, not the mechanism that keeps
+    # an inline render fast.
+    export_inline_timeout_seconds: int = 5
+    # A renderer bug (an infinite table, a runaway image) must not be free to fill the uploads
+    # volume that `api` and `worker` share.
+    export_max_file_bytes: int = 20 * 1024 * 1024
+    # How long an export job may stay `rendering` before the stale-job sweep
+    # (`AbandonStaleExportJobs`, beat, every 60 s) records it `failed` / `abandoned`. Above the hard
+    # limit (180) for 1.3's reason, restated for this job: at or below it, the sweep can abandon a
+    # render that is still running, and the worker's later success then meets a row the sweep
+    # already decided. `create_celery` refuses to start otherwise (AC-20) — see that guard.
+    export_stale_after_seconds: int = 300
+    # Per session. Fails OPEN (`export:create`, `fail_open=True`): a render costs worker seconds and
+    # disk of ours, bounded by the per-session cap below and the purge — there is no invoice, unlike
+    # `tailoring_rate_limit_per_hour`, which fails closed because that endpoint spends money.
+    export_rate_limit_per_hour: int = 30
+    # Per client IP, because a guest can always mint a new session — the per-session limit alone
+    # bounds nothing.
+    export_rate_limit_per_ip_per_hour: int = 60
+    # A cross-aggregate cap enforced in the use case, not on `ExportJob` itself — the rule spans
+    # every export a session owns, which no single job can know. 2 documents x 2 formats x a
+    # generous number of re-exports, bounded by the purge.
+    max_export_jobs_per_session: int = 40
+
     # NOT settings, deliberately, and this list is the answer to "why is X not configurable?":
     #
     #   * `TailoredCv`'s and `CoverLetter`'s length floors and ceilings. They live in the value

@@ -8,8 +8,12 @@ FROM python:3.13-slim AS base
 # WeasyPrint renders PDFs (ADR-0005) and needs real system libraries — Pango, Cairo, HarfBuzz and
 # fontconfig. This is the least obvious dependency in the stack: without them the import succeeds
 # and the *first render* fails at runtime, in the worker, where nobody is watching. Fonts matter
-# too — a PDF rendered on a box with no fonts is a page of boxes. Mirrored in .github/workflows/ci.yml;
-# keep the two lists in step.
+# too — a PDF rendered on a box with no fonts is a page of boxes.
+#
+# KEEP THIS LIST IN STEP WITH `.github/workflows/ci.yml`'s "WeasyPrint system libraries" step
+# (search that file for this same sentence). The two drifted once already — CI was missing
+# `fonts-liberation` and `libffi8` — and a missing package there fails silently too: `ruff`,
+# `mypy` and every non-rendering test stay green, and only a PDF-rendering test (AC-46) notices.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b libcairo2 libgdk-pixbuf-2.0-0 \
         libffi8 shared-mime-info fonts-dejavu-core fonts-liberation \
@@ -35,8 +39,15 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
 WORKDIR /app
 
-# Uploaded and generated files live on a volume shared with the worker (ADR-0006).
-RUN mkdir -p /var/lib/tailorcraft/uploads
+# Uploaded and generated files live on a volume shared with the worker (ADR-0006). `state` is
+# beat's schedule database (docker-compose.yml's `beat_state` volume). Both are pre-created here,
+# in the image, so that when Compose mounts an EMPTY named volume over them Docker seeds the
+# volume from the image directory's own ownership instead of creating the mount point as root:root.
+# Without this, `state` doesn't exist in the image at all, the volume mounts as root-owned, and
+# beat — which runs as `USER app` below, unlike the dev target — crash-loops on
+# `PermissionError: [Errno 13] Permission denied: '.../celerybeat-schedule'`. Caught at /verify
+# (slice 1.5, V1): invisible in dev because the dev override never switches off root.
+RUN mkdir -p /var/lib/tailorcraft/uploads /var/lib/tailorcraft/state
 
 # ---------------------------------------------------------------------------
 FROM base AS deps
@@ -69,7 +80,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # Run as a non-root user. This process writes uploaded CVs — files whose names come from strangers —
 # into a mounted volume. Root is not the account that should be doing that.
 RUN useradd --create-home --uid 1000 app \
-    && chown -R app:app /app /opt/venv /var/lib/tailorcraft/uploads
+    && chown -R app:app /app /opt/venv /var/lib/tailorcraft/uploads /var/lib/tailorcraft/state
 USER app
 
 EXPOSE 8000
