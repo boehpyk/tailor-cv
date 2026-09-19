@@ -111,15 +111,27 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > - **`test_document_renderer.py` writes a float into an `int` settings field** via `model_copy`,
 >   which does not validate. The timeout branch is proved against a value the type forbids. A settings
 >   field a test must lie about is a hint the field wants to be a float.
-> - **AC-11's loop-liveness test is load-sensitive and has failed once in `make check`.** It asserts a
->   **p50** of `/health/live` latency while 20 CPU-bound renders run, and on a loaded host that p50
->   can drift past its 5 ms bound. Observed: one failure inside a full-suite run, then five passes
->   (four isolated, one full-suite) with nothing changed. The max-latency clause was already struck
->   for the same underlying reason — GIL contention among genuinely concurrent CPU-bound threads. It
->   is a real guard (a synchronous parse *on* the loop would destroy p50, not merely the tail), so the
->   answer is not to delete it; but a timing assertion in the Definition-of-Done chain will eventually
->   fail on someone's busy laptop and be believed. Whoever next touches it should decide between a
->   looser bound and a `slow`/opt-in mark.
+> - **A timing test's precondition can scale inversely with machine speed — AC-11's did, and it went
+>   red in CI.** The loop-liveness test asserts a **p50** of `/health/live` latency while 20 CPU-bound
+>   renders run, behind a floor of "at least 20 samples". The flake was **bidirectional**: a loaded
+>   host drifts p50 past its bound, and a *fast* host finishes the fixed 240-render batch inside 16
+>   sampler ticks and trips the floor instead. GitHub's runner hit the second — with sampled latencies
+>   of **0.5 ms**, i.e. the property under test holding comfortably while its scaffolding failed.
+>   The floor was right; **coupling it to how long the work happened to take was not**. The renders now
+>   run until the sampler signals it has its 20 samples, so the batch duration is an *output* rather
+>   than an assumption, and the count is a self-check on an invariant instead of a race.
+>   **`tests/integration/adapters/test_posting_fetcher_event_loop.py` has the identical latent shape**
+>   — the same `len(latencies) >= 20` floor, coupled to a four-fetch batch. It has not flaked, probably
+>   because network I/O plus `trafilatura` is slow enough; fix it the same way if it ever does.
+> - **Dropping `asyncio.to_thread` from the renderer does not slow the loop — it hangs the process,
+>   uninterruptibly.** Measured while mutation-testing the above. A coroutine wrapping a synchronous
+>   call has **no internal suspension point**, so there is no `await` boundary for a `CancelledError`
+>   to land on: `asyncio.wait_for` cannot preempt it, the timeout never fires, and one core sits at
+>   99.9% until the process is killed from outside the container. This is worth knowing twice over.
+>   It is a *stronger* proof that the loop was blocked than an elevated p50 would be — and it means a
+>   `wait_for` hang-guard around such a batch protects only against a **partial** regression (one that
+>   still yields occasionally), never against the total case. Closing that properly needs an OS-thread
+>   watchdog with a hard `os._exit`; judged disproportionate, and recorded rather than assumed away.
 > - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
 >   today (counts, not text). Same "clean today" argument as the `httpcore` note.
 > - **The production image has no `pytest`**, so AC-50's in-image render check needs a per-invocation

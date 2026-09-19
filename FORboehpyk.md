@@ -2072,6 +2072,73 @@ of them is worth keeping as a rule: a cast written to let a RED test compile aga
 does not exist yet is legitimate scaffolding — and **a RED-phase escape hatch that outlives its RED
 is indistinguishable from a suppressed error.** Remove it in the GREEN.
 
+### The test that failed because the machine was fast
+
+This one arrived after `/verify` had already passed, from CI, which is the right place for it to
+arrive from.
+
+The export slice has a test that asks a blunt question: while twenty CPU-bound renders run
+concurrently, does the event loop still answer `/health/live` promptly? It hammers that endpoint on
+a 1 ms cadence, collects the latencies, and asserts a **p50 under 5 ms**. Before it concludes
+anything it checks it has at least twenty samples — because a p50 over three numbers is not a p50.
+
+It went red on GitHub's runner:
+
+```
+only 16 /health/live samples were taken during the 20 concurrent renders
+assert 16 >= 20
+latencies: [0.00145, 0.00050, 0.00050, 0.00051, ...]
+```
+
+Read the numbers before the message. Half a millisecond. The loop was *superb*. The property the
+test exists to guard held with enormous margin — and the test failed anyway, on its own
+precondition, because the renders finished before the sampler could take twenty ticks.
+
+Each worker rendered a fixed twelve times, a number chosen so the batch "lasts long enough for the
+sampler to collect its floor". On a fast machine, 240 renders take under 16 ms. **So the guard got
+harder to satisfy the better the machine performed.**
+
+A day earlier the same test had failed on my laptop for the opposite reason — p50 drifting past its
+bound under load — and I had written it up as "will eventually fail on a busy laptop". That was half
+right in the way that is worse than being wrong: it named a real failure mode and implied it was the
+only one. The flake was bidirectional. Slow machines trip the p50; fast machines trip the floor.
+
+The floor itself was never the problem — refusing to draw a conclusion from too little data is
+exactly right. The problem was **coupling it to how long the work happened to take**, which is
+neither controlled by the test nor related to what it measures. The renders now run until the
+sampler signals it has its twenty samples. The batch's duration became an *output* instead of an
+assumption, and the count assertion became a self-check on something guaranteed rather than a race.
+
+### The mutation that would not die
+
+Then the verification turned up something better than the fix.
+
+The rule in this project is that a test claiming to guard a regression must be observed failing when
+you reintroduce it. So: drop the `asyncio.to_thread` hop from the renderer, making the render
+synchronous on the event loop, and confirm p50 collapses.
+
+It did not collapse. It **hung** — one core at 99.9%, zero responses, for eight to ten minutes,
+until the pytest processes were killed from outside the container. The freshly-added
+`asyncio.wait_for(..., timeout=30)` never fired.
+
+The reason is worth carrying well beyond this test. A coroutine that wraps a synchronous call and
+contains **no internal `await`** has no suspension point. `asyncio`'s cancellation is cooperative:
+`CancelledError` is delivered *at* an `await` boundary. If there isn't one, there is nowhere to
+deliver it, and nothing short of an OS signal interrupts the work. `wait_for` does not "stop" a
+coroutine — it asks one to stop at its next opportunity, and a fully synchronous body never has one.
+
+Two things follow. First, this is a *stronger* proof of the property than the one we went looking
+for: not "the loop got slower" but "the loop stopped entirely, and the test harness's own timeout
+could not save it". Second, and more usefully: **a `wait_for` hang-guard around CPU-bound work
+protects only against a partial regression** — something slower, something that still yields
+occasionally. Against the total case it is decorative. Making it real needs an OS-thread watchdog
+with a hard `os._exit`, which was judged disproportionate here and written down rather than quietly
+assumed away.
+
+This is the async lesson CLAUDE.md has been warning about since slice 1.1, met in its purest form.
+"A synchronous CPU-bound call inside an async route blocks the event loop for every concurrent user"
+is the sentence. Watching a timeout fail to fire while a core pegs is the sentence with teeth.
+
 ### The common thread, an eighth time
 
 Day fourteen's bugs lived between a contract and the thing on the other side of it. This round's
@@ -2084,8 +2151,9 @@ incapable of failing.
 
 Every one of them was green. Every one of them was measuring something adjacent to the thing it was
 named after. The tool that found each one was the same, and it is the only one that works: **take
-the thing the test claims to guard, break it on purpose, and check that the test notices.** Four
-times this round that check was run. Four times it changed the answer.
+the thing the test claims to guard, break it on purpose, and check that the test notices.** Five
+times this round that check was run. Five times it changed the answer — and the fifth ran after
+`/verify` had already passed, on a test that was failing while the thing it measured was perfect.
 
 ## What's next
 
@@ -2113,13 +2181,10 @@ Open, and named rather than quietly carried:
 - **A test lies to a settings field.** `model_copy` writes a float into an `int`, and does not
   validate, so the render-timeout branch is proved against a value the type forbids. A field a test
   must lie about is a field that wants to be a float.
-- **A timing assertion sits in the Definition-of-Done chain.** AC-11's loop-liveness test measures a
-  p50 while twenty CPU-bound renders compete, and it failed once during this round's `make check`,
-  then passed five times running with nothing changed. It is a genuine guard — a synchronous parse on
-  the event loop would destroy p50, not just the tail — so deleting it would lose something real. But
-  a wall-clock assertion in a gate everyone runs before every commit will eventually fail on a busy
-  laptop, and the person it fails for will believe it. A looser bound or an opt-in mark; someone has
-  to choose.
+- **`test_posting_fetcher_event_loop.py` carries the same latent shape** AC-11's liveness test just
+  had to have fixed: a "at least 20 samples" floor coupled to how long a fixed batch of work happens
+  to take. It has not flaked, probably because network I/O plus `trafilatura` is slow enough that the
+  sampler always gets there first. Fix it the same way if it ever flares.
 - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
   today — its debug records are counts, not text. That is the same "clean today" argument the
   `httpcore` note already makes, on the one library holding the document.
