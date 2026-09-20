@@ -49,6 +49,11 @@ from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import RedisPurgeLock
+from tailorcraft.infrastructure.retention.log_events import (
+    EVENT_PURGE_COMPLETED,
+    EVENT_PURGE_FAILED,
+    EVENT_PURGE_SKIPPED,
+)
 from tailorcraft.infrastructure.settings import get_settings
 from tailorcraft.infrastructure.tasks.app import (
     PURGE_EXPIRED_GUEST_SESSIONS_TASK_NAME,
@@ -62,9 +67,13 @@ log = structlog.get_logger(__name__)
 # AC-21 names the completion line and its eight fields. The other two share its prefix so that one
 # log search finds a job's skips and failures next to its successes — which for a job whose failure
 # mode is silence is the whole point of searching.
-_EVENT_COMPLETED: Final = "retention.purge_completed"
-_EVENT_SKIPPED: Final = "retention.purge_skipped"
-_EVENT_FAILED: Final = "retention.purge_failed"
+#
+# The names moved to `infrastructure/retention/log_events.py` at T23, when `purge-guests` became the
+# second runner of this use case: the search only works if both entry points spell the line the same
+# way, and two literals that must be identical are one rewording away from not being.
+_EVENT_COMPLETED: Final = EVENT_PURGE_COMPLETED
+_EVENT_SKIPPED: Final = EVENT_PURGE_SKIPPED
+_EVENT_FAILED: Final = EVENT_PURGE_FAILED
 
 
 # `celery` is untyped, so the same narrow ignore as the sweeps'. The signature is fully annotated,
