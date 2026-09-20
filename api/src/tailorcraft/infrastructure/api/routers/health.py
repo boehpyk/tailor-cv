@@ -86,49 +86,31 @@ async def ready(
     return ReadinessResponse(
         ready=all_healthy,
         dependencies=dependencies,
-        jobs=JobsStatus(guest_purge=_skeleton_guest_purge_status(guest_purge)),
+        jobs=JobsStatus(guest_purge=_guest_purge_status(guest_purge)),
     )
 
 
 def _guest_purge_status(job: JobStatus) -> GuestPurgeStatus:
     """Publish the probe's answer as `jobs.guest_purge`.
 
-    **SKELETON (T27): T29 writes this body.** It is a field-for-field copy of `job` — the probe
-    already owns every decision (`stale`'s truth table, the RFC 3339 rendering, the degraded
-    `overdue` and its `detail`), so there is nothing for this function to compute and nothing for it
-    to re-derive. That is the intended shape: a second derivation of `stale` here is exactly the
-    defect slice 1.5 spent a `/verify` round on.
-    """
-    raise NotImplementedError("T29: copy the probe's JobStatus onto GuestPurgeStatus")
+    A field-for-field copy, and the absence of any arithmetic in here is the design. The probe
+    already owns every decision — `stale`'s truth table, the RFC 3339 rendering, the degraded
+    `overdue` and the `detail` that explains it — so a second derivation at this layer could only
+    ever *disagree* with the one an operator is reading one key over. That is the defect slice 1.5
+    spent a `/verify` round on (the download control that asked the row what a click meant while the
+    copy came from the view), restated in a smaller place: one question, one answer, one source.
 
-
-def _skeleton_guest_purge_status(job: JobStatus) -> GuestPurgeStatus:
-    """The placeholder `jobs.guest_purge` this SKELETON publishes. **T29 deletes it.**
-
-    **Why the `NotImplementedError` is not on this path, which is the one decision in T27 worth
-    arguing.** `/health/ready` is a *shared* route: it already answers three dependency probes that
-    three tests assert on today. A raise here would turn every readiness request into a 500, which
-    fails those three existing tests for a reason that has nothing to do with them — and, worse,
-    would make T28's new assertions fail on a **missing key** rather than on the assertion. An
-    `ImportError` red proves a file is absent, not that an assertion discriminates (sdlc.md §2); a
-    `KeyError` red proves exactly as little. So the skeleton publishes the full seven-key object
-    with nothing computed in it, and T28's tests fail where they should: on `stale`, on `overdue`,
-    on `last_run`.
-
-    The argument that decides it is the same asymmetry the rest of this slice runs on: an
-    over-eager skeleton costs a red that says nothing, and this one costs nothing at all, because
-    `_guest_purge_status` above still carries the unimplemented signature T29 fills in.
-
-    `job` is threaded through unused so that T29's change is one line — swap the call — rather than
-    a change to the handler's shape. The probe therefore genuinely runs in the skeleton, which is
-    also what proves the `asyncio.gather` above works before anybody depends on its answer.
+    Written out field by field rather than `GuestPurgeStatus(**asdict(job))` for the reason both
+    models state in their own docstrings — no field has a default, so adding a field to `JobStatus`
+    without publishing it must be a *type* error here, not a silently missing key. A splat would
+    make the two shapes drift in exactly the way the explicit list refuses to.
     """
     return GuestPurgeStatus(
-        scheduled=False,
-        last_run=None,
-        last_run_age_seconds=None,
-        last_outcome=None,
-        overdue=None,
-        stale=False,
-        detail="not implemented (T27 skeleton)",
+        scheduled=job.scheduled,
+        last_run=job.last_run,
+        last_run_age_seconds=job.last_run_age_seconds,
+        last_outcome=job.last_outcome,
+        overdue=job.overdue,
+        stale=job.stale,
+        detail=job.detail,
     )
