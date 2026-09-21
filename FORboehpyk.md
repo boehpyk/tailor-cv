@@ -2418,6 +2418,214 @@ what you find even when it isn't yours, and don't quietly widen your own scope t
   1 on a supposedly empty database. Scope assertions to ids your test created; an absolute count is
   one stray row away from lying to you.
 
+## What `/verify` found, or: four ways to promise something and not check it
+
+The slice went into `/verify` with 1423 passing tests and came out with 1456. That arithmetic is the
+least interesting part. What matters is that all four things review found were *the same kind of
+thing*, and it is a kind that a green suite is structurally incapable of noticing.
+
+Every one of them was **something the spec promised that no test asserted.**
+
+Not a bug. Not a design flaw. A gap between a document that says "this is guaranteed" and a codebase
+where nothing checks it. The suite was green because the suite never asked.
+
+- **The beat entry and its Celery task had no test whatsoever.** Five acceptance criteria — the
+  schedule, the interval, the queue, the thinness of the task, the absence of retries — and not one
+  line of test between them. Including, and this is the part that should make you wince,
+  `GUEST_PURGE_ENABLED`: the single control keeping the first `DELETE` in this codebase off an
+  automatic schedule before anyone has rehearsed it. **Nothing proved the flag worked.** It happened
+  to. Nobody had checked.
+- **AC-38's privacy test did not exist**, and had never even been given a task number. Meanwhile the
+  spec's Privacy section said the "never logged" list was *"asserted by AC-38's planted-marker test,
+  **not by intention**."* That sentence had been false since the day it was written. It was written
+  precisely to stop someone relying on intention, and then it became the thing being relied on.
+- **R-3 and R-4 named two log events that existed nowhere in the source.** More on this below,
+  because the consequence is funnier and worse than it sounds.
+- **The symlink seam** — a whole story of its own, three sections down.
+
+If you want one transferable idea from this slice, it is this: **a specification is not a test, and a
+sentence in a spec claiming a test exists is worth less than no sentence at all** — because the empty
+spec leaves you suspicious, and the confident one buys your trust for free.
+
+## The job whose failure mode is silence, failing silently
+
+R-3 and R-4 were rows in the failure contract. Each specified a log line: when one session's `DELETE`
+is refused, log `retention.session_purge_failed` with the session id and the error type. Neither
+event name appeared anywhere in `api/src/`. And the handler was worse than missing — it was this:
+
+```python
+except Exception:          # note: no `as exc`
+    sessions_failed += 1
+    continue
+```
+
+The exception was never bound. So `error_type` wasn't merely unlogged, it was **unrecoverable in
+principle**: by the time anyone wanted it, the object was gone.
+
+Now follow it through, because this is where it stops being a missing feature and becomes the slice
+contradicting its own reason to exist. The CLI's batch loop ends with:
+
+```python
+if limit is not None or report.sessions_deleted == 0:
+    break
+```
+
+Perfectly sensible — a batch that deleted nothing has nothing left to try. But candidates arrive
+oldest-expiry-first, and a session whose `DELETE` refuses *permanently* (a lock that never clears, a
+constraint nobody predicted) is never deleted and therefore never leaves the front of the queue. So
+every hour, for ever: the job runs, tries it, fails, deletes the others, stops. The run **exits 0**.
+`overdue` sits above zero and never falls. And nothing, anywhere, names the session or the reason.
+
+This slice exists because *"a job whose only failure symptom is silence cannot be silently broken."*
+That is the sentence in the spec. And the purge had built itself a silent failure one level down,
+inside the very mechanism meant to prevent one.
+
+The fix is the interesting part, because the obvious repair was wrong. There is a `structlog` call
+three lines below that handler. Using it would have worked and would have broken the architecture:
+`application/` does not log, and — less obviously — **a log line emitted from there is a record the
+AC-38 privacy test cannot see.** Instead the use case *returns* its failures (`PurgeReport` grew two
+tuples of frozen value objects) and the two entry points emit them. The layer stays silent, and every
+record the system writes stays inside the privacy test's field of view.
+
+That meant widening `PurgeReport`, whose acceptance criterion pinned it to "counts and instants only"
+with a test asserting the exact field set. **That test went red, which is the mechanism working.** The
+widening got argued in a spec amendment before the test was touched — what forced it, why the
+criterion's *intent* survives (a session id and a class name are not text a user wrote), and what
+rejected alternative was considered and why its precedent didn't transfer. Then the test was widened.
+
+The order matters: argue, then widen. A test that changes in the same commit that makes it pass is
+the failure the whole red-first cycle exists to prevent.
+
+## The same bug three times, or: the thing named is not the thing acted on
+
+You already met the `.part` bug earlier in this chapter — the partial file that survived while a live
+file beside it was deleted. During `/verify` the same shape turned up **twice more**, both in the file
+store, and it is worth laying all three side by side because the pattern is the lesson.
+
+The review flagged something small: `_resolve_contained` calls `Path.resolve()`, and `resolve()`
+follows symlinks. Which means the path handed to `unlink` is the link's **target**.
+
+Here is why that was newly dangerous, and it is a genuinely subtle bit of reasoning. `resolve()` had
+been there since slice 1.1 and had never been a problem, because `delete` was only ever called with a
+`FileRef` derived from a **database row**. The orphan sweep changed the premise: it is the first
+caller in this codebase that deletes by a name it **discovered on disk**. A pre-existing line became a
+deletion primitive the day a new caller arrived with untrusted input.
+
+Plant a symlink at a `FileRef`-shaped key pointing at another session's live CV, and: the scanner
+reports it (the name parses), the cross-check clears it as an orphan (*the link's* key is in no row),
+and the sweep "reclaims" it — **destroying a live, referenced file belonging to a different user**
+while the link itself sits there untouched and the report cheerfully says `reclaimed: 1`.
+
+The scanner, incidentally, was blameless. It passes `follow_symlinks=False` to everything and never
+descends a link. Two components either side of one seam, each locally correct, with **opposite
+symlink policies** — and the bug living in the gap. Its comment even claimed a link "cannot walk this
+job out of the store root," which was true of the walk and quietly false of the pair.
+
+Then, following the fix rather than closing the ticket, a third instance surfaced. `_put_sync` opened
+`<key>.part` with a plain `open()`. The containment guard covered the *final* key; `.part` is a
+different name, so it never applied. So: bytes get written through the link onto someone else's file,
+and then `os.replace` — which renames a link rather than following it — **installs the symlink at the
+real key**, permanently. One upload, an arbitrary file overwritten, and that storage key is a symlink
+from then on.
+
+Three instances, one sentence: **the thing named is not always the thing acted on.** And all three
+were invisible to a recording fake, because a fake has no filesystem and therefore no difference
+between `K` and `K.part`, and no difference between a link and a file. Every one was found by a test
+driving a **real** filesystem.
+
+The repair is uniform, which is the part I'd want to remember. Rather than four arguments about four
+methods, the module docstring now makes one claim: `put` and `get` open `O_NOFOLLOW` and work on the
+**descriptor**; `delete`/`delete_partial` call `unlink`, which removes a link and never its target;
+and `_resolve_contained` refuses a final-component link — *but it is a check-then-use, so it is the
+outer lock and never the only one.* That last clause is the whole reason `O_NOFOLLOW` is there: the
+check and the use are two syscalls, and a name can change meaning in between.
+
+Two details worth stealing:
+
+- **`os.fchmod(fd, …)` instead of `os.chmod(path, …)`.** A descriptor cannot be re-pointed between
+  the open and the chmod. It is also immune to the umask, which `O_CREAT`'s mode argument is not — so
+  the file is now *created* at `0600` rather than created world-readable and narrowed a moment later.
+- **The descriptor-leak fix removed code.** Both paths now pass one `_nofollow_opener` to `open()`'s
+  `opener=` hook. `open()` takes ownership of the descriptor the opener returns, so CPython closes it
+  if anything downstream raises. The leak is gone *by construction* instead of by a handler, at both
+  sites, and `put` lost a local variable in the process.
+
+## The test that was pinning the wrong lock
+
+One more, because it is the most instructive failure of the round and it was mine.
+
+A test called `test_get_translates_eloop_to_file_store_unavailable_not_stored_file_missing` planted a
+symlink, called `get`, and asserted the right exception type. It passed. Its docstring explained that
+the symlink makes `open()` raise `ELOOP`.
+
+It does not. `_get_sync` evaluates `_resolve_contained(ref)` as the *argument* to `open()`, and that
+check refuses the link first — so the exception came from the containment check, `__cause__` was
+`None`, and no `OSError` was ever involved. The assertions were all true. They were pinning the outer
+lock for the third time, while the docstring told any future reader that the opener was covered.
+
+Delete `opener=_nofollow_opener` and that test stays green, under a comment vouching for it.
+
+This is CLAUDE.md's own rule — *a docblock claiming coverage the assertion cannot deliver is the same
+defect one level up* — in its nastiest form, because the false comment is worse than the weak test.
+The fix was to make the test bypass containment so it hits the path it names. The proof is that it
+now **reddens when the opener is removed**, and it demonstrably did not before.
+
+If you take one habit from this: when you write a test for a new guard, delete the guard and watch
+the test fail. If it stays green, you tested something else.
+
+## Two mistakes of mine, recorded because they cost time
+
+**I reported a test failure that wasn't one.** Running the suite twice in a row is an acceptance
+criterion here — a second run that fails means Redis state leaked. I ran it, saw four failures, and
+reported AC-40 as failing. It wasn't. I was running the suite while a review agent ran its own gates
+against the same containers, and `clear_redis` calls `flushdb()`, which is **global**. Each run was
+deleting the other's rate-limiter counters mid-test; the limiters fail open, so a third request that
+should have been `429` came back `201`.
+
+The evidence was in front of me before I reported it: **a different set of unrelated tests failed each
+run, and every one passed in isolation.** That pattern means shared-state contention, essentially
+always. It does not mean a defect in the code under test. I read it the wrong way round.
+
+The durable lesson isn't about me, though — it's that **this suite cannot be run concurrently and
+nothing tells you so.** Reach for `pytest -n`, or just a second terminal, and you get what looks
+exactly like flaky application code. That is now written in `clear_redis`'s own docstring (with the
+fix, if it's ever needed: a per-run key prefix, not a narrower flush, which would bring back the
+leftover-lock hazard) and in CLAUDE.md beside the other Redis warnings.
+
+**I fixed a false claim in two places and missed the third.** A docstring asserted that `error_type`
+could only ever be a class name *structurally*, because `from_exception` was "the only way this value
+is built." Not true: the dataclass constructor is public, and the tests use it directly. It is a
+convention the call sites keep, not a property the type enforces. I corrected it in the value object
+and in the spec — and review found the same claim surviving verbatim in `log_events.py`, in its
+strongest wording, plus a softer fourth copy in the use case.
+
+Four copies of one sentence, and I'd fixed half of them. When a claim is worth stating in more than
+one place, `grep` for the claim before you declare it corrected — the copy you miss is the one someone
+relies on.
+
+## An inconsistency I chose to ship, and wrote down
+
+The symlink fix routes a planted link into the sweep's `unrecognized` count, where it is skipped and
+never deleted. Correct behaviour. But `unrecognized` now means two things: "a stray `.DS_Store`
+someone dropped in" (residue, ignore it) and "a symlink at a key the store would never create, so
+something *else* wrote to this volume" (investigate this now).
+
+A count that means two things is a count nobody acts on, and the weaker meaning is the one that gets
+assumed.
+
+What makes this properly awkward is that **this is the exact argument the slice had already used to
+refuse folding R-38 into `failed`** — *"folding 'we could not even look here' into it would make one
+number mean two things."* Same reasoning, applied in one place and not the other.
+
+The honest fix is a second counter. The call was to document the limitation instead — the two causes
+are indistinguishable from the report, here is the `find -type l` that tells them apart, and the
+counter is the fix if a planted link is ever actually found. That trade is defensible (the trigger
+requires prior write access to the volume) and it is still an inconsistency.
+
+It is in the spec, in writing, labelled as the cost of shipping now. Which is the point: **a known
+inconsistency that is written down is a decision; the same inconsistency undocumented is just a
+mistake nobody has met yet.**
+
 ## What is not done, and why that matters
 
 The purge is built, tested and merged-ready. **The schedule is off.**

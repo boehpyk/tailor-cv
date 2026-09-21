@@ -18,7 +18,8 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: five slices shipped; slice 1.6 built and green, awaiting its rehearsal (2026-09-21).**
+> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS) and awaiting its
+> rehearsal (2026-09-22).**
 > Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
 > jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
 > written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
@@ -46,14 +47,60 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
 >   all of them in code a green suite of 1293 tests was happy with — see below.
 >
-> - **1.6 `retention-guest-purge`** (branch open, **not yet rehearsed**) — the purge, the orphan
->   sweep, the CLI, the beat entry and a Retention block in the status panel. **1423 backend and 532
->   frontend tests**, green twice. `retention` is the first context with **no aggregate** — a policy,
+> - **1.6 `retention-guest-purge`** (branch open, `/verify` **PASS**, **not yet rehearsed**) — the
+>   purge, the orphan sweep, the CLI, the beat entry and a Retention block in the status panel.
+>   **1456 backend and 532 frontend tests**, green twice. `retention` is the first context with **no aggregate** — a policy,
 >   two use cases, two ports (**ADR-0018**) — and `/health/ready` gained `jobs.guest_purge`, the
 >   first thing it reports as a *fact* rather than as readiness (**ADR-0019**). **No migration**, and
 >   that is proven by reading `pg_constraint`/`pg_index` rather than trusting the comments that
 >   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
 >   `overdue` probe **2.1 ms p95** against 20 ms.
+>
+> **`/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
+> four were the same *kind* of gap: something the spec promised that no test asserted.**
+> - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
+>   including `GUEST_PURGE_ENABLED` — the single control keeping the first `DELETE` off a schedule
+>   before the rehearsal. Nothing proved the flag worked.
+> - **AC-38's privacy test did not exist**, and had never been given a task. The spec's own Privacy
+>   section said the "never logged" list was *"asserted by AC-38's planted-marker test, not by
+>   intention"*. That sentence was false for the whole slice. It is true now: markers planted in
+>   every PII field, plus the real storage keys and joined paths, over a real purge **and** a real
+>   orphan sweep on a real filesystem.
+> - **R-3 and R-4 named two log events that existed nowhere in `api/src/`**, and the handler was a
+>   bare `except Exception:` that never bound the exception — so `error_type` was unrecoverable *in
+>   principle*. The consequence is this slice's own thesis one level down: `_purge_batches` breaks on
+>   `sessions_deleted == 0`, so a permanently-refused `DELETE` is retried hourly **for ever**, the run
+>   still **exits 0**, `overdue` sits above zero, and nothing names the session or the reason.
+>   Fixed by **returning** the failures (`PurgeReport` grew two tuples, **AC-4 amended**) rather than
+>   logging from `application/` — which keeps the layer silent *and* keeps every emitted record inside
+>   AC-38's field of view.
+> - **The symlink seam**, below.
+>
+> **The `.part`/symlink pattern appeared three times in one slice, all in the file store, all
+> invisible to a recording fake.** One lesson, worth learning once: *the thing named is not always the
+> thing acted on.*
+> 1. The partial that survived while a live file beside it died (T18b, below).
+> 2. **A symlink whose target died while the link survived.** The scanner passes `follow_symlinks=False`
+>    everywhere and is correct; `_resolve_contained` called `.resolve()`, which **follows**. Opposite
+>    policies either side of one seam. The orphan sweep is the **first caller in the codebase that
+>    deletes by a name it discovered on disk**, which is what turned a pre-existing `resolve()` into a
+>    deletion primitive: a link at a `FileRef`-shaped key is reported by the scanner, clears the
+>    cross-check (the *link's* key is in no row), and is "reclaimed" — destroying a live, referenced
+>    file belonging to a **different session** while the orphan survives.
+> 3. **`_put_sync` opened `<key>.part` with a plain `open()`**, which follows a link — so bytes landed
+>    on the target and `os.replace`, which renames the link rather than following it, then installed
+>    **the link itself** at the real key. One upload overwriting an arbitrary file on the volume, and
+>    that key a symlink from then on. Found by following the fix rather than closing the ticket.
+>
+> **The fix is uniform and is now stated once in the module docstring** so nobody re-derives which
+> path was which: `put` and `get` open `O_NOFOLLOW` through one `_nofollow_opener` passed to
+> `open()`'s `opener=` hook and work on the **descriptor**; `delete`/`delete_partial` call `unlink`,
+> which removes a link and never its target; `_resolve_contained` resolves the **parent** and never
+> the basename, refusing a final-component link — but it is a **check-then-use**, so it is the outer
+> lock and never the only one. `os.fchmod(fd, …)` replaced `os.chmod(path, …)`: a descriptor cannot be
+> re-pointed between the open and the chmod, and `fchmod` is immune to the umask that `O_CREAT`'s mode
+> argument is not. The opener also closed a descriptor leak **by construction** — `open()` owns the fd
+> it returns — which removed code instead of adding a handler.
 >
 > **What 1.6 found that no passing test could:**
 > - **A `.part` file was never deleted, and a live file beside it was.** `FileRef`'s grammar ends
@@ -422,6 +469,17 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   right is to **run the suite twice in a row** — a second run that fails is the classic symptom. A
   leftover *lock* is the dangerous one: the job then does nothing, logs "skipped", and exits 0, so a
   test asserting a successful run passes against a run that never happened.
+  **Run exactly one suite at a time — the suite is not safe to run concurrently, and nothing in it
+  will tell you so.** `clear_redis` calls `flushdb()`, which is **global**: a second pytest process
+  (another terminal, an agent running gates, `pytest -n`) sharing this Redis will delete the first
+  run's rate-limiter counters *mid-test*. The limiters then **fail open**, so a third request that
+  should be `429` returns `201`/`202`, and the knock-on assertions fail with unrelated `409`s.
+  The signature is unmistakable once you know it and baffling until then: **a different set of
+  unrelated tests fails on each run, and every one of them passes in isolation.** That is shared-state
+  contention, never a defect in the code under test — it cost two separate sessions real time during
+  1.6's `/verify`. The same applies to `tailorcraft_test`. Judging suite health from a *subset* run is
+  the milder version of the same error: a subset leaves rate-limiter keys uncleared, and an
+  interrupted run can leave the schema downgraded.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
