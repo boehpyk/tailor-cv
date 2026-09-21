@@ -18,10 +18,11 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: four slices shipped; slice 1.5 verified and in review (2026-09-19).**
-> Phase 1 is under way. The architecture now carries a paid external call, a worker, two scheduled
-> jobs, an unauthenticated *write* to a PII row on a timer, and — new in 1.5 — **a stranger's CV
-> rendered into HTML and written to disk as a file**.
+> **Status: five slices shipped; slice 1.6 built and green, awaiting its rehearsal (2026-09-21).**
+> Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
+> jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
+> written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
+> in two systems at once.**
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
@@ -35,7 +36,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   revision on the run (ADR-0015); one version column refuses a stale edit **and** closes 1.3's
 >   concurrent duplicate delivery. `/verify` took four rounds and ended by re-modelling the autosave
 >   hook as one pure state machine.
-> - **1.5 `export-multi-format-download`** (PR open) — four formats. `md` and `txt` are a
+> - **1.5 `export-multi-format-download`** (PR #7, merged) — four formats. `md` and `txt` are a
 >   `GET` on a representation of the document and leave **no row**; `pdf` and `docx` are an
 >   `ExportJob`, a Celery task on a third queue, a file on the uploads volume and a polled client
 >   (**ADR-0016**). The pipeline is Markdown → tokens (`html=False`) → grammar normalization →
@@ -44,6 +45,61 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   **11 ms** (budget 500 ms), `POST` → `ready` p95 **0.17 s** over 40 real renders (budget 10 s),
 >   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
 >   all of them in code a green suite of 1293 tests was happy with — see below.
+>
+> - **1.6 `retention-guest-purge`** (branch open, **not yet rehearsed**) — the purge, the orphan
+>   sweep, the CLI, the beat entry and a Retention block in the status panel. **1423 backend and 532
+>   frontend tests**, green twice. `retention` is the first context with **no aggregate** — a policy,
+>   two use cases, two ports (**ADR-0018**) — and `/health/ready` gained `jobs.guest_purge`, the
+>   first thing it reports as a *fact* rather than as readiness (**ADR-0019**). **No migration**, and
+>   that is proven by reading `pg_constraint`/`pg_index` rather than trusting the comments that
+>   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
+>   `overdue` probe **2.1 ms p95** against 20 ms.
+>
+> **What 1.6 found that no passing test could:**
+> - **A `.part` file was never deleted, and a live file beside it was.** `FileRef`'s grammar ends
+>   `\.(pdf|docx|txt)$`, so a partial *cannot be a `FileRef`* and travels as base-ref-plus-flag —
+>   and the sweep called plain `delete(ref)` for both, which unlinks the **final** key with
+>   `missing_ok=True`. So the `.part` survived and was reported `reclaimed`; and where a live file
+>   sat at that key it was **deleted**, with the reference cross-check structurally unable to save it
+>   because partials are excluded from it by design. Reachable: `put` #1 succeeds, the task is
+>   redelivered, `put` #2 dies before `os.replace`. **`FileStorePort.delete_partial` is the fix — a
+>   second method, not a boolean**, because a flag threaded from a variable is the shape that caused
+>   it. Found only because a test was rewritten to drive a **real filesystem** instead of a recording
+>   fake: R-36's existing test passed throughout, because a fake has no filesystem and cannot model
+>   the difference between `K` and `K.part`.
+> - **`NotImplementedError` subclasses `RuntimeError`**, so a red-first test asserting "an unexpected
+>   exception propagates" with `pytest.raises(RuntimeError)` passes **vacuously** against a skeleton.
+> - **A `SET` on a pooled connection does not survive a commit** — and it hung CI for twenty minutes.
+>   `SET lock_timeout` was issued once, then a purge that **commits per session** ran; `QueuePool`
+>   hands back a different physical connection after each transaction, so the timeout was never in
+>   force and a deliberately-locked row waited unbounded. Pin one connection and bind the
+>   sessionmaker to *it*, and **commit the `SET`** — a bare `SET` is itself transactional.
+>   **A test that hangs is worse than one that fails**: CI sits on it until timeout and the failure
+>   names nothing.
+> - **`/health/ready` costs ~2.1 s against its own 300 ms budget, and has since Phase 0.**
+>   `probe_celery` is **2128 ms** of it; the new retention probe is **1.8 ms**.
+>   `control.ping(timeout=2.0)` is a broadcast with **no reply limit**, so it waits the whole window
+>   however fast the worker answers — `ping(timeout=2.0, limit=1)` returns the same reply in
+>   **4.0 ms**. Not changed in this slice: it would stop `detail` reporting the worker count, which
+>   is a trade for the owner to make. Owner: `devops`; trigger: before anything relies on this
+>   endpoint's timing.
+> - **The dev uploads volume holds 753 orphaned files out of 827** — residue from 1.1–1.5. The
+>   arithmetic reconciles exactly in both directions (74 referenced keys, 2 of them past the floor),
+>   which is what makes it residue rather than a cross-check that is failing to match.
+> - **`tailorcraft_test` carried a committed, already-expired session**, so `count_expired` returned
+>   1 on an "empty" database. Scope assertions to ids the test created; an absolute count is one
+>   stray row from lying.
+>
+> **Carried out of 1.6, each with an owner and a trigger:**
+> - **The schedule is off.** `GUEST_PURGE_ENABLED=false` until the runbook's rehearsal is done on
+>   real data. The UI's Retention block says so in plain words on every page, which is the guard
+>   against the flag rotting. Owner: the repository owner; trigger: the rehearsal.
+> - **AC-17's uploads/exports split was dropped**, amended on purpose: a `FileRef` is an opaque key
+>   with **one grammar shared by both kinds**, the extension lies (`.pdf` is both), and widening
+>   `ExpiringGuestSession` would contradict AC-4, whose third field's *type is the privacy control*.
+> - **R-38's "counted `failed`" is unreachable** through the port as designed, and the port was
+>   deliberately not widened: `failed` means "we tried to reclaim this and could not", and folding
+>   "we could not even look here" into it would make one number mean two things.
 >
 > **Every gate was verified by running it**: Ruff, mypy `--strict`, import-linter (3 contracts, now
 > with `weasyprint`, `nh3`, `markdown_it` and `docx` on both forbidden lists), pytest, `tsc -b`,
@@ -300,9 +356,15 @@ make check.static        # every gate EXCEPT pytest/vitest — the RED commit of
 # to uploads, so the backlog count below reads higher after that slice than it used to for the
 # same number of guest sessions — not itself a sign of anything wrong.
 make purge.dry                                     # report only; deletes nothing
-make purge limit=50                                # a small, explicit bite
-make purge                                         # a full run
+make purge limit=50                                # a small, explicit bite (one batch, not a loop)
+make purge                                         # a full run — loops batches until empty
 curl -s localhost:8080/health/ready | jq .jobs.guest_purge   # the backlog — the signal to trust
+
+# Orphans: files with no row (the crash window's survivors). Operator-run only, never on beat.
+# Fails CLOSED — if the database cross-check cannot run, it deletes nothing and exits 1.
+python -m tailorcraft.cli purge-guests --orphans --dry-run
+# Exit codes: 0 success (including deleting nothing) · 1 failed · 2 usage · 3 THE LOCK WAS HELD.
+# 3 is the point: a run that did nothing because another holds the lock must not exit 0.
 
 # Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is

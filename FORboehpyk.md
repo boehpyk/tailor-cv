@@ -2222,3 +2222,214 @@ document path exists now, lives for the length of one function call, and never r
 response or Sentry.
 
 The specs die when the features ship. This file doesn't.
+
+---
+
+# Slice 1.6 — retention, or: the first thing that deletes
+
+The previous chapter ended by saying 1.6 is "the slice that finally deletes things." That turned out
+to be the least interesting thing about it.
+
+Here is the honest summary. The purge itself — find expired sessions, delete the rows, unlink the
+files — is about forty lines of application code and it was right almost immediately. What took the
+slice was everything around it: the tests that looked like they were checking something and weren't,
+the fixture that hung CI for twenty minutes, a file-deletion bug that had been latent since 1.1, and
+a two-second health check that nobody had ever timed.
+
+## Deleting is easy. Knowing you deleted the right thing is not.
+
+Start with the shape of the problem, because it explains every decision that follows.
+
+A purge touches **two systems that cannot be committed together**: rows in Postgres, and files on a
+volume. There is no transaction spanning them. So you have to choose which one goes first, and the
+choice is really a choice about *what survives a crash in between*.
+
+- Unlink the file first, crash, and you have a **row pointing at nothing**. A user clicks Download
+  and gets an error. That row is a lie, and nothing can find it except the user who trips over it.
+- Delete the row first, crash, and you have a **file nobody references**. Invisible, harmless,
+  occupying disk — and findable later, because the filename is a UUID and the layout is walkable
+  without the database.
+
+ADR-0006 chose rows-first back in Phase 0, and this slice is where that sentence had to become code.
+"Rows first, *committed*, then files" — the word *committed* is doing real work. An uncommitted
+delete followed by an unlink gives you the broken-download case anyway, on a rollback instead of a
+crash. So the commit is per-session, in the composition root, and the use case never names a
+transaction at all (it may not — that's ADR-0002's layering rule).
+
+The analogy I keep coming back to: it's like demolishing a building and then cancelling the parking
+permit, versus cancelling the permit and then demolishing. Both orders end in the same place. Only
+one of them leaves a hole in the ground that nobody has the paperwork for.
+
+## The bug that three passing tests were happy with
+
+Now the part worth the price of admission.
+
+A file in this system is addressed by a `FileRef` — an opaque key with a strict grammar, ending
+`.pdf`, `.docx` or `.txt`. When we write a file we write it as `<key>.part` first, `fsync`, then
+`os.replace` it onto the real key. That rename is atomic, so a reader never sees half a file, and a
+crash mid-write leaves a `.part` for the sweep to collect. Standard, careful, correct.
+
+Here is the thing nobody noticed: **a `.part` file cannot be a `FileRef`.** The grammar forbids it.
+So when the orphan scanner finds `abc.pdf.part`, it hands back the *base* ref (`abc.pdf`) plus a
+separate `is_partial: true` flag. Perfectly reasonable.
+
+And then the sweep called `files.delete(ref)` — the same call it uses for every other file.
+
+`LocalFileStore.delete` unlinks `root/<ref.key>`. The **final** key. Not the `.part`. With
+`missing_ok=True`, so it doesn't even complain.
+
+Two consequences, and the second one is the bad one:
+
+1. The `.part` is never deleted, and is reported as `reclaimed`. It comes back every sweep, for
+   ever. The report says a thing that did not happen.
+2. **If a file exists at that final key, the sweep deletes the live file.** And partials are
+   deliberately excluded from the "is this referenced?" cross-check — because nothing ever
+   references a `.part` — so the one guard designed to prevent exactly this *cannot fire*.
+
+Is that reachable? Yes, and not exotically. `put` #1 succeeds, so `K` exists and a `ready` row points
+at it. The Celery task is redelivered (which happens — `task_acks_late` doesn't mean what people
+think). `put` #2 starts, writes `K.part`, and the worker dies before `os.replace`. Now both exist,
+`K` is live and referenced, and the next orphan sweep deletes it.
+
+**The test for this behaviour passed the whole time.** It asserted against a recording fake — a stub
+that logs "you called `delete` with this ref". A fake has no filesystem. It cannot tell `K` from
+`K.part`, because on a fake there *is* no difference. The test looked like it guarded the behaviour
+and structurally could not.
+
+The fix took ten minutes. Finding it took rewriting the test to drive a **real** `LocalFileStore`
+over a real temp directory, with real `os.utime` ages — at which point it failed instantly with
+`assert not part_path.exists()` → `assert not True`, and then, worse and better,
+`AssertionError: the live, referenced file must survive the .part reclaim`.
+
+The lesson is already written in this repo, in slice 1.5's notes and in the R-42 row of this slice's
+own failure contract: *assert against direct filesystem checks, not against the report the code
+produced*. It was written down. It still happened. Writing a rule down is not the same as having it
+reach the moment where it applies.
+
+**And the fix itself had a fork in it.** The obvious move is `delete(ref, partial=True)` — one
+method, one flag. I went with a second method, `delete_partial(ref)`, and the reasoning is worth
+keeping: a boolean would have fixed this *instance* and preserved the *shape that caused it*. One
+call site, one flag threaded in from a variable, and the wrong value silently deletes a stranger's
+CV. Two differently-named methods cannot be confused by a caller who forgot which way the flag
+pointed. When the failure mode is "silently destroys data", spend the extra method.
+
+A nice side-effect: adding one method to the `FileStorePort` Protocol produced **twelve
+`mypy --strict` errors across six files** — every test double that claimed to implement the port. The
+contract change proved its own reach. That's the argument for the port being a `Protocol` in
+`domain/` rather than an informal convention, made concretely rather than theoretically.
+
+## The test that hung CI for twenty minutes
+
+Second story, shorter, and it's a pure Postgres lesson.
+
+A test needed to force a `DELETE` to fail mid-batch, to prove the SAVEPOINT contains the failure and
+the rest of the batch survives. The way to do that is hold a row lock from another connection and set
+`lock_timeout` so the purge's delete gives up quickly.
+
+It hung. Not failed — hung, producing zero output, until I killed it by hand.
+
+`pg_stat_activity` told the story: one connection `idle in transaction` holding the lock, two others
+blocked on `Lock: transactionid` with an unbounded wait. The `SET lock_timeout` had simply not
+applied.
+
+Why: **`SET` is per-connection, and the purge commits per session.** SQLAlchemy's `QueuePool` checks
+a connection back into the pool at the end of each transaction and may hand you a different physical
+connection next time. By the time the loop reached the locked row, it was on a connection that had
+never seen the `SET`.
+
+Two-part fix, both parts necessary:
+- **Pin one physical connection** for the whole test (`engine.connect()` once) and bind the
+  sessionmaker to *that*, not to the engine.
+- **Commit the `SET`** — because a bare `SET` is itself transactional and reverts on rollback.
+
+Every pinned connection in that file now also carries `statement_timeout = 5s`, so any future
+accidental lock fails in seconds with a Postgres error naming the timeout, rather than hanging.
+Because here is the thing about a hanging test: **it is worse than a failing one.** A failure names
+its cause in the output. A hang produces nothing, CI sits on it until the job timeout, and whoever
+picks it up starts from zero.
+
+## Two ways to fail, pointing in opposite directions
+
+This slice has two mechanisms that can't reach Redis or Postgres, and they fail **opposite ways** on
+purpose. A reader who meets only one of them will "fix" the other for consistency, so both carry the
+argument at the point of the code.
+
+- **The purge lock fails OPEN.** Redis down? Run the purge anyway. The cost of a skipped purge is a
+  broken privacy promise that compounds every hour. The cost of two overlapping purges is duplicated
+  work on a job that is idempotent by construction — a second `DELETE` affects zero rows, and
+  `delete` is `missing_ok`. The lock is *advisory*; it is not what makes concurrency safe.
+- **The orphan sweep's cross-check fails CLOSED.** Can't ask the database whether a file is
+  referenced? Delete nothing, exit 1. Because deleting a file because you *couldn't ask* is the one
+  irreversible mistake this tool can make.
+
+One sentence generates both: **put a mechanism's failure on the side whose loss is recoverable.**
+Duplicated work is recoverable. A deleted file is not.
+
+There's a subtlety I'd have missed without writing it out: the lock had to return **three** states,
+not a boolean. "I got it", "someone else has it", "I couldn't ask". A boolean collapses the last two,
+and then Redis hiccuping looks identical to a purge already running — so the job skips, logs
+"skipped", and exits 0. Which is precisely the trap: a check asserting "the purge ran successfully"
+passes against a run that never happened.
+
+## A number nobody had ever measured
+
+The acceptance criteria said to measure `/health/ready` against its 300 ms budget. So I did.
+
+**2143 ms p95.** Seven times over.
+
+Before blaming the new probe, I timed each one separately: `postgres` 0.7 ms, `redis` 1.1 ms, the new
+`guest_purge` probe **1.8 ms**… and `celery` **2128 ms**.
+
+`control.ping(timeout=2.0)` is a broadcast with **no reply limit**, so it waits the full two seconds
+regardless of how fast the worker answers. Proved it three ways on the same box, one worker running:
+`ping(timeout=2.0)` → 2038 ms. `ping(timeout=0.5)` → 511 ms. `ping(timeout=2.0, limit=1)` → **4.0 ms**,
+returning *the same single reply*.
+
+This endpoint has cost two seconds since Phase 0. Nobody noticed because nobody timed it — it always
+*worked*, and "works" and "works within budget" are different claims. The deploy's readiness gate
+polls it.
+
+I did **not** fix it, and that restraint is the interesting part. `limit=1` is one keyword, but it
+changes an existing probe's observable output: `detail` currently reports `"N worker(s)"` and with a
+limit it would always say one. The probe's real contract is "did *any* worker answer" — so the count
+is a nicety — but trading it away is a decision for whoever owns that endpoint, not something a
+retention slice should smuggle in. It's recorded with an owner and a trigger instead.
+
+That's the discipline I'd want applied to my own work: **measure everything the criteria name, report
+what you find even when it isn't yours, and don't quietly widen your own scope to fix it.**
+
+## Small things worth keeping
+
+- **`NotImplementedError` subclasses `RuntimeError`.** A red-first test asserting "an unexpected
+  exception propagates" with `pytest.raises(RuntimeError)` passes *vacuously* against a skeleton
+  that raises `NotImplementedError`. It looks like a passing contract test and proves nothing. Pin
+  the exact type.
+- **A skeleton that does nothing satisfies every "absence" assertion.** "The dry run never calls
+  delete" is trivially true of a method whose body is `raise NotImplementedError`. Every absence
+  assertion needs a positive one beside it that actually discriminates.
+- **A method that ignores its own field looks like a bug.** `RetentionWindow.expiry_cutoff(now)`
+  returns `now` and never reads `hours`, because the window was already frozen into `expires_at` when
+  the session started. The plausible "fix" — subtracting the window again — turns a 24-hour promise
+  into a 48-hour one *with no symptom whatsoever*: the job still runs, still logs, still deletes,
+  just a day late. Three parametrized tests over 1h/24h/999h exist solely to catch that edit.
+- **The dev uploads volume had 753 orphaned files out of 827.** The arithmetic reconciles exactly in
+  both directions, which is how you tell residue from a broken cross-check.
+- **The test database had a committed, already-expired session in it** — so `count_expired` returned
+  1 on a supposedly empty database. Scope assertions to ids your test created; an absolute count is
+  one stray row away from lying to you.
+
+## What is not done, and why that matters
+
+The purge is built, tested and merged-ready. **The schedule is off.**
+
+`GUEST_PURGE_ENABLED` ships `false`, because a purge is an irreversible `DELETE` across two systems
+and **has no rollback** — and the first automated run should not also be the first run. The rehearsal
+is a human sequence: dump the database *and* snapshot the volume, dry run, `--limit 50`, confirm the
+backlog fell by exactly 50, full run, check the orphans, and only then flip the flag.
+
+The guard against that flag quietly rotting is not a ticket. It's that the status panel says, on
+every page, in plain words: *"Scheduled guest purge is off — guest data is deleted only when someone
+runs it by hand."* The product prints its 24-hour promise to users in four places. Until that flag
+flips, this slice has made the promise *keepable*, not *kept* — and the UI is honest about which.
+
+That distinction is the whole slice, really. The code was the easy part.
