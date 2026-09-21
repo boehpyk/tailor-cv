@@ -29,11 +29,12 @@ every choice here leans the same way:
   "nothing to do" is the healthy outcome, so the empty line is the proof of life. Beat has no other
   trace: `/health/ready`'s Celery probe pings *workers*, and beat is not a worker (R-10).
 
-**Nothing here can name a person.** The use case's channel is a `PurgeReport` of six counts and a
-flag, and `ExpiringGuestSession` has nowhere to put a CV, a filename or a path — so the line below
-is counts, a duration and a word, by the shape of the types rather than by the author's care
-(Constitution §8, AC-38). The failure line carries `error_type` and never the message: a driver
-error quotes the row it refused, and here the row is a guest session.
+**Nothing here can name a person.** The use case's channel is a `PurgeReport` of counts, a flag and
+two tuples of failure records, and `ExpiringGuestSession` has nowhere to put a CV, a filename or a
+path — so every line below is counts, a duration, a word, an opaque session id and an exception's
+**class name**, by the shape of the types rather than by the author's care (Constitution §8, AC-38,
+and AC-4's amendment). No failure line carries the exception's message and none carries `exc_info`:
+a driver error quotes the row it refused, and here the row is a guest session.
 """
 
 from __future__ import annotations
@@ -50,9 +51,11 @@ from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import RedisPurgeLock
 from tailorcraft.infrastructure.retention.log_events import (
+    EVENT_FILE_UNLINK_FAILED,
     EVENT_PURGE_COMPLETED,
     EVENT_PURGE_FAILED,
     EVENT_PURGE_SKIPPED,
+    EVENT_SESSION_PURGE_FAILED,
 )
 from tailorcraft.infrastructure.settings import get_settings
 from tailorcraft.infrastructure.tasks.app import (
@@ -64,9 +67,10 @@ from tailorcraft.infrastructure.tasks.container import purge_expired_guest_sessi
 
 log = structlog.get_logger(__name__)
 
-# AC-21 names the completion line and its eight fields. The other two share its prefix so that one
-# log search finds a job's skips and failures next to its successes — which for a job whose failure
-# mode is silence is the whole point of searching.
+# AC-21 names the completion line and its eight fields. The other four share its prefix so that one
+# log search finds a job's skips and failures — the run's and the individual sessions' and files' —
+# next to its successes, which for a job whose failure mode is silence is the whole point of
+# searching.
 #
 # The names moved to `infrastructure/retention/log_events.py` at T23, when `purge-guests` became the
 # second runner of this use case: the search only works if both entry points spell the line the same
@@ -74,6 +78,8 @@ log = structlog.get_logger(__name__)
 _EVENT_COMPLETED: Final = EVENT_PURGE_COMPLETED
 _EVENT_SKIPPED: Final = EVENT_PURGE_SKIPPED
 _EVENT_FAILED: Final = EVENT_PURGE_FAILED
+_EVENT_SESSION_FAILED: Final = EVENT_SESSION_PURGE_FAILED
+_EVENT_FILE_UNLINK_FAILED: Final = EVENT_FILE_UNLINK_FAILED
 
 
 # `celery` is untyped, so the same narrow ignore as the sweeps'. The signature is fully annotated,
@@ -159,6 +165,31 @@ async def _purge() -> None:
                 files_unlinked=report.files_unlinked,
                 duration_ms=report.duration_ms,
             )
+
+            # R-3 and R-4: the detail behind `sessions_failed` and `files_failed`, one line per
+            # element, **above** the summary that explains it — a reader scanning downward meets
+            # the individual refusals and then the totals they add up to.
+            #
+            # A run with failures still **completed**: the heartbeat above is written, the line
+            # below is logged, and this task returns normally. `sessions_failed > 0` is a batch
+            # that carried on without those sessions (R-3), not a run that died — that path is the
+            # `except` above, and it emits none of these, because an escaping exception carries no
+            # report at all.
+            #
+            # `warning`, matching `_EVENT_FAILED`: something an operator should act on happened,
+            # and the run's own outcome line is an `info` that cannot say so.
+            #
+            # Neither line can carry a message, an `exc_info`, a `FileRef` or a path — not by care
+            # here but because `SessionPurgeFailure` and `FileUnlinkFailure` have no field to hold
+            # one. `error_type` is `type(exc).__name__` at its only construction site.
+            for session_failure in report.session_purge_failures:
+                log.warning(
+                    _EVENT_SESSION_FAILED,
+                    guest_session_id=str(session_failure.session_id.value),
+                    error_type=session_failure.error_type,
+                )
+            for file_failure in report.file_unlink_failures:
+                log.warning(_EVENT_FILE_UNLINK_FAILED, error_type=file_failure.error_type)
 
             # AC-21's eight fields, every one of them a count, a duration or a flag.
             #

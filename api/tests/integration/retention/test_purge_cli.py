@@ -39,11 +39,11 @@ from uuid import uuid4
 import pytest
 import pytest_asyncio
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from tailorcraft.cli import main
 from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.shared.files import FileRef
+from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.observability import configure_logging
 from tailorcraft.infrastructure.persistence.mapping.identity.guest_session import (
@@ -450,6 +450,221 @@ async def test_no_limit_loops_batches_until_the_backlog_is_empty(
     out = capsys.readouterr().out
     batch_lines = re.findall(r"^  batch \d+:", out, flags=re.MULTILINE)
     assert len(batch_lines) == 4, out  # 2 + 2 + 1, plus the empty batch that stops the loop
+
+
+# --- R-3 / R-4: the two log lines `/verify` found missing, at the CLI entry point -----------------
+#
+# `EVENT_SESSION_PURGE_FAILED` / `EVENT_FILE_UNLINK_FAILED` are asserted here as the literal strings
+# `retention.session_purge_failed` / `retention.file_unlink_failed`, matching every other test in this
+# file (`test_exit_3_when_the_lock_is_already_held`'s `"retention.purge_skipped"` above) rather than
+# importing the constants from `infrastructure/retention/log_events.py` — the two entry points are
+# what must agree with each other, and a test importing the same constant both sides import from
+# would not notice one of them drifting from the string the other still emits.
+
+
+async def _insert_expired_session_with_base_cv(
+    engine: AsyncEngine, files: LocalFileStore, *, expires_at: datetime
+) -> tuple[GuestSessionId, FileRef]:
+    """A committed, expired guest session that owns one real base CV — both the row (so
+    `list_expired` hands the purge a candidate with a file key) and the bytes on disk (so a forced
+    unlink failure is a real `LocalFileStore.delete` call, not a call the purge never had a reason
+    to make). Never cleaned up by the shared `committed` fixture, because it needs a real
+    `AsyncSession` through a repository rather than `_CommittedRows`'s bare `engine.begin()` insert;
+    each test below removes both the row and the file itself.
+
+    The repository, `BaseCv` and its value objects are imported **inside** this function rather than
+    at module scope — the same deferral `test_purge_privacy_log_markers.py` uses and explains at
+    length: `configure_mappings()` (the session-scoped, autouse `_mappings` fixture) only runs at
+    fixture setup, *after* every test module in the run has already been collected and imported, and
+    `repositories/intake/base_cv.py` reads `BaseCv._id` as a plain class attribute at its own import
+    time to build an `InstrumentedAttribute` cast — an attribute that exists only once some mapping
+    module has already run. A module-scope import here reproduces exactly that `AttributeError` at
+    collection.
+    """
+    from tailorcraft.domain.intake.base_cv import BaseCv
+    from tailorcraft.domain.intake.value_objects import CvContentType, OriginalFilename
+    from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
+        SqlAlchemyBaseCvRepository,
+    )
+
+    session_id = GuestSessionId(uuid4())
+    async with engine.begin() as conn:
+        await conn.execute(
+            guest_session_table.insert().values(
+                id=session_id,
+                token_hash=secrets.token_hex(32),
+                created_at=expires_at - timedelta(hours=24),
+                expires_at=expires_at,
+            )
+        )
+    factory = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    async with factory() as session:
+        cvs = SqlAlchemyBaseCvRepository(session)
+        cv_id = cvs.next_identity()
+        ref = FileRef.for_base_cv(cv_id, CvContentType.PDF)
+        await cvs.add(
+            BaseCv.upload(
+                id=cv_id,
+                guest_session_id=session_id,
+                original_filename=OriginalFilename("cv.pdf"),
+                content_type=CvContentType.PDF,
+                size_bytes=8,
+                file=ref,
+                uploaded_at=expires_at - timedelta(hours=3),
+            )
+        )
+        await session.commit()
+    await files.put(ref, b"%PDF-1.4")
+    return session_id, ref
+
+
+async def test_a_refused_delete_session_logs_the_session_failed_line_with_only_the_id_and_error_type(
+    settings: Settings,
+    committed: _CommittedRows,
+    clear_redis: None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R-3, found missing at `/verify`. `delete_session` is monkeypatched to refuse for exactly one
+    committed, expired session, carrying a distinctive marker in its exception message; the run
+    still exits 0 (AC-13: one refused session does not fail the batch), and the entry point's line
+    carries the session id and the exception's *class name* — and, the actual claim, **nothing
+    else**: not the marker, which stands in for whatever a real driver message would have quoted
+    (SQLAlchemy's `[parameters: …]`, asyncpg's quoted values, PostgreSQL's `DETAIL: Failing row
+    contains (…)` — CLAUDE.md's warning about what a failed write carries out through three layers).
+
+    Mutation-verified: see the task list for the recorded run against `PurgeExpiredGuestSessions`'s
+    catch site and against `_log_batch_failures`.
+    """
+    _assert_test_database(settings)
+    session_id = await committed.insert_expired_guest_session(expires_at=_a_past_instant(2))
+
+    marker = "MARKER-do-not-let-this-travel-into-a-log-record"
+    original = SqlAlchemyExpiredGuestData.delete_session
+
+    async def _refuse(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> None:
+        if sid == session_id:
+            raise RuntimeError(marker)
+        await original(self, sid)
+
+    monkeypatch.setattr(SqlAlchemyExpiredGuestData, "delete_session", _refuse)
+
+    with caplog.at_level(logging.WARNING):
+        exit_code = await purge_command._purge_guests(settings, dry_run=False, limit=None)
+
+    assert exit_code == purge_command.EXIT_OK
+    assert await committed.session_exists(session_id), "a refused DELETE must not remove the row"
+    assert "retention.session_purge_failed" in caplog.text
+    assert str(session_id.value) in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert marker not in caplog.text, (
+        f"the exception's message leaked into a log record: {caplog.text}"
+    )
+
+
+async def test_a_refused_unlink_logs_the_file_failed_line_with_only_the_error_type(
+    settings: Settings,
+    engine: AsyncEngine,
+    clear_redis: None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R-4, found missing at `/verify`. The session's row IS deleted — rows first, R-4's whole
+    point — and only the unlink is refused, leaving the file an orphan for `--orphans` to recover
+    later. The line carries the exception's class name and, the actual claim, **never the key and
+    never the path** (R-4's own wording), although both are genuinely held in memory by this run
+    (`ExpiringGuestSession.files`, `LocalFileStore._resolve_contained`).
+    """
+    _assert_test_database(settings)
+    files = LocalFileStore(settings.upload_dir)
+    session_id, ref = await _insert_expired_session_with_base_cv(
+        engine, files, expires_at=_a_past_instant(2)
+    )
+
+    message = "a storage key or path, which must never travel"
+
+    async def _refuse(self: LocalFileStore, r: FileRef) -> None:
+        raise FileStoreUnavailable(message)
+
+    monkeypatch.setattr(LocalFileStore, "delete", _refuse)
+
+    try:
+        with caplog.at_level(logging.WARNING):
+            exit_code = await purge_command._purge_guests(settings, dry_run=False, limit=None)
+
+        assert exit_code == purge_command.EXIT_OK
+        async with engine.connect() as conn:
+            result = await conn.execute(
+                select(func.count())
+                .select_from(guest_session_table)
+                .where(guest_session_table.c.id == session_id)
+            )
+            assert result.scalar_one() == 0, "R-4: the row is deleted even though the unlink failed"
+        assert "retention.file_unlink_failed" in caplog.text
+        assert "FileStoreUnavailable" in caplog.text
+        assert ref.key not in caplog.text
+        assert str(settings.upload_dir / ref.key) not in caplog.text
+        assert message not in caplog.text, (
+            f"the exception's message leaked into a log record: {caplog.text}"
+        )
+    finally:
+        # The row is already gone (R-4's point); only the orphaned file needs cleaning up, since the
+        # monkeypatched `delete` never actually removed it.
+        (settings.upload_dir / ref.key).unlink(missing_ok=True)
+
+
+async def test_a_permanently_refused_session_is_logged_once_per_batch_it_reappears_in(
+    settings: Settings,
+    committed: _CommittedRows,
+    clear_redis: None,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The trap `api-dev` flagged: `list_expired` is oldest-first and a permanently-refused session
+    is never deleted, so it legitimately reappears at the front of every later batch until the loop
+    stops — an operator rerunning `make purge` would see the same session named again, and that is
+    the log doing its job, not a bug in the test or the code.
+
+    Three real, committed, expired sessions (oldest `always_fails`, then `middle`, then `newest`),
+    the batch size monkeypatched to 2 (mirroring `test_no_limit_loops_batches_until_the_backlog_is_
+    empty`'s own technique) so a single `--limit`-less run takes three batches: batch 1 examines
+    `[always_fails, middle]` (deletes `middle`, `sessions_deleted=1`, loop continues); batch 2
+    examines `[always_fails, newest]` (deletes `newest`, loop continues); batch 3 examines
+    `[always_fails]` alone (deletes nothing, `sessions_deleted=0`, loop stops). `always_fails` is
+    therefore refused — and logged — **three** times in this one invocation, and `middle`/`newest`
+    are each logged zero times. Asserting an exact count of 1 here would be the wrong test: it would
+    either fail on correct behaviour or, if written the "convenient" way (`in caplog.text`), it would
+    stay green no matter how many times the line repeated and would not be testing the repetition at
+    all.
+    """
+    _assert_test_database(settings)
+    monkeypatch.setattr(purge_command, "_DEFAULT_BATCH_LIMIT", 2)
+    always_fails = await committed.insert_expired_guest_session(expires_at=_a_past_instant(3))
+    middle = await committed.insert_expired_guest_session(expires_at=_a_past_instant(2))
+    newest = await committed.insert_expired_guest_session(expires_at=_a_past_instant(1))
+
+    original = SqlAlchemyExpiredGuestData.delete_session
+
+    async def _refuse_one(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> None:
+        if sid == always_fails:
+            raise RuntimeError("a lock timeout nobody predicted")
+        await original(self, sid)
+
+    monkeypatch.setattr(SqlAlchemyExpiredGuestData, "delete_session", _refuse_one)
+
+    with caplog.at_level(logging.WARNING):
+        exit_code = await purge_command._purge_guests(settings, dry_run=False, limit=None)
+
+    assert exit_code == purge_command.EXIT_OK
+    assert await committed.session_exists(always_fails)
+    assert not await committed.session_exists(middle)
+    assert not await committed.session_exists(newest)
+
+    occurrences = caplog.text.count("retention.session_purge_failed")
+    assert occurrences == 3, caplog.text
+    assert caplog.text.count(str(always_fails.value)) == occurrences
+    assert str(middle.value) not in caplog.text
+    assert str(newest.value) not in caplog.text
 
 
 # --- AC-20: argparse's own usage exit, exercised through the real parser --------------------------

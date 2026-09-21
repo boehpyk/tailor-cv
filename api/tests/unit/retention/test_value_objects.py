@@ -44,13 +44,15 @@ from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.value_objects import (
     ExpiringGuestSession,
+    FileUnlinkFailure,
     OrphanScanReport,
     PurgeReport,
     RetentionWindow,
     ScannedFile,
+    SessionPurgeFailure,
 )
 from tailorcraft.domain.shared.errors import InvariantViolated
-from tailorcraft.domain.shared.files import FileRef
+from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 
 _SESSION_ID = GuestSessionId(value=UUID("11111111-1111-7111-8111-111111111111"))
 _TOKEN_HASH = "a" * 64  # a SHA-256 hex digest is 64 characters; the exact value never matters here
@@ -137,22 +139,127 @@ def test_expiring_guest_session_field_set_is_exactly_the_agreed_fields_with_no_d
 
 
 def test_purge_report_field_set_is_exactly_the_agreed_fields_with_no_defaults() -> None:
-    """Counts and a flag only. No default on any field — a default on a count is how a second
-    construction site forgets one and reports a confident zero (the 1.4 lesson on `conflicts`)."""
+    """Counts, a flag, and — since AC-4's amendment at `/verify` — the detail behind the two failure
+    counts. No default on any field — a default on a count is how a second construction site forgets
+    one and reports a confident zero (the 1.4 lesson on `conflicts`).
+
+    **This widening is the amendment, not a drift.** The field set grew from seven to nine when R-3's
+    and R-4's log lines turned out to exist in the failure contract and nowhere in `api/src/`: a count
+    alone cannot tell an operator *which* session or *what kind* of refusal, so `PurgeReport` gained
+    `session_purge_failures` and `file_unlink_failures` — see the amendment recorded under AC-4 in
+    `feature-spec.md` for the full argument that AC-4's *intent* ("no field can carry text a user
+    wrote, a filename, a storage key or a path") survives even though its original seven-field letter
+    did not."""
     fields = dataclasses.fields(PurgeReport)
 
     assert tuple(field.name for field in fields) == (
         "examined",
         "sessions_deleted",
         "sessions_failed",
+        "session_purge_failures",
         "files_unlinked",
         "files_failed",
+        "file_unlink_failures",
         "duration_ms",
         "dry_run",
     )
     for field in fields:
         assert field.default is dataclasses.MISSING
         assert field.default_factory is dataclasses.MISSING
+
+
+# --- AC-4's amendment: SessionPurgeFailure / FileUnlinkFailure field sets, and __post_init__ --------
+
+
+def test_session_purge_failure_field_set_is_exactly_the_agreed_fields_with_no_defaults() -> None:
+    """The id, and the exception's class name — nowhere to put a message, a key or a path (AC-4's
+    amendment, R-3)."""
+    fields = dataclasses.fields(SessionPurgeFailure)
+
+    assert tuple(field.name for field in fields) == ("session_id", "error_type")
+    for field in fields:
+        assert field.default is dataclasses.MISSING
+        assert field.default_factory is dataclasses.MISSING
+
+
+def test_file_unlink_failure_field_set_is_exactly_the_agreed_fields_with_no_defaults() -> None:
+    """One field, and deliberately no `FileRef` and no session id beside it (R-4: never the key,
+    never the path)."""
+    fields = dataclasses.fields(FileUnlinkFailure)
+
+    assert tuple(field.name for field in fields) == ("error_type",)
+    for field in fields:
+        assert field.default is dataclasses.MISSING
+        assert field.default_factory is dataclasses.MISSING
+
+
+def test_session_purge_failure_from_exception_records_the_class_name_never_the_message() -> None:
+    """`from_exception` is the only constructor R-3's catch site can reach, and it must read
+    `type(exc).__name__` rather than `str(exc)` — a failed `DELETE` carries the row it refused out
+    through the driver's own message, and the row is a guest session."""
+    exc = RuntimeError("a lock timeout naming the row, which must never travel")
+
+    failure = SessionPurgeFailure.from_exception(_SESSION_ID, exc)
+
+    assert failure.session_id == _SESSION_ID
+    assert failure.error_type == "RuntimeError"
+
+
+def test_file_unlink_failure_from_exception_records_the_class_name_never_the_message() -> None:
+    exc = FileStoreUnavailable("a storage key or path, which must never travel")
+
+    failure = FileUnlinkFailure.from_exception(exc)
+
+    assert failure.error_type == "FileStoreUnavailable"
+
+
+def test_purge_report_rejects_a_sessions_failed_count_that_disagrees_with_its_detail() -> None:
+    """`__post_init__`'s new invariant (AC-4's amendment): one fact — how many sessions failed — held
+    in two places (a count and a tuple) is a fact that can drift, so a second construction site that
+    supplies one without the other is refused rather than silently trusted.
+
+    The message names only the two disagreeing numbers — never the session id, which is exactly the
+    kind of "helpful" detail AC-4's invariant exists to keep out of an exception that ends up in a
+    log and a Sentry frame like any other string.
+    """
+    with pytest.raises(InvariantViolated) as exc_info:
+        PurgeReport(
+            examined=1,
+            sessions_deleted=0,
+            sessions_failed=0,  # disagrees with the one failure recorded below
+            session_purge_failures=(SessionPurgeFailure(session_id=_SESSION_ID, error_type="X"),),
+            files_unlinked=0,
+            files_failed=0,
+            file_unlink_failures=(),
+            duration_ms=1,
+            dry_run=False,
+        )
+
+    message = str(exc_info.value)
+    assert "sessions_failed" in message
+    assert "session_purge_failures" in message
+    assert "0 != 1" in message
+    assert str(_SESSION_ID.value) not in message
+
+
+def test_purge_report_rejects_a_files_failed_count_that_disagrees_with_its_detail() -> None:
+    with pytest.raises(InvariantViolated) as exc_info:
+        PurgeReport(
+            examined=1,
+            sessions_deleted=1,
+            sessions_failed=0,
+            session_purge_failures=(),
+            files_unlinked=0,
+            files_failed=0,  # disagrees with the one failure recorded below
+            file_unlink_failures=(FileUnlinkFailure(error_type="X"),),
+            duration_ms=1,
+            dry_run=False,
+        )
+
+    message = str(exc_info.value)
+    assert "files_failed" in message
+    assert "file_unlink_failures" in message
+    assert "0 != 1" in message
 
 
 def test_orphan_scan_report_field_set_is_exactly_the_agreed_fields_with_no_defaults() -> None:
@@ -222,6 +329,16 @@ def test_orphan_scan_report_is_frozen_and_uses_slots() -> None:
 def test_scanned_file_is_frozen_and_uses_slots() -> None:
     assert _is_frozen(ScannedFile) is True
     assert "__slots__" in vars(ScannedFile)
+
+
+def test_session_purge_failure_is_frozen_and_uses_slots() -> None:
+    assert _is_frozen(SessionPurgeFailure) is True
+    assert "__slots__" in vars(SessionPurgeFailure)
+
+
+def test_file_unlink_failure_is_frozen_and_uses_slots() -> None:
+    assert _is_frozen(FileUnlinkFailure) is True
+    assert "__slots__" in vars(FileUnlinkFailure)
 
 
 # --- AC-9: FileRef.for_export's determinism, generalised over ExportFormat.delivery -------------
