@@ -170,6 +170,16 @@ async def clear_redis(settings: Settings) -> AsyncIterator[None]:
 
     A leftover **lock** is the dangerous one. The job then does nothing, logs that it skipped, and
     exits 0 — so a test asserting a successful run passes against a run that never happened.
+
+    **`flushdb()` is global, so this suite cannot be run concurrently with another copy of itself.**
+    A second pytest process against this Redis — another terminal, an agent running the gates,
+    `pytest -n` — has its `clear_redis` delete *this* run's rate-limiter counters mid-test. The
+    limiters fail open, so a third request that should be `429` comes back `201`/`202`, and the
+    knock-on assertions fail with unrelated `409`s. The symptom is a **different set of unrelated
+    tests failing on each run, all of which pass in isolation**; it reads as flaky application code
+    and is not. Two sessions lost time to this during 1.6's `/verify`. If this ever needs to be
+    parallel-safe, the fix is a per-run key prefix (or a per-worker Redis db) and deleting by that
+    prefix here — not a narrower `flushdb`, which would reintroduce the leftover-lock hazard above.
     """
     client = create_redis(settings.redis_url)
     await client.flushdb()
