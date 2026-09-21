@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat as stat_module
 from collections.abc import Generator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -199,11 +200,26 @@ class LocalOrphanFileScanner:
                             # that is not a directory is reported — a symlink, a fifo, a socket —
                             # because the honest answer to "what is on this volume" includes the
                             # things nobody expected, and an unrecognised one is only ever counted.
+                            #
+                            # **Not descending a link is only half of it, and the other half is the
+                            # seam.** What this walk reports, `ReclaimOrphanedFiles` may hand to
+                            # `FileStorePort.delete` — and that adapter resolves before it unlinks.
+                            # So the walk's refusal to follow a link says nothing about what the
+                            # *deleter* would follow, which is why `_describe` is told whether this
+                            # entry is a link rather than left to infer it from a name.
                             stat_result = entry.stat(follow_symlinks=False)
                         except OSError as exc:
                             failures.record(exc, directory=False)
                             continue
-                        scanned = _describe(entry.name, prefix, stat_result.st_mtime, cutoff)
+                        # Read off the `lstat` we already hold, so it costs no syscall and cannot
+                        # disagree with the `st_mtime` taken from the same call.
+                        scanned = _describe(
+                            entry.name,
+                            prefix,
+                            stat_result.st_mtime,
+                            cutoff,
+                            is_symlink=stat_module.S_ISLNK(stat_result.st_mode),
+                        )
                         if scanned is None:
                             continue
                         chunk.append(scanned)
@@ -233,7 +249,12 @@ def _next_chunk(walker: Generator[list[ScannedFile]]) -> list[ScannedFile] | Non
 
 
 def _describe(
-    name: str, prefix: tuple[str, ...], mtime: float, cutoff: datetime
+    name: str,
+    prefix: tuple[str, ...],
+    mtime: float,
+    cutoff: datetime,
+    *,
+    is_symlink: bool,
 ) -> ScannedFile | None:
     """Turn one directory entry into a `ScannedFile`, or `None` if it is newer than the cutoff.
 
@@ -257,6 +278,26 @@ def _describe(
     shard names and the filename are joined into a candidate key and handed to the type. A name that
     is not a key raises `InvalidFileRef` and becomes `ref=None` — counted by the use case, never
     deleted, and never named anywhere (R-37).
+
+    **A symlink is unrecognised whatever it is named, and that is AC-24 rather than a new rule.**
+    This store writes bytes under generated keys and creates a link nowhere, ever — so a link
+    sitting at a `FileRef`-shaped key is by definition a file the sweep *cannot explain*, and AC-24
+    says it never deletes one of those. Giving it a `ref` would be worse than useless: the key that
+    is in no database row is the **link's**, so the cross-check clears it as unreferenced, and
+    `LocalFileStore` resolves before it unlinks — so "reclaiming" it would destroy whatever the link
+    points at, which can be another session's live, referenced file, while the link itself survives.
+
+    That is T18b's shape a second time — *the thing named was not the thing deleted, and a live
+    file beside it died instead* — and it is newly reachable for the same reason: this sweep is the
+    first caller in the codebase that deletes by a name it discovered **on disk** rather than by a
+    ref read out of a row. Planting the link needs prior write access to the uploads volume, so
+    this is blast radius, not a remote exploit; it is worth closing because the damage is silent,
+    irreversible and lands on somebody else's data.
+
+    `is_partial` is still reported honestly for a link named `<key>.part`, and it changes nothing:
+    the use case tests `ref is None` first, counts the entry `unrecognized` and leaves it alone.
+    Nothing about the link is logged or kept — this branch, like the one above it, is the whole of
+    what the system will ever know about it (R-37).
     """
     created_at = datetime.fromtimestamp(int(mtime), tz=UTC)
     if created_at > cutoff:
@@ -266,7 +307,7 @@ def _describe(
     base = name[: -len(_PART_SUFFIX)] if is_partial else name
 
     ref: FileRef | None = None
-    if len(prefix) == _SHARD_DEPTH:
+    if len(prefix) == _SHARD_DEPTH and not is_symlink:
         try:
             ref = FileRef(f"{prefix[0]}/{prefix[1]}/{base}")
         except InvalidFileRef:

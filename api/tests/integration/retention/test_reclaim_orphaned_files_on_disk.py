@@ -213,3 +213,64 @@ async def test_a_genuine_orphan_at_a_final_key_is_still_removed(
 
     assert not (tmp_path / ref.key).exists()
     assert report.reclaimed == 1
+
+
+# --- 4. A symlink at a FileRef-shaped key survives the sweep, and its target is untouched (T18b,
+#        second occurrence — the containment-escape shape, this time reachable from the volume) -----
+
+
+def _age_symlink(path: Path, at: datetime) -> None:
+    """Set mtime on the **link itself**. `LocalOrphanFileScanner._walk` reads `entry.stat(follow_
+    symlinks=False)`, so aging the target — which is what a plain `os.utime` would do — would age the
+    wrong inode and the link would never clear the cutoff regardless of the defect under test."""
+    timestamp = at.timestamp()
+    os.utime(path, (timestamp, timestamp), follow_symlinks=False)
+
+
+async def test_a_symlink_at_a_file_ref_shaped_key_pointing_at_a_strangers_live_file_survives_a_real_sweep(
+    tmp_path: Path, clock: FixedClock
+) -> None:
+    """The full pipeline, end to end, for the shape `_resolve_contained`'s own docstring calls "T18b's
+    finding a second time": a link planted at a `FileRef`-shaped key, pointed at a **different**
+    session's live, referenced file. The link's own key is in no row, so the cross-check clears it as
+    unreferenced — the ordinary orphan sweep would then try to reclaim it, and before this fix
+    `LocalFileStore` resolved the full path, so "reclaiming" the link actually destroyed whatever it
+    pointed at while the link itself survived.
+
+    Two independent defences are exercised together here (each is also proven alone —
+    `test_orphan_scanner.py` for the scanner's `ref=None`, `test_local_file_store.py` for
+    `_resolve_contained`'s refusal): `LocalOrphanFileScanner` reports the link as `ref=None`, so
+    `ReclaimOrphanedFiles` counts it `unrecognized` and never calls `FileStorePort.delete` on it at
+    all — the sweep never even reaches the second defence in this run, which is the point of having
+    the first one.
+
+    **The assertion that matters most**, exactly as the module docstring for consequence 2 above
+    states it: after a real run, the victim's file must still exist, with its original bytes, and the
+    link itself must still be a link — never reclaimed, never resolved through.
+    """
+    victim_ref = _a_file_ref()
+    link_ref = _a_file_ref()
+    at = clock.now() - _OLD_AGE
+    # The victim is REFERENCED — it belongs to a live session the cross-check would spare anyway —
+    # so this test proves the link is stopped by its own unrecognisability, not merely because the
+    # (different) key it points at happens to be referenced.
+    data = _ExpiredGuestDataDouble(referenced=frozenset({victim_ref}))
+    use_case, store = _use_case(tmp_path, data, clock)
+
+    await store.put(victim_ref, b"a stranger's live, referenced file")
+    victim_path = tmp_path / victim_ref.key
+    _age(victim_path, at)
+
+    link_path = tmp_path / link_ref.key
+    link_path.parent.mkdir(parents=True, exist_ok=True)
+    link_path.symlink_to(victim_path)
+    _age_symlink(link_path, at)
+
+    report = await use_case()
+
+    assert victim_path.exists(), "the symlink's target must survive the sweep"
+    assert await store.get(victim_ref) == b"a stranger's live, referenced file"
+    assert link_path.is_symlink(), "the link itself must be untouched — never reclaimed"
+    assert report.unrecognized == 1
+    assert report.referenced == 1
+    assert report.reclaimed == 0
