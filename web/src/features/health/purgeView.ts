@@ -5,9 +5,6 @@
  * Query under `readinessQueryKey`) and returns one of four mutually exclusive readings. It holds
  * nothing, fetches nothing and reads no wall clock, which is what lets AC-35's copy table drive it
  * row by row — the same shape as `features/export/exportView.ts` and `features/tailoring/runView.ts`.
- *
- * **SKELETON (T35).** Signatures are real; the bodies throw. T36 writes the failing tests against
- * them and T37 implements. Nothing here is the finished behaviour.
  */
 
 import type { GuestPurgeStatus } from '@/api/health';
@@ -103,6 +100,12 @@ export type PurgeView =
  *    function is total over the wire type and something must be decided for it. "Off" wins, because
  *    it is both the more actionable fact and the one that makes the staleness verdict meaningless:
  *    a job nothing schedules cannot be behind schedule.
+ *
+ *    The cost of the other order is not hypothetical and lands on *this* release:
+ *    `GUEST_PURGE_ENABLED` ships false until the rehearsal earns the flip, so swapping these two
+ *    branches would put a red *"has not run for over 3 hours"* alarm on every page load for the
+ *    entire pre-rehearsal window — the exact failure AC-33 prevents on the server, reintroduced
+ *    here. A test pins it.
  * 3. **`stale === true` → `stale`.** Read from the server, never re-derived here: the three-hour
  *    threshold is the API's rule and re-computing it from `last_run_age_seconds` would be a second
  *    authority that is silently wrong the day the threshold moves (Constitution §4.5).
@@ -119,15 +122,27 @@ export type PurgeView =
  *
  * @param job the `jobs.guest_purge` member of the readiness response, or `undefined` when the API
  *   that answered does not report it
- *
- * SKELETON: the parameter list is final; the body is not. It is referenced in the message only
- * because `noUnusedParameters` and `no-unused-vars` are both on and neither is worth weakening for
- * a temporary body — and it is referenced as its *type*, never its value, because this module is
- * one where interpolating a payload into a string is how something ends up in a console (§8).
  */
 export function viewOfGuestPurge(job: GuestPurgeStatus | undefined): PurgeView {
-  throw new Error(`not implemented: viewOfGuestPurge(${typeof job})`);
+  if (job === undefined) {
+    return { kind: 'unreported' };
+  }
+  if (!job.scheduled) {
+    return { kind: 'unscheduled', overdue: job.overdue };
+  }
+  if (job.stale) {
+    return { kind: 'stale', ageSeconds: job.last_run_age_seconds, overdue: job.overdue };
+  }
+  return { kind: 'healthy', ageSeconds: job.last_run_age_seconds, overdue: job.overdue };
 }
+
+/** Whole units, largest that fits. Ordered longest-first so the first match wins. */
+const AGE_UNITS: readonly (readonly [seconds: number, name: string])[] = [
+  [86_400, 'day'],
+  [3_600, 'hour'],
+  [60, 'minute'],
+  [1, 'second'],
+];
 
 /**
  * An age in seconds as the phrase the copy reads: *"12 minutes ago"*.
@@ -139,7 +154,14 @@ export function viewOfGuestPurge(job: GuestPurgeStatus | undefined): PurgeView {
  * Whole units, largest that fits, singular where the count is one. It never returns a bare number
  * and never a timestamp — an instant is allowed by AC-36, but an operator reading a status panel
  * wants "how long ago", not a UTC string they have to subtract in their head.
+ *
+ * An age below one second reads as *"0 seconds ago"* rather than "just now": this panel is read by
+ * someone deciding whether a background job is working, and a phrase that sounds like a judgement
+ * ("just now") is doing more than reporting a number.
  */
 export function describeAge(ageSeconds: number): string {
-  throw new Error(`not implemented: describeAge(${String(ageSeconds)})`);
+  const seconds = Math.max(0, Math.floor(ageSeconds));
+  const [unitSeconds, unitName] = AGE_UNITS.find(([size]) => seconds >= size) ?? [1, 'second'];
+  const count = Math.floor(seconds / unitSeconds);
+  return `${String(count)} ${unitName}${count === 1 ? '' : 's'} ago`;
 }

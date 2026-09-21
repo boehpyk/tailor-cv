@@ -56,14 +56,22 @@ describe('GuestPurgeStatus — success, three readings', () => {
   });
 
   it('not scheduled: says the schedule is off, in plain words', () => {
-    render(<GuestPurgeStatus job={job({ scheduled: false, overdue: 10 })} />);
+    const { container } = render(<GuestPurgeStatus job={job({ scheduled: false, overdue: 10 })} />);
 
     // The sentence the whole flag exists to make visible. A config file nobody re-reads is not a
     // signal; this is (AC-35, ADR-0018 decision 5).
-    expect(screen.getByText(/scheduled guest purge is off/i)).toBeInTheDocument();
-    expect(screen.getByText(/deleted only when someone runs it by hand/i)).toBeInTheDocument();
-    expect(screen.getByText(/10 expired sessions waiting/i)).toBeInTheDocument();
-    expect(screen.queryByText(/has not run for over/i)).not.toBeInTheDocument();
+    //
+    // Asserted against the paragraph's `textContent` rather than with `getByText`, because the
+    // copy emphasises the operative word — `is <strong>off</strong>` — and `getByText` matches
+    // within a single element, so it would fail on a sentence a person reads as one sentence.
+    // The emphasis is the spec's and it is worth keeping: "off" is the word an operator has to
+    // see. **The matcher was wrong here, not the component** — a test that dropped the `<strong>`
+    // to make itself pass would have been the test bending the UI to suit its query.
+    const sentence = container.textContent;
+    expect(sentence).toMatch(/scheduled guest purge is off/i);
+    expect(sentence).toMatch(/deleted only when someone runs it by hand/i);
+    expect(sentence).toMatch(/10 expired sessions waiting/i);
+    expect(sentence).not.toMatch(/has not run for over/i);
   });
 
   it('stale: says it has not run for over three hours', () => {

@@ -1,5 +1,7 @@
 import { useReadiness } from '../hooks/useReadiness';
 
+import { GuestPurgeStatus } from './GuestPurgeStatus';
+
 /**
  * The Phase 0 screen: the dependency report, rendered.
  *
@@ -43,6 +45,27 @@ export function SystemStatus(): React.JSX.Element {
           </li>
         ))}
       </ul>
+      <section aria-labelledby="retention-heading" className="space-y-1">
+        <h3 id="retention-heading" className="text-xs font-medium uppercase text-slate-400">
+          Retention
+        </h3>
+        {/*
+          The guarantee this product prints to users in four other places, rendered as either kept
+          or not (AC-35). It is a second *reader* of the readiness cache entry this component
+          already holds — no new query key, no second fetch (AC-37).
+
+          Its loading and error states are the two branches above, deliberately: this component
+          owns the query, so it is the only thing that knows whether a request is in flight or
+          failed. "The API could not be reached" stays a different fact from "the API says the
+          purge is stale", and collapsing them is the small dishonesty that makes a status page
+          useless.
+
+          `data.jobs?.guest_purge` is optional twice over, and the block renders "not reported"
+          rather than crashing: during a deploy the browser can be served a bundle newer than the
+          API (R-32).
+        */}
+        <GuestPurgeStatus job={data.jobs?.guest_purge} />
+      </section>
     </div>
   );
 }
