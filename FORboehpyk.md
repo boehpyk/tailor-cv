@@ -2810,32 +2810,90 @@ expired. There was nothing unexpired for the purge to have spared. Empty is the 
 reasoning about whether it should be scary.** The whole reason to take the backup first is so that
 this question has an answer.
 
-### What is still not done, and it is one line
+### Flipping it on, and the command that would have lied to me
 
-`GUEST_PURGE_ENABLED=true` in `.env`, a `beat` restart, and watching one tick land.
+`GUEST_PURGE_ENABLED=true` went into `.env`, and then I nearly reached for `docker compose restart
+beat`.
 
-I confirmed the flag really does gate the schedule — not by reading the code, but by asking a live
-`create_celery()` in the running `beat` container for its schedule twice, once with the flag off and
-once with it on. Off: two entries. On: three, the third being the hourly purge. That control had no
-test at all until this slice's `/verify` caught it, and now it has both a test and a reading from a
-running container.
+That would not have worked, and — this is the bad part — it would not have *looked* like it hadn't
+worked. `env_file:` is read when a container is **created**, not when it starts. A restart keeps the
+old environment. You'd flip the flag, restart, see beat come up clean, and have a schedule that is
+still off. `up -d` recreates, and recreating is the point.
 
-The first scheduled tick will delete nothing, because the backlog is 0. That is exactly the case the
-heartbeat exists for: **a run that deletes nothing is otherwise indistinguishable from a run that
-never happened**, and this whole slice is an argument against letting those two look alike.
+And `api` belongs in that list next to `beat`, which is less obvious: the API is what serves
+`scheduled` on `/health/ready`, and the status panel repeats it to users. Recreate only `beat` and
+the job runs while the UI tells everyone it doesn't — the exact dishonesty the panel was added to
+prevent, achieved by being too careful about which container to touch.
+
+Then a tick, end to end: I published the same message beat publishes — same task name, same options
+read out of the beat entry itself rather than retyped — and the worker took it in 47 ms.
+`examined=0`. Nothing to delete, because the backlog was 0.
+
+And `/health/ready` moved anyway: `last_run` set, `last_outcome: "ok"`, **`stale: false`**.
+
+**A run that deletes nothing is otherwise indistinguishable from a run that never happened.** That
+sentence is the whole slice, and this is the first time the system said it out loud.
+
+### The last bug, found by the fix
+
+Except `stale` had been `true` a minute before that, with `last_run: null`, on a system that had
+successfully purged fifteen minutes earlier. Nothing had failed. So where did the heartbeat go?
+
+**I committed.** The pre-commit hook runs `make check`, `make check` runs the test suite, and the
+suite's `clear_redis` fixture calls `flushdb()`.
+
+Against the dev Redis. The `settings` fixture overrides `database_url` and `upload_dir` — and not
+`redis_url`. There is no test Redis. The fixture's own docstring opens with *"Flush the test
+Redis"*, and that thing does not exist.
+
+This is a trap this project had already met one store over: `get_settings()` under `APP_ENV=test`
+still hands back the *dev* `database_url`, and a cleanup script once emptied the dev database through
+exactly that hole. Same shape, different datastore, and the existing warning in `CLAUDE.md` is about
+`flushdb()` being global between *two concurrent test runs* — true, and one scope too narrow. It is
+also global against the running application.
+
+The consequence lands precisely where it hurts most. The purge's alarm is `stale`, and `stale` is
+computed as "scheduled, and no heartbeat recently". Wipe the heartbeat and you get `stale: true` on a
+perfectly healthy system — **AC-33's rule working exactly as designed, on a false premise.** Now that
+the schedule is on, every commit fires the alarm.
+
+It's dev-only; nobody runs pytest against production. But the lesson generalises past this repo:
+
+**Test isolation is a property you have to check store by store.** Postgres was isolated, the
+filesystem was isolated, and Redis looked isolated because the fixture said so in a docstring nobody
+had reason to doubt. The isolation was three-quarters done, and the missing quarter was invisible
+until a job that writes to Redis had to survive a commit.
+
+The fix is a test-only `redis_url` beside the `test_database_url` that already exists. Not a narrower
+flush — that would bring back the leftover-lock hazard `clear_redis` was written to kill, where a
+stale lock makes the job skip, log "skipped", and exit 0, so a test asserting a successful run passes
+against a run that never happened.
+
+Which, you'll notice, is the same failure as the heartbeat one: **something that did not run,
+looking exactly like something that did.** Third time in this slice. That's not a coincidence, it's
+the subject.
 
 ## What is not done, and why that matters
 
-The purge is built, tested and merged-ready. **The schedule is off.**
+The purge is built, tested, rehearsed and **on**. That last word was only earned today, and the order
+it was earned in is the point.
 
-`GUEST_PURGE_ENABLED` ships `false`, because a purge is an irreversible `DELETE` across two systems
-and **has no rollback** — and the first automated run should not also be the first run. The rehearsal
-is a human sequence: dump the database *and* snapshot the volume, dry run, `--limit 50`, confirm the
-backlog fell by exactly 50, full run, check the orphans, and only then flip the flag.
+`GUEST_PURGE_ENABLED` shipped `false` — because a purge is an irreversible `DELETE` across two
+systems with **no rollback**, and the first automated run should not also be the first run. The
+rehearsal was a human sequence: dump the database *and* snapshot the volume, dry run, a bite smaller
+than the backlog, confirm it fell by exactly that, full run, check the orphans. Only then the flag.
 
-The guard against that flag quietly rotting is not a ticket. It's that the status panel says, on
-every page, in plain words: *"Scheduled guest purge is off — guest data is deleted only when someone
-runs it by hand."* The product prints its 24-hour promise to users in four places. Until that flag
-flips, this slice has made the promise *keepable*, not *kept* — and the UI is honest about which.
+The guard against that flag quietly rotting was never a ticket. It was that the status panel said,
+on every page, in plain words: *"Scheduled guest purge is off — guest data is deleted only when
+someone runs it by hand."* For six days this slice made the 24-hour promise *keepable* rather than
+kept, and the UI was honest about which. Today it says `scheduled: true`, and that is honest too.
 
-That distinction is the whole slice, really. The code was the easy part.
+**Nothing in the code changed between those two states.** The difference was a backup, a dry run, a
+number read rather than assumed, and a small deletion verified four ways before a large one. That
+distinction is the whole slice, really. The code was the easy part.
+
+One thing genuinely remains: beat's own hourly tick, due about an hour after the flag went on. Every
+part of the path is proven — the entry is in the live schedule, the worker consumed the identical
+message and wrote a heartbeat, the broker's bindings are clean — so what's left unproven is one
+timer's arithmetic. Which is worth stating rather than rounding up to "done", because *"the only
+untested part is the trivial part"* is how the last four bugs in this file introduced themselves.

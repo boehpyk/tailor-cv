@@ -18,9 +18,9 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS), and rehearsed on real
-> data 2026-09-22.** One line in `.env` (`GUEST_PURGE_ENABLED=true`) and an observed beat tick are
-> all that remain.
+> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS), rehearsed on real data
+> and switched on, 2026-09-22.** `GUEST_PURGE_ENABLED=true`; `/health/ready` reads
+> `scheduled: true`, `stale: false`, `overdue: 0`. Every task in the slice is closed.
 > Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
 > jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
 > written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
@@ -154,14 +154,17 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   stray row from lying.
 >
 > **Carried out of 1.6, each with an owner and a trigger:**
-> - **The schedule is still off, but its precondition is now met.** The rehearsal ran in order on
->   2026-09-22 — both backup halves, dry run (11 sessions / 74 keys), `limit=5` verified at exactly
->   −5 with a row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0 — so
->   `GUEST_PURGE_ENABLED=true` is now the correct value and simply has not been written. The flag is
->   confirmed to gate the beat entry, read from a live `create_celery()` rather than from the source.
+> - **The schedule is ON as of 2026-09-22 16:04 UTC.** The rehearsal ran in order first — both
+>   backup halves, dry run (11 sessions / 74 keys), `limit=5` verified at exactly −5 with a
+>   row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0, volume empty. A tick has
+>   run end to end (`examined=0`, `last_outcome: ok`, `stale: false`): **a run that deletes nothing
+>   is still visible**, which is the heartbeat's whole job. Beat's own hourly tick is the one thing
+>   left to watch.
+>   **`docker compose restart` does not pick up an `.env` change** — `env_file:` is read at container
+>   *create*. Use `up -d api worker beat`, and note `api` belongs in that list: it serves `scheduled`
+>   on `/health/ready`, so a beat-only change leaves the UI saying "off" while the job runs.
 >   **`limit=50` in the runbook was wrong for a backlog of 11** and now reads "smaller than the
->   backlog you just read": a bite bigger than the backlog silently skips the safeguard. Owner: the
->   repository owner; trigger: now.
+>   backlog you just read": a bite bigger than the backlog silently skips the safeguard.
 > - **AC-17's uploads/exports split was dropped**, amended on purpose: a `FileRef` is an opaque key
 >   with **one grammar shared by both kinds**, the extension lies (`.pdf` is both), and widening
 >   `ExpiringGuestSession` would contradict AC-4, whose third field's *type is the privacy control*.
@@ -486,7 +489,16 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   `tailorcraft_test` — **never** the dev DB. **No test calls the real Gemini API**; CI has no key.
   Time comes from a fake `Clock`, never `datetime.now()`.
   **The database transaction does not roll back Redis.** Rate limiters, the purge heartbeat and the
-  purge lock survive between tests and must be cleared in the fixture. The cheap proof you got it
+  purge lock survive between tests and must be cleared in the fixture.
+  **And `clear_redis` flushes the *dev* Redis, not a test one — running the suite breaks the running
+  dev system's purge status.** The `settings` fixture overrides `database_url` and `upload_dir` and
+  **not** `redis_url`, so `flushdb()` lands on the box's real Redis; the fixture's own docstring says
+  "the test Redis", and there is no such thing. Since the pre-commit hook runs `make check`, **every
+  commit wipes the purge heartbeat**, and with the schedule on that reads as `stale: true` on a
+  perfectly healthy system — AC-33's rule working correctly on a false premise. It also drops the
+  kombu bindings (re-declared on the next worker start) and the rate-limiter counters. Dev-only, and
+  the fix is a test-only `redis_url` beside `test_database_url` — *not* a narrower flush, which would
+  reintroduce the leftover-lock hazard the fixture exists to prevent. The cheap proof you got it
   right is to **run the suite twice in a row** — a second run that fails is the classic symptom. A
   leftover *lock* is the dangerous one: the job then does nothing, logs "skipped", and exits 0, so a
   test asserting a successful run passes against a run that never happened.
