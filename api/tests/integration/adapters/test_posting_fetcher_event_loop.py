@@ -39,6 +39,55 @@ and not about how fast four fetches finish. ADR-0009 found a **374 ms** stall
 from a synchronous "cheap" DOCX zip-directory read done inline in a route — the health check's p50
 stayed under a millisecond there specifically *because* the CPU-bound work was kept off the loop,
 and this test pins the same property for the fetcher's extraction step.
+
+---
+
+**Reshaped at T47 (2026-09-22), after discovering it could not fail.** Three things changed, and the
+third is the one worth reading.
+
+1. *The sample floor no longer races the batch.* It used to be a bare `len(latencies) >= 20` over
+   however many samples four fetches happened to leave room for — a precondition coupled to machine
+   speed in the **wrong** direction, because a *fast* box finishes the batch before the sampler has
+   its floor and fails a test whose property is holding comfortably. CI hit exactly that in slice 1.5
+   (`test_export_inline.py`, 16 samples against a floor of 20, sampled latencies of 0.5 ms); this
+   file carried the identical latent shape and had simply never been unlucky — probably because
+   network I/O plus `trafilatura` is slow enough. It is now `loop_liveness.hammer_health_live_until_floor`'s own
+   invariant: the sampler does not return short, whatever the batch does.
+2. *A sample is the loop's **turnaround**, not the request's duration.* Timing
+   `client.get("/health/live")` alone measures the one window in which the loop is by construction
+   not blocked — an in-process ASGI request to a no-I/O route never reaches a real suspension point,
+   so the loop cannot switch to a blocking worker in the middle of one. Lesson two in
+   `loop_liveness.py` has the full account and the mutation that proved it.
+3. *The four fetches now loop until the sampler has its floor, and the floor is 200.* Both changes
+   are forced by the same measurement problem: **blocking suppresses sampling**, so a blocked loop
+   under-represents itself in the sample set, and a p50 taken over a short window dominated by the
+   fetches' I/O phase never sees the extraction phase at all.
+
+**Mutation-verified, and the margin is stated rather than implied.** Replacing the
+`asyncio.wait_for(asyncio.to_thread(self._extract_sync, html), ...)` in `fetching.py` step 12 with a
+bare `self._extract_sync(html)` — the whole of what AC-10 guards — and changing nothing else:
+
+| shape | healthy p50 | mutated p50 |
+|---|---|---|
+| as it stood before T47 (request-timed, one round, floor 20) | ~0.1 ms | **passed** — never red |
+| turnaround-timed, one round, floor 20 | 0.59 ms | **passed** (6.54 ms once, then under budget) |
+| turnaround-timed, sampler-driven, floor 200 (this file) | 0.46 / 0.50 / 0.54 ms | 6.63 / 16.03 / 18.68 / 273.74 ms |
+
+So this assertion now fails against its own regression in 4 runs out of 4, with the healthy side
+stable at roughly a tenth of the 5 ms budget. **The mutated side is not stable**: its lowest observed
+figure, 6.63 ms, clears the budget by only 1.3x, so a fast enough box could still let this regression
+through. That is a missed regression rather than a flaky red — the healthy side has 10x of headroom —
+but it is a real limit and it is not the assertion's fault: p50 is the wrong statistic for a workload
+whose blocked fraction is well under half. The statistic that would separate these cleanly is the
+loop's *unavailable fraction* over the window (`sum(turnarounds) / wall-clock`), which is a change to
+what AC-10 asserts and therefore a decision for AC-10's owner rather than for retention's T47.
+**Owner: `qa`; trigger: the next slice that touches the fetcher, or the first time this test lets a
+regression through.**
+
+`tests/api/test_export_inline.py`'s AC-11 copy is **not** reshaped and **not** proven blind — its own
+banner records that removing `asyncio.to_thread` from the renderer hangs the process outright, which
+is a louder mutation than the one that fooled this file. Somebody should check it with a mutation
+that only *partially* blocks.
 """
 
 from __future__ import annotations
@@ -47,7 +96,6 @@ import asyncio
 import http.server
 import statistics
 import threading
-import time
 from collections.abc import Iterator
 
 import pytest
@@ -56,6 +104,8 @@ from httpx import AsyncClient
 from tailorcraft.domain.posting.value_objects import SourceUrl
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
+
+from .loop_liveness import hammer_health_live_until_floor
 
 pytestmark = pytest.mark.slow
 
@@ -157,81 +207,79 @@ def _fetcher() -> HttpxTrafilaturaFetcher:
     )
 
 
-async def _hammer_health_live(client: AsyncClient, *, stop: asyncio.Event) -> list[float]:
-    """Fire `/health/live` requests back-to-back until `stop` is set, timing each one.
-
-    `/health/live` does no I/O at all (`routers/health.py`): it answers as soon as the event loop
-    schedules its coroutine. Any latency above noise is therefore latency the loop spent doing
-    something else before it got around to this request — which is exactly what a blocked loop looks
-    like from the outside, and exactly what four inline (non-threaded) extractions would produce.
-
-    **The trailing `await asyncio.sleep(...)` is load-bearing, not decoration.** `client` here is an
-    in-process `httpx.ASGITransport` client, and `/health/live` performs no real I/O of any kind —
-    so a request against it can resolve through a chain of nested coroutine `await`s that never hits
-    a genuine OS-level suspension point (no socket, no disk, no thread hop). Without an explicit
-    yield, `asyncio`'s scheduler has no opportunity to switch to a sibling task between iterations,
-    and this loop's own `Task` starves every other task on the loop **forever**, including the one
-    meant to stop it — found the hard way while writing this test: the exact shape below, with a bare
-    `await asyncio.sleep(0)` in place of the timed sleep, hung indefinitely (confirmed with
-    `faulthandler.dump_traceback_later`, which showed the main thread parked inside FastAPI's routing
-    dispatch with no other task ever getting a turn — `sleep(0)` only reschedules onto the *current*
-    ready-queue pass, and this loop's own next iteration was consistently ready before the sibling
-    task's continuation, starving it just as completely as no yield at all). A small positive delay
-    (rather than `sleep(0)`) is what actually lets the fetch tasks — and the outer test coroutine —
-    get scheduled turns; it also caps the hammering rate to something sane instead of an unbounded
-    tight loop, which is worth doing on its own merits — an unbounded loop makes the samples measure
-    the loop rather than the fetcher.
-    A real deployed `/health/live` request arrives over an actual socket and would not have this
-    problem; it is specific to driving the app in-process, and the fetcher's own I/O (real sockets,
-    a real worker thread) does not share this failure mode, which is exactly why gathering it
-    alongside this loop works once this loop cooperates.
-    """
-    latencies: list[float] = []
-    while not stop.is_set():
-        started = time.perf_counter()
-        response = await client.get("/health/live")
-        latencies.append(time.perf_counter() - started)
-        assert response.status_code == 200
-        await asyncio.sleep(0.001)
-    return latencies
+# The sample floor this file needs, and it is ten times the shared default for a stated reason:
+# **blocking suppresses sampling**, so a blocked loop under-represents itself, and a fetch is I/O
+# *then* CPU — the extraction `asyncio.to_thread` protects the loop from does not begin until the
+# download is done. Twenty samples are collected inside the first download phase, before the thing
+# under test has started, and a p50 over them is a p50 over a warm-up. Two hundred spans several
+# full fetch cycles per worker, which is what puts the median inside the extraction phase. Measured,
+# not guessed: at floor 20 the mutation below passes; at floor 200 it fails 4 runs out of 4.
+_SAMPLE_FLOOR = 200
 
 
-async def test_health_live_p50_stays_under_5ms_during_four_concurrent_fetches(
+async def _fetch_until_enough_samples(
+    fetcher: HttpxTrafilaturaFetcher, url: str, *, enough: asyncio.Event
+) -> None:
+    """Keep fetching until the sampler has its floor, checked before every fetch rather than after —
+    an in-flight fetch always finishes, so `enough` being set mid-fetch costs at most one extra
+    fetch per worker rather than a torn result. The page is served by a local stub, so looping costs
+    nothing but CPU and touches no network."""
+    while not enough.is_set():
+        await fetcher.fetch(SourceUrl(url))
+
+
+async def test_loop_turnaround_p50_stays_under_5ms_during_four_concurrent_fetches(
     client: AsyncClient, large_page_server: _LargePageServer
 ) -> None:
-    """AC-10: hammer `/health/live` while four concurrent fetches of a large page run, and assert
-    the health check's p50 stays under 5 ms — the same measurement shape ADR-0009's addendum used,
-    so the two numbers are comparable. See the module docstring for what this does and does not
-    claim about the fetches' own speed."""
+    """AC-10: sample the loop's turnaround while four concurrent fetches of a large page loop, and
+    assert its p50 stays under 5 ms — the same budget ADR-0009's addendum used, so the numbers are
+    comparable in units. See the module docstring for what a sample is, what this file's reshaping
+    fixed, and exactly how far this assertion's mutated margin extends."""
     fetchers = [_fetcher() for _ in range(4)]
-    stop = asyncio.Event()
+    enough = asyncio.Event()
 
-    hammer_task = asyncio.ensure_future(_hammer_health_live(client, stop=stop))
-    await asyncio.sleep(0)  # let the hammering task actually start before the fetches begin
+    hammer_task = asyncio.ensure_future(
+        hammer_health_live_until_floor(client, enough=enough, floor=_SAMPLE_FLOOR)
+    )
+    await asyncio.sleep(0)  # let the sampling task actually start before the fetches begin
 
-    # `stop.set()` in `finally`, not after a bare `await gather(...)`: if any fetch raises, a bare
-    # sequence would skip straight past `stop.set()` and leave `_hammer_health_live`'s `while not
-    # stop.is_set()` loop running forever on this session-scoped event loop — a real failure mode
-    # hit while writing this test (a first draft of the fixture page made every fetch raise
-    # `SourceTextTooLong`, and the resulting orphaned hammering task looked exactly like a hang).
+    # `enough.set()` in `finally`, not after a bare `await gather(...)`: if any fetch raises, a bare
+    # sequence would skip straight past it and leave the workers that are still running looping
+    # forever on this session-scoped event loop — a real failure mode hit while writing this test (a
+    # first draft of the fixture page made every fetch raise `SourceTextTooLong`, and the resulting
+    # orphaned task looked exactly like a hang).
     try:
-        await asyncio.gather(
-            *(fetcher.fetch(SourceUrl(large_page_server.url)) for fetcher in fetchers)
+        # A generous but finite ceiling, not a tuned number: `enough` is set by the sampler the
+        # instant it has its floor. It is deliberately wide enough to let the *mutated* fetcher
+        # finish and fail on the assertion below — a timeout here would report "a fetch took too
+        # long", which is a throughput claim this test does not make.
+        await asyncio.wait_for(
+            asyncio.gather(
+                *(
+                    _fetch_until_enough_samples(fetcher, large_page_server.url, enough=enough)
+                    for fetcher in fetchers
+                )
+            ),
+            timeout=120,
         )
     finally:
-        stop.set()
-    latencies = await asyncio.wait_for(hammer_task, timeout=5)
+        enough.set()
+    turnarounds = await asyncio.wait_for(hammer_task, timeout=15)
 
-    # A sanity floor on the sample size, not a performance assertion: if the hammering loop only
-    # got to run a handful of times, the p50 below would be measuring noise rather than concurrent
-    # behaviour, and that failure mode should be loud rather than silently passing on 2 samples.
-    assert len(latencies) >= 20, (
-        f"only {len(latencies)} /health/live samples were taken during the four concurrent "
-        "fetches — too few to say anything about event-loop liveness"
+    # A self-check on `hammer_health_live_until_floor`'s own invariant, not a precondition that can lose a race —
+    # this is the 1.5 flake, fixed (T47); see the module docstring's item 1.
+    assert len(turnarounds) >= _SAMPLE_FLOOR, (
+        f"only {len(turnarounds)} /health/live samples were taken during the four concurrent "
+        "fetches — the sampler returned before reaching its own floor, which should be impossible; "
+        "see loop_liveness.hammer_health_live_until_floor"
     )
 
-    p50 = statistics.median(latencies)
+    p50 = statistics.median(turnarounds)
+    # p50 only, no `max(...)` assertion: four concurrent CPU-bound Python threads contending for the
+    # GIL produce real spikes no implementation under this port can prevent — the healthy runs above
+    # recorded maxima of 29 ms and 368 ms while their p50s sat at half a millisecond. `max` is
+    # reported as diagnostic context, exactly as its two sibling measurements do.
     assert p50 < 0.005, (
-        f"/health/live p50 was {p50 * 1000:.2f} ms during four concurrent fetches "
-        f"(n={len(latencies)}, max={max(latencies) * 1000:.2f} ms) — the event loop was blocked"
+        f"/health/live turnaround p50 was {p50 * 1000:.2f} ms during four concurrent fetches "
+        f"(n={len(turnarounds)}, max={max(turnarounds) * 1000:.2f} ms) — the event loop was blocked"
     )

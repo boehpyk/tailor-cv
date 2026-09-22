@@ -18,10 +18,13 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: four slices shipped; slice 1.5 verified and in review (2026-09-19).**
-> Phase 1 is under way. The architecture now carries a paid external call, a worker, two scheduled
-> jobs, an unauthenticated *write* to a PII row on a timer, and — new in 1.5 — **a stranger's CV
-> rendered into HTML and written to disk as a file**.
+> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS), rehearsed on real data
+> and switched on, 2026-09-22.** `GUEST_PURGE_ENABLED=true`; `/health/ready` reads
+> `scheduled: true`, `stale: false`, `overdue: 0`. Every task in the slice is closed.
+> Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
+> jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
+> written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
+> in two systems at once.**
 >
 > - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
 >   worker thread, owned by a guest session.
@@ -35,7 +38,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   revision on the run (ADR-0015); one version column refuses a stale edit **and** closes 1.3's
 >   concurrent duplicate delivery. `/verify` took four rounds and ended by re-modelling the autosave
 >   hook as one pure state machine.
-> - **1.5 `export-multi-format-download`** (PR open) — four formats. `md` and `txt` are a
+> - **1.5 `export-multi-format-download`** (PR #7, merged) — four formats. `md` and `txt` are a
 >   `GET` on a representation of the document and leave **no row**; `pdf` and `docx` are an
 >   `ExportJob`, a Celery task on a third queue, a file on the uploads volume and a polled client
 >   (**ADR-0016**). The pipeline is Markdown → tokens (`html=False`) → grammar normalization →
@@ -44,6 +47,130 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   **11 ms** (budget 500 ms), `POST` → `ready` p95 **0.17 s** over 40 real renders (budget 10 s),
 >   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
 >   all of them in code a green suite of 1293 tests was happy with — see below.
+>
+> - **1.6 `retention-guest-purge`** (branch open, `/verify` **PASS**, **not yet rehearsed**) — the
+>   purge, the orphan sweep, the CLI, the beat entry and a Retention block in the status panel.
+>   **1456 backend and 532 frontend tests**, green twice. `retention` is the first context with **no aggregate** — a policy,
+>   two use cases, two ports (**ADR-0018**) — and `/health/ready` gained `jobs.guest_purge`, the
+>   first thing it reports as a *fact* rather than as readiness (**ADR-0019**). **No migration**, and
+>   that is proven by reading `pg_constraint`/`pg_index` rather than trusting the comments that
+>   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
+>   `overdue` probe **2.1 ms p95** against 20 ms.
+>
+> **`/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
+> four were the same *kind* of gap: something the spec promised that no test asserted.**
+> - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
+>   including `GUEST_PURGE_ENABLED` — the single control keeping the first `DELETE` off a schedule
+>   before the rehearsal. Nothing proved the flag worked.
+> - **AC-38's privacy test did not exist**, and had never been given a task. The spec's own Privacy
+>   section said the "never logged" list was *"asserted by AC-38's planted-marker test, not by
+>   intention"*. That sentence was false for the whole slice. It is true now: markers planted in
+>   every PII field, plus the real storage keys and joined paths, over a real purge **and** a real
+>   orphan sweep on a real filesystem.
+> - **R-3 and R-4 named two log events that existed nowhere in `api/src/`**, and the handler was a
+>   bare `except Exception:` that never bound the exception — so `error_type` was unrecoverable *in
+>   principle*. The consequence is this slice's own thesis one level down: `_purge_batches` breaks on
+>   `sessions_deleted == 0`, so a permanently-refused `DELETE` is retried hourly **for ever**, the run
+>   still **exits 0**, `overdue` sits above zero, and nothing names the session or the reason.
+>   Fixed by **returning** the failures (`PurgeReport` grew two tuples, **AC-4 amended**) rather than
+>   logging from `application/` — which keeps the layer silent *and* keeps every emitted record inside
+>   AC-38's field of view.
+> - **The symlink seam**, below.
+>
+> **The `.part`/symlink pattern appeared three times in one slice, all in the file store, all
+> invisible to a recording fake.** One lesson, worth learning once: *the thing named is not always the
+> thing acted on.*
+> 1. The partial that survived while a live file beside it died (T18b, below).
+> 2. **A symlink whose target died while the link survived.** The scanner passes `follow_symlinks=False`
+>    everywhere and is correct; `_resolve_contained` called `.resolve()`, which **follows**. Opposite
+>    policies either side of one seam. The orphan sweep is the **first caller in the codebase that
+>    deletes by a name it discovered on disk**, which is what turned a pre-existing `resolve()` into a
+>    deletion primitive: a link at a `FileRef`-shaped key is reported by the scanner, clears the
+>    cross-check (the *link's* key is in no row), and is "reclaimed" — destroying a live, referenced
+>    file belonging to a **different session** while the orphan survives.
+> 3. **`_put_sync` opened `<key>.part` with a plain `open()`**, which follows a link — so bytes landed
+>    on the target and `os.replace`, which renames the link rather than following it, then installed
+>    **the link itself** at the real key. One upload overwriting an arbitrary file on the volume, and
+>    that key a symlink from then on. Found by following the fix rather than closing the ticket.
+>
+> **The fix is uniform and is now stated once in the module docstring** so nobody re-derives which
+> path was which: `put` and `get` open `O_NOFOLLOW` through one `_nofollow_opener` passed to
+> `open()`'s `opener=` hook and work on the **descriptor**; `delete`/`delete_partial` call `unlink`,
+> which removes a link and never its target; `_resolve_contained` resolves the **parent** and never
+> the basename, refusing a final-component link — but it is a **check-then-use**, so it is the outer
+> lock and never the only one. `os.fchmod(fd, …)` replaced `os.chmod(path, …)`: a descriptor cannot be
+> re-pointed between the open and the chmod, and `fchmod` is immune to the umask that `O_CREAT`'s mode
+> argument is not. The opener also closed a descriptor leak **by construction** — `open()` owns the fd
+> it returns — which removed code instead of adding a handler.
+>
+> **What 1.6 found that no passing test could:**
+> - **A test that samples an in-process route cannot see a blocked event loop** — found at T47, by
+>   mutation-testing AC-42's brand-new loop-liveness test against the regression it was written for.
+>   It passed. `/health/live` does no I/O and the test client is an `httpx.ASGITransport`, so the
+>   request resolves through nested `await`s that **never reach a real suspension point**: the loop
+>   cannot switch to a blocking worker in the middle of one, and a request that starts while the loop
+>   is free finishes while the loop is free, at full speed. **Timing the request measures the one
+>   window in which the loop is by construction not blocked.** Time the *turnaround* instead —
+>   `sleep(pace) + GET`, minus the pace — and the same mutation goes from a sub-millisecond p50 to
+>   **1264 ms**. The mutated run had been taking 27 s instead of 3 s the whole time; wall-clock knew,
+>   the assertion did not. **AC-10's test had the identical defect and had never been able to fail
+>   either**; AC-11's copy is unproven in both directions. A second corollary, because it decides the
+>   sample floor: **blocking suppresses sampling**, so a blocked loop under-represents itself in the
+>   set being summarised and a p50 is only sensitive when the blocked fraction is over half.
+> - **A `.part` file was never deleted, and a live file beside it was.** `FileRef`'s grammar ends
+>   `\.(pdf|docx|txt)$`, so a partial *cannot be a `FileRef`* and travels as base-ref-plus-flag —
+>   and the sweep called plain `delete(ref)` for both, which unlinks the **final** key with
+>   `missing_ok=True`. So the `.part` survived and was reported `reclaimed`; and where a live file
+>   sat at that key it was **deleted**, with the reference cross-check structurally unable to save it
+>   because partials are excluded from it by design. Reachable: `put` #1 succeeds, the task is
+>   redelivered, `put` #2 dies before `os.replace`. **`FileStorePort.delete_partial` is the fix — a
+>   second method, not a boolean**, because a flag threaded from a variable is the shape that caused
+>   it. Found only because a test was rewritten to drive a **real filesystem** instead of a recording
+>   fake: R-36's existing test passed throughout, because a fake has no filesystem and cannot model
+>   the difference between `K` and `K.part`.
+> - **`NotImplementedError` subclasses `RuntimeError`**, so a red-first test asserting "an unexpected
+>   exception propagates" with `pytest.raises(RuntimeError)` passes **vacuously** against a skeleton.
+> - **A `SET` on a pooled connection does not survive a commit** — and it hung CI for twenty minutes.
+>   `SET lock_timeout` was issued once, then a purge that **commits per session** ran; `QueuePool`
+>   hands back a different physical connection after each transaction, so the timeout was never in
+>   force and a deliberately-locked row waited unbounded. Pin one connection and bind the
+>   sessionmaker to *it*, and **commit the `SET`** — a bare `SET` is itself transactional.
+>   **A test that hangs is worse than one that fails**: CI sits on it until timeout and the failure
+>   names nothing.
+> - **`/health/ready` costs ~2.1 s against its own 300 ms budget, and has since Phase 0.**
+>   `probe_celery` is **2128 ms** of it; the new retention probe is **1.8 ms**.
+>   `control.ping(timeout=2.0)` is a broadcast with **no reply limit**, so it waits the whole window
+>   however fast the worker answers — `ping(timeout=2.0, limit=1)` returns the same reply in
+>   **4.0 ms**. Not changed in this slice: it would stop `detail` reporting the worker count, which
+>   is a trade for the owner to make. Owner: `devops`; trigger: before anything relies on this
+>   endpoint's timing.
+> > - **The dev uploads volume held 753 orphaned files out of 827** — residue from 1.1–1.5. The
+>   arithmetic reconciled exactly in both directions, which is what made it residue rather than a
+>   cross-check that was failing to match. **Cleared in the 2026-09-22 rehearsal**: the purge took
+>   the 74 referenced keys, the sweep reclaimed the remaining 753 with 0 failures, and the volume is
+>   now empty. `overdue` is 0 and the dev database holds no guest data.
+> - **`tailorcraft_test` carried a committed, already-expired session**, so `count_expired` returned
+>   1 on an "empty" database. Scope assertions to ids the test created; an absolute count is one
+>   stray row from lying.
+>
+> **Carried out of 1.6, each with an owner and a trigger:**
+> - **The schedule is ON as of 2026-09-22 16:04 UTC.** The rehearsal ran in order first — both
+>   backup halves, dry run (11 sessions / 74 keys), `limit=5` verified at exactly −5 with a
+>   row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0, volume empty. **Beat's own tick fired
+>   at 17:04:53**, exactly 3600 s after beat started, and the worker ran it in 35 ms (`examined=0`,
+>   `last_outcome: ok`, `stale: false`): **a run that deletes nothing is still visible**, which is the
+>   heartbeat's whole job and the reason the backlog — not the log line — is the signal to trust.
+>   **`docker compose restart` does not pick up an `.env` change** — `env_file:` is read at container
+>   *create*. Use `up -d api worker beat`, and note `api` belongs in that list: it serves `scheduled`
+>   on `/health/ready`, so a beat-only change leaves the UI saying "off" while the job runs.
+>   **`limit=50` in the runbook was wrong for a backlog of 11** and now reads "smaller than the
+>   backlog you just read": a bite bigger than the backlog silently skips the safeguard.
+> - **AC-17's uploads/exports split was dropped**, amended on purpose: a `FileRef` is an opaque key
+>   with **one grammar shared by both kinds**, the extension lies (`.pdf` is both), and widening
+>   `ExpiringGuestSession` would contradict AC-4, whose third field's *type is the privacy control*.
+> - **R-38's "counted `failed`" is unreachable** through the port as designed, and the port was
+>   deliberately not widened: `failed` means "we tried to reclaim this and could not", and folding
+>   "we could not even look here" into it would make one number mean two things.
 >
 > **Every gate was verified by running it**: Ruff, mypy `--strict`, import-linter (3 contracts, now
 > with `weasyprint`, `nh3`, `markdown_it` and `docx` on both forbidden lists), pytest, `tsc -b`,
@@ -300,9 +427,15 @@ make check.static        # every gate EXCEPT pytest/vitest — the RED commit of
 # to uploads, so the backlog count below reads higher after that slice than it used to for the
 # same number of guest sessions — not itself a sign of anything wrong.
 make purge.dry                                     # report only; deletes nothing
-make purge limit=50                                # a small, explicit bite
-make purge                                         # a full run
+make purge limit=50                                # a small, explicit bite (one batch, not a loop)
+make purge                                         # a full run — loops batches until empty
 curl -s localhost:8080/health/ready | jq .jobs.guest_purge   # the backlog — the signal to trust
+
+# Orphans: files with no row (the crash window's survivors). Operator-run only, never on beat.
+# Fails CLOSED — if the database cross-check cannot run, it deletes nothing and exits 1.
+python -m tailorcraft.cli purge-guests --orphans --dry-run
+# Exit codes: 0 success (including deleting nothing) · 1 failed · 2 usage · 3 THE LOCK WAS HELD.
+# 3 is the point: a run that did nothing because another holds the lock must not exit 0.
 
 # Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
@@ -356,10 +489,44 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   `tailorcraft_test` — **never** the dev DB. **No test calls the real Gemini API**; CI has no key.
   Time comes from a fake `Clock`, never `datetime.now()`.
   **The database transaction does not roll back Redis.** Rate limiters, the purge heartbeat and the
-  purge lock survive between tests and must be cleared in the fixture. The cheap proof you got it
+  purge lock survive between tests and must be cleared in the fixture.
+  **`clear_redis` flushed the *dev* Redis until 2026-09-22 — the suite broke the running system's
+  purge status on every run, and nothing said so.** The `settings` fixture swapped `database_url` and
+  `upload_dir` and **not** `redis_url`, so `flushdb()` landed on the box's real Redis while the
+  fixture's docstring called it "the test Redis". Through the pre-commit hook that meant **every
+  commit wiped the purge heartbeat**, which with the schedule on reads as `stale: true` on a perfectly
+  healthy system — AC-33's rule working correctly on a premise the suite invented. It also dropped the
+  kombu bindings and the rate-limiter counters.
+  **Fixed: `Settings.test_redis_url`**, derived from `redis_url` with the database swapped to 3 so the
+  password is written down once, and — this is the actual fix — **a boot guard that refuses a test
+  Redis resolving to the same `(host, port, db)` as the cache, the broker or the result backend**.
+  Compared on identity rather than on the URL string, because `redis://redis:6379/0` and
+  `redis://:secret@redis:6379/0` are one database and a string comparison waves the dangerous case
+  through. A correct URL fixes today; the guard is what makes tomorrow's `/0`-instead-of-`/3` loud.
+  Not a narrower flush — that would reintroduce the leftover-lock hazard `clear_redis` exists for.
+  **The general lesson is the transferable part: test isolation is a property you check per
+  datastore.** Postgres was isolated, the filesystem was isolated, and Redis looked isolated because a
+  docstring said so. Proof it holds is a sentinel key and a live heartbeat surviving a full run, not a
+  green suite. The cheap proof you got it
   right is to **run the suite twice in a row** — a second run that fails is the classic symptom. A
   leftover *lock* is the dangerous one: the job then does nothing, logs "skipped", and exits 0, so a
   test asserting a successful run passes against a run that never happened.
+  **Run exactly one suite at a time — the suite is not safe to run concurrently, and nothing in it
+  will tell you so.** `clear_redis` calls `flushdb()`, which is **global**: a second pytest process
+  (another terminal, an agent running gates, `pytest -n`) sharing this Redis will delete the first
+  run's rate-limiter counters *mid-test*. The limiters then **fail open**, so a third request that
+  should be `429` returns `201`/`202`, and the knock-on assertions fail with unrelated `409`s.
+  The signature is unmistakable once you know it and baffling until then: **a different set of
+  unrelated tests fails on each run, and every one of them passes in isolation.** That is shared-state
+  contention, never a defect in the code under test — it cost two separate sessions real time during
+  1.6's `/verify`. The same applies to `tailorcraft_test`. Judging suite health from a *subset* run is
+  the milder version of the same error: a subset leaves rate-limiter keys uncleared, and an
+  interrupted run can leave the schema downgraded.
+- **A performance or liveness assertion is a claim about a mechanism, and the only proof is a
+  mutation.** Both of this codebase's event-loop tests were green against the exact defect they
+  named (T47) — not because the code was fine, but because the *measurement* could not observe it.
+  Re-introduce the regression, watch the assertion go red, restore the source byte-exact, and write
+  both numbers into the test. An assertion that has never been observed failing is a docblock.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of

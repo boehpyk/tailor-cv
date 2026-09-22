@@ -9,9 +9,16 @@ The beat schedule holds two jobs, one per aggregate that a lost worker can stran
 sweep (slice 1.3, G-25') and the stale-**job** sweep (slice 1.5, X-29, AC-20). They are two entries
 rather than one generalized sweep for the reason ADR-0016 (c) gives — the two aggregates have
 different terminal states, different failure reasons and different windows, and a shared sweep would
-have to be widened by whichever of them grew a third. The guest-retention purge (FR-6) lands with
-slice 1.6, and the roadmap deliberately keeps it *off* until it has been rehearsed by hand on real
-data. It issues a `DELETE` against rows and unlinks files, and neither is reversible.
+have to be widened by whichever of them grew a third.
+
+**A third entry, the guest-retention purge (FR-6, slice 1.6), exists only when
+`GUEST_PURGE_ENABLED` is true, and it ships false** (ADR-0018 decision 5). It is not a sweep and it
+does not recover anything: it issues a `DELETE` against rows and unlinks files, and neither is
+reversible, so the schedule stays off until the purge has been rehearsed by hand on real data
+through `purge-guests` (docs/infrastructure.md's runbook). The flag gates the *entry*, not the task
+— the module is always imported and the task is always registered, because a worker that could not
+run a message beat publishes is a worse failure than an idle registration. See
+`_guest_purge_schedule`.
 
 **The worker's observability is configured here, by Celery signal, and that is not decoration.**
 `create_app`'s lifespan calls `configure_logging` / `configure_sentry` for the API process; nothing
@@ -31,7 +38,7 @@ from celery.signals import celeryd_init, worker_process_init
 from kombu import Queue
 
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
-from tailorcraft.infrastructure.settings import MisconfiguredSettings, get_settings
+from tailorcraft.infrastructure.settings import MisconfiguredSettings, Settings, get_settings
 
 # The queue Celery publishes to when nothing says otherwise — Celery's own default name, written
 # down rather than left implicit, because `task_queues` below turns the set of consumed queues into
@@ -63,10 +70,62 @@ ABANDON_STALE_EXPORT_JOBS_TASK_NAME: Final = "tailorcraft.export.abandon_stale_j
 STALE_EXPORT_SWEEP_INTERVAL_SECONDS: Final = 60.0
 STALE_EXPORT_SWEEP_EXPIRES_SECONDS: Final = 55.0
 
+# The guest purge's task name (slice 1.6, FR-6, ADR-0018), here for the reason the two sweep names
+# are: `beat_schedule` below names it and `tasks/retention.py` imports this module, so the other
+# direction is an import cycle. A schedule and a task that disagree about a name produce
+# `NotRegistered` on the worker, hourly, in a log nobody reads — and for *this* job that failure is
+# invisible in every other way, because a purge that never ran looks exactly like a purge that found
+# nothing to do (R-10).
+PURGE_EXPIRED_GUEST_SESSIONS_TASK_NAME: Final = "tailorcraft.retention.purge_expired_guest_sessions"
+
+# Hourly, with the expiry below the interval for the same reason the sweeps' is: at most one live
+# tick exists, so a worker back after a day finds one purge worth running rather than twenty-four.
+# An expired tick loses nothing — the next one purges everything the last would have, because the
+# work is defined by a predicate over the data rather than by the message.
+#
+# **Hourly rather than at the retention boundary**, and the difference is the point: `expires_at` is
+# per session, so there is no single boundary to fire at. A guest who arrives at 14:37 expires at
+# 14:37 the next day, and the promise is "at most 24 hours", so the job must run often enough that
+# the overshoot is an hour rather than a day. `docs/infrastructure.md`'s runbook is written against
+# this number.
+GUEST_PURGE_INTERVAL_SECONDS: Final = 3600.0
+GUEST_PURGE_EXPIRES_SECONDS: Final = 3500.0
+
+# How old the heartbeat may get before `/health/ready` calls the purge `stale` — **three missed
+# ticks**, derived from the interval above rather than written as a number, so halving the interval
+# cannot silently leave the staleness bound three times too generous. One missed tick is a busy
+# worker; three is a fault worth a human.
+#
+# It is a *report*, never a 503 (ADR-0019, AC-32): readiness is about serving a request, and a
+# background hygiene job that is behind does not make this process unable to answer one. Pulling the
+# app out of service over it would fail a deploy's readiness gate for a job the deploy just
+# restarted.
+GUEST_PURGE_STALE_AFTER_SECONDS: Final = int(3 * GUEST_PURGE_INTERVAL_SECONDS)  # 10800 (3 h)
+
 # The hard time limit: the pool child running a task is killed at this many seconds. Named because
-# two things read it, the config below and the stale-window check at the top of `create_celery`,
-# and a limit written twice is a limit that drifts from the check guarding it.
+# three things read it now — the config below, the stale-window check at the top of `create_celery`,
+# and `PURGE_LOCK_TTL_SECONDS` immediately underneath — and a limit written twice is a limit that
+# drifts from the check guarding it.
 TASK_TIME_LIMIT_SECONDS: Final = 180
+
+# How long the guest purge's Redis lock lives before Redis expires it on its own (slice 1.6,
+# ADR-0018 decision 7). It must outlast the longest run that can possibly still be holding it, and
+# that bound is the hard time limit above: a pool child is killed at 180 s, so a purge task cannot
+# still be working at 240 s. The minute of headroom covers the gap between the kill and the `finally`
+# that would have released the lock — a SIGKILLed holder releases nothing, and R-9 then costs exactly
+# one skipped hourly tick.
+#
+# **Deliberately not a setting.** A setting would need a startup guard refusing a TTL at or below the
+# time limit, and that would be the *fourth* refusal in this codebase that cannot exit the container
+# under `uvicorn --workers N` — a known, measured, still-open bug carried since slice 1.3 (AC-30).
+# A constant derived from the very limit it must exceed cannot be misconfigured. The best guard is
+# the one you do not need.
+#
+# It lives here, beside the limit it derives from, rather than in `infrastructure/retention/lock.py`:
+# a derivation split from its input is a derivation that stops being one. The lock module does **not**
+# import it — it takes the TTL as a constructor argument, so that taking a lock does not oblige a
+# process to build a Celery app (see that module's `__init__`); the composition roots pass this.
+PURGE_LOCK_TTL_SECONDS: Final = TASK_TIME_LIMIT_SECONDS + 60
 
 
 def create_celery() -> Celery:
@@ -149,6 +208,12 @@ def create_celery() -> Celery:
             "tailorcraft.infrastructure.tasks.tailoring_sweep",
             "tailorcraft.infrastructure.tasks.export",
             "tailorcraft.infrastructure.tasks.export_sweep",
+            # The guest purge (slice 1.6). Listed **unconditionally**, although the beat entry below
+            # is conditional: `GUEST_PURGE_ENABLED` decides whether anything *publishes* the task,
+            # never whether a worker can run one. A worker that skipped the import would reject a
+            # message published by a beat that has the flag on — two processes, one `.env`, and the
+            # failure would be `NotRegistered` on the one job whose absence is otherwise silent.
+            "tailorcraft.infrastructure.tasks.retention",
         ],
     )
     celery_app.conf.update(
@@ -269,8 +334,9 @@ def create_celery() -> Celery:
         ),
         # --- The beat schedule --------------------------------------------------------------------
         #
-        # Two jobs until slice 1.6: the stale-run sweep (G-25') and the stale-job sweep (X-29). See
-        # the module docstring for why they are two entries and not one.
+        # Two sweeps, plus the guest purge when it is enabled. See the module docstring for why the
+        # sweeps are two entries and not one, and `_guest_purge_schedule` for why the third is
+        # conditional and the other two are not.
         beat_schedule={
             "abandon-stale-tailoring-runs": {
                 "task": ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
@@ -320,9 +386,62 @@ def create_celery() -> Celery:
                     "expires": STALE_EXPORT_SWEEP_EXPIRES_SECONDS,
                 },
             },
+            # The guest purge (slice 1.6, FR-6), **present only when `GUEST_PURGE_ENABLED` is
+            # true** — see `_guest_purge_schedule`. A `**` merge of either one entry or none,
+            # rather than an `if` that mutates the schedule after the fact: the two sweeps above
+            # stay byte-for-byte what they were, and the third's condition is one call a reader can
+            # follow instead of a second place the schedule is assembled.
+            **_guest_purge_schedule(settings),
         },
     )
     return celery_app
+
+
+def _guest_purge_schedule(settings: Settings) -> dict[str, dict[str, object]]:
+    """The hourly guest-purge beat entry, or **nothing at all** (AC-25, ADR-0018 decision 5).
+
+    **The entry is absent rather than disabled when the flag is off**, and that is the difference
+    worth stating. Celery has no "paused" entry; a present entry with a huge interval, or one whose
+    task returns early on a flag, still publishes messages and still writes a heartbeat, so an
+    operator reading `beat`'s startup banner or `/health/ready` would see a job that is scheduled.
+    Nothing is what `scheduled: false` means, and an absent key is the only honest spelling of it.
+
+    The flag is read **once, here, at `create_celery`** — so flipping it takes a `beat` restart,
+    which is exactly the deploy-shaped, deliberate act this job's first real run should be. A
+    setting re-read per tick would let a stray `.env` edit start deleting a stranger's CV without
+    anyone running anything.
+
+    **The CLI does not consult it.** `purge-guests` purges whether or not the schedule is on: an
+    operator who typed the command has already said what they want, and the rehearsal this flag is
+    waiting for is performed with that command. The flag governs the *unattended* run only.
+    """
+    if not settings.guest_purge_enabled:
+        return {}
+    return {
+        "purge-expired-guest-sessions": {
+            "task": PURGE_EXPIRED_GUEST_SESSIONS_TASK_NAME,
+            "schedule": GUEST_PURGE_INTERVAL_SECONDS,
+            "options": {
+                # **The default `celery` queue, and `task_queues` above is untouched** (AC-27,
+                # ADR-0018 decision 9). Hygiene must not queue behind the workload it cleans up
+                # after — the sweeps' reason, and sharper here: a backlog of paid tailoring runs or
+                # slow renders would delay the job that keeps a privacy promise, and the promise has
+                # a deadline the queue knows nothing about.
+                #
+                # A fourth queue would also mean a fourth kombu binding, and kombu adds one per
+                # declaration and never removes one. The healthy broker state stays **three members
+                # in `_kombu.binding.celery`** on db 1 (all queues share the one default exchange),
+                # so there is nothing to `SREM` after this slice.
+                "queue": DEFAULT_QUEUE_NAME,
+                # Below the interval, so at most one live tick exists — the shape both sweeps use.
+                # A tick that expires unrun costs nothing here: the next one deletes everything this
+                # one would have, because the work is a predicate over the data and not a payload in
+                # the message. What it does cost is an hour of a promise, which is why the interval
+                # is an hour and not a day.
+                "expires": GUEST_PURGE_EXPIRES_SECONDS,
+            },
+        }
+    }
 
 
 # Same narrow ignore as `tasks/tailoring.py`'s: `celery.signals` is untyped, so `.connect` would

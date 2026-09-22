@@ -53,6 +53,48 @@ describe('SystemStatus', () => {
     expect(screen.getByText('celery')).toBeInTheDocument();
   });
 
+  it('renders the Retention block from the same response, under its own heading', async () => {
+    // The wiring itself, which the `GuestPurgeStatus` unit tests cannot see: they hand the
+    // component a prop, so they prove the block works and not that anything renders it with the
+    // API's payload. Asserted through a real `fetch` response so `data.jobs?.guest_purge` is
+    // exercised end to end — AC-37's "no new query key" is what makes this one response enough.
+    respondWith(200, {
+      ready: true,
+      dependencies: { postgres: { healthy: true, detail: null } },
+      jobs: {
+        guest_purge: {
+          scheduled: false,
+          last_run: null,
+          last_run_age_seconds: null,
+          last_outcome: null,
+          overdue: 10,
+          stale: false,
+          detail: null,
+        },
+      },
+    });
+
+    renderWithQuery(<SystemStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /retention/i })).toBeInTheDocument();
+    });
+    expect(screen.getByText(/10 expired sessions waiting/i)).toBeInTheDocument();
+  });
+
+  it('renders "not reported" when the API sends no jobs member at all (R-32)', async () => {
+    // Every other test in this file predates `jobs` and sends a response without it — so this is
+    // also the assertion that those four are not quietly crashing on an older-API shape. During a
+    // deploy the browser really can be served a bundle newer than the API.
+    respondWith(200, { ready: true, dependencies: {} });
+
+    renderWithQuery(<SystemStatus />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/not reported/i)).toBeInTheDocument();
+    });
+  });
+
   it('renders the 503 report rather than treating it as a failed request', async () => {
     // The API answers 503 WITH the report naming what is down. Throwing there would discard the one
     // piece of information worth having and replace it with "request failed".

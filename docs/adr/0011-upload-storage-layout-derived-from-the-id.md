@@ -64,9 +64,35 @@ engineered for by choosing to write the file before the row.
 file, and a crash mid-write leaves a `.part` the sweep can also collect. Every syscall goes through
 `asyncio.to_thread` — a blocking write on the event loop is the silent failure Constitution §1 names.
 
-**6. Containment is checked anyway.** `(root / ref.key).resolve()` must be under `root.resolve()` or
-the store raises. The `FileRef` grammar already makes a traversing key unrepresentable; this is the
-second lock on a door that should never be reachable, and it costs one line.
+**6. Containment is checked anyway, and it is the *outer* lock only.** The resolved path must be
+under `root.resolve()` or the store raises. The `FileRef` grammar already makes a traversing key
+unrepresentable; this is the second lock on a door that should never be reachable, and it costs one
+line.
+
+> **Amended in slice 1.6.** As originally written this resolved the **whole** path —
+> `(root / ref.key).resolve()` — and `resolve()` follows symlinks, so the path handed to `unlink`,
+> `open` or `read` was a planted link's **target**. Harmless while every caller passed a `FileRef`
+> derived from a database row; the orphan sweep (ADR-0006 §2) is the first caller that deletes by a
+> name it **discovered on disk**, which turned one pre-existing line into a deletion primitive: a
+> link at a `FileRef`-shaped key clears the reference cross-check, because *the link's* key is in no
+> row, and its target — a live file of another session — is destroyed while the link survives.
+>
+> Two changes, and the second is the load-bearing one. Containment now resolves the **parent** and
+> leaves the basename un-resolved, then refuses a final-component symlink. But that is a
+> **check-then-use**: the check and the syscall are two operations and a name can change meaning
+> between them. So every path that opens a file does so `O_NOFOLLOW`, through one opener, and works
+> on the **descriptor** — `put` and `get` alike — while `delete` and `delete_partial` rely on
+> `unlink` removing a link rather than its target. `O_NOFOLLOW` also covers `<key>.part`, which the
+> containment check never inspects and where a plain `open()` meant an upload wrote through a link
+> and `os.replace` then installed **the link itself** at the real key.
+>
+> Mode-setting moved with it: `os.fchmod(fd, 0o600)` rather than `os.chmod(path, …)`, so the mode
+> lands on the descriptor that was opened rather than on a name that could be re-looked-up, and is
+> not subject to the umask that `O_CREAT`'s mode argument is.
+>
+> The threat model is honest: planting a link requires prior write access to the uploads volume, so
+> this is blast-radius reduction rather than a remote exploit. It earns the lines because the damage
+> is silent, irreversible, and lands on a **different** user's data.
 
 ## Alternatives
 

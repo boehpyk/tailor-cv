@@ -211,6 +211,13 @@ class InMemoryFileStore:
     async def delete(self, ref: FileRef) -> None:
         self.data.pop(ref.key, None)
 
+    async def delete_partial(self, ref: FileRef) -> None:
+        """No test using this fake exercises the orphan sweep's partial branch (that is
+        `_RecordingFileStorePort`'s job, below) — this fake has no `.part` concept at all, so the
+        method is a no-op rather than a guard-rail `AssertionError`: nothing here claims to cover a
+        reached-but-unexpected call, only "this fake cannot express a `.part` file"."""
+        return None
+
 
 class AlwaysFailingFileStore:
     """`FileStorePort` that fails every write, simulating F-14 (`ENOSPC` / `EACCES`).
@@ -232,6 +239,9 @@ class AlwaysFailingFileStore:
 
     async def delete(self, ref: FileRef) -> None:
         raise AssertionError("delete() should not be reached in this scenario")
+
+    async def delete_partial(self, ref: FileRef) -> None:
+        raise AssertionError("delete_partial() should not be reached in this scenario")
 
 
 class FakeExtractor:
@@ -626,6 +636,9 @@ class MissingFileStore:
 
     async def delete(self, ref: FileRef) -> None:
         raise AssertionError("delete() should not be reached in this scenario")
+
+    async def delete_partial(self, ref: FileRef) -> None:
+        raise AssertionError("delete_partial() should not be reached in this scenario")
 
 
 class _HasAll(Protocol):
