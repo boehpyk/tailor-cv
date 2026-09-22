@@ -156,10 +156,10 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > **Carried out of 1.6, each with an owner and a trigger:**
 > - **The schedule is ON as of 2026-09-22 16:04 UTC.** The rehearsal ran in order first — both
 >   backup halves, dry run (11 sessions / 74 keys), `limit=5` verified at exactly −5 with a
->   row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0, volume empty. A tick has
->   run end to end (`examined=0`, `last_outcome: ok`, `stale: false`): **a run that deletes nothing
->   is still visible**, which is the heartbeat's whole job. Beat's own hourly tick is the one thing
->   left to watch.
+>   row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0, volume empty. **Beat's own tick fired
+>   at 17:04:53**, exactly 3600 s after beat started, and the worker ran it in 35 ms (`examined=0`,
+>   `last_outcome: ok`, `stale: false`): **a run that deletes nothing is still visible**, which is the
+>   heartbeat's whole job and the reason the backlog — not the log line — is the signal to trust.
 >   **`docker compose restart` does not pick up an `.env` change** — `env_file:` is read at container
 >   *create*. Use `up -d api worker beat`, and note `api` belongs in that list: it serves `scheduled`
 >   on `/health/ready`, so a beat-only change leaves the UI saying "off" while the job runs.

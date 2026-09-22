@@ -2924,8 +2924,20 @@ kept, and the UI was honest about which. Today it says `scheduled: true`, and th
 number read rather than assumed, and a small deletion verified four ways before a large one. That
 distinction is the whole slice, really. The code was the easy part.
 
-One thing genuinely remains: beat's own hourly tick, due about an hour after the flag went on. Every
-part of the path is proven — the entry is in the live schedule, the worker consumed the identical
-message and wrote a heartbeat, the broker's bindings are clean — so what's left unproven is one
-timer's arithmetic. Which is worth stating rather than rounding up to "done", because *"the only
-untested part is the trivial part"* is how the last four bugs in this file introduced themselves.
+And then, an hour later, beat fired it itself.
+
+`17:04:53` — exactly 3600 seconds after beat started at `16:04:53`. Worker took it in 35ms,
+`examined=0`, nothing to do. `last_run` moved with no help from anybody.
+
+That was the last thing in the slice I'd been careful not to round up to "done". Everything else on
+the path was proven — the entry was in the live schedule, the worker had consumed a byte-identical
+message, the broker's bindings were clean — and what remained was one timer's arithmetic, which is
+about as trivial as a thing can get. I wrote it down as unproven anyway, because *"the only untested
+part is the trivial part"* is how roughly every bug in this file introduced itself.
+
+It worked. That's usually how it goes, and it isn't an argument against having checked.
+
+Worth noticing what the log line alone says about that tick: exactly what a run that deleted eleven
+sessions would say. Same sentence, same level. **It is the heartbeat moving — not the line appearing
+— that tells you the schedule fired.** Which is the thing this whole slice has been about from the
+first commit, arriving one last time, from the one direction it hadn't yet come from.
