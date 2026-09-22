@@ -2752,6 +2752,78 @@ logic test usually fails loudly on something. A wrong performance test passes se
 because "fast enough" is the default state of almost any measurement you can accidentally take. The
 only way to know a latency assertion works is to make the system slow on purpose and watch it go red.
 
+## The rehearsal, or: the number that could not be faked
+
+The purge ran for real today, on the dev box, against real data. Here is what that was like, because
+the *shape* of it is the transferable part.
+
+**Two backups, not one.** A `pg_dump` and a tarball of the uploads volume, because restoring either
+one alone is not a rollback — rows without files is a broken app with a green restore, files without
+rows resurrects exactly what you deliberately deleted. The tarball held 827 files, which matched the
+volume's own count, so I knew the snapshot was complete rather than partial. That check took three
+seconds and would have been the difference between a backup and a belief.
+
+**Then the dry run, and the first surprise.** 11 overdue sessions, 74 file keys. The runbook's next
+step says `make purge limit=50` and *"confirm the backlog fell by exactly 50."*
+
+With 11 sessions, `limit=50` takes all of them. The step would have "passed" — it would have run, it
+would have deleted things, it would have exited 0 — and the safeguard it exists to be, a small
+reversible-in-scope bite you verify before committing to the rest, would simply not have happened.
+The command was written for a backlog nobody had measured yet.
+
+So the step is now `limit=N where N is smaller than the backlog you just read`, and the reason is in
+the runbook next to it. **A runbook step with a hardcoded number is a guess about the future** — the
+number should come from the step before it.
+
+**The bite: `limit=5`.** Before running it I picked the oldest session and wrote down everything I'd
+need to check afterwards — its id, its base CV's id, and the storage key derived from that id by
+hand. That last one matters more than it looks: the key isn't stored anywhere, it's *computed* from
+the row. After the purge the row is gone, and with it your ability to know which file to go looking
+for. **Capture the evidence before you destroy the thing that generates it.**
+
+Then four independent confirmations, which is three more than the step asks for:
+
+- the report: 5 deleted, 45 keys removed, 0 failures
+- the backlog: 11 → 6, exactly −5, read from `/health/ready`
+- the spot-checked session: zero rows in all four tables *and* the session row, and its file gone
+- the volume's own file count: 827 → 782, which is exactly 45
+
+The fourth one is my favourite because it costs one `find` and it is the only check that doesn't
+trust the application at all. The report is the job's opinion of itself. The filesystem isn't.
+
+**The full run, then the sweep.** 6 more sessions, 29 more keys. 45 + 29 = 74 — the number the dry
+run predicted, closing exactly. Backlog 0. Then the orphan sweep took the 753 files that had been
+accumulating since slice 1.1, and the volume went to zero.
+
+And the arithmetic closed from both ends at every step: 827 on the volume, 74 referenced, 753
+orphans; purge removes the 74, leaving 753; sweep reclaims 753, leaving 0. The `referenced` count
+went 74 → 0 *because* the purge had just deleted the rows those keys belonged to — the two jobs'
+halves confirming each other rather than two numbers that happen to match.
+
+### The thing this slice was actually about
+
+The dev database is now empty of guest data. For a moment that looked alarming, so I checked it
+rather than reassuring myself: the pre-purge dump holds exactly 11 guest sessions, and all 11 were
+expired. There was nothing unexpired for the purge to have spared. Empty is the correct answer.
+
+**Verify the scary-looking outcome against the backup you took ten minutes ago, instead of
+reasoning about whether it should be scary.** The whole reason to take the backup first is so that
+this question has an answer.
+
+### What is still not done, and it is one line
+
+`GUEST_PURGE_ENABLED=true` in `.env`, a `beat` restart, and watching one tick land.
+
+I confirmed the flag really does gate the schedule — not by reading the code, but by asking a live
+`create_celery()` in the running `beat` container for its schedule twice, once with the flag off and
+once with it on. Off: two entries. On: three, the third being the hourly purge. That control had no
+test at all until this slice's `/verify` caught it, and now it has both a test and a reading from a
+running container.
+
+The first scheduled tick will delete nothing, because the backlog is 0. That is exactly the case the
+heartbeat exists for: **a run that deletes nothing is otherwise indistinguishable from a run that
+never happened**, and this whole slice is an argument against letting those two look alike.
+
 ## What is not done, and why that matters
 
 The purge is built, tested and merged-ready. **The schedule is off.**

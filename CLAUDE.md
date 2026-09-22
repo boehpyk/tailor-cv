@@ -18,8 +18,9 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS) and awaiting its
-> rehearsal (2026-09-22).**
+> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS), and rehearsed on real
+> data 2026-09-22.** One line in `.env` (`GUEST_PURGE_ENABLED=true`) and an observed beat tick are
+> all that remain.
 > Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
 > jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
 > written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
@@ -143,17 +144,24 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   **4.0 ms**. Not changed in this slice: it would stop `detail` reporting the worker count, which
 >   is a trade for the owner to make. Owner: `devops`; trigger: before anything relies on this
 >   endpoint's timing.
-> - **The dev uploads volume holds 753 orphaned files out of 827** — residue from 1.1–1.5. The
->   arithmetic reconciles exactly in both directions (74 referenced keys, 2 of them past the floor),
->   which is what makes it residue rather than a cross-check that is failing to match.
+> > - **The dev uploads volume held 753 orphaned files out of 827** — residue from 1.1–1.5. The
+>   arithmetic reconciled exactly in both directions, which is what made it residue rather than a
+>   cross-check that was failing to match. **Cleared in the 2026-09-22 rehearsal**: the purge took
+>   the 74 referenced keys, the sweep reclaimed the remaining 753 with 0 failures, and the volume is
+>   now empty. `overdue` is 0 and the dev database holds no guest data.
 > - **`tailorcraft_test` carried a committed, already-expired session**, so `count_expired` returned
 >   1 on an "empty" database. Scope assertions to ids the test created; an absolute count is one
 >   stray row from lying.
 >
 > **Carried out of 1.6, each with an owner and a trigger:**
-> - **The schedule is off.** `GUEST_PURGE_ENABLED=false` until the runbook's rehearsal is done on
->   real data. The UI's Retention block says so in plain words on every page, which is the guard
->   against the flag rotting. Owner: the repository owner; trigger: the rehearsal.
+> - **The schedule is still off, but its precondition is now met.** The rehearsal ran in order on
+>   2026-09-22 — both backup halves, dry run (11 sessions / 74 keys), `limit=5` verified at exactly
+>   −5 with a row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0 — so
+>   `GUEST_PURGE_ENABLED=true` is now the correct value and simply has not been written. The flag is
+>   confirmed to gate the beat entry, read from a live `create_celery()` rather than from the source.
+>   **`limit=50` in the runbook was wrong for a backlog of 11** and now reads "smaller than the
+>   backlog you just read": a bite bigger than the backlog silently skips the safeguard. Owner: the
+>   repository owner; trigger: now.
 > - **AC-17's uploads/exports split was dropped**, amended on purpose: a `FileRef` is an opaque key
 >   with **one grammar shared by both kinds**, the extension lies (`.pdf` is both), and widening
 >   `ExpiringGuestSession` would contradict AC-4, whose third field's *type is the privacy control*.
