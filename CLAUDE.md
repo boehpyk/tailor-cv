@@ -18,8 +18,8 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: five slices shipped; slice 1.6 built, verified (`/verify` PASS), rehearsed on real data
-> and switched on, 2026-09-22.** `GUEST_PURGE_ENABLED=true`; `/health/ready` reads
+> **Status: six slices shipped. Slice 1.6 was verified (`/verify` PASS), rehearsed on real data,
+> switched on and merged as PR #8, 2026-09-22.** `GUEST_PURGE_ENABLED=true`; `/health/ready` reads
 > `scheduled: true`, `stale: false`, `overdue: 0`. Every task in the slice is closed.
 > Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
 > jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
@@ -48,7 +48,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
 >   all of them in code a green suite of 1293 tests was happy with — see below.
 >
-> - **1.6 `retention-guest-purge`** (branch open, `/verify` **PASS**, **not yet rehearsed**) — the
+> - **1.6 `retention-guest-purge`** (PR #8, merged; rehearsed and switched on) — the
 >   purge, the orphan sweep, the CLI, the beat entry and a Retention block in the status panel.
 >   **1456 backend and 532 frontend tests**, green twice. `retention` is the first context with **no aggregate** — a policy,
 >   two use cases, two ports (**ADR-0018**) — and `/health/ready` gained `jobs.guest_purge`, the
