@@ -2626,6 +2626,132 @@ It is in the spec, in writing, labelled as the cost of shipping now. Which is th
 inconsistency that is written down is a decision; the same inconsistency undocumented is just a
 mistake nobody has met yet.**
 
+## The test I wrote to catch a bug, which could not catch that bug
+
+This one is my favourite thing that happened in the whole slice, and it happened after `/verify` had
+already said PASS.
+
+There was one automatable task left: AC-42, the criterion that says the orphan sweep's directory walk
+must not block the event loop. The claim it guards is a real one. The sweep walks a whole volume —
+thousands of `stat` calls — and if that runs on the event loop instead of in a worker thread, every
+other user of the app waits for the whole walk. No error, no log line, nothing on a dashboard. The
+app is just *slow*, for everyone, until the sweep finishes.
+
+So I wrote the test the way the spec asks and the way the two existing tests in the codebase do it:
+start hammering a trivial health-check endpoint, start the heavy work alongside it, and assert the
+health check's median response time stays under five milliseconds. Blocked loop, slow health check.
+Obvious.
+
+It passed. Green, first try, 0.33 ms median against a 5 ms budget.
+
+That should have been a good moment, and this project has trained me to distrust good moments. There
+is a rule in `CLAUDE.md` that exists precisely for this: *if a test says it guards a regression,
+verify it fails when you reintroduce that regression.* So I broke the scanner on purpose — took the
+`asyncio.to_thread` out of the walk, which is the entire mechanism the criterion is about — and ran
+the test again.
+
+**It passed again.** Median under a millisecond. A test written to catch exactly one defect, run
+against exactly that defect, reporting that everything was fine.
+
+### Why it could not fail
+
+The tell was in the corner of the screen. The healthy run took 3 seconds. The broken run took 27. The
+blocking was massive, and it was visible the whole time — just not to the assertion.
+
+Here is the mechanism, and it is worth internalising because it is not specific to this codebase.
+
+The test drives the app *in-process*. There is no real HTTP, no socket; the test client calls the
+application's coroutines directly. And `/health/live` deliberately does nothing — no database, no
+Redis, no disk. Put those two facts together and you get something unexpected: **a request to that
+endpoint never hits a real suspension point.** It runs from start to finish through nested `await`s
+that never actually give the event loop a chance to go and do something else.
+
+Which means the event loop can never switch to the blocking work *in the middle of a request*. A
+request that starts while the loop is free finishes while the loop is free, at full speed, no matter
+how long the loop was frozen before it started or how long it will be frozen after.
+
+I was timing the one window in which the loop is, by construction, not blocked.
+
+It is a bit like testing whether a doctor's waiting room is backed up by timing how long the
+appointment takes once you are in the room. The appointment is always seven minutes. The three hours
+you spent in the waiting room never appear in the measurement — and the waiting room is the entire
+thing you wanted to know about.
+
+### The fix, which is one line and a rename
+
+Measure the wait, not the appointment. Each sample now times a one-millisecond nap **plus** the
+request, and subtracts the nap. What is left is the loop's *turnaround*: how late the timer fired,
+plus how long the answer took. A healthy loop is late by microseconds. A loop stuck inside a 300 ms
+synchronous directory walk cannot answer until it is done, and now the number says so.
+
+Same mutation, same scanner, same everything else:
+
+| | median turnaround |
+|---|---|
+| walk in a thread (correct) | **0.62 ms** |
+| walk on the loop (the bug) | **1263.71 ms** |
+
+Two thousand times apart. That is what an assertion that can actually fail looks like.
+
+### The part that made my stomach drop
+
+If the brand-new test had this defect, what about the two that had been in the repo for months?
+
+I checked the one for the job-posting fetcher — AC-10, written back in slice 1.2, with a beautiful
+two-paragraph docstring explaining exactly which property it pins. Same in-process client, same
+no-I/O endpoint, same median-of-request-times.
+
+I broke *its* mechanism — took the `to_thread` out of the HTML extraction — and ran it.
+
+Green.
+
+That test had been passing for four slices. It had never once been able to fail.
+
+### A second thing, which decided a number
+
+Fixing it was not just a matter of swapping in the turnaround measurement. That helped and was not
+enough, and the reason is a property of this kind of measurement that I had not thought about before:
+
+**Blocking suppresses sampling.** While the loop is frozen, the sampler cannot take samples. So the
+frozen periods are systematically *under-represented* in the very dataset you are computing a median
+over. A median is only sensitive to blocking when the loop is blocked more than half the time.
+
+For the orphan scanner that is satisfied — the walk starts instantly and blocks continuously, so
+every sample lands on it. For the fetcher it is not: a fetch is *download first, then parse*, and
+only the parse is the part under test. The first twenty samples all land in the download phase,
+before the thing being tested has even started, and the median over them is a median over a warm-up.
+
+The fix was to make the fetches loop until the sampler has its samples, and to raise the sample count
+from 20 to 200 so the median lands inside the parse phase. Measured, not guessed — at 20 the mutation
+passes, at 200 it fails, four runs out of four.
+
+And I wrote the margin into the file instead of declaring victory, because the four mutated medians
+were 6.6, 16, 18.7 and 273.7 ms. All red against the 5 ms budget — but that 6.6 clears it by only
+1.3x, so a fast enough machine could still let that regression slip through. The honest summary is
+*"this now catches the bug, and here is how much room it has"*, not *"fixed"*. The statistic that
+would separate them cleanly is the loop's **unavailable fraction** over the window rather than a
+median, and switching to it changes what those criteria assert — so it is written down with an owner
+and a trigger, and left for whoever next touches those adapters.
+
+### What to take from it
+
+Three things, in order of how much they will cost you elsewhere.
+
+**A green test is evidence about the test, not only about the code.** This project already knew that
+in the abstract — there is a whole section in the story above about a test that could no longer fail.
+This is the same lesson arriving through a different door: not a test whose assertion had been
+re-pointed at something trivially true, but one whose *instrument* was pointed at the wrong window
+from the day it was written.
+
+**Wall-clock was screaming and nobody was listening.** 3 seconds versus 27. The information was on
+screen for every one of those runs. When a run's duration changes by 9x and its assertions do not
+move at all, the assertions are measuring something other than what changed.
+
+**Performance assertions need mutation-testing more than logic assertions do, not less.** A wrong
+logic test usually fails loudly on something. A wrong performance test passes serenely forever,
+because "fast enough" is the default state of almost any measurement you can accidentally take. The
+only way to know a latency assertion works is to make the system slow on purpose and watch it go red.
+
 ## What is not done, and why that matters
 
 The purge is built, tested and merged-ready. **The schedule is off.**

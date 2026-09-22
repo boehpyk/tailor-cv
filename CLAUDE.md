@@ -103,6 +103,19 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > it returns — which removed code instead of adding a handler.
 >
 > **What 1.6 found that no passing test could:**
+> - **A test that samples an in-process route cannot see a blocked event loop** — found at T47, by
+>   mutation-testing AC-42's brand-new loop-liveness test against the regression it was written for.
+>   It passed. `/health/live` does no I/O and the test client is an `httpx.ASGITransport`, so the
+>   request resolves through nested `await`s that **never reach a real suspension point**: the loop
+>   cannot switch to a blocking worker in the middle of one, and a request that starts while the loop
+>   is free finishes while the loop is free, at full speed. **Timing the request measures the one
+>   window in which the loop is by construction not blocked.** Time the *turnaround* instead —
+>   `sleep(pace) + GET`, minus the pace — and the same mutation goes from a sub-millisecond p50 to
+>   **1264 ms**. The mutated run had been taking 27 s instead of 3 s the whole time; wall-clock knew,
+>   the assertion did not. **AC-10's test had the identical defect and had never been able to fail
+>   either**; AC-11's copy is unproven in both directions. A second corollary, because it decides the
+>   sample floor: **blocking suppresses sampling**, so a blocked loop under-represents itself in the
+>   set being summarised and a p50 is only sensitive when the blocked fraction is over half.
 > - **A `.part` file was never deleted, and a live file beside it was.** `FileRef`'s grammar ends
 >   `\.(pdf|docx|txt)$`, so a partial *cannot be a `FileRef`* and travels as base-ref-plus-flag —
 >   and the sweep called plain `delete(ref)` for both, which unlinks the **final** key with
@@ -480,6 +493,11 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   1.6's `/verify`. The same applies to `tailorcraft_test`. Judging suite health from a *subset* run is
   the milder version of the same error: a subset leaves rate-limiter keys uncleared, and an
   interrupted run can leave the schema downgraded.
+- **A performance or liveness assertion is a claim about a mechanism, and the only proof is a
+  mutation.** Both of this codebase's event-loop tests were green against the exact defect they
+  named (T47) — not because the code was fine, but because the *measurement* could not observe it.
+  Re-introduce the regression, watch the assertion go red, restore the source byte-exact, and write
+  both numbers into the test. An assertion that has never been observed failing is a docblock.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
