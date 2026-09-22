@@ -2941,3 +2941,51 @@ Worth noticing what the log line alone says about that tick: exactly what a run 
 sessions would say. Same sentence, same level. **It is the heartbeat moving — not the line appearing
 — that tells you the schedule fired.** Which is the thing this whole slice has been about from the
 first commit, arriving one last time, from the one direction it hadn't yet come from.
+
+## Getting a real box ready, or: the gate goes in before the key
+
+Six slices were built against a deploy pipeline that had never met a server. On 2026-09-22 it got
+one, serving `cv.samolit.com`, and the interesting part of that evening was
+almost entirely about **order**.
+
+**The lock went on before the key was cut.** The `production` environment had its required reviewer
+and its protected-branch rule *before* a single secret existed. Do it the other way round and there
+is a window — invisible, nothing in any log marks it — in which a merge to `main` ships to a real box
+with nobody watching. The four secrets then went onto the **environment**, not the repository. A
+repository secret is readable by any job in any workflow; an environment secret is handed over only
+to a job that has already been approved. Same four values, very different blast radius. It is the
+difference between leaving the car key on the kitchen table and leaving it in the safe.
+
+**The domain was hard-coded in five places**, and the owner found three of them. The other two were
+in the documentation — a runbook and the deploy skill — which is exactly where a stale value does the
+most damage, because documentation is the thing you trust at 11 p.m. `grep` for the old value after
+every rename, *including* the prose.
+
+**The docs described a deploy the script didn't do.** `docs/cicd.md` promised a database dump before
+every migration and a check of the worker's queues after every release. The script did neither. Both
+promises were true *as intentions*, and intentions don't run. The dump now happens inside the script,
+before anything changes — and the datastores are started first, because on the very first deploy
+nothing is running yet, and "dump the database" against a stopped Postgres is an error on exactly
+the day you're least ready to debug one.
+
+**The check that would have lied.** The new queue check greps `celery inspect active_queues` for
+`'name': 'celery'`. It found all three queues on the first try, which is the moment to be suspicious
+rather than pleased. Reading the real output: every queue entry also contains its *exchange*, and the
+exchange is named… `celery`. So the default queue would have been reported present even with it
+gone. The fix is to anchor on the start of the entry (`* {'name': 'celery'`), and the proof is a
+deliberate negative — delete that queue's line from real output and watch the check say MISSING.
+**A check you have only ever seen pass is a check you have not tested.** That's the same sentence as
+every mutation test in this file, arriving through a shell script instead of pytest.
+
+**Checked over SSH, not taken on trust.** "`.env` is ready" was verified by logging in with the
+deploy key itself and asking: login shell bash (the script uses `<<<` and `pipefail`), in the docker
+group, `.env` mode 600, four required values non-empty, zero `change-me` left, the purge still off.
+Without printing a single secret — `grep -c` counts, it doesn't show.
+
+**Passwords are hex, on purpose.** They end up inside `postgresql://user:PASSWORD@host` URLs, and a
+base64 password eventually contains a `/` or a `+` that the URL parser reads as structure. And the
+database password is effectively permanent: Postgres writes it into the volume on first start, and
+changing `.env` afterwards changes only what the app *tries*.
+
+One thing is still owed, and it's the bigger half: **nothing has been released yet.** Everything above
+makes the first deploy possible and observable. The first deploy is what proves it.

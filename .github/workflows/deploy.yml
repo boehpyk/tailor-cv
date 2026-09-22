@@ -68,7 +68,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_DEPLOY_KEY }}
           source: "docker-compose.yml,docker/nginx/default.conf"
-          target: /home/tailorcraft-deploy/tailor-craft
+          target: /home/boehpyk/www/tailor-cv
 
       - name: Release over SSH
         uses: appleboy/ssh-action@v1
@@ -79,7 +79,7 @@ jobs:
           envs: GITHUB_SHA,GITHUB_REPOSITORY,GITHUB_ACTOR
           script: |
             set -euo pipefail
-            cd /home/tailorcraft-deploy/tailor-craft
+            cd /home/boehpyk/www/tailor-cv
 
             export API_IMAGE="ghcr.io/${GITHUB_REPOSITORY}-api:${GITHUB_SHA}"
             export WEB_IMAGE="ghcr.io/${GITHUB_REPOSITORY}-web:${GITHUB_SHA}"
@@ -102,6 +102,20 @@ jobs:
             # the only symptom was behaviour that did not match the source. Here that is api, worker
             # and beat. A fourth daemon means a fourth entry here AND in the verification loop below.
             docker compose pull api worker beat web
+
+            # A dump BEFORE anything changes, taken by the script rather than remembered by a person.
+            # The datastores are brought up first so this also works on the very first deploy, when
+            # nothing is running yet. The dump holds every guest's CV, so the directory is 700 and
+            # the files 600, and only the newest ten are kept — a PII copy nobody needs is a liability,
+            # not a backup. This is the database only: the uploads volume is not in here (ADR-0006).
+            docker compose up -d --wait postgres redis
+            umask 077
+            mkdir -p backups
+            dump="backups/pre-deploy_$(date -u +%Y%m%dT%H%M%SZ)_${GITHUB_SHA:0:12}.dump"
+            docker compose exec -T postgres sh -c \
+              'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc --no-owner --no-privileges' > "$dump.part"
+            mv "$dump.part" "$dump"
+            ls -1t backups/pre-deploy_*.dump | tail -n +11 | xargs -r rm --
 
             # Publish the new frontend bundle, then bring up the API.
             docker compose up -d web
@@ -126,7 +140,30 @@ jobs:
               fi
             done
 
+            # Right image is half of it: a worker that consumes the wrong queues is green on
+            # /health/ready (it still answers ping) while every run or export queues for ever.
+            # The expected list is create_celery()'s task_queues — see docs/cicd.md's queue table.
+            # Retried because a just-started worker has not joined the broker yet.
+            queues=""
+            for _ in $(seq 1 10); do
+              queues="$(docker compose exec -T worker \
+                celery -A tailorcraft.infrastructure.tasks.app inspect active_queues 2>&1 || true)"
+              missing=""
+              for q in celery tailoring export; do
+                # Anchored on the entry's opening `* {'name':` — the exchange is ALSO named 'celery',
+                # so an unanchored match would report the default queue present when it is not.
+                grep -Eq "^[[:space:]]*\* \{'name': '${q}'" <<<"$queues" || missing="$missing $q"
+              done
+              [ -z "$missing" ] && break
+              sleep 3
+            done
+            if [ -n "$missing" ]; then
+              echo "::error::worker is not consuming:${missing}"
+              echo "$queues"
+              exit 1
+            fi
+
       # /health/ready probes Postgres, Redis AND Celery (ADR-0005). If it only probed the datastores,
       # this check would pass with every export silently queueing forever.
       - name: Smoke check
-        run: curl -fsS --retry 5 --retry-delay 3 https://tailorcraft.app/health/ready
+        run: curl -fsS --retry 5 --retry-delay 3 https://cv.samolit.com/health/ready

@@ -17,11 +17,12 @@ Never `git pull` on the box.
 3. On approval, over SSH to the VDS:
 
 ```bash
-cd /home/tailorcraft-deploy/tailor-craft
+cd /home/boehpyk/www/tailor-cv
 # Persist the released tags so hand-run `docker compose` on the box targets the same images.
 # ... TAILORCRAFT_API_IMAGE / TAILORCRAFT_WEB_IMAGE written into .env ...
 
 docker compose pull api worker beat web        # every container that runs application code
+docker compose up -d --wait postgres redis     # then pg_dump to backups/ — BEFORE anything changes
 docker compose up -d api web nginx
 docker compose stop worker beat                # the migration window
 docker compose exec -T api alembic upgrade head
@@ -37,7 +38,7 @@ for svc in api worker beat; do
 done
 ```
 
-5. **Smoke check:** `curl -fsS https://tailorcraft.app/health/ready` must return 200 — and it must
+5. **Smoke check:** `curl -fsS https://cv.samolit.com/health/ready` must return 200 — and it must
    report Postgres, Redis **and Celery**, or it is telling you less than you think.
 
 ## The two rules that step 3 and 4 exist for
