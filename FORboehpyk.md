@@ -2873,6 +2873,38 @@ Which, you'll notice, is the same failure as the heartbeat one: **something that
 looking exactly like something that did.** Third time in this slice. That's not a coincidence, it's
 the subject.
 
+### Fixing it, and the difference between a fix and a guard
+
+Writing `TEST_REDIS_URL=redis://…/3` into `.env` would have made the symptom go away in about forty
+seconds. I didn't do that, and the reason is the whole point of the exercise.
+
+The bug was never "the test Redis URL was missing." The bug was that **nothing anywhere checked
+which Redis the suite was about to flush.** A correct URL fixes today's instance and leaves
+tomorrow's typo — someone writes `/0` instead of `/3` — exactly as silent and exactly as
+destructive. So the shipped change is a boot guard: `Settings` refuses to start if the test Redis
+resolves to the same store as the cache, the broker or the result backend. The derived default is
+just a convenience sitting on top of it.
+
+Two details in that guard are worth more than the guard:
+
+**It compares `(host, port, database)`, not URL strings.** `redis://redis:6379/0` and
+`redis://:secret@redis:6379/0` are the same database. A string comparison calls them different and
+waves through precisely the case you built the guard for — a guard that is wrong in exactly the
+situation it exists for is worse than none, because now you also trust it. I wrote a test for that
+specific wrong implementation, then wrote the wrong implementation on purpose to watch the test go
+red.
+
+**Its error message names the setting and the database number and never a URL.** All four of those
+URLs carry the Redis password. This codebase already learned that lesson the expensive way — there's
+a class called `MisconfiguredSettings` whose entire docstring is about why raising a `ValueError`
+inside a pydantic validator prints your secrets into the crash log. A new guard that compares four
+secret-bearing strings is precisely where you'd forget.
+
+And the proof it works isn't a green suite. It's a sentinel key and the real purge heartbeat planted
+in the live Redis, a full `make test`, and both still sitting there afterwards. Three runs running
+now. **The suite passing was never the thing in question — the suite passed the whole time it was
+destroying things.**
+
 ## What is not done, and why that matters
 
 The purge is built, tested, rehearsed and **on**. That last word was only earned today, and the order

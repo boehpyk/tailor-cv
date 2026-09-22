@@ -133,3 +133,95 @@ def test_export_timeout_defaults_are_ordered_inline_through_stale_window(
         < built.conf.task_time_limit
         < stale_default
     )
+
+
+# --- The test Redis database's isolation guard (added 2026-09-22, after its absence bit) ----------
+#
+# The bug these pin is not hypothetical and was not caught by a test: `tests/conftest.py`'s `settings`
+# fixture swapped `database_url` and `upload_dir` and **not** `redis_url`, so `clear_redis`'s
+# `flushdb()` ran against the *running dev system's* Redis on every `make test` — which, through the
+# pre-commit hook, means every commit. It erased the guest-purge heartbeat (observed twice on
+# 2026-09-22: `/health/ready` went from a healthy `stale: false` to `stale: true` with `last_run:
+# null` immediately after a commit), the kombu queue bindings and the rate-limiter counters.
+#
+# **What is pinned here is the guard, not the default.** Writing a correct `TEST_REDIS_URL` fixes
+# today's instance; refusing a `TEST_REDIS_URL` that resolves to a live database is what makes
+# tomorrow's `/0`-instead-of-`/3` typo loud instead of destructive.
+
+
+def test_the_test_redis_url_is_derived_from_redis_url_with_the_database_swapped() -> None:
+    """Empty means derived, so the Redis password is written down once. Two copies of a secret are
+    two things to rotate and one thing to forget."""
+    settings = Settings(redis_url="redis://:secret@redis:6379/0", test_redis_url="")
+
+    assert settings.test_redis_url == "redis://:secret@redis:6379/3"
+
+
+def test_an_explicit_test_redis_url_is_left_alone() -> None:
+    """A separate Redis server is a perfectly good answer, and the derivation must not overwrite it."""
+    settings = Settings(
+        redis_url="redis://:secret@redis:6379/0",
+        test_redis_url="redis://other-host:6379/0",
+    )
+
+    assert settings.test_redis_url == "redis://other-host:6379/0"
+
+
+@pytest.mark.parametrize(
+    ("collides_with", "url"),
+    [
+        ("REDIS_URL", "redis://redis:6379/0"),
+        ("CELERY_BROKER_URL", "redis://redis:6379/1"),
+        ("CELERY_RESULT_BACKEND", "redis://redis:6379/2"),
+    ],
+)
+def test_a_test_redis_url_colliding_with_a_live_database_refuses_to_boot(
+    collides_with: str, url: str
+) -> None:
+    """All three, not just `redis_url`: a suite flushing the broker or the result backend is the same
+    failure wearing a different hat. The refusal also has to name *which* one, or an operator reads
+    "there is a collision" and has three places to look."""
+    with pytest.raises(MisconfiguredSettings) as caught:
+        Settings(
+            redis_url="redis://redis:6379/0",
+            celery_broker_url="redis://redis:6379/1",
+            celery_result_backend="redis://redis:6379/2",
+            test_redis_url=url,
+        )
+
+    assert collides_with in str(caught.value)
+
+
+def test_the_collision_is_judged_on_host_port_and_database_not_on_the_url_string() -> None:
+    """`redis://redis:6379/0` and `redis://:secret@redis:6379/0` are **one** database. A string
+    comparison would call them two and wave the dangerous case through — which is the whole failure
+    mode this guard exists for, so it is pinned rather than trusted."""
+    with pytest.raises(MisconfiguredSettings):
+        Settings(
+            redis_url="redis://:the-real-password@redis:6379/0",
+            test_redis_url="redis://:a-different-password@redis:6379/0",
+        )
+
+
+def test_a_missing_database_number_counts_as_zero() -> None:
+    """A Redis client with no path talks to database 0, so `redis://redis:6379` and
+    `redis://redis:6379/0` collide. Left unhandled this is a silent hole in the guard, reachable by
+    an ordinary hand-written URL."""
+    with pytest.raises(MisconfiguredSettings):
+        Settings(redis_url="redis://redis:6379/0", test_redis_url="redis://redis:6379")
+
+
+def test_the_collision_refusal_names_no_url_and_leaks_no_password() -> None:
+    """The same property `test_the_guard_never_leaks_a_secret_from_a_sibling_field` pins for the API
+    key, for the guard that compares four URLs **each of which carries the Redis password**. The
+    message may name the setting and the database number; it may not quote what it compared."""
+    with pytest.raises(MisconfiguredSettings) as caught:
+        Settings(
+            redis_url="redis://:hunter2@redis:6379/0",
+            test_redis_url="redis://:hunter2@redis:6379/0",
+        )
+
+    message = str(caught.value)
+    assert "hunter2" not in message
+    assert "redis://" not in message
+    assert "REDIS_URL" in message  # the setting's name is what an operator needs

@@ -490,15 +490,24 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   Time comes from a fake `Clock`, never `datetime.now()`.
   **The database transaction does not roll back Redis.** Rate limiters, the purge heartbeat and the
   purge lock survive between tests and must be cleared in the fixture.
-  **And `clear_redis` flushes the *dev* Redis, not a test one — running the suite breaks the running
-  dev system's purge status.** The `settings` fixture overrides `database_url` and `upload_dir` and
-  **not** `redis_url`, so `flushdb()` lands on the box's real Redis; the fixture's own docstring says
-  "the test Redis", and there is no such thing. Since the pre-commit hook runs `make check`, **every
-  commit wipes the purge heartbeat**, and with the schedule on that reads as `stale: true` on a
-  perfectly healthy system — AC-33's rule working correctly on a false premise. It also drops the
-  kombu bindings (re-declared on the next worker start) and the rate-limiter counters. Dev-only, and
-  the fix is a test-only `redis_url` beside `test_database_url` — *not* a narrower flush, which would
-  reintroduce the leftover-lock hazard the fixture exists to prevent. The cheap proof you got it
+  **`clear_redis` flushed the *dev* Redis until 2026-09-22 — the suite broke the running system's
+  purge status on every run, and nothing said so.** The `settings` fixture swapped `database_url` and
+  `upload_dir` and **not** `redis_url`, so `flushdb()` landed on the box's real Redis while the
+  fixture's docstring called it "the test Redis". Through the pre-commit hook that meant **every
+  commit wiped the purge heartbeat**, which with the schedule on reads as `stale: true` on a perfectly
+  healthy system — AC-33's rule working correctly on a premise the suite invented. It also dropped the
+  kombu bindings and the rate-limiter counters.
+  **Fixed: `Settings.test_redis_url`**, derived from `redis_url` with the database swapped to 3 so the
+  password is written down once, and — this is the actual fix — **a boot guard that refuses a test
+  Redis resolving to the same `(host, port, db)` as the cache, the broker or the result backend**.
+  Compared on identity rather than on the URL string, because `redis://redis:6379/0` and
+  `redis://:secret@redis:6379/0` are one database and a string comparison waves the dangerous case
+  through. A correct URL fixes today; the guard is what makes tomorrow's `/0`-instead-of-`/3` loud.
+  Not a narrower flush — that would reintroduce the leftover-lock hazard `clear_redis` exists for.
+  **The general lesson is the transferable part: test isolation is a property you check per
+  datastore.** Postgres was isolated, the filesystem was isolated, and Redis looked isolated because a
+  docstring said so. Proof it holds is a sentinel key and a live heartbeat surviving a full run, not a
+  green suite. The cheap proof you got it
   right is to **run the suite twice in a row** — a second run that fails is the classic symptom. A
   leftover *lock* is the dangerous one: the job then does nothing, logs "skipped", and exits 0, so a
   test asserting a successful run passes against a run that never happened.

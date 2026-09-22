@@ -13,12 +13,39 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["production", "dev", "test"]
+
+# The Redis database the test suite owns. Redis ships with 16 (0-15) and this system uses three of
+# them — cache/rate limiter, Celery broker, Celery result backend — so this is the first free one.
+_TEST_REDIS_DB: Final = 3
+
+
+def _with_redis_database(url: str, database: int) -> str:
+    """The same Redis URL, pointed at a different database number.
+
+    String surgery on a URL is usually a smell; here it is the point. The alternative is a second
+    URL in `.env` carrying a second copy of the Redis password, and two copies of a secret are two
+    things to rotate and one thing to forget.
+    """
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path=f"/{database}"))
+
+
+def _redis_identity(url: str) -> tuple[str, int | None, str]:
+    """`(host, port, database)` — what decides whether two Redis URLs mean the same store.
+
+    Credentials are deliberately excluded: `redis://redis:6379/0` and `redis://:secret@redis:6379/0`
+    are one database, and comparing URL strings would call them two and let the dangerous case
+    through. A missing path is database `0`, which is what a Redis client assumes.
+    """
+    parts = urlsplit(url)
+    return (parts.hostname or "", parts.port, parts.path.lstrip("/") or "0")
 
 
 class MisconfiguredSettings(RuntimeError):
@@ -86,6 +113,69 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
     celery_broker_url: str = "redis://redis:6379/1"
     celery_result_backend: str = "redis://redis:6379/2"
+    # A DEDICATED Redis database for the suite, the exact counterpart of `test_database_url` — and
+    # added late, after its absence bit (2026-09-22). `tests/conftest.py`'s `clear_redis` calls
+    # `flushdb()`, its `settings` fixture swapped `database_url` and `upload_dir` and **not** this,
+    # and so every `make test` — every commit, via the pre-commit hook — flushed the **running dev
+    # system's** Redis: the guest-purge heartbeat, the kombu bindings, the rate-limiter counters.
+    # With the purge schedule on, a wiped heartbeat reads as `stale: true` on a healthy box, which
+    # is `/health/ready`'s alarm for this job firing on a premise the test suite invented.
+    #
+    # **Left empty it is derived from `redis_url` with the database number swapped**, which is the
+    # point rather than a convenience: the password lives in `.env` once, and a second URL carrying
+    # a second copy of it is a thing that drifts on the day someone rotates it. Set `TEST_REDIS_URL`
+    # explicitly to override — a separate Redis server is a perfectly good answer too.
+    test_redis_url: str = ""
+
+    @model_validator(mode="after")
+    def _isolate_the_test_redis_database(self) -> Settings:
+        """Fill `test_redis_url` from `redis_url` when it is empty, and refuse a collision.
+
+        **The guard is the fix; the derivation is only a default.** The bug this closes was not "the
+        test Redis URL was missing" — it was that nothing anywhere *checked* which Redis the suite
+        was about to flush, so the answer could be "the live one" and no one would learn. Writing a
+        `TEST_REDIS_URL` into `.env` would have fixed today's instance and left tomorrow's typo
+        (`/0` instead of `/3`) exactly as silent and exactly as destructive.
+
+        So the collision check runs against whatever `test_redis_url` ends up being, derived or
+        configured: it must not be the database backing the cache and rate limiter, the Celery
+        broker, or the result backend. A suite flushing any of those three is the same failure
+        wearing a different hat.
+
+        **Compared on (host, port, db), not on the URL string** — `redis://redis:6379/0` and
+        `redis://:secret@redis:6379/0` are the same database, and a string comparison would call
+        them different and wave the dangerous case through.
+
+        **The message names database numbers and never a URL.** Every one of these carries the Redis
+        password, and `MisconfiguredSettings` exists because this class's crash output has to be
+        readable in a log by someone who is not entitled to its secrets — see that class for the
+        measured reason a `ValueError` here would be worse than useless.
+
+        Note this runs at construction only. `tests/conftest.py` builds its settings with
+        `model_copy(update={"redis_url": base.test_redis_url, ...})`, which skips validation by
+        design — the resulting object deliberately has `redis_url == test_redis_url`, because that
+        *is* the swap. The guard's job is to make sure the value being swapped in was never the live
+        one in the first place.
+        """
+        if not self.test_redis_url:
+            self.test_redis_url = _with_redis_database(self.redis_url, _TEST_REDIS_DB)
+
+        test_database = _redis_identity(self.test_redis_url)
+        for name, url in (
+            ("REDIS_URL", self.redis_url),
+            ("CELERY_BROKER_URL", self.celery_broker_url),
+            ("CELERY_RESULT_BACKEND", self.celery_result_backend),
+        ):
+            if _redis_identity(url) == test_database:
+                raise MisconfiguredSettings(
+                    f"TEST_REDIS_URL points at the same Redis database as {name} "
+                    f"(database {test_database[2]} on the same host and port). The test suite "
+                    "flushes that database on every test, so this would erase the running "
+                    "system's purge heartbeat, queue bindings and rate limiters. Give the suite a "
+                    f"database of its own (this system uses 0, 1 and 2; {_TEST_REDIS_DB} is free) "
+                    "or leave TEST_REDIS_URL empty and let it be derived."
+                )
+        return self
 
     # -- Storage & retention (ADR-0006) --------------------------------------
     upload_dir: Path = Path("/var/lib/tailorcraft/uploads")

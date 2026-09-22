@@ -20,7 +20,9 @@ Four decisions here shape every test in this suite:
    `make test` anyone runs. The `settings` fixture below points `upload_dir` at a session-scoped
    temp directory for exactly this reason, the same way `clear_redis` isolates Redis.
 
-The test database is `tailorcraft_test`, dedicated and never the dev one.
+The test database is `tailorcraft_test`, dedicated and never the dev one. The test **Redis** is a
+dedicated database on the same server (`test_redis_url`, derived from `redis_url` with the number
+swapped) — dedicated since 2026-09-22 and not before, which is the third point's whole story.
 """
 
 from __future__ import annotations
@@ -64,12 +66,27 @@ def settings(tmp_path_factory: pytest.TempPathFactory) -> Settings:
     module docstring's fourth point. `tmp_path_factory.mktemp` is session-scoped, matching this
     fixture's own scope (and pytest-asyncio's session-scoped loop, CLAUDE.md); pytest removes it
     afterwards on its own schedule, so nothing here needs to.
+
+    **`redis_url` is overridden for exactly the same reason, and was not until 2026-09-22.** Until
+    then this fixture isolated Postgres and the filesystem and left Redis pointing at the running
+    dev system, so `clear_redis`'s `flushdb()` — below, which called it "the test Redis" — wiped the
+    real one. Every `make test` did it, which by way of the pre-commit hook means every commit. It
+    surfaced only when a job that *writes* to Redis (the guest purge's heartbeat) finally had to
+    survive one: the heartbeat vanished between the rehearsal and the switch-on, and `/health/ready`
+    reported `stale: true` on a system where nothing was wrong.
+    The lesson is worth more than the line: **test isolation is a property you check per datastore.**
+    Postgres was isolated, the filesystem was isolated, and Redis looked isolated because a docstring
+    said so.
+    `Settings` now derives `test_redis_url` from `redis_url` with the database swapped and **refuses
+    a configuration where the two are the same store** — the check is the fix, the derivation is
+    only a default.
     """
     base = get_settings()
     return base.model_copy(
         update={
             "app_env": "test",
             "database_url": base.test_database_url,
+            "redis_url": base.test_redis_url,
             "upload_dir": tmp_path_factory.mktemp("uploads"),
         }
     )
@@ -164,6 +181,13 @@ def clock() -> FixedClock:
 @pytest_asyncio.fixture
 async def clear_redis(settings: Settings) -> AsyncIterator[None]:
     """Flush the test Redis before and after a test.
+
+    That first sentence was **false from the day it was written until 2026-09-22**, and is worth
+    leaving a scar over rather than a silent correction: there was no test Redis. The `settings`
+    fixture swapped `database_url` and `upload_dir` and not `redis_url`, so this `flushdb()` landed
+    on the running dev system's Redis every time the suite ran. It is true now — `settings` swaps in
+    `test_redis_url`, which `Settings` refuses to let be the same store as the cache, the broker or
+    the result backend.
 
     Request this in any test that touches a rate limiter, the purge lock, or the purge heartbeat.
     The database rollback above cannot help: none of that state is in PostgreSQL.
