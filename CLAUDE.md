@@ -269,16 +269,31 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
 > pushes images to GHCR.
 >
-> **The deploy path is still unproven, but the gate is now real.** There is no VDS, so `deploy` would
-> fail at the SSH sync — expected. **Corrected 2026-09-19, by reading the API rather than this file:**
-> the `production` environment now carries **two protection rules** — a `required_reviewers` rule
-> naming the repository owner, and a `branch_policy` limiting deployments to protected branches. The
-> "manual-gated deploy" this file and `docs/cicd.md` describe therefore **does** exist. An earlier
-> revision of this paragraph said the environment had zero protection rules and that a missing
-> `SSH_KEY` was the only thing stopping a release; that was true when written and **was repeated for
-> a whole slice after it stopped being true**. The repo also currently holds **no secrets at all**
-> (`gh secret list` is empty), so a merge to `main` runs `build` and then *waits* for a human.
+> **The box exists and is wired, 2026-09-22; the first release has not run yet.** The VDS serves
+> **`cv.samolit.com`** through the Traefik already running there (the
+> external `traefik` network, entrypoint `websecure`, resolver `le`). The stack lives in
+> **`/home/boehpyk/www/tailor-cv`** and deploys as **`boehpyk`** (bash, `docker` group), with a
+> dedicated key used for nothing else. The root `.env` was made by hand on the box: mode 600,
+> generated hex passwords, `APP_ENV=production`, **`GUEST_PURGE_ENABLED=false`** until the purge has
+> been rehearsed *there*. Checked over SSH rather than taken on trust.
+> The four deploy secrets — `SSH_HOST`, `SSH_USER`, `SSH_DEPLOY_KEY`, `GHCR_TOKEN` (a classic PAT,
+> `read:packages` only) — are **`production` environment secrets, not repository secrets**, so
+> GitHub releases them only to a job that has already passed the required reviewer. The environment
+> carries **two protection rules**, `required_reviewers` (the owner) and `branch_policy` (protected
+> branches only), verified by reading the API. **From here on, every merge to `main` is a real
+> release waiting for an approval** — and a run uses the workflow file *from its own commit*, so an
+> older branch merged later deploys with the older script.
+> An earlier revision of this paragraph said the environment had zero protection rules; that was
+> true when written and **was repeated for a whole slice after it stopped being true.**
 >
+> **The release script gained two steps the docs had promised and it never ran:** a `pg_dump` into
+> `backups/` (700/600, newest ten) *before* anything changes, with the datastores brought up first so
+> it works on an empty box; and a check that the worker consumes `celery`, `tailoring` **and**
+> `export`. That check is anchored on `* {'name': '<queue>'` because **the exchange is also named
+> `celery`** — an unanchored match reports the default queue present when it is gone, proved by
+> deleting its line from real `inspect active_queues` output. nginx also carries
+> `traefik.docker.network=traefik` itself, since the provider flag belongs to another stack's Traefik.
+
 > The standing rule that produced the original warning still holds and is worth keeping: **a control
 > nobody has verified is a belief, not a control.** Check it with
 > `gh api repos/<owner>/<repo>/environments/production` before trusting either this file or the

@@ -14,9 +14,14 @@ services:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.tailorcraft.rule=Host(`tailorcraft.app`)"
+      - "traefik.http.routers.tailorcraft.rule=Host(`cv.samolit.com`)"
       - "traefik.http.routers.tailorcraft.entrypoints=websecure"
       - "traefik.http.routers.tailorcraft.tls.certresolver=le"
+      # nginx sits on two networks. Pin the one Traefik reaches it on HERE as well as by the shared
+      # Traefik's own `--providers.docker.network=traefik`: that flag belongs to another stack on this
+      # box, and if it is ever missing Traefik may pick the `default` IP it cannot route to — a silent
+      # 30-second 504 with nothing in any log.
+      - "traefik.docker.network=traefik"
     networks:
       - default
       - traefik
