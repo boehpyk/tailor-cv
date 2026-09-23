@@ -8,9 +8,18 @@ relying on what happens to be in the container's environment.
 
 from __future__ import annotations
 
-import pytest
+import traceback
 
-from tailorcraft.infrastructure.settings import Environment, MisconfiguredSettings, Settings
+import pytest
+from pydantic import SecretStr, ValidationError
+
+from tailorcraft.infrastructure.settings import (
+    JWT_SIGNING_KEY_MIN_BYTES,
+    JWT_SIGNING_KEY_PLACEHOLDER,
+    Environment,
+    MisconfiguredSettings,
+    Settings,
+)
 from tailorcraft.infrastructure.tasks import app as tasks_app_module
 from tailorcraft.infrastructure.tasks.app import TASK_TIME_LIMIT_SECONDS
 
@@ -225,3 +234,161 @@ def test_the_collision_refusal_names_no_url_and_leaks_no_password() -> None:
     assert "hunter2" not in message
     assert "redis://" not in message
     assert "REDIS_URL" in message  # the setting's name is what an operator needs
+
+
+# --- I-46/AC-22 (T17 RED): the fourth startup refusal, for `JWT_SIGNING_KEY` --------------------
+#
+# Every construction below passes a non-empty `gemini_api_key`, or `_refuse_to_boot_without_a_key_
+# in_production` fires first and the test would be vacuous — it would never exercise the JWT guard
+# at all. `_refuse_a_weak_jwt_signing_key_in_production` is SKELETON at T16 (a pass-through that
+# never calls `_refuse_weak_jwt_signing_key`, itself `raise NotImplementedError`), so every refusal
+# test below is expected to fail today with `Failed: DID NOT RAISE <class '...MisconfiguredSettings'>`
+# — a red on the assertion, not on import, which is what T18 GREEN is measured against.
+
+
+def test_production_with_an_empty_jwt_signing_key_refuses_to_boot() -> None:
+    with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
+        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(""))
+
+
+def test_production_with_a_whitespace_only_jwt_signing_key_refuses_to_boot() -> None:
+    """The same "a space is not a key" rule the Gemini guard already applies — the plausible
+    hand-edited-`.env` typo, not a hypothetical."""
+    with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
+        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr("   "))
+
+
+def test_production_with_the_example_placeholder_key_refuses_to_boot() -> None:
+    """Refused **by name**, not merely by length: the placeholder is 33 bytes, so the length rule
+    alone would let it through, and it is exactly the value most likely to reach a real box —
+    copied out of `.env.example` and never rotated."""
+    assert len(JWT_SIGNING_KEY_PLACEHOLDER.encode("utf-8")) > JWT_SIGNING_KEY_MIN_BYTES
+
+    with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
+        Settings(
+            app_env="production",
+            gemini_api_key="x",
+            jwt_signing_key=SecretStr(JWT_SIGNING_KEY_PLACEHOLDER),
+        )
+
+
+def test_production_with_a_31_byte_jwt_signing_key_refuses_to_boot_and_never_leaks_it() -> None:
+    """The boundary, tested at the boundary: one byte short of `JWT_SIGNING_KEY_MIN_BYTES` (32) must
+    be refused. A distinctive marker stands in for the key so the second half of this test — that
+    the raised message names the variable and never the value — is actually checking something: a
+    generic short string could pass that assertion by accident if the message happened not to quote
+    it verbatim, while a marker chosen to be unmistakable cannot.
+
+    Checked against **both** `str(exc)` and the fully rendered traceback (`format_exception`), since
+    a secret can leak into the traceback's frame locals even when the exception's own message is
+    clean — the concern `MisconfiguredSettings`' docstring raises about `ValidationError`'s
+    `input_value` one field over.
+    """
+    marker = "do-not-leak-" + "x" * 19
+    assert len(marker.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES - 1
+
+    with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY") as exc_info:
+        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(marker))
+
+    rendered_traceback = "".join(
+        traceback.format_exception(
+            type(exc_info.value), exc_info.value, exc_info.value.__traceback__
+        )
+    )
+    assert marker not in str(exc_info.value)
+    assert marker not in rendered_traceback
+
+
+def test_production_with_a_32_byte_jwt_signing_key_boots() -> None:
+    key = "a" * JWT_SIGNING_KEY_MIN_BYTES
+    assert len(key.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES
+
+    settings = Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+
+    assert settings.jwt_signing_key.get_secret_value() == key
+
+
+def test_a_32_byte_key_of_multibyte_characters_is_counted_in_bytes_not_characters() -> None:
+    """`JWT_SIGNING_KEY_MIN_BYTES` is a byte floor (RFC 7518 §3.2's 256-bit HMAC key), not a
+    character count. Sixteen two-byte UTF-8 characters (`é`, U+00E9) are 32 bytes and 16 characters
+    — accepted on the byte count, which is the only count that matches what HS256 actually signs
+    with."""
+    key = "é" * 16
+    assert len(key) == 16
+    assert len(key.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES
+
+    settings = Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+
+    assert settings.jwt_signing_key.get_secret_value() == key
+
+
+def test_a_31_byte_key_of_multibyte_characters_refuses_to_boot() -> None:
+    """The other side of the same boundary: fifteen two-byte characters plus one ASCII byte is 31
+    bytes and 16 characters — refused on the byte count, where a character-counting bug would have
+    accepted it."""
+    key = "é" * 15 + "a"
+    assert len(key) == 16
+    assert len(key.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES - 1
+
+    with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
+        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+
+
+@pytest.mark.parametrize("app_env", ["dev", "test"])
+def test_dev_and_test_accept_the_placeholder_jwt_signing_key(app_env: Environment) -> None:
+    """The same split as the Gemini key's empty default: the placeholder is fatal in production and
+    legal everywhere a call would never be signed for a real login."""
+    settings = Settings(
+        app_env=app_env, gemini_api_key="x", jwt_signing_key=SecretStr(JWT_SIGNING_KEY_PLACEHOLDER)
+    )
+
+    assert settings.jwt_signing_key.get_secret_value() == JWT_SIGNING_KEY_PLACEHOLDER
+
+
+def test_jwt_signing_key_is_a_secret_str_and_never_appears_in_repr() -> None:
+    """I-46's guard is pointless if the value it protects leaks through a second channel — a stray
+    `print(settings)` or a log call that reprs the object. `SecretStr.__repr__` masks its value by
+    construction; this pins that `jwt_signing_key` is actually typed as one and stays masked on the
+    live object, not only on the class's declared default."""
+    key = "b" * JWT_SIGNING_KEY_MIN_BYTES
+    settings = Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+
+    assert isinstance(settings.jwt_signing_key, SecretStr)
+    assert key not in repr(settings)
+    assert key not in repr(settings.jwt_signing_key)
+
+
+# --- I-47: the TTL bounds are `Field(gt=..., le=...)`, not a model validator -----------------------
+#
+# Safe as a `Field` bound, unlike the key: the rejected value is an integer, and pydantic's
+# `ValidationError` printing it back leaks nothing (unlike `input_value` echoing a secret). These
+# bounds are already declared on `Settings` (T16's skeleton), so — unlike every test above — these
+# pass today, before T18. Recorded here rather than skipped, because I-47 is this task's row too and
+# a red-first task that only ever asserts things which already pass would be an easy way to fail to
+# notice the bound quietly disappearing later.
+
+
+@pytest.mark.parametrize("minutes", [0, 61])
+def test_access_token_ttl_minutes_out_of_bounds_refuses_to_boot(minutes: int) -> None:
+    with pytest.raises(ValidationError, match="access_token_ttl_minutes"):
+        Settings(app_env="test", access_token_ttl_minutes=minutes)
+
+
+@pytest.mark.parametrize("minutes", [1, 60])
+def test_access_token_ttl_minutes_within_bounds_boots(minutes: int) -> None:
+    settings = Settings(app_env="test", access_token_ttl_minutes=minutes)
+
+    assert settings.access_token_ttl_minutes == minutes
+
+
+@pytest.mark.parametrize("days", [0, 91])
+def test_refresh_token_ttl_days_out_of_bounds_refuses_to_boot(days: int) -> None:
+    with pytest.raises(ValidationError, match="refresh_token_ttl_days"):
+        Settings(app_env="test", refresh_token_ttl_days=days)
+
+
+@pytest.mark.parametrize("days", [1, 90])
+def test_refresh_token_ttl_days_within_bounds_boots(days: int) -> None:
+    settings = Settings(app_env="test", refresh_token_ttl_days=days)
+
+    assert settings.refresh_token_ttl_days == days
