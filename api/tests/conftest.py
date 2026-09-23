@@ -27,6 +27,7 @@ swapped) — dedicated since 2026-09-22 and not before, which is the third point
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 
@@ -36,12 +37,15 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import (
     AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
+    create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from tailorcraft.infrastructure.api.deps import get_session
 from tailorcraft.infrastructure.api.main import create_app
@@ -102,14 +106,45 @@ def _mappings() -> None:
     configure_mappings()
 
 
+async def _reset_schema(url: str) -> None:
+    """Drop and recreate `public` in the test database, refusing any database not named `*_test`.
+
+    The guard comes before the first statement: `get_settings()` under `APP_ENV=test` still returns
+    the dev `database_url` (CLAUDE.md), and this function's only statement is a `DROP ... CASCADE`.
+    """
+    database = make_url(url).database
+    if not database or not database.endswith("_test"):
+        raise RuntimeError(f"refusing to reset schema of non-test database {database!r}")
+    eng = create_async_engine(url, poolclass=NullPool)
+    try:
+        async with eng.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        await eng.dispose()
+
+
 @pytest.fixture(scope="session")
 def _migrated(settings: Settings) -> None:
-    """Bring the test database to head, once per session.
+    """Bring an EMPTY test database to head, once per session.
 
     Migrations rather than `metadata.create_all()`: this way every run also proves the migrations
     themselves apply to an empty database, which is the thing the deploy will do and the thing
     `create_all` would never catch.
+
+    **Empty is load-bearing, not tidiness.** PostgreSQL never gives back a dropped column's slot —
+    `DROP COLUMN` only marks it dead, and dead columns count toward the 1600-column table limit
+    until the table is recreated. The migration up/down/up tests drop and re-add `tailoring_run`'s
+    columns on every run, so a test database that persisted between runs accumulated them: on
+    2026-09-23 it held 16 live columns and 1580 dead ones, `upgrade head` hit `TooManyColumnsError`,
+    and 428 unrelated tests errored. CI never saw it — its database is new every time. Resetting
+    here makes every local run start where CI does, and it also clears a schema a previous run left
+    downgraded by being interrupted mid-migration-test.
+
+    `asyncio.run` is safe here for the same reason Alembic's own `env.py` may call it: a sync
+    session fixture runs while pytest-asyncio's loop is idle.
     """
+    asyncio.run(_reset_schema(settings.test_database_url))
     config = Config("alembic.ini")
     config.set_main_option("sqlalchemy.url", settings.test_database_url)
     command.upgrade(config, "head")
