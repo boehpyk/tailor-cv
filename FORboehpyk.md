@@ -2987,5 +2987,56 @@ base64 password eventually contains a `/` or a `+` that the URL parser reads as 
 database password is effectively permanent: Postgres writes it into the volume on first start, and
 changing `.env` afterwards changes only what the app *tries*.
 
-One thing is still owed, and it's the bigger half: **nothing has been released yet.** Everything above
-makes the first deploy possible and observable. The first deploy is what proves it.
+One thing was still owed, and it was the bigger half: **nothing had been released yet.** Everything
+above made the first deploy possible and observable. The first deploy is what proves it.
+
+### The first release, and the run that failed on purpose (well, nearly)
+
+It happened the same evening. Two PRs were merged within seconds of each other — #9 (a docs change
+marking 1.6 shipped) and #10 (the deploy wiring) — and each merge to `main` started its own deploy
+run. **#10's went green** in 49 seconds: images pulled, every migration applied from an empty
+database to head, the worker and beat started *after* the migration on the new image, the smoke check
+read `ready: true` with one worker. `cv.samolit.com` answers.
+
+**#9's went red**, at the step that copies config to the server. The reason is one sentence in
+`CLAUDE.md` that had so far been theory: *a run uses the workflow file from its own commit.* #9 had
+been branched before the deploy wiring existed, so its run carried the **old** workflow, pointed at
+the **old** target directory on the box — and failed to create it. It never reached the release step,
+so it changed nothing. Harmless this time, because the newer run landed right after it. It would not
+have been harmless the other way round: an old run finishing *last* would deploy with the old script.
+Think of it like two couriers leaving the depot with different editions of the delivery instructions
+— whoever arrives last decides what the house looks like.
+
+**One quiet trap in reading the log:** the dump and the queue check print nothing when they pass.
+The evidence that they ran is the script's `set -euo pipefail` plus a green step — any failure would
+have stopped it. A check that is silent on success is fine; just know that "I didn't see it in the
+log" is not evidence either way.
+
+**What's still owed:** the guest purge is deployed but switched **off** in production. Dev's
+rehearsal does not count for a different database — the box gets its own: backups, dry run, a small
+`limit=` bite, full run, orphan sweep, *then* the flag, then `docker compose up -d api worker beat`
+(not `restart`, which never re-reads `.env`).
+
+### The docs commit the test suite refused
+
+Writing down the release, the commit itself was blocked: the pre-commit hook ran the suite and **428
+tests errored** on a change to two Markdown files. A docs change cannot break code, so the question
+was never "what did I break" but "what state is this machine in".
+
+The answer was a PostgreSQL detail most people never meet. **Dropping a column doesn't give its slot
+back.** Postgres marks the column dead and leaves it in place, like a hotel that retires room numbers
+instead of reassigning them — and every table gets 1600 room numbers, ever. Our migration tests go
+up, down, and up again, dropping and re-adding `tailoring_run`'s columns each time, against a test
+database that is never recreated. Every commit (the hook runs the suite) quietly retired about ten
+more numbers. On 2026-09-23 the table had **16 live columns and 1580 dead ones**; the next `ALTER
+TABLE … ADD COLUMN` hit the ceiling, the migration fixture stopped three revisions short, and
+everything downstream of the missing tables fell over.
+
+CI never saw it, because CI's database is born fresh on every run. That is the lesson worth keeping:
+**a test environment that persists between runs is accumulating state whether or not you meant it
+to** — and "passes in CI, fails locally, the diff is a README" is the fingerprint. Resetting the test
+schema fixed it in one statement; the durable fix (PR #12) makes the suite do that itself at the
+start of every session — behind a check that the database's name ends in `_test`, because the one
+statement it runs is `DROP SCHEMA … CASCADE`. The proof was a number, not a green run: dead columns
+grew by 5 per run before, and read 5 after each of three runs since.
+
