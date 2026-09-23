@@ -1,8 +1,5 @@
 """The `RefreshLogin` use case: rotate a refresh token, or find out that it was stolen (AC-10).
 
-**SKELETON step (T12).** `__init__` is fully written and stores its arguments; `__call__`'s body is
-deferred to T14.
-
 Both arguments are `TokenHash`es: the route read the cookie, hashed it, minted the replacement and
 hashed that too. **No plaintext token reaches this layer** (AC-10, ADR-0010), and `mypy` enforces it.
 
@@ -18,9 +15,19 @@ case's is only to have removed and published before raising.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from tailorcraft.application.identity.results import Authenticated
+from tailorcraft.domain.identity.errors import (
+    LoginConcurrentlyRotated,
+    LoginExpired,
+    LoginNotFound,
+    RefreshInProgress,
+    RefreshTokenReused,
+)
+from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ports import AccessTokenPort, LoginRepository, UserRepository
-from tailorcraft.domain.identity.value_objects import TokenHash
+from tailorcraft.domain.identity.value_objects import RetiredTokenVerdict, TokenHash
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -65,4 +72,39 @@ class RefreshLogin:
         self._events = events
 
     async def __call__(self, presented: TokenHash, replacement: TokenHash) -> Authenticated:
-        raise NotImplementedError
+        now = self._clock.now()
+
+        login = await self._logins.find_by_current_token_hash(presented)
+        if login is not None:
+            return await self._rotate(login, replacement, now)
+
+        found = await self._logins.find_by_retired_token_hash(presented)
+        if found is None:
+            raise LoginNotFound()  # unknown (I-20): nothing changed
+        login, generation = found
+        try:
+            verdict = login.judge_retired(generation, now)
+        except LoginExpired:
+            await self._logins.remove(login.id)
+            raise LoginNotFound() from None
+        if verdict is RetiredTokenVerdict.RACED:
+            raise RefreshInProgress()  # raced (I-23): nothing changed
+        # reused (I-24): the revocation is the deletion. Removed and published *before* the raise;
+        # committing despite the raise is the route's obligation (module docstring).
+        await self._logins.remove(login.id)
+        await self._events.publish(*login.release_events())
+        raise RefreshTokenReused()
+
+    async def _rotate(self, login: Login, replacement: TokenHash, now: datetime) -> Authenticated:
+        try:
+            retired = login.rotate(replacement, now)
+        except LoginExpired:
+            await self._logins.remove(login.id)  # expired (I-21): deleted on sight
+            raise LoginNotFound() from None
+        try:
+            await self._logins.save_rotation(login, retired)
+        except LoginConcurrentlyRotated:
+            raise RefreshInProgress() from None  # a lost race (I-25), never a revocation
+        user = await self._users.get(login.user_id)
+        access_token = self._tokens.issue(user.id, now)
+        return Authenticated(user=user, login=login, access_token=access_token)

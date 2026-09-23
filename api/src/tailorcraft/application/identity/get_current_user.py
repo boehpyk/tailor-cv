@@ -1,8 +1,5 @@
 """The `GetCurrentUser` use case: the user an access token speaks for (AC-12, I-39).
 
-**SKELETON step (T12).** `__init__` is fully written and stores its argument; `__call__`'s body is
-deferred to T14.
-
 The `UserId` arrives already verified — `AccessTokenPort.verify` runs in the API's bearer dependency,
 not here. A use case for a single `get` looks like ceremony; it is the seam that keeps the router
 from holding a repository, and the place a future rule ("a suspended user is not current") lands.
@@ -23,4 +20,4 @@ class GetCurrentUser:
         self._users = users
 
     async def __call__(self, user_id: UserId) -> User:
-        raise NotImplementedError
+        return await self._users.get(user_id)  # `UserNotFound` propagates (I-39)

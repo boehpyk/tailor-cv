@@ -1,8 +1,5 @@
 """The `LogIn` use case: check a password and start a new `Login` for it (AC-9, I-7 … I-11).
 
-**SKELETON step (T12).** `__init__` is fully written and stores its arguments; `__call__`'s body is
-deferred to T14.
-
 **The design choice this module makes: the failure's cause leaves through a port, not through the
 error.** Two requirements pull in opposite directions:
 
@@ -33,6 +30,8 @@ from __future__ import annotations
 from datetime import timedelta
 
 from tailorcraft.application.identity.results import Authenticated
+from tailorcraft.domain.identity.errors import InvalidCredentials
+from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
     FailedLoginObserver,
@@ -40,7 +39,12 @@ from tailorcraft.domain.identity.ports import (
     PasswordHasherPort,
     UserRepository,
 )
-from tailorcraft.domain.identity.value_objects import TokenHash
+from tailorcraft.domain.identity.value_objects import (
+    EmailAddress,
+    Password,
+    PasswordVerdict,
+    TokenHash,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -98,4 +102,30 @@ class LogIn:
         raw_password: str,
         refresh_token_hash: TokenHash,
     ) -> Authenticated:
-        raise NotImplementedError
+        email = EmailAddress.parse(raw_email)
+        password = Password.from_input(raw_password)
+
+        user = await self._users.find_by_email(email)
+        # Exactly one verify on every path: `None` makes the adapter spend the same on a decoy, so an
+        # unknown email and a wrong password cost alike (AC-9).
+        verdict = await self._hasher.verify(password, user.password_hash if user else None)
+        if user is None:
+            self._failed_logins.unknown_email()
+            raise InvalidCredentials()
+        if verdict is PasswordVerdict.MISMATCH:
+            self._failed_logins.wrong_password(user.id)
+            raise InvalidCredentials()
+
+        now = self._clock.now()
+        if verdict is PasswordVerdict.MATCH_NEEDS_REHASH:
+            user.replace_password_hash(await self._hasher.hash(password), now)
+            await self._users.save(user)
+
+        login = Login.start(
+            self._logins.next_identity(), user.id, refresh_token_hash, now, self._refresh_lifetime
+        )
+        await self._logins.add(login)
+        access_token = self._tokens.issue(user.id, now)
+
+        await self._events.publish(*user.release_events(), *login.release_events())
+        return Authenticated(user=user, login=login, access_token=access_token)

@@ -1,8 +1,5 @@
 """The `RevokeAllLogins` use case: the break-glass that signs everybody out (AC-13, OQ-5).
 
-**SKELETON step (T12).** `__init__` is fully written and stores its argument; `__call__`'s body is
-deferred to T14.
-
 Entry point: `python -m tailorcraft.cli revoke-logins --all [--dry-run]`, which prints the count.
 **`dry_run` is a call argument, not constructor configuration** — unlike the purge's, whose dry-run
 is fixed per run by the scheduler — because this has one caller that decides per invocation, and a
@@ -27,4 +24,6 @@ class RevokeAllLogins:
         self._logins = logins
 
     async def __call__(self, dry_run: bool) -> int:
-        raise NotImplementedError
+        if dry_run:
+            return await self._logins.count_all()
+        return await self._logins.remove_all()

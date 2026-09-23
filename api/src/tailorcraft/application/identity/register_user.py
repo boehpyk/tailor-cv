@@ -1,9 +1,5 @@
 """The `RegisterUser` use case: create an account and sign its owner in, in one unit of work (AC-8).
 
-**SKELETON step (T12).** `__init__` is fully written and really stores its arguments, so `qa`'s T13
-RED tests fail on their *assertions* rather than on a `TypeError` from the constructor (docs/sdlc.md
-§2). Only `__call__`'s body is deferred; its signature and return type are real.
-
 **No plaintext refresh token reaches this layer.** The route mints `(token, hash)` and passes only
 `refresh_token_hash` (ADR-0010's pattern for the guest cookie, AC-10). The plaintext *password* does
 arrive — hashing it is the point — and is wrapped in `Password` on the first line, which cannot be
@@ -18,13 +14,20 @@ from __future__ import annotations
 from datetime import timedelta
 
 from tailorcraft.application.identity.results import Authenticated
+from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
     LoginRepository,
     PasswordHasherPort,
     UserRepository,
 )
-from tailorcraft.domain.identity.value_objects import PasswordPolicy, TokenHash
+from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.value_objects import (
+    EmailAddress,
+    Password,
+    PasswordPolicy,
+    TokenHash,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -88,4 +91,21 @@ class RegisterUser:
         raw_password: str,
         refresh_token_hash: TokenHash,
     ) -> Authenticated:
-        raise NotImplementedError
+        email = EmailAddress.parse(raw_email)
+        password = Password.from_input(raw_password)
+        self._policy.check(password, email)
+        password_hash = await self._hasher.hash(password)
+        now = self._clock.now()
+
+        user = User.register_with_password(self._users.next_identity(), email, password_hash, now)
+        # The insert is the uniqueness check (§0.4): no `find_by_email` first, so a duplicate costs
+        # exactly what a success does up to this line, and there is no look-up-then-insert race.
+        await self._users.add(user)
+        login = Login.start(
+            self._logins.next_identity(), user.id, refresh_token_hash, now, self._refresh_lifetime
+        )
+        await self._logins.add(login)
+        access_token = self._tokens.issue(user.id, now)
+
+        await self._events.publish(*user.release_events(), *login.release_events())
+        return Authenticated(user=user, login=login, access_token=access_token)

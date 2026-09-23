@@ -1,8 +1,5 @@
 """The `LogOut` use case: end the login a refresh token belongs to, if any (AC-11, I-29).
 
-**SKELETON step (T12).** `__init__` is fully written and stores its arguments; `__call__`'s body is
-deferred to T14.
-
 `presented` is a `TokenHash` or `None` — `None` when the request carried no refresh cookie at all.
 Never a plaintext token (AC-10).
 """
@@ -47,4 +44,14 @@ class LogOut:
         self._events = events
 
     async def __call__(self, presented: TokenHash | None) -> None:
-        raise NotImplementedError
+        if presented is None:
+            return
+        login = await self._logins.find_by_current_token_hash(presented)
+        if login is None:
+            found = await self._logins.find_by_retired_token_hash(presented)
+            if found is None:
+                return
+            login, _generation = found
+        login.record_logout(self._clock.now())
+        await self._logins.remove(login.id)
+        await self._events.publish(*login.release_events())
