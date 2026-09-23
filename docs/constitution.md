@@ -125,7 +125,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    | `posting` | job descriptions, pasted or fetched from a URL | `JobPosting` |
    | `tailoring` | the LLM run and its output documents | `TailoringRun` — `TailoredDocument` is a value object on it, not an aggregate ([ADR-0014 §9](./adr/0014-tailoring-runs-on-a-queue-and-is-polled.md), [ADR-0015](./adr/0015-edits-are-a-revision-on-the-run-stored-as-markdown.md)) |
    | `export` | rendering a document to PDF/DOCX/MD/TXT | `ExportJob` |
-   | `identity` | accounts, sessions, tokens | `User` |
+   | `identity` | accounts, sessions, tokens | `GuestSession`, `User`, `Login` — two principals, no shared base ([ADR-0010](./adr/0010-guest-session-cookie-is-an-opaque-hashed-token.md), [ADR-0020](./adr/0020-a-login-is-a-refresh-token-family-revocation-is-deletion.md)) |
    | `retention` | the guest 1-day purge (no aggregate — a policy + a port method) | — |
 
    Ubiquitous language: keep a glossary in each context's spec. A **base CV** is never a "resume" in
