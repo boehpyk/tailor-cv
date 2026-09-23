@@ -229,14 +229,6 @@ class WeakPasswordReason(StrEnum):
     TOO_LONG = "password_too_long"
     MATCHES_EMAIL = "password_matches_email"
 
-    NOT_NORMALIZED = "password_not_normalized"
-    """`Password(...)` was constructed directly with a value that is not NFKC — `EmailAddress`'s
-    `NOT_NORMALIZED`, for the same reason. **Unreachable from user input**: `from_input` normalizes
-    first and NFKC is idempotent, so only a caller that bypasses `from_input` (an adapter, a test)
-    can produce it. It is a reason rather than an `InvariantViolated` because the RED test (AC-3)
-    pins `WeakPassword` for this refusal, and a `WeakPassword` must carry *some* reason; borrowing
-    `TOO_SHORT` or `TOO_LONG` would make the log line lie."""
-
 
 # The hashing-DoS bound (AC-3, I-3). Applies to *every* password that enters the system — login as
 # well as registration — because it is what stops a megabyte "password" reaching the hasher, and a
@@ -257,8 +249,9 @@ class Password:
     space is a character the user typed, and silently removing it would make "correct password,
     refused" a support ticket nobody can reproduce.
 
-    `__post_init__` re-checks the same three rules and refuses a value that is not already NFKC, for
-    `EmailAddress`'s reason: one form, no side door.
+    `__post_init__` re-checks the same bounds and refuses a value that is not already NFKC, for
+    `EmailAddress`'s reason: one form, no side door. That refusal is `InvariantViolated`, not
+    `WeakPassword` — no user input can produce it (see the comment at the check).
 
     **Why a type at all**, when every use case could hold a `str`: `repr()`, `str()` and `format()`
     all return `Password(<redacted>)`, so `f"{password}"`, `log.info("%s", password)` and a pytest
@@ -287,8 +280,14 @@ class Password:
             raise refuse(WeakPasswordReason.TOO_SHORT)
         if len(self.value) > PASSWORD_INPUT_MAX_LENGTH:
             raise refuse(WeakPasswordReason.TOO_LONG)
+        # Not NFKC is a broken invariant, not a weak password: `from_input` normalizes first and
+        # NFKC is idempotent, so no user input can reach this line — only a caller that bypassed
+        # `from_input` (an adapter, a test, a corrupted row). That is `EmailAddress`'s, `PasswordHash`'s
+        # and `TokenHash`'s answer to a directly-constructed value in the wrong form, and it keeps
+        # `WeakPasswordReason` to the three codes a person can act on — each of them a wire code.
+        # The message names the rule, never the value.
         if not unicodedata.is_normalized("NFKC", self.value):
-            raise refuse(WeakPasswordReason.NOT_NORMALIZED)
+            raise InvariantViolated("a password must already be NFKC-normalized")
 
     @classmethod
     def from_input(cls, raw: str) -> Password:
