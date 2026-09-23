@@ -1,13 +1,31 @@
 """Value objects for the `identity` bounded context.
 
-`identity` is deliberately small in this slice: a guest session is not a login, and shares nothing
-with the future `User` (ADR-0008) — see `docs/adr/0008-*` for why the two are not unified under a
-base class even though they will eventually sit side by side on the same tables.
+Two things live here that share nothing but a context. `GuestSessionId` is slice 1.1's: a guest
+session is not a login, and shares nothing with `User` (ADR-0008, ADR-0010) — see `docs/adr/0008-*`
+for why the two are not unified under a base class even though they sit side by side on the same
+tables. Everything below it arrives with slice 2.1 (registration and login, ADR-0020, ADR-0021).
+
+The rule is the one every other context follows: a frozen `@dataclass(frozen=True, slots=True)`
+where there is something to validate, a `StrEnum` where the set is closed. Never Pydantic
+(ADR-0002).
+
+**Four of these hold a secret or something derived from one** — `Password`, `PasswordHash`,
+`TokenHash`, `IssuedAccessToken` — and each redacts its own `repr`. That is not tidiness. A value
+object's `repr` is what an f-string, a `logging` call with `%r`, a failed `assert` in pytest and a
+Sentry frame all reach for, and "nobody would log that" is a belief; a `repr` that cannot contain the
+value is a control. Each also declares the secret field `field(repr=False)`, so that deleting the
+hand-written `__repr__` falls back to a generated one that *still* omits it — two locks, because the
+hand-written one is the kind of method a reader deletes as "boilerplate".
+
+**Nothing here names argon2, SHA-256 or JWT** (AC-4, AC-7). The domain knows *that* a value is a
+hash and what shape a hash has; which algorithm made it is `infrastructure/identity/`'s business.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import StrEnum
 from uuid import UUID
 
 
@@ -24,3 +42,334 @@ class GuestSessionId:
     # validation method that does nothing would just be a place a future reader adds a rule that
     # does not belong (see the domain-modeler brief). `BaseCvId` is the same shape for the same
     # reason.
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.1 — registered users and their logins.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class UserId:
+    """A `User`'s identity. Typed so a `LoginId` — or a `GuestSessionId`, which is also "who is
+    asking" — cannot be handed where a user id was meant. `UserRepository.get(login.id)` is a lookup
+    that quietly finds nothing with bare `UUID`s and a `mypy --strict` error with these."""
+
+    value: UUID
+
+    # No `__post_init__`: every `UUID` is a valid `UserId` (the `GuestSessionId` reasoning above).
+
+
+@dataclass(frozen=True, slots=True)
+class LoginId:
+    """A `Login`'s identity — one refresh-token family, one device (ADR-0020)."""
+
+    value: UUID
+
+    # No `__post_init__`: every `UUID` is a valid `LoginId` (the `GuestSessionId` reasoning above).
+
+
+class InvalidEmailReason(StrEnum):
+    """Which rule of AC-2 an email address broke. Closed; carried by `InvalidEmailAddress`.
+
+    **Never reaches the wire.** The API answers every one of these with the single code
+    `invalid_email` (I-1, I-12): telling a stranger *which* rule failed helps nobody type an address,
+    and the distinction is for the test table and for a developer reading a refusal, not for the
+    response body. Carrying a reason rather than a bare error is what lets AC-2's ≥ 20-case table
+    assert that `a@b` was refused *for having no dot*, not merely refused — a table that only checks
+    "raised" passes against a parser that refuses everything.
+    """
+
+    NOT_ASCII = "not_ascii"
+    """Any code point above U+007F, anywhere. Internationalized addresses are out of scope in 2.1
+    (R-12): refusing them is honest, accepting them un-normalized would make two spellings of one
+    mailbox two accounts."""
+
+    WHITESPACE_OR_CONTROL = "whitespace_or_control"
+    """Whitespace *inside* the address or any control character. Surrounding whitespace is not a
+    refusal — `parse` strips it first."""
+
+    AT_SIGN_COUNT = "at_sign_count"
+    """Not exactly one `@` — covers the empty string, `alex.example.com` and `a@@b.com`."""
+
+    LOCAL_PART_LENGTH = "local_part_length"
+    """The part before `@` is empty or longer than 64 characters."""
+
+    DOMAIN_LENGTH = "domain_length"
+    """The part after `@` is empty or longer than 253 characters."""
+
+    DOMAIN_WITHOUT_DOT = "domain_without_dot"
+    """`a@b` — a single-label domain. Legal on an intranet, never a mailbox a stranger can own."""
+
+    EMPTY_DOMAIN_LABEL = "empty_domain_label"
+    """`a@.b.com`, `a@b..com`, `a@b.com.` — a dot with nothing on one side of it."""
+
+    TOO_LONG = "too_long"
+    """The whole address is longer than 254 characters."""
+
+    NOT_NORMALIZED = "not_normalized"
+    """`EmailAddress(...)` was constructed directly with a value `parse` would have changed — upper
+    case or surrounding whitespace. Only `__post_init__` raises this; `parse` normalizes first and so
+    can never produce it."""
+
+
+@dataclass(frozen=True, slots=True)
+class EmailAddress:
+    """A normalized email address: stripped, lower-cased, ASCII, shaped like a mailbox (AC-2).
+
+    **Equality is the uniqueness rule.** `EmailAddress.parse("A@x.io") == EmailAddress.parse(" a@X.io
+    ")`, so "one account per address" and "these two are the same address" are the same `==`, and
+    the unique index on `identity_user.email` compares exactly the string this type holds.
+
+    `__post_init__` re-validates **and refuses a value that is not already normalized**, so there is
+    no second, un-normalized way to hold one: `EmailAddress("Alex@Example.com")` raises
+    `InvalidEmailAddress(NOT_NORMALIZED)`. Build one with `parse`. (A repository rehydrating a row
+    constructs directly — which is exactly why the direct path must refuse anything `parse` would not
+    have produced: the database is also a stranger, one migration later.)
+
+    **Dots and `+tags` are preserved.** `alex.smith+cv@example.com` and `alexsmith@example.com` are
+    distinct mailboxes on most providers, and folding them is a provider-specific guess that would
+    merge two real people's accounts on the providers where it is wrong.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        raise NotImplementedError
+
+    @classmethod
+    def parse(cls, raw: str) -> EmailAddress:
+        """Strip surrounding whitespace, lower-case, then validate every rule of AC-2.
+
+        Raises `InvalidEmailAddress(reason)` naming the first rule broken. Never carries `raw` in the
+        error, not even in its message: a refused address is still somebody's address.
+        """
+        raise NotImplementedError
+
+    @property
+    def local_part(self) -> str:
+        """Everything before the `@` — what `PasswordPolicy.check` compares a password against,
+        beside the whole address (AC-3's "equal to the email or its local part")."""
+        raise NotImplementedError
+
+
+class WeakPasswordReason(StrEnum):
+    """Why a password was refused. Closed; carried by `WeakPassword`, and — unlike
+    `InvalidEmailReason` — **each member is its own wire code** (I-2, I-3, I-4), because the user
+    can act on the difference: "too short" and "same as your email" ask for different fixes."""
+
+    TOO_SHORT = "password_too_short"
+    TOO_LONG = "password_too_long"
+    MATCHES_EMAIL = "password_matches_email"
+
+
+# The hashing-DoS bound (AC-3, I-3). Applies to *every* password that enters the system — login as
+# well as registration — because it is what stops a megabyte "password" reaching the hasher, and a
+# login is the endpoint a stranger can call without an account. Not the policy's `max_length`: that
+# one is a registration rule about what a *good* password is; this one is about what the process can
+# afford to hash. A module constant rather than a setting for the codebase's usual reason — a control
+# does not get a knob (ADR-0012).
+PASSWORD_INPUT_MAX_LENGTH = 1024
+
+
+@dataclass(frozen=True, slots=True)
+class Password:
+    """A plaintext password, NFKC-normalized, that cannot be printed (AC-3).
+
+    `from_input` is the way in: NFKC (NIST SP 800-63B §5.1.1.2, so a password typed on two keyboards
+    that produce two encodings of one character is one password), then refuse an empty value and
+    anything over `PASSWORD_INPUT_MAX_LENGTH` code points. **No whitespace is stripped** — a trailing
+    space is a character the user typed, and silently removing it would make "correct password,
+    refused" a support ticket nobody can reproduce.
+
+    `__post_init__` re-checks the same three rules and refuses a value that is not already NFKC, for
+    `EmailAddress`'s reason: one form, no side door.
+
+    **Why a type at all**, when every use case could hold a `str`: `repr()`, `str()` and `format()`
+    all return `Password(<redacted>)`, so `f"{password}"`, `log.info("%s", password)` and a pytest
+    assertion diff cannot put a plaintext into a log line; and `mypy` refuses a `Password` where any
+    other `str` is expected, so it cannot be confused with the email beside it in the same request.
+
+    `from_input` raises `WeakPassword` for its two refusals — `TOO_SHORT` for empty, `TOO_LONG` over
+    the bound — carrying `min_length=1` and `max_length=PASSWORD_INPUT_MAX_LENGTH`, i.e. the bounds it
+    actually applied, never the policy's. A registration password of 129…1024 code points passes
+    here and is refused by `PasswordPolicy` naming 128; on login these are the only length rules
+    there are (and the HTTP body's own 1024 cap normally refuses first — this is the second lock).
+    """
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        raise NotImplementedError
+
+    @classmethod
+    def from_input(cls, raw: str) -> Password:
+        """NFKC-normalize `raw` without stripping it, and refuse empty or over-long input.
+
+        Raises `WeakPassword(TOO_SHORT | TOO_LONG, min_length=1,
+        max_length=PASSWORD_INPUT_MAX_LENGTH)`. Never carries the value or its length.
+        """
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        raise NotImplementedError
+
+    def __str__(self) -> str:
+        raise NotImplementedError
+
+    def __format__(self, format_spec: str) -> str:
+        # `object.__format__` would delegate to `__str__` for an empty spec but raise `TypeError`
+        # for any other — so `f"{password:>20}"` would crash rather than redact. Defined explicitly
+        # so every spec redacts.
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordPolicy:
+    """What registration accepts as a password (AC-3, OQ-3): 12 to 128 code points after NFKC, and
+    not the email or its local part. **No composition rules** — NIST SP 800-63B §5.1.1.2 advises
+    against them, and `aaaaaaaaaaaa` passing is a test, not an oversight.
+
+    **The policy is data** so the API can put `min_length` / `max_length` in the 422 envelope from the
+    same object that refused the password; the client never hard-codes 12 as a rule, only as copy.
+
+    Used **only at registration**. A login checks the password it is given against the stored hash
+    and nothing else: a policy tightened next year must not lock out the people who registered under
+    this one.
+    """
+
+    min_length: int = 12
+    max_length: int = 128
+
+    def __post_init__(self) -> None:
+        """Refuse a policy that could never be met or that exceeds the input bound:
+        `1 <= min_length <= max_length <= PASSWORD_INPUT_MAX_LENGTH`."""
+        raise NotImplementedError
+
+    def check(self, password: Password, email: EmailAddress) -> None:
+        """Return nothing if `password` is acceptable for `email`; otherwise raise
+        `WeakPassword(reason, self.min_length, self.max_length)`.
+
+        Lengths are in code points of the (already NFKC) value. "Matches the email" is
+        case-insensitive and compares against both the whole address and its local part.
+        """
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordHash:
+    """A stored password hash in PHC string format (AC-4): non-empty, `$`-prefixed, ≤ 512.
+
+    PHC (`$<id>$<params>$<salt>$<hash>`) is a vendor-neutral standard, not an argon2 fact, which is
+    why the domain may check for the `$` without knowing the algorithm: the id and the parameters
+    live *inside* the string, so a parameter change (ADR-0021's rehash-on-login) needs no column and
+    no migration. The `repr` is redacted — a hash is not a password, but an offline guessing attack
+    needs nothing else.
+    """
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class TokenHash:
+    """The hash of a refresh token: exactly 64 lowercase hex characters (AC-4).
+
+    **The type that makes "application code never sees a plaintext refresh token" checkable by
+    `mypy`.** The route mints `(token, hash)` and hands the application only the hash (ADR-0010's
+    pattern for the guest cookie, ADR-0020); every application signature that touches a refresh
+    token takes a `TokenHash`, so passing the plaintext is a type error rather than a review comment.
+    The `repr` is redacted: it is a lookup key into `identity_login`, and a log line holding one is
+    one half of a session.
+    """
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class RetiredRefreshToken:
+    """A refresh token that was current until a rotation replaced it (ADR-0020's option (c)).
+
+    Returned by `Login.rotate` and persisted by `LoginRepository.save_rotation` into the append-only
+    retired table — a lookup index answering "whose token was this, and which generation?", which is
+    what lets reuse be detected *at any generation* rather than only the immediate predecessor.
+    `generation >= 1`, because generation 1 is the first one `Login.start` issues.
+    """
+
+    token_hash: TokenHash
+    generation: int
+    retired_at: datetime
+
+    def __post_init__(self) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedAccessToken:
+    """A freshly minted access token and how long it lives, as the client will receive it.
+
+    **`expires_in` is relative** (a `timedelta`, positive), never an absolute instant: the client is
+    told "this lives 900 s", so its own clock — which may be anywhere — never enters the arithmetic
+    (I-38, AC-38). The token is opaque to the domain (`AccessTokenPort` knows its format; this type
+    does not), and its `repr` is redacted because a bearer token in a log line is a login.
+    """
+
+    token: str = field(repr=False)
+    expires_in: timedelta
+
+    def __post_init__(self) -> None:
+        raise NotImplementedError
+
+    def __repr__(self) -> str:
+        raise NotImplementedError
+
+
+class PasswordVerdict(StrEnum):
+    """What `PasswordHasherPort.verify` found. **Three outcomes, not a `bool` plus a side channel.**
+
+    `MATCH_NEEDS_REHASH` is a match whose stored hash was made with parameters older than today's;
+    `LogIn` replaces the hash in the same unit of work (I-11). A `bool` return with a separate
+    `needs_rehash()` call would be two questions about one comparison, and a caller that asked only
+    the first would silently never upgrade anybody.
+    """
+
+    MATCH = "match"
+    MATCH_NEEDS_REHASH = "match_needs_rehash"
+    MISMATCH = "mismatch"
+
+
+class RetiredTokenVerdict(StrEnum):
+    """What `Login.judge_retired` decided about a retired token presented again (AC-6).
+
+    `RACED`: the immediate predecessor, within `REFRESH_RACE_GRACE` of the rotation — a second tab
+    that lost the race, answered 409 with nothing changed (I-23). `REUSED`: anything else — the
+    login is revoked (I-24).
+    """
+
+    RACED = "raced"
+    REUSED = "reused"
+
+
+class AccessTokenRefusal(StrEnum):
+    """Why `AccessTokenPort.verify` refused a bearer token (I-33 … I-38). Closed; carried by
+    `AccessTokenInvalid`, logged as `reason=`, and **never** sent to the client — every one of these
+    is the same 401 `invalid_access_token`, so a forger learns nothing about which check caught them.
+    """
+
+    MALFORMED = "malformed"
+    BAD_SIGNATURE = "bad_signature"
+    BAD_ALGORITHM = "bad_algorithm"
+    BAD_CLAIMS = "bad_claims"
+    EXPIRED = "expired"
+    ISSUED_IN_FUTURE = "issued_in_future"
