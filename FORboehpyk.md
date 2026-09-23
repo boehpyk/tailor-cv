@@ -3035,6 +3035,8 @@ everything downstream of the missing tables fell over.
 CI never saw it, because CI's database is born fresh on every run. That is the lesson worth keeping:
 **a test environment that persists between runs is accumulating state whether or not you meant it
 to** — and "passes in CI, fails locally, the diff is a README" is the fingerprint. Resetting the test
-schema fixed it in one statement. The durable fix — have the suite start from an empty schema every
-session — is written down as owed, not done.
+schema fixed it in one statement; the durable fix (PR #12) makes the suite do that itself at the
+start of every session — behind a check that the database's name ends in `_test`, because the one
+statement it runs is `DROP SCHEMA … CASCADE`. The proof was a number, not a green run: dead columns
+grew by 5 per run before, and read 5 after each of three runs since.
 

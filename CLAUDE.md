@@ -752,10 +752,10 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   **16 live columns and 1580 dropped ones**, `upgrade head` died on `TooManyColumnsError`, the fixture
   left the schema three revisions short, and **428 unrelated tests errored**, blocking a docs-only
   commit. CI never sees it: its database is new every time. Signature: the migration tests fail
-  first, then everything touching `export_job` reports `UndefinedTableError`. Reset it (test DB
-  only — check the name first):
-  `psql -d tailorcraft_test -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`. The durable fix,
-  not yet made, is for `_migrated` to start from an empty schema every session.
+  first, then everything touching `export_job` reports `UndefinedTableError`. **Fixed (PR #12):**
+  `_migrated` drops and recreates `public` at the start of every session, behind a guard refusing
+  any database not named `*_test`, so a local run now starts where CI does. The count of dead
+  columns stays flat at one run's worth instead of growing.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global
