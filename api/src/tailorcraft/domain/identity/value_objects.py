@@ -23,10 +23,31 @@ hash and what shape a hash has; which algorithm made it is `infrastructure/ident
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
 from uuid import UUID
+
+from tailorcraft.domain.shared.errors import InvariantViolated
+
+# Every function-local `from tailorcraft.domain.identity.errors import ...` below breaks a module
+# cycle, exactly as `domain/posting/value_objects.py` does: `errors.py` imports the reason enums from
+# this module, so a module-level import in the other direction would make the two import each other
+# during collection. `InvariantViolated` lives in `domain.shared` and has no such cycle.
+
+# AC-2's numbers. Module constants, not settings: they are the shape of a mailbox (RFC 5321's
+# path and local-part limits), not a knob anybody tunes.
+_EMAIL_MAX_LENGTH = 254
+_LOCAL_PART_MAX_LENGTH = 64
+_DOMAIN_MAX_LENGTH = 253
+
+# PHC strings in practice run ~100 characters; 512 is room for any algorithm's parameters and a
+# ceiling on what a corrupt or hostile row can make us carry.
+_PASSWORD_HASH_MAX_LENGTH = 512
+
+_TOKEN_HASH_LENGTH = 64
+_LOWERCASE_HEX = frozenset("0123456789abcdef")
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +156,15 @@ class EmailAddress:
     value: str
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        from tailorcraft.domain.identity.errors import InvalidEmailAddress
+
+        # Normalization first: a value `parse` would have changed is refused as *that*, before any
+        # shape rule gets to name a different reason for the same mistake.
+        if _normalize_email(self.value) != self.value:
+            raise InvalidEmailAddress(InvalidEmailReason.NOT_NORMALIZED)
+        reason = _email_refusal(self.value)
+        if reason is not None:
+            raise InvalidEmailAddress(reason)
 
     @classmethod
     def parse(cls, raw: str) -> EmailAddress:
@@ -144,13 +173,51 @@ class EmailAddress:
         Raises `InvalidEmailAddress(reason)` naming the first rule broken. Never carries `raw` in the
         error, not even in its message: a refused address is still somebody's address.
         """
-        raise NotImplementedError
+        # One set of rules, applied in one place: `parse` only normalizes, and `__post_init__`
+        # validates — so the direct path and this one can never drift apart.
+        return cls(_normalize_email(raw))
 
     @property
     def local_part(self) -> str:
         """Everything before the `@` — what `PasswordPolicy.check` compares a password against,
         beside the whole address (AC-3's "equal to the email or its local part")."""
-        raise NotImplementedError
+        # Exactly one `@` is an invariant of this type, so the partition cannot miss.
+        local, _, _ = self.value.partition("@")
+        return local
+
+
+def _normalize_email(raw: str) -> str:
+    """The whole of `parse`'s normalization: strip, then lower-case. Nothing provider-specific —
+    dots and `+tags` survive (the class docstring says why)."""
+    return raw.strip().lower()
+
+
+def _email_refusal(value: str) -> InvalidEmailReason | None:
+    """The first AC-2 rule `value` breaks, or `None`. Assumes `value` is already normalized.
+
+    The order is deliberate: character-level rules first (they make every structural rule below
+    meaningless), then the `@` that the structure hangs on, then lengths, then the domain's labels.
+    """
+    if not value.isascii():
+        return InvalidEmailReason.NOT_ASCII
+    # `isprintable()` is False for every ASCII control character; `" "` is the only printable
+    # whitespace in ASCII. Surrounding whitespace never reaches here — normalization stripped it.
+    if " " in value or not value.isprintable():
+        return InvalidEmailReason.WHITESPACE_OR_CONTROL
+    if value.count("@") != 1:
+        return InvalidEmailReason.AT_SIGN_COUNT
+    if len(value) > _EMAIL_MAX_LENGTH:
+        return InvalidEmailReason.TOO_LONG
+    local, _, domain = value.partition("@")
+    if not 1 <= len(local) <= _LOCAL_PART_MAX_LENGTH:
+        return InvalidEmailReason.LOCAL_PART_LENGTH
+    if not 1 <= len(domain) <= _DOMAIN_MAX_LENGTH:
+        return InvalidEmailReason.DOMAIN_LENGTH
+    if "." not in domain:
+        return InvalidEmailReason.DOMAIN_WITHOUT_DOT
+    if "" in domain.split("."):
+        return InvalidEmailReason.EMPTY_DOMAIN_LABEL
+    return None
 
 
 class WeakPasswordReason(StrEnum):
@@ -161,6 +228,14 @@ class WeakPasswordReason(StrEnum):
     TOO_SHORT = "password_too_short"
     TOO_LONG = "password_too_long"
     MATCHES_EMAIL = "password_matches_email"
+
+    NOT_NORMALIZED = "password_not_normalized"
+    """`Password(...)` was constructed directly with a value that is not NFKC — `EmailAddress`'s
+    `NOT_NORMALIZED`, for the same reason. **Unreachable from user input**: `from_input` normalizes
+    first and NFKC is idempotent, so only a caller that bypasses `from_input` (an adapter, a test)
+    can produce it. It is a reason rather than an `InvariantViolated` because the RED test (AC-3)
+    pins `WeakPassword` for this refusal, and a `WeakPassword` must carry *some* reason; borrowing
+    `TOO_SHORT` or `TOO_LONG` would make the log line lie."""
 
 
 # The hashing-DoS bound (AC-3, I-3). Applies to *every* password that enters the system — login as
@@ -200,7 +275,20 @@ class Password:
     value: str = field(repr=False)
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        from tailorcraft.domain.identity.errors import WeakPassword
+
+        def refuse(reason: WeakPasswordReason) -> WeakPassword:
+            return WeakPassword(reason, min_length=1, max_length=PASSWORD_INPUT_MAX_LENGTH)
+
+        # Length before normalization: an over-long value is refused before it is normalized, so a
+        # megabyte cannot be made to cost an NFKC pass on the direct path either. (`from_input`
+        # normalizes first; NFKC can lengthen a string, so the bound it applies is to the result.)
+        if not self.value:
+            raise refuse(WeakPasswordReason.TOO_SHORT)
+        if len(self.value) > PASSWORD_INPUT_MAX_LENGTH:
+            raise refuse(WeakPasswordReason.TOO_LONG)
+        if not unicodedata.is_normalized("NFKC", self.value):
+            raise refuse(WeakPasswordReason.NOT_NORMALIZED)
 
     @classmethod
     def from_input(cls, raw: str) -> Password:
@@ -209,19 +297,21 @@ class Password:
         Raises `WeakPassword(TOO_SHORT | TOO_LONG, min_length=1,
         max_length=PASSWORD_INPUT_MAX_LENGTH)`. Never carries the value or its length.
         """
-        raise NotImplementedError
+        # Deliberately no `.strip()` — see the class docstring. `__post_init__` applies the bounds
+        # to the normalized value, which is what every later length rule counts.
+        return cls(unicodedata.normalize("NFKC", raw))
 
     def __repr__(self) -> str:
-        raise NotImplementedError
+        return "Password(<redacted>)"
 
     def __str__(self) -> str:
-        raise NotImplementedError
+        return "Password(<redacted>)"
 
     def __format__(self, format_spec: str) -> str:
         # `object.__format__` would delegate to `__str__` for an empty spec but raise `TypeError`
         # for any other — so `f"{password:>20}"` would crash rather than redact. Defined explicitly
-        # so every spec redacts.
-        raise NotImplementedError
+        # so every spec redacts: the spec is applied to the redacted form, never to the value.
+        return format(str(self), format_spec)
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,7 +334,11 @@ class PasswordPolicy:
     def __post_init__(self) -> None:
         """Refuse a policy that could never be met or that exceeds the input bound:
         `1 <= min_length <= max_length <= PASSWORD_INPUT_MAX_LENGTH`."""
-        raise NotImplementedError
+        if not 1 <= self.min_length <= self.max_length <= PASSWORD_INPUT_MAX_LENGTH:
+            raise InvariantViolated(
+                "password policy bounds must satisfy "
+                f"1 <= min_length <= max_length <= {PASSWORD_INPUT_MAX_LENGTH}"
+            )
 
     def check(self, password: Password, email: EmailAddress) -> None:
         """Return nothing if `password` is acceptable for `email`; otherwise raise
@@ -253,7 +347,19 @@ class PasswordPolicy:
         Lengths are in code points of the (already NFKC) value. "Matches the email" is
         case-insensitive and compares against both the whole address and its local part.
         """
-        raise NotImplementedError
+        from tailorcraft.domain.identity.errors import WeakPassword
+
+        # `len` of a `str` is code points, and `Password` guarantees the value is already NFKC —
+        # so a ligature that expands to two letters counts as two, never one.
+        length = len(password.value)
+        if length < self.min_length:
+            raise WeakPassword(WeakPasswordReason.TOO_SHORT, self.min_length, self.max_length)
+        if length > self.max_length:
+            raise WeakPassword(WeakPasswordReason.TOO_LONG, self.min_length, self.max_length)
+        # `casefold`, not `lower`: it is the comparison Unicode defines for "ignoring case". The
+        # email is ASCII and already lower-case, so only the password side needs folding.
+        if password.value.casefold() in (email.value, email.local_part):
+            raise WeakPassword(WeakPasswordReason.MATCHES_EMAIL, self.min_length, self.max_length)
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,10 +376,16 @@ class PasswordHash:
     value: str = field(repr=False)
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        # Messages name the rule, never the value: a malformed hash is still most of a hash.
+        if not self.value.startswith("$"):
+            raise InvariantViolated("a password hash must be a non-empty PHC string")
+        if len(self.value) > _PASSWORD_HASH_MAX_LENGTH:
+            raise InvariantViolated(
+                f"a password hash must be at most {_PASSWORD_HASH_MAX_LENGTH} characters"
+            )
 
     def __repr__(self) -> str:
-        raise NotImplementedError
+        return "PasswordHash(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,10 +403,15 @@ class TokenHash:
     value: str = field(repr=False)
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        # A set test, not `int(value, 16)`: that would accept upper case, a `0x` prefix, `_`
+        # separators and surrounding whitespace, none of which a stored hash may have.
+        if len(self.value) != _TOKEN_HASH_LENGTH or not set(self.value) <= _LOWERCASE_HEX:
+            raise InvariantViolated(
+                f"a token hash must be exactly {_TOKEN_HASH_LENGTH} lowercase hex characters"
+            )
 
     def __repr__(self) -> str:
-        raise NotImplementedError
+        return "TokenHash(<redacted>)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,7 +429,8 @@ class RetiredRefreshToken:
     retired_at: datetime
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        if self.generation < 1:
+            raise InvariantViolated("a retired refresh token's generation must be at least 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,10 +447,12 @@ class IssuedAccessToken:
     expires_in: timedelta
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        if self.expires_in <= timedelta(0):
+            raise InvariantViolated("an access token's lifetime must be positive")
 
     def __repr__(self) -> str:
-        raise NotImplementedError
+        # The lifetime is not a secret and is what a reader debugging a 401 wants to see.
+        return f"IssuedAccessToken(token=<redacted>, expires_in={self.expires_in!r})"
 
 
 class PasswordVerdict(StrEnum):
