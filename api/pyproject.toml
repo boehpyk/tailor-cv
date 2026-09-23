@@ -70,6 +70,14 @@ dependencies = [
     "markdown-it-py>=3.0",
     # Imported by exactly one module: tailorcraft.infrastructure.export.html.
     "nh3>=0.2",
+    # Accounts (slice 2.1, ADR-0010). Neither needs an apt package: `argon2-cffi` pulls
+    # `argon2-cffi-bindings`, which ships abi3 manylinux wheels (predicted here, proved at T45 by
+    # hashing inside the production image — the WeasyPrint lesson), and PyJWT is pure Python.
+    #
+    # Imported by exactly one module: tailorcraft.infrastructure.identity.password_hasher.
+    "argon2-cffi>=23.1",
+    # Imported by exactly one module: tailorcraft.infrastructure.identity.access_tokens.
+    "PyJWT>=2.10",
 ]
 
 [dependency-groups]
@@ -250,6 +258,7 @@ forbidden_modules = [
     "httpx", "requests", "structlog", "sentry_sdk",
     "google",
     "weasyprint", "nh3", "markdown_it", "docx",
+    "argon2", "jwt",
 ]
 
 [[tool.importlinter.contracts]]
@@ -263,4 +272,5 @@ forbidden_modules = [
     "httpx", "requests", "sentry_sdk",
     "google",
     "weasyprint", "nh3", "markdown_it", "docx",
+    "argon2", "jwt",
 ]
