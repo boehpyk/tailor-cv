@@ -21,7 +21,10 @@ log = structlog.get_logger(__name__)
 
 _SECONDS_PER_HOUR = 3600
 
-RateLimitScope = Literal["session", "ip"]
+# `email` arrived with slice 2.1's per-account login limiter (AC-27). Its identifier is an HMAC of the
+# normalized address, never the address — `deps.login_email_rate_limit_identifier` says how — so a
+# Redis key is no more an email than an `ip`-scope log line is an IP.
+RateLimitScope = Literal["session", "ip", "email"]
 
 
 @dataclass(frozen=True, slots=True)

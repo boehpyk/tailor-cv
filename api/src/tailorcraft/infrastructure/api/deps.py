@@ -16,10 +16,14 @@ cheap to construct and this keeps a test's `Settings.redis_url` override (`_over
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 from collections.abc import AsyncIterator
-from typing import Annotated
+from datetime import timedelta
+from typing import Annotated, Final
 
 import redis.asyncio as aioredis
+import structlog
 from celery import Celery
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
@@ -45,8 +49,10 @@ from tailorcraft.domain.export.ports import (
     ExportJobRepository,
     ExportQueuePort,
 )
+from tailorcraft.domain.identity.errors import AccessTokenInvalid
 from tailorcraft.domain.identity.guest_session import GuestSession
-from tailorcraft.domain.identity.ports import GuestSessionRepository
+from tailorcraft.domain.identity.ports import AccessTokenPort, GuestSessionRepository
+from tailorcraft.domain.identity.value_objects import AccessTokenRefusal, EmailAddress, UserId
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
@@ -57,7 +63,11 @@ from tailorcraft.domain.tailoring.ports import (
     TailoringQueuePort,
     TailoringRunRepository,
 )
-from tailorcraft.infrastructure.api.errors import GUEST_SESSION_EXPIRED_DETAIL
+from tailorcraft.infrastructure.api.errors import (
+    GUEST_SESSION_EXPIRED_DETAIL,
+    ORIGIN_NOT_ALLOWED_DETAIL,
+    invalid_access_token_exception,
+)
 from tailorcraft.infrastructure.api.guest_session import (
     hash_guest_token,
     mint_guest_token,
@@ -69,6 +79,7 @@ from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPubl
 from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
+from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
@@ -77,6 +88,8 @@ from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
+
+log = structlog.get_logger(__name__)
 
 
 def get_app_settings(request: Request) -> Settings:
@@ -858,3 +871,156 @@ def get_download_export_file(
 
 
 DownloadExportFileDep = Annotated[DownloadExportFile, Depends(get_download_export_file)]
+
+
+# ---------------------------------------------------------------------------------------------
+# identity — slice 2.1 (T26). The bearer and `Origin` dependencies, the three login/register
+# limiters and the per-email limiter key. **`require_user` and `require_guest_session` are never
+# both in one route's graph** (AC-30): a route answers to one credential, and a test walks the
+# dependency graph to keep it so.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_access_tokens(settings: SettingsDep) -> AccessTokenPort:
+    """Binds `AccessTokenPort` -> `JwtAccessTokens` (ADR-0008).
+
+    Built per request, like `get_llm`: two values and no I/O, and it keeps a test's settings override
+    effective. The key is unwrapped from its `SecretStr` here and nowhere else in the API.
+    """
+    return JwtAccessTokens(
+        settings.jwt_signing_key.get_secret_value(),
+        timedelta(minutes=settings.access_token_ttl_minutes),
+    )
+
+
+AccessTokensDep = Annotated[AccessTokenPort, Depends(get_access_tokens)]
+
+# A bearer token this API issues is ~300 bytes. The cap is not a security boundary (uvicorn already
+# bounds header size); it keeps a megabyte of junk from reaching base64 and JSON parsing at all.
+_MAX_BEARER_LENGTH: Final = 4096
+
+
+async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDep) -> UserId:
+    """The bearer rule (AC-34, I-32 … I-38): the `UserId` an `Authorization: Bearer <jwt>` header
+    speaks for, or 401 `invalid_access_token` with `WWW-Authenticate: Bearer error="invalid_token"`.
+
+    **The response never says why**; the log line does, as `identity.access_token_refused reason=…`
+    — `expired` at `debug`, because every client's token expires every 15 minutes and that is not
+    news. **The token is never logged**, and neither is the header.
+
+    Verification is stateless (a keyed hash, microseconds) and touches neither Postgres nor Redis, so
+    a Redis outage cannot sign anybody out (I-18). A missing header, or a scheme other than `Bearer`,
+    is refused without a log line (I-32): an anonymous request is not an event.
+    """
+    header = request.headers.get("authorization")
+    if header is None:
+        raise invalid_access_token_exception()
+    scheme, _, credentials = header.partition(" ")
+    token = credentials.strip()
+    # RFC 7235 §2.1: the scheme is case-insensitive.
+    if scheme.lower() != "bearer" or not token:
+        raise invalid_access_token_exception()
+    try:
+        if len(token) > _MAX_BEARER_LENGTH:
+            raise AccessTokenInvalid(AccessTokenRefusal.MALFORMED)
+        return tokens.verify(token, clock.now())
+    except AccessTokenInvalid as exc:
+        if exc.reason is AccessTokenRefusal.EXPIRED:
+            log.debug("identity.access_token_refused", reason=exc.reason.value)
+        else:
+            log.info("identity.access_token_refused", reason=exc.reason.value)
+        # `from None`: the chained frame holds the token.
+        raise invalid_access_token_exception() from None
+
+
+RequireUserDep = Annotated[UserId, Depends(require_user)]
+
+
+def _trusted_origins(settings: Settings) -> frozenset[str]:
+    return frozenset(
+        origin.rstrip("/") for origin in (settings.public_base_url, *settings.cors_origin_list)
+    )
+
+
+async def require_trusted_origin(request: Request, settings: SettingsDep) -> None:
+    """The cookie surface's CSRF control (AC-25, ADR-0021 §4): `Origin` must equal
+    `PUBLIC_BASE_URL` or a member of `CORS_ORIGINS` — an exact string match after a trailing `/` is
+    stripped from either side. Missing or foreign is 403 `origin_not_allowed`.
+
+    Declared in each route decorator's `dependencies=[...]`, which FastAPI resolves **before** the
+    route's own parameters and body — so a refusal happens before the rate limiter, the database or
+    the hasher is touched (a recording hasher sees zero calls), and before a malformed body can turn
+    the 403 into a 422.
+
+    **Why `Origin` and not a CSRF token:** `SameSite=Strict` already keeps the cookie off cross-site
+    requests in every current browser; this is the second lock for the ones that do not honour it,
+    and every browser sends `Origin` on a `POST`. A client with no `Origin` cannot use these four
+    endpoints, which is the intended cost (ADR-0021's consequences).
+
+    Logs `identity.origin_refused` with the endpoint's path — **never the header's value**: it can
+    carry a hostname an attacker chose, which is harmless and not ours to keep.
+    """
+    origin = request.headers.get("origin")
+    if origin is not None and origin.rstrip("/") in _trusted_origins(settings):
+        return
+    log.info("identity.origin_refused", endpoint=request.url.path)
+    raise HTTPException(status.HTTP_403_FORBIDDEN, detail=ORIGIN_NOT_ALLOWED_DETAIL)
+
+
+# The three identity limiters. **All fail closed**, and it is the rule of `rate_limit.py::__init__`
+# applied rather than an exception to it: *fail open when the cost is ours and bounded; fail closed
+# when the cost is money or somebody else's.* An unlimited login guesser spends **somebody else's
+# account** (I-17): the executor bounds our CPU, never the number of guesses — 2 threads at ~10
+# verifies/s is ~1.7 M guesses a day. And every attempt that reaches the hasher holds 64 MiB. A Redis
+# outage therefore stops new logins and registrations with a 503 — and never signs anybody out,
+# because `refresh`, `logout` and `me` have no limiter and no Redis dependency at all (I-18). The
+# direction is not a setting; the three limits are.
+
+
+def get_login_ip_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """`auth:login`, scope `ip` — `settings.login_rate_limit_per_ip_per_hour` (I-14). Fails closed."""
+    return RedisFixedWindowRateLimiter(redis, namespace="auth:login", fail_open=False)
+
+
+LoginIpRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_login_ip_rate_limiter)]
+
+
+def get_login_email_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """`auth:login`, scope `email` — `settings.login_rate_limit_per_email_per_hour` (I-15), keyed by
+    `login_email_rate_limit_identifier`, so one account's guesses are bounded however many addresses
+    they come from. The same namespace as the IP limiter: one endpoint, two scopes. Fails closed."""
+    return RedisFixedWindowRateLimiter(redis, namespace="auth:login", fail_open=False)
+
+
+LoginEmailRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_login_email_rate_limiter)
+]
+
+
+def get_register_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """`auth:register`, scope `ip` — `settings.register_rate_limit_per_ip_per_hour` (I-16). Fails
+    closed: every registration hashes, and an unlimited one is also an account-creation script."""
+    return RedisFixedWindowRateLimiter(redis, namespace="auth:register", fail_open=False)
+
+
+RegisterRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_register_rate_limiter)]
+
+_EMAIL_RATE_LIMIT_LABEL: Final = b"tailorcraft/rate-limit/email/v1"
+
+
+def login_email_rate_limit_identifier(email: EmailAddress, settings: Settings) -> str:
+    """The per-email limiter's identifier: `HMAC-SHA256(k_rl, normalized email)`, hex (AC-27).
+
+    **The email never appears in a Redis key** — a `KEYS rl:*` on the box must not be a list of who
+    tried to log in. A plain SHA-256 would not do: the space of email addresses is small enough to
+    hash a leaked list and match it. So the hash is keyed.
+
+    `k_rl = HMAC-SHA256(JWT_SIGNING_KEY, "tailorcraft/rate-limit/email/v1")` — a subkey **derived**
+    under a fixed label, so the signing key itself is never used for a second purpose (a key used
+    for two things is a key whose compromise in one is a compromise in both). Rotating the signing
+    key changes `k_rl` and so resets the counters, which is harmless: they are hourly anyway. The
+    `v1` in the label is how a future change to this derivation avoids colliding with old keys.
+    """
+    signing_key = settings.jwt_signing_key.get_secret_value().encode("utf-8")
+    k_rl = hmac.new(signing_key, _EMAIL_RATE_LIMIT_LABEL, hashlib.sha256).digest()
+    return hmac.new(k_rl, email.value.encode("utf-8"), hashlib.sha256).hexdigest()
