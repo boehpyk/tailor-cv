@@ -33,6 +33,11 @@ from tailorcraft.application.export.get_export_job import GetExportJobForSession
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
+from tailorcraft.application.identity.get_current_user import GetCurrentUser
+from tailorcraft.application.identity.log_in import LogIn
+from tailorcraft.application.identity.log_out import LogOut
+from tailorcraft.application.identity.refresh_login import RefreshLogin
+from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
 from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
@@ -51,8 +56,20 @@ from tailorcraft.domain.export.ports import (
 )
 from tailorcraft.domain.identity.errors import AccessTokenInvalid
 from tailorcraft.domain.identity.guest_session import GuestSession
-from tailorcraft.domain.identity.ports import AccessTokenPort, GuestSessionRepository
-from tailorcraft.domain.identity.value_objects import AccessTokenRefusal, EmailAddress, UserId
+from tailorcraft.domain.identity.ports import (
+    AccessTokenPort,
+    FailedLoginObserver,
+    GuestSessionRepository,
+    LoginRepository,
+    PasswordHasherPort,
+    UserRepository,
+)
+from tailorcraft.domain.identity.value_objects import (
+    AccessTokenRefusal,
+    EmailAddress,
+    PasswordPolicy,
+    UserId,
+)
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
@@ -80,6 +97,7 @@ from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
+from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
@@ -1024,3 +1042,155 @@ def login_email_rate_limit_identifier(email: EmailAddress, settings: Settings) -
     signing_key = settings.jwt_signing_key.get_secret_value().encode("utf-8")
     k_rl = hmac.new(signing_key, _EMAIL_RATE_LIMIT_LABEL, hashlib.sha256).digest()
     return hmac.new(k_rl, email.value.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+# ---------------------------------------------------------------------------------------------
+# identity — slice 2.1 (T27): the remaining ports and the five route use cases. A port with no
+# binding is a bug. **This is the only composition root that binds them**: the worker and beat
+# (`tasks/container.py`) bind none — no task needs auth — and the CLI binds `LoginRepository` alone,
+# for the break-glass (`infrastructure/identity/composition.py`).
+# ---------------------------------------------------------------------------------------------
+
+
+def get_user_repository(session: SessionDep) -> UserRepository:
+    """Binds `UserRepository` -> `SqlAlchemyUserRepository` (ADR-0007).
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.identity.user import (
+        SqlAlchemyUserRepository,
+    )
+
+    return SqlAlchemyUserRepository(session)
+
+
+UserRepositoryDep = Annotated[UserRepository, Depends(get_user_repository)]
+
+
+def get_login_repository(session: SessionDep) -> LoginRepository:
+    """Binds `LoginRepository` -> `SqlAlchemyLoginRepository` (ADR-0007, ADR-0020).
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.identity.login import (
+        SqlAlchemyLoginRepository,
+    )
+
+    return SqlAlchemyLoginRepository(session)
+
+
+LoginRepositoryDep = Annotated[LoginRepository, Depends(get_login_repository)]
+
+
+def get_password_hasher(request: Request) -> PasswordHasherPort:
+    """Binds `PasswordHasherPort` -> the `Argon2PasswordHasher` on `app.state` (ADR-0021).
+
+    **Off `app.state`, never built here**, unlike `get_access_tokens`: the hasher owns a decoy hash
+    computed once per process and a bounded executor whose size is the memory cap. Building one per
+    request would recompute the decoy (a full argon2 hash, on the loop) and — worse — invite a second
+    executor, which would double the cap. `main.py`'s lifespan creates both and shuts the executor
+    down; the test `app` fixture places a cheap-parameter hasher through the constructor seam.
+    """
+    hasher: PasswordHasherPort = request.app.state.password_hasher
+    return hasher
+
+
+PasswordHasherDep = Annotated[PasswordHasherPort, Depends(get_password_hasher)]
+
+
+def get_failed_login_observer() -> FailedLoginObserver:
+    """Binds `FailedLoginObserver` -> `LoggingFailedLoginObserver` (I-9, I-10)."""
+    return LoggingFailedLoginObserver()
+
+
+FailedLoginObserverDep = Annotated[FailedLoginObserver, Depends(get_failed_login_observer)]
+
+
+def _refresh_lifetime(settings: Settings) -> timedelta:
+    """A `Login`'s absolute lifetime. A `timedelta`, so the unit is a type and not a parameter name."""
+    return timedelta(days=settings.refresh_token_ttl_days)
+
+
+def get_register_user(
+    users: UserRepositoryDep,
+    logins: LoginRepositoryDep,
+    hasher: PasswordHasherDep,
+    tokens: AccessTokensDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+    settings: SettingsDep,
+) -> RegisterUser:
+    """`PasswordPolicy()` with its defaults — 12 to 128 code points (OQ-3). Constructed here and
+    injected, so the object that refuses a password is the one whose bounds the 422 reports."""
+    return RegisterUser(
+        users,
+        logins,
+        hasher,
+        tokens,
+        clock,
+        events,
+        PasswordPolicy(),
+        refresh_lifetime=_refresh_lifetime(settings),
+    )
+
+
+RegisterUserDep = Annotated[RegisterUser, Depends(get_register_user)]
+
+
+def get_log_in(
+    users: UserRepositoryDep,
+    logins: LoginRepositoryDep,
+    hasher: PasswordHasherDep,
+    tokens: AccessTokensDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+    failed_logins: FailedLoginObserverDep,
+    settings: SettingsDep,
+) -> LogIn:
+    """No `PasswordPolicy` — a login checks the stored hash and nothing else (`LogIn`'s docstring)."""
+    return LogIn(
+        users,
+        logins,
+        hasher,
+        tokens,
+        clock,
+        events,
+        failed_logins,
+        refresh_lifetime=_refresh_lifetime(settings),
+    )
+
+
+LogInDep = Annotated[LogIn, Depends(get_log_in)]
+
+
+def get_refresh_login(
+    logins: LoginRepositoryDep,
+    users: UserRepositoryDep,
+    tokens: AccessTokensDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+) -> RefreshLogin:
+    """No lifetime and no hasher: rotation never extends a login (OQ-9), and a refresh token is
+    looked up by its SHA-256, never verified by a KDF (ADR-0010 §3)."""
+    return RefreshLogin(logins, users, tokens, clock, events)
+
+
+RefreshLoginDep = Annotated[RefreshLogin, Depends(get_refresh_login)]
+
+
+def get_log_out(
+    logins: LoginRepositoryDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+) -> LogOut:
+    return LogOut(logins, clock, events)
+
+
+LogOutDep = Annotated[LogOut, Depends(get_log_out)]
+
+
+def get_get_current_user(users: UserRepositoryDep) -> GetCurrentUser:
+    return GetCurrentUser(users)
+
+
+GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]

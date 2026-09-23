@@ -28,7 +28,8 @@ swapped) — dedicated since 2026-09-22 and not before, which is the third point
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 import pytest
@@ -50,6 +51,10 @@ from sqlalchemy.pool import NullPool
 from tailorcraft.infrastructure.api.deps import get_session
 from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.clock import FixedClock
+from tailorcraft.infrastructure.identity.password_hasher import (
+    Argon2Parameters,
+    Argon2PasswordHasher,
+)
 from tailorcraft.infrastructure.persistence.database import create_engine
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.redis_client import create_redis
@@ -314,8 +319,32 @@ def _committing_session_override(
     return _override
 
 
+TEST_ARGON2_PARAMETERS = Argon2Parameters(memory_cost=8, time_cost=1, parallelism=1)
+"""argon2id's floor (`m >= 8·p`), for every test that is not *about* the production parameters. A
+production-cost hash is ~50 ms and 64 MiB; the suite hashes on every register and login. Passed
+through the hasher's constructor seam — **never** an environment variable, so nothing a deployment
+can set reaches it (AC-19). AC-19's own test builds a default-parameter hasher to prove the constants."""
+
+
+@pytest.fixture(scope="session")
+def password_hasher() -> Iterator[Argon2PasswordHasher]:
+    """One cheap-parameter hasher for the session, on its own two-worker executor — the same shape
+    `main.py`'s lifespan builds, so a test exercises the executor hop and not an inline call. The
+    executor is shut down at teardown, as the lifespan's `finally` does in production."""
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="argon2-test")
+    try:
+        yield Argon2PasswordHasher(executor, TEST_ARGON2_PARAMETERS)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 @pytest.fixture
-def app(settings: Settings, session: AsyncSession, engine: AsyncEngine) -> FastAPI:
+def app(
+    settings: Settings,
+    session: AsyncSession,
+    engine: AsyncEngine,
+    password_hasher: Argon2PasswordHasher,
+) -> FastAPI:
     """The application under test, wired to this test's rolled-back transaction.
 
     Exposed as its own fixture so a test can reach `app.state` directly — swapping in a stub Celery,
@@ -337,6 +366,7 @@ def app(settings: Settings, session: AsyncSession, engine: AsyncEngine) -> FastA
     app.state.engine = engine
     app.state.session_factory = lambda: session
     app.state.celery = celery_app
+    app.state.password_hasher = password_hasher
 
     return app
 
