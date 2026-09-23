@@ -8,6 +8,7 @@ pointed at a different database without importing a global and monkey-patching i
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from typing import cast
 
@@ -20,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
 from tailorcraft.infrastructure.api.routers import export, health, intake, posting, tailoring
+from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -27,6 +29,12 @@ from tailorcraft.infrastructure.settings import Settings, get_settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
 
 log = structlog.get_logger(__name__)
+
+# ADR-0021 §2: the argon2 executor's size IS the memory cap — 2 in-flight hashes x 64 MiB per process,
+# x 2 uvicorn processes = 256 MiB worst case. A constant, not a setting: if the box's memory is ever
+# tight this drops to 1 before the argon2 parameters drop (ADR-0021's consequences), and that is a
+# decision to make in review, not a variable to flip on a box.
+ARGON2_EXECUTOR_WORKERS = 2
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -47,12 +55,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.engine = create_engine(settings)
         app.state.session_factory = create_session_factory(app.state.engine)
         app.state.celery = celery_app
+        # The password hasher and its dedicated executor (ADR-0021 §2): long-lived like the engine,
+        # so the decoy hash is computed once per process, and the pool is bounded and private — never
+        # the loop's default executor, which CV extraction and the posting parser share.
+        argon2_executor = ThreadPoolExecutor(
+            max_workers=ARGON2_EXECUTOR_WORKERS, thread_name_prefix="argon2"
+        )
+        app.state.argon2_executor = argon2_executor
+        app.state.password_hasher = Argon2PasswordHasher(argon2_executor)
 
         log.info("app.started", env=settings.app_env)
         try:
             yield
         finally:
             await app.state.engine.dispose()
+            # By lifespan shutdown uvicorn has drained every request, so nothing is waiting on a
+            # hash; `wait=True` lets one already running finish rather than abandoning its thread.
+            argon2_executor.shutdown(wait=True, cancel_futures=True)
             log.info("app.stopped")
 
     app = FastAPI(
