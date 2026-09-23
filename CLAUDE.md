@@ -269,7 +269,14 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
 > pushes images to GHCR.
 >
-> **The box exists and is wired, 2026-09-22; the first release has not run yet.** The VDS serves
+> **The first release ran on 2026-09-22 (PR #10, `b3acdc1`, deploy run 35788932871) and
+> `cv.samolit.com` is live.** Every migration ran from empty to head, the pre-deploy dump and the
+> three-queue check passed under `set -euo pipefail`, and the smoke check read `ready: true` with one
+> worker. The purge is deployed but **off** in production (`scheduled: false`) until it has been
+> rehearsed on the box. **PR #9's deploy failed at the config sync, harmlessly**: it was branched
+> before the deploy wiring, so it ran the *old* workflow against the old target path and never
+> reached the release step. That is the "a run uses the workflow file from its own commit" rule
+> below, met in practice. The VDS serves
 > **`cv.samolit.com`** through the Traefik already running there (the
 > external `traefik` network, entrypoint `websecure`, resolver `le`). The stack lives in
 > **`/home/boehpyk/www/tailor-cv`** and deploys as **`boehpyk`** (bash, `docker` group), with a
@@ -737,6 +744,18 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   tailoring_run; DELETE FROM identity_guest_session` emptied dev through the cascades during 1.4's
   verify. Anything that deletes must name `test_database_url` explicitly and assert the URL contains
   `_test` before the first statement.
+- **The local `tailorcraft_test` runs out of columns — PostgreSQL never gives back a dropped
+  column's slot.** `DROP COLUMN` only marks the attribute dropped; it still counts toward the
+  1600-column limit until the table is rewritten, and `VACUUM FULL` does not renumber it. The
+  migration up/down/up tests drop and re-add `tailoring_run`'s columns on every run, and the test
+  database persists between runs, so each suite run burns ~10 slots. On 2026-09-23 the table held
+  **16 live columns and 1580 dropped ones**, `upgrade head` died on `TooManyColumnsError`, the fixture
+  left the schema three revisions short, and **428 unrelated tests errored**, blocking a docs-only
+  commit. CI never sees it: its database is new every time. Signature: the migration tests fail
+  first, then everything touching `export_job` reports `UndefinedTableError`. Reset it (test DB
+  only — check the name first):
+  `psql -d tailorcraft_test -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"`. The durable fix,
+  not yet made, is for `_migrated` to start from an empty schema every session.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global
