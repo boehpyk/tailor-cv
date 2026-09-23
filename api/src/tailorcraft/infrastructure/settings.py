@@ -92,11 +92,33 @@ def _refuse_weak_jwt_signing_key(key: SecretStr) -> None:
     `Settings._refuse_a_weak_jwt_signing_key_in_production`. Raises `MisconfiguredSettings` naming
     the variable and never its value.
 
-    SKELETON (T16). Not yet called from the validator: wiring it in is T18 GREEN, together with this
-    body. Wired now, the `NotImplementedError` would fire on every production-mode `Settings(...)`,
-    including the Gemini guard's existing tests.
+    The four rules, and why each is its own line rather than one clever predicate:
+
+    - **Empty or whitespace-only** — the same "a space is not a key" rule the Gemini guard applies.
+    - **The `.env.example` placeholder, by name** — it is 33 bytes, so the length rule alone would
+      wave through exactly the value most likely to reach a real box.
+    - **Fewer than `JWT_SIGNING_KEY_MIN_BYTES` UTF-8 bytes** — counted in bytes, not characters,
+      because bytes are what HMAC-SHA256 keys on; sixteen `é` are 32 bytes and 16 characters.
+
+    Each message is a constant string. Nothing derived from the key — not its length, not a prefix —
+    goes into it, and the raise happens outside any `except`, so there is no `__context__` to carry
+    the value out through a rendered traceback.
     """
-    raise NotImplementedError
+    value = key.get_secret_value()
+    reason: str | None = None
+    if not value.strip():
+        reason = "is empty"
+    elif value == JWT_SIGNING_KEY_PLACEHOLDER:
+        reason = "is still the .env.example placeholder"
+    elif len(value.encode("utf-8")) < JWT_SIGNING_KEY_MIN_BYTES:
+        reason = f"is shorter than {JWT_SIGNING_KEY_MIN_BYTES} bytes"
+    if reason is None:
+        return
+    raise MisconfiguredSettings(
+        f"JWT_SIGNING_KEY {reason}; APP_ENV=production refuses to sign access tokens with it. "
+        f"Generate one with `openssl rand -hex {JWT_SIGNING_KEY_MIN_BYTES}` and set it in the "
+        "box's .env (mode 600, created by hand), or run with APP_ENV=dev."
+    )
 
 
 class Settings(BaseSettings):
@@ -524,10 +546,14 @@ class Settings(BaseSettings):
     def _refuse_a_weak_jwt_signing_key_in_production(self) -> Settings:
         """AC-22/I-46: `APP_ENV=production` with a weak `JWT_SIGNING_KEY` must not start.
 
-        SKELETON (T16): deliberately a pass-through. T18 GREEN makes it call
-        `_refuse_weak_jwt_signing_key(self.jwt_signing_key)` when `app_env == "production"`, and
-        implements that helper — see its docstring for why the call is not wired yet.
+        A signing key is the whole of the access token's authority: anyone who can guess it can
+        mint a token for any user. Dev and test accept the placeholder, for the same reason they
+        accept an empty Gemini key — nothing signed there authorises a real login. Same
+        `MisconfiguredSettings` (never a `ValueError`) and the same uvicorn `--workers N` caveat as
+        the Gemini guard above.
         """
+        if self.app_env == "production":
+            _refuse_weak_jwt_signing_key(self.jwt_signing_key)
         return self
 
     @property
