@@ -24,6 +24,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from tailorcraft.domain.identity.errors import LoginExpired
+from tailorcraft.domain.identity.events import LoggedIn, LoggedOut, RefreshTokenReuseDetected
 from tailorcraft.domain.identity.value_objects import (
     LoginId,
     RetiredRefreshToken,
@@ -31,6 +33,7 @@ from tailorcraft.domain.identity.value_objects import (
     TokenHash,
     UserId,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
 # How long after a rotation the immediate predecessor still counts as a lost race rather than a
@@ -86,11 +89,23 @@ class Login(RecordsEvents):
         `lifetime <= 0` — `expires_at` must be after `created_at`, and this does not trust the caller
         (the settings object) to have enforced it.
         """
-        raise NotImplementedError
+        if lifetime <= timedelta(0):
+            raise InvariantViolated("a login's lifetime must be positive")
+        login = cls()
+        login._id = id
+        login._user_id = user_id
+        login._created_at = at
+        login._expires_at = at + lifetime
+        login._generation = 1
+        login._current_token_hash = token_hash
+        login._rotated_at = None
+        login._version = 1
+        login.record(LoggedIn(user_id=user_id, login_id=id, occurred_at=at))
+        return login
 
     def is_expired(self, at: datetime) -> bool:
         """Whether `at` is at or past `expires_at` — inclusive, matching `GuestSession.is_expired`."""
-        raise NotImplementedError
+        return at >= self._expires_at
 
     def rotate(self, new_hash: TokenHash, at: datetime) -> RetiredRefreshToken:
         """Retire the current token and install `new_hash` as current.
@@ -102,7 +117,17 @@ class Login(RecordsEvents):
 
         Records no event: one every 15 minutes per tab is a log flood with no listener.
         """
-        raise NotImplementedError
+        if self.is_expired(at):
+            raise LoginExpired()
+        retired = RetiredRefreshToken(
+            token_hash=self._current_token_hash,
+            generation=self._generation,
+            retired_at=at,
+        )
+        self._current_token_hash = new_hash
+        self._generation += 1
+        self._rotated_at = at
+        return retired
 
     def judge_retired(self, generation: int, at: datetime) -> RetiredTokenVerdict:
         """Decide what a retired token of `generation`, presented at `at`, means (AC-6).
@@ -116,41 +141,59 @@ class Login(RecordsEvents):
         Changes no state either way: `RACED` must leave everything as it was (I-23), and on `REUSED`
         the revocation is the repository's deletion, not a flag here.
         """
-        raise NotImplementedError
+        if self.is_expired(at):
+            raise LoginExpired()
+        is_immediate_predecessor = generation == self._generation - 1
+        if (
+            is_immediate_predecessor
+            and self._rotated_at is not None
+            and at - self._rotated_at <= REFRESH_RACE_GRACE
+        ):
+            return RetiredTokenVerdict.RACED
+        self.record(
+            RefreshTokenReuseDetected(
+                user_id=self._user_id,
+                login_id=self._id,
+                generation_presented=generation,
+                generation_current=self._generation,
+                occurred_at=at,
+            )
+        )
+        return RetiredTokenVerdict.REUSED
 
     def record_logout(self, at: datetime) -> None:
         """Record `LoggedOut(user_id, login_id, occurred_at=at)`. The deletion is the repository's;
         the aggregate records the fact so the use case can publish it after the delete commits."""
-        raise NotImplementedError
+        self.record(LoggedOut(user_id=self._user_id, login_id=self._id, occurred_at=at))
 
     @property
     def id(self) -> LoginId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def user_id(self) -> UserId:
-        raise NotImplementedError
+        return self._user_id
 
     @property
     def created_at(self) -> datetime:
-        raise NotImplementedError
+        return self._created_at
 
     @property
     def expires_at(self) -> datetime:
-        raise NotImplementedError
+        return self._expires_at
 
     @property
     def generation(self) -> int:
-        raise NotImplementedError
+        return self._generation
 
     @property
     def current_token_hash(self) -> TokenHash:
-        raise NotImplementedError
+        return self._current_token_hash
 
     @property
     def rotated_at(self) -> datetime | None:
-        raise NotImplementedError
+        return self._rotated_at
 
     @property
     def version(self) -> int:
-        raise NotImplementedError
+        return self._version

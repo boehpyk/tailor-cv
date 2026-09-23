@@ -31,7 +31,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from tailorcraft.domain.identity.events import UserPasswordRehashed, UserRegistered
 from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
 
@@ -86,7 +88,14 @@ class User(RecordsEvents):
         `Password` — hashing is the port's job, done by the use case before this is called, so the
         aggregate never holds a plaintext even for the length of a constructor.
         """
-        raise NotImplementedError
+        user = cls()
+        user._id = id
+        user._email = email
+        user._password_hash = password_hash
+        user._created_at = at
+        user._password_updated_at = at
+        user.record(UserRegistered(user_id=id, occurred_at=at))
+        return user
 
     def replace_password_hash(self, new: PasswordHash, at: datetime) -> None:
         """Install `new` as the password credential and set `password_updated_at = at`.
@@ -96,24 +105,28 @@ class User(RecordsEvents):
         `InvariantViolated` if `at` is before `created_at` — a credential cannot be replaced before
         the account existed, and a clock that says otherwise is a bug worth hearing about.
         """
-        raise NotImplementedError
+        if at < self._created_at:
+            raise InvariantViolated("a password hash cannot be replaced before the user existed")
+        self._password_hash = new
+        self._password_updated_at = at
+        self.record(UserPasswordRehashed(user_id=self._id, occurred_at=at))
 
     @property
     def id(self) -> UserId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def email(self) -> EmailAddress:
-        raise NotImplementedError
+        return self._email
 
     @property
     def password_hash(self) -> PasswordHash:
-        raise NotImplementedError
+        return self._password_hash
 
     @property
     def created_at(self) -> datetime:
-        raise NotImplementedError
+        return self._created_at
 
     @property
     def password_updated_at(self) -> datetime:
-        raise NotImplementedError
+        return self._password_updated_at
