@@ -4,9 +4,10 @@
 are `infrastructure/api/guest_session.py`'s business (ADR-0010). Implemented in
 `infrastructure/persistence/repositories/identity/guest_session.py`; neither module is imported here.
 
-Slice 2.1 adds four (technical plan §1): `UserRepository`, `LoginRepository`, `PasswordHasherPort`
-and `AccessTokenPort`. **None of them names an algorithm, a token format, a transport or a
-cookie.** The domain knows that a password becomes a `PasswordHash`, that a refresh token is looked
+Slice 2.1 adds five (technical plan §1): `UserRepository`, `LoginRepository`, `PasswordHasherPort`,
+`AccessTokenPort` and `FailedLoginObserver` (the last added at T12, where `LogIn`'s need for it
+became visible — its docstring says why). **None of them names an algorithm, a token format, a
+transport or a cookie.** The domain knows that a password becomes a `PasswordHash`, that a refresh token is looked
 up by its `TokenHash`, and that an access token turns back into a `UserId` or is refused with a
 reason; which hash function, which signature scheme and which header carries what is
 `infrastructure/identity/`'s business (ADR-0020, ADR-0021, AC-4, AC-7).
@@ -216,4 +217,35 @@ class AccessTokenPort(Protocol):
     def verify(self, token: str, at: datetime) -> UserId:
         """Return the user the token speaks for, as of `at`. Raises `AccessTokenInvalid(reason)`
         for every refusal (I-33 … I-38); the reason is for the log line, never for the client."""
+        ...
+
+
+class FailedLoginObserver(Protocol):
+    """Told *why* a login was refused, so the log line can say so while the error cannot (I-9, I-10).
+
+    **Why this port exists at all.** `LogIn` must raise one `InvalidCredentials` with no attributes
+    for both an unknown email and a wrong password (AC-9) — so nothing downstream can tell them apart
+    by inspecting the error, and the response is byte-identical (AC-28). But the failure contract
+    wants `identity.login_failed` with `reason=unknown_email`, or `reason=wrong_password` *and*
+    `user_id`, and only the use case knows which it was. The application layer does not log (the
+    house rule: a logging channel opened in `application/` is one the privacy tests cannot see), and
+    1.6's answer — *return* the failure for the entry point to log — is unavailable because the
+    outcome here is an exception. So the use case reports the cause through this port, immediately
+    before raising, and the adapter in `infrastructure/` emits the line.
+
+    **Two methods rather than one taking `(reason, user_id | None)`**: an unknown email has no user
+    id, and a wrong password always has one, so the pairing is a rule the signature can hold instead
+    of a docstring. Neither method takes the email, the password or any hash of either — the only
+    fact that crosses is an id that already belongs to a real account.
+
+    Synchronous, for `AccessTokenPort`'s reason: an adapter that emits one log line has nothing to
+    await. Must not raise; a failure to *record* a refused login must never turn a 401 into a 500.
+    """
+
+    def unknown_email(self) -> None:
+        """No account has the (normalized) email that was presented. The decoy verify has run."""
+        ...
+
+    def wrong_password(self, user_id: UserId) -> None:
+        """The account `user_id` exists and the password presented does not match its hash."""
         ...
