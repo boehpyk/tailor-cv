@@ -15,6 +15,17 @@ subclass of any of those three, so the red is on the right line for the right re
 Every redaction test plants a distinctive marker in the secret value and asserts both that the
 marker is absent from the output *and* that the output equals the documented redacted form — an
 absence check alone would pass against an adapter that returns `""`.
+
+**Deliberate correction, decided by the orchestrator (T11's sibling commit).** The GREEN commit
+(`55575a1`) made `test_direct_construction_of_a_non_nfkc_normalized_value_is_refused` pass by adding
+`WeakPasswordReason.NOT_NORMALIZED` — a wire code (every other member of that enum is one) that no
+user input can ever produce, because `Password.from_input` normalizes before anything can reach
+`__post_init__` and NFKC is idempotent. A non-NFKC value reaching the direct constructor is not a
+weak password a person typed; it is an adapter or test bypassing the only sanctioned entry point,
+exactly the "stranger, one migration later" case `EmailAddress`, `PasswordHash` and `TokenHash` all
+answer with `InvariantViolated`. This file now asserts that instead, which reopens the red the GREEN
+commit closed for the wrong reason, and adds a test pinning `WeakPasswordReason` to its three real
+wire codes so a fifth `NOT_NORMALIZED`-shaped enum member cannot creep back in unnoticed.
 """
 
 from __future__ import annotations
@@ -260,12 +271,31 @@ def test_direct_construction_over_the_maximum_length_is_refused() -> None:
 
 
 def test_direct_construction_of_a_non_nfkc_normalized_value_is_refused() -> None:
-    """`__post_init__` re-checks NFKC for the same reason `EmailAddress` does: one form, no side
-    door — a repository rehydrating a row is also a stranger."""
+    """`Password(...)` called directly with a value that is not NFKC is not a refusal any real user
+    input can trigger — `from_input` normalizes first and NFKC is idempotent, so only a caller that
+    bypasses `from_input` entirely (an adapter, a test, a corrupted row) can produce it. That is a
+    broken invariant, not a weak password someone typed: `__post_init__` raises `InvariantViolated`
+    (`domain.shared.errors`), exactly as `EmailAddress`, `PasswordHash` and `TokenHash` all refuse a
+    directly-constructed, not-already-normalized/shaped value — one form, no side door, and never
+    `WeakPassword`, which is reserved for a value a real user actually typed and which the router
+    turns into a 422 the user can act on."""
     raw = "ﬁle12345678"  # not NFKC-normalized: unicodedata.normalize("NFKC", raw) != raw
 
-    with pytest.raises(WeakPassword):
+    with pytest.raises(InvariantViolated):
         Password(raw)
+
+
+def test_weak_password_reason_has_exactly_the_three_wire_codes() -> None:
+    """`WeakPasswordReason` is carried straight into the 422 envelope's `code` (I-2, I-3, I-4): every
+    member of this enum **is** a wire code the client receives verbatim, unlike `InvalidEmailReason`,
+    which the API collapses to a single `invalid_email`. A fourth member is a code the router would
+    have to translate for, and the direct-construction non-NFKC case above is not one of these three
+    — it never reaches the wire at all, because it is not a refusal user input can cause."""
+    assert {member.value for member in WeakPasswordReason} == {
+        "password_too_short",
+        "password_too_long",
+        "password_matches_email",
+    }
 
 
 def test_direct_construction_of_an_already_normalized_value_succeeds() -> None:
@@ -500,7 +530,7 @@ def test_password_hash_repr_never_contains_the_value_and_equals_the_redacted_for
 
     assert _MARKER_HASH not in output
     assert "MARKERSALT" not in output
-    assert "redacted" in output
+    assert output == "PasswordHash(<redacted>)"
 
 
 # ====================================================================================================
@@ -538,7 +568,7 @@ def test_token_hash_repr_never_contains_the_value_and_equals_the_redacted_form()
     output = repr(token_hash)
 
     assert marker not in output
-    assert "redacted" in output
+    assert output == "TokenHash(<redacted>)"
 
 
 # ====================================================================================================
@@ -610,4 +640,5 @@ def test_issued_access_token_repr_never_contains_the_token_and_equals_the_redact
     output = repr(token)
 
     assert marker not in output
-    assert "redacted" in output
+    # `expires_in`'s own `repr` formatting may vary; only the redacted-token prefix is pinned.
+    assert output.startswith("IssuedAccessToken(token=<redacted>")
