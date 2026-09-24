@@ -136,6 +136,40 @@ interface RequestOptions {
    * replace it with "request failed" — the failure is the payload.
    */
   readonly acceptStatuses?: readonly number[];
+  /**
+   * `'required'` makes this a **bearer-authenticated** request (slice 2.1, AC-38). Absent — the
+   * default, and every guest endpoint — and the request carries no `Authorization` header at all.
+   *
+   * Opt-in rather than "attach the token whenever there is one", for two reasons:
+   *
+   * - **No request carries two credentials by accident.** Guest endpoints are authorized by the
+   *   `tc_guest` cookie; a guest request that also carried a bearer token would be the first step
+   *   of the claim (slice 2.4) happening without anyone designing it.
+   * - **The retry is keyed on the declaration.** A 401 whose `code` is `invalid_access_token`, on
+   *   a request declared `'required'`, gets one `authStore.refresh()` and one retry. A 401
+   *   `guest_session_expired` never refreshes (I-48): the branch is on `code`, never on status,
+   *   because "401" alone means different things on different routes.
+   *
+   * Before sending, the token comes from `authStore.accessTokenForRequest()`, which refreshes
+   * *first* when less than 30 s remain. `api/auth.ts`'s `refresh` and `logout` must never set this:
+   * the first is what the interceptor calls, and the second must work with an expired token.
+   */
+  readonly auth?: 'required';
+}
+
+/**
+ * The `auth: 'required'` path: token → request → on 401 `invalid_access_token`, one refresh and one
+ * retry → give up.
+ *
+ * **T36 skeleton** — stubbed so the option type-checks and every *existing* request, none of which
+ * declares it, is untouched. T38 GREEN implements it against `authStore`.
+ */
+function requestWithAuth<T>(path: string, options: RequestOptions): Promise<T> {
+  return Promise.reject(
+    new Error(
+      `request(${options.method ?? 'GET'} ${path}, auth: "required"): not implemented (T36 skeleton; T38 GREEN)`,
+    ),
+  );
 }
 
 /**
@@ -147,6 +181,10 @@ interface RequestOptions {
  * be the thing standing between an attacker and a session.
  */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  if (options.auth === 'required') {
+    return requestWithAuth<T>(path, options);
+  }
+
   // A multipart upload (`FormData`) must NOT get a hand-set `Content-Type` and must NOT be run
   // through `JSON.stringify` — this looks wrong until you know why. `multipart/form-data` requires
   // a `boundary` parameter that only the browser's own `fetch` implementation can generate (it is
