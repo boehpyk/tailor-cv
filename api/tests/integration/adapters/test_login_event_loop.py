@@ -54,47 +54,69 @@ fraction is comfortably over half," and this workload — mostly async I/O (two 
 plus a Redis rate-limiter check per login) with one CPU-bound step — keeps that fraction under half
 under 8-way concurrency.
 
-**Amendment (2026-09-24): AC-20 now gates on `loop_liveness.unavailable_fraction`
-(`sum(turnarounds) / wall_clock`), never on p50** — the owner's decision on the finding above, made
-explicit in `feature-spec.md`'s own "Amended 2026-09-24" note on AC-20. p50 is still computed and
-reported in the assertion message, for a human reading a failure to have it, but nothing here passes
-or fails because of it.
+**Amendment (2026-09-24): AC-20 gates on `loop_liveness.unavailable_fraction`, never on p50** — the
+owner's decision on the finding above, made explicit in `feature-spec.md`'s own "Amended 2026-09-24"
+note on AC-20. p50 is still computed and reported in the assertion message, for a human reading a
+failure to have it, but nothing here passes or fails because of it.
 
-**Mutation record for the amended assertion.** Same mutation as the first pass — `verify` rewritten
-to call `self._verify_sync(...)` directly, dropping `await loop.run_in_executor(self._executor,
-...)` around it, leaving everything else byte-identical — then restored.
+**Correction, same day, before this ever reached a reviewer.** The amendment's first version divided
+by wall-clock (`sum(turnarounds) / wall_clock`), which turned out to have the flaw CLAUDE.md's 1.5
+lesson already names one level up: for this file's single-coroutine sampler, `wall_clock ≈ N x
+(PACE_SECONDS + t̄)`, so with **no** blocking at all that ratio is already `≈ t̄ / (PACE_SECONDS +
+t̄)` — a number driven by ambient per-request latency and the sampler's own pacing, not by blocking,
+and one that would climb on any slower box or any change to `PACE_SECONDS` with nothing actually
+wrong. `loop_liveness.unavailable_fraction` now does two things the wall-clock version did not:
+subtracts a same-run, same-box **baseline** (the median turnaround measured with nothing else in
+flight, over a small fixed sample, immediately before the workload under test) from every sample
+before summing, and normalises by `sum(turnarounds)` rather than wall-clock, which **removes
+`PACE_SECONDS` from the ratio entirely** (each turnaround already has it subtracted) and makes the
+statistic **exactly invariant to a uniform "everything is K times slower" scaling** — the actual risk
+the correction was asked to close, since `max(0, K·t - K·baseline) = K·max(0, t - baseline)` for
+`K > 0`, so the ratio of two sums built the same way from the same list cancels `K` exactly. Proven,
+not merely observed.
+
+**Mutation record for the corrected assertion.** Same mutation as both earlier passes — `verify`
+rewritten to call `self._verify_sync(...)` directly, dropping `await
+loop.run_in_executor(self._executor, ...)` around it, leaving everything else byte-identical — then
+restored.
 
     before: 06078b0ab2071c2615ba12cd9b8843a5  password_hasher.py
     after:  06078b0ab2071c2615ba12cd9b8843a5  password_hasher.py   (identical — byte-exact restore)
 
-| run | unavailable_fraction | p50 | samples | max | wall-clock |
+| run | unavailable_fraction | baseline | p50 | samples | max |
 |---|---|---|---|---|---|
-| healthy 1 | 0.5428 | 1.134 ms | 200 | 123.8 ms | 1.054 s |
-| healthy 2 | 0.5523 | 1.110 ms | 200 | 88.3 ms | 1.080 s |
-| healthy 3 | 0.5623 | 1.154 ms | 200 | 110.2 ms | 1.090 s |
-| mutated 1 | 0.9018 | 1.866 ms | 200 | 198.6 ms | 4.756 s |
-| mutated 2 | 0.8881 | 1.664 ms | 200 | 197.0 ms | 4.618 s |
-| mutated 3 | 0.8672 | 1.673 ms | 200 | 246.1 ms | 4.667 s |
+| healthy 1 | 0.7749 | 0.627 ms | 1.019 ms | 200 | 98.3 ms |
+| healthy 2 | 0.7975 | 0.562 ms | 1.033 ms | 200 | 98.1 ms |
+| healthy 3 | 0.7988 | 0.589 ms | 1.054 ms | 200 | 97.7 ms |
+| mutated 1 | 0.9715 | 0.606 ms | 1.550 ms | 200 | 349.8 ms |
+| mutated 2 | 0.9738 | 0.541 ms | 1.680 ms | 200 | 301.3 ms |
+| mutated 3 | 0.9744 | 0.540 ms | 1.575 ms | 200 | 251.8 ms |
 
-Healthy `unavailable_fraction` ranges **0.543-0.562**; mutated ranges **0.867-0.902** — a clean,
-reproducible gap of roughly 0.30-0.36 with no overlap across three runs on each side. **The bound is
-`_UNAVAILABLE_FRACTION_BUDGET = 0.7`**, chosen at (rather than merely inside) the numeric midpoint of
-the worst healthy run (0.562) and the worst-case mutated run (0.867) — 0.7145 rounded down to one
-readable decimal — giving healthy a **0.138** margin below the bound and mutated a **0.167** margin
-above it: the mutated side, the one where a false negative is the dangerous failure mode, gets the
-larger cushion on purpose. Every one of the three mutated runs above fails this bound; every one of
-the three healthy runs passes it — the "observe red" outcome the task asked for, now genuinely
-observed rather than reported absent.
+Healthy `unavailable_fraction` ranges **0.775-0.799** (tight: 0.024 spread); mutated ranges
+**0.971-0.974** (tighter still: 0.003 spread) — a clean, reproducible, non-overlapping gap of
+**0.172-0.199** across all six runs. **The bound is `_UNAVAILABLE_FRACTION_BUDGET = 0.88`**, the
+midpoint of the worst healthy run (0.799) and the worst-case mutated run (0.971) rounded to two
+places, giving healthy a **0.081** margin below the bound and mutated a **0.091** margin above it.
+Every one of the three mutated runs above fails this bound; every one of the three healthy runs
+passes it — the "observe red" outcome the task asked for, genuinely observed.
 
-**Why this number is not close to 0, and that is not a bug in the statistic.** Even the healthy
-runs show `unavailable_fraction` above one half, because `sum(turnarounds)` is a sum across *every*
-one of 200 samples' excess-over-pacing, including brief, ordinary scheduling jitter under 8-way
-concurrent load — not a fraction of time that is literally "the loop could not respond at all" the
-way the name might suggest read informally. `loop_liveness.unavailable_fraction`'s own docstring says
-so explicitly: it is not bounded to `[0, 1]` by construction, and a caller compares it against a
-bound measured for its *own* workload and sampler configuration, never a borrowed threshold. What
-carries the proof here is not the absolute number but the **separation** between the two clusters,
-verified above with margin on both sides.
+**The pace sanity-check, and an honest account of what it did and did not show.**
+`loop_liveness.PACE_SECONDS` was raised from 1 ms to 5 ms for one throwaway healthy run (never
+committed — reverted immediately after, confirmed by `git diff`): the fraction moved from the
+0.775-0.799 cluster to **0.564**, a real drop of roughly 30%, not "barely moves" by a literal
+reading. The uniform-scaling proof above is exact for a box that runs uniformly slower; it says
+nothing about *changing the sampler's own pacing constant*, which is a structurally different
+perturbation — a sparser poll interval samples the same underlying contention differently (fewer
+polls land inside a transient burst, proportionally), and that is a sampling-density effect no
+per-sample ratio can fully cancel. Two things keep this from being a live flake risk for this
+codebase rather than a solved one: `PACE_SECONDS` is a hardcoded module constant (`loop_liveness.py`
+line 90), never read from `Settings`, an environment variable, or anything a CI runner or a
+deployment could vary — so the specific perturbation that moved the number by 30% cannot occur
+between any two real runs of this suite, only inside this one deliberate, reverted experiment. What
+*can* vary between runs — the box being uniformly faster or slower — is exactly the case proven
+invariant above. Recorded here rather than quietly dropped: the bound's margin (0.081 healthy / 0.091
+mutated) is not large enough to promise safety against a pacing change, only against the scaling
+risk it was asked to close.
 """
 
 from __future__ import annotations
@@ -136,10 +158,14 @@ _CONCURRENT_LOGINS = 8
 # docstring's mutation record) — the higher floor changes the batch's duration, not the statistic
 # below, so 200 is kept as this file's floor.
 _SAMPLE_FLOOR = 200
+# A small, fixed sample for the unloaded baseline (module docstring, lesson three) — big enough for
+# a stable median, small enough to cost a fraction of a second before the real workload starts.
+_BASELINE_SAMPLE_FLOOR = 30
 # AC-20's amended bound (2026-09-24), chosen with margin on both sides of the measured healthy and
 # mutated `unavailable_fraction` values — the full set of numbers is in the module docstring's
-# mutation record, which is also where "why this number and not p50" is argued in full.
-_UNAVAILABLE_FRACTION_BUDGET = 0.7
+# mutation record, which is also where "why this number and not p50, and why a baseline" is argued
+# in full.
+_UNAVAILABLE_FRACTION_BUDGET = 0.88
 
 
 def _with_raised_login_limits(settings: Settings) -> Settings:
@@ -214,18 +240,23 @@ async def test_loop_unavailable_fraction_stays_under_budget_during_8_concurrent_
     production_hasher: Argon2PasswordHasher,
     clear_redis: None,
 ) -> None:
-    """AC-20 (amended 2026-09-24). Eight logins against one seeded, production-cost account, held in
-    flight continuously (re-submitted until the sampler signals it has its floor) while
-    `/health/live`'s turnaround is sampled on the same event loop.
+    """AC-20 (amended 2026-09-24, then corrected the same day — module docstring's lesson three).
+    Eight logins against one seeded, production-cost account, held in flight continuously
+    (re-submitted until the sampler signals it has its floor) while `/health/live`'s turnaround is
+    sampled on the same event loop.
 
-    **Gates on the loop's unavailable fraction, `sum(turnarounds) / wall_clock`
-    (`loop_liveness.unavailable_fraction`), not on p50.** The amendment's own reason, recorded in
-    full in this module's docstring: p50 was measured, across five separate mutated runs including a
-    10x-larger sample, to stay under its 5 ms budget even with the executor hop removed from
-    `password_hasher.py`'s `verify` — this workload's blocked fraction stays under half under 8-way
-    concurrency, which is precisely where CLAUDE.md already documents p50 losing its sensitivity.
-    p50 is still computed and reported in the assertion message for context; it is never what this
-    test's pass/fail depends on.
+    **Gates on the loop's unavailable fraction, computed as *excess over an unloaded baseline*
+    (`loop_liveness.unavailable_fraction(..., baseline_seconds=...)`), never on p50 and never on the
+    raw (baseline-free) fraction.** Two corrections happened here, both recorded in full in this
+    module's docstring: p50 could not be made to go red against the mutation at all (blocked fraction
+    under half at 8-way concurrency, CLAUDE.md's own documented weakness); the *raw* unavailable
+    fraction this file first adopted instead turned out to measure ambient per-request latency, not
+    blocking (`wall_clock ≈ N x (PACE_SECONDS + t̄)` for a single-coroutine sampler, so with **no**
+    blocking at all the raw fraction is already `≈ t̄ / (PACE_SECONDS + t̄)` — a number that rises on
+    any slower box, mutation or not, exactly 1.5's "precondition scales with machine speed" flake one
+    level up). Subtracting a same-run, same-box, unloaded baseline before summing is what makes the
+    statistic track blocking specifically. p50 is still computed and reported in the assertion
+    message for context; it is never what this test's pass/fail depends on.
     """
     settings: Settings = live_app.state.settings
     email = f"t34-{uuid4().hex}@example.com"
@@ -234,6 +265,7 @@ async def test_loop_unavailable_fraction_stays_under_budget_during_8_concurrent_
     )
     client = AsyncClient(transport=ASGITransport(app=live_app), base_url="http://testserver")
     try:
+        baseline_seconds = await _measure_baseline_turnaround(client)
         turnarounds, wall_clock_seconds = await _hammer_logins_and_sample(client, settings, email)
     finally:
         await client.aclose()
@@ -244,14 +276,28 @@ async def test_loop_unavailable_fraction_stays_under_budget_during_8_concurrent_
         "logins — the sampler returned before reaching its own floor, which should be impossible; "
         "see loop_liveness.hammer_health_live_until_floor"
     )
-    fraction = unavailable_fraction(turnarounds, wall_clock_seconds)
+    fraction = unavailable_fraction(turnarounds, baseline_seconds=baseline_seconds)
     p50 = statistics.median(turnarounds)
     assert fraction < _UNAVAILABLE_FRACTION_BUDGET, (
         f"the loop's unavailable fraction was {fraction:.4f} during eight concurrent logins "
-        f"(budget {_UNAVAILABLE_FRACTION_BUDGET}; n={len(turnarounds)}, wall_clock="
-        f"{wall_clock_seconds:.2f}s, p50={p50 * 1000:.2f}ms, max={max(turnarounds) * 1000:.2f}ms) "
-        "— the event loop was blocked"
+        f"(budget {_UNAVAILABLE_FRACTION_BUDGET}; baseline={baseline_seconds * 1000:.3f}ms, "
+        f"n={len(turnarounds)}, wall_clock={wall_clock_seconds:.2f}s, p50={p50 * 1000:.2f}ms, "
+        f"max={max(turnarounds) * 1000:.2f}ms) — the event loop was blocked"
     )
+
+
+async def _measure_baseline_turnaround(client: AsyncClient) -> float:
+    """The median `/health/live` turnaround with **nothing else in flight** — the ambient
+    per-request latency `unavailable_fraction`'s `baseline_seconds` subtracts (module docstring,
+    lesson three). A small, fixed sample, measured on this same client against this same app, right
+    before the workload under test starts — same box, same process, same moment, so a uniformly
+    slower run (a loaded CI runner) moves this number and the loaded numbers together instead of
+    only the loaded ones."""
+    enough = asyncio.Event()
+    baseline_turnarounds = await hammer_health_live_until_floor(
+        client, enough=enough, floor=_BASELINE_SAMPLE_FLOOR
+    )
+    return statistics.median(baseline_turnarounds)
 
 
 async def _hammer_logins_and_sample(
