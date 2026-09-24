@@ -3,6 +3,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router';
 
+import { authStore } from './features/auth/authStore';
+import { seedFromRefresh } from './features/auth/hooks/authCache';
 import { router } from './router';
 import './index.css';
 
@@ -23,6 +25,25 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
     },
   },
+});
+
+/**
+ * Ask "is this browser logged in?" once, at module scope, before the first render (technical plan
+ * §7, AC-36).
+ *
+ * **Not in a `useEffect`.** `<StrictMode>` runs effects twice in development, so an effect would send
+ * two boot refreshes from one tab — the second presenting a token the first just rotated, which is
+ * exactly the race the server's grace window exists for, triggered by our own double-mount. The
+ * store's single-flight would dedupe them anyway; calling it once is the design, and single-flight
+ * is the belt.
+ *
+ * The result seeds **this** `queryClient` — the one the provider below hands to every component —
+ * so `['auth', 'me']` is already in the cache when `useAuth()` first reads it, and no `GET /me` is
+ * sent to learn what the refresh response already said. `bootstrap()` never rejects: every ending
+ * is an outcome (`authenticated`, `anonymous`, `unavailable`, `superseded`).
+ */
+void authStore.bootstrap().then((result) => {
+  seedFromRefresh(queryClient, result);
 });
 
 const container = document.getElementById('root');
