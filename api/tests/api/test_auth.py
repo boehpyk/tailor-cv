@@ -43,11 +43,13 @@ directly through its repository.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import pytest_asyncio
+from argon2 import PasswordHasher as Argon2Library
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy.exc import SQLAlchemyError
@@ -1327,30 +1329,50 @@ async def test_argon2_hasher_failure_on_login_is_503(
     password_hasher: Argon2PasswordHasher,
     clock: FixedClock,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """I-45: the hasher's own floor (`PasswordHashingFailed`) maps to the same `service_unavailable`
-    503 as a dead Postgres — to the client, both mean "try again"."""
+    503 as a dead Postgres — to the client, both mean "try again".
+
+    The explosion must be injected **below** the adapter's `except Exception` floor
+    (`Argon2PasswordHasher.verify`, `password_hasher.py` ~143-158): patching the adapter's own
+    `verify` replaces the floor itself, so the RuntimeError would reach the route untranslated as an
+    honest 500 rather than exercising I-45's mapping. Patching the underlying
+    `argon2.PasswordHasher.verify` — the call the adapter's `_verify_sync` makes on its executor
+    thread — leaves the floor in place and lets it do the translating, exactly as T25's adapter-level
+    floor test (`test_an_unexpected_exception_during_verify_becomes_exactly_password_hashing_failed`)
+    does it. `argon2.PasswordHasher` is a slotted class, so the class itself is patched rather than
+    the instance.
+    """
+    password = "a-real-password"
     await _seed_user(
         session,
         password_hasher,
         clock,
         email="hasher.floor@example.com",
-        password="a-real-password",
+        password=password,
     )
 
-    async def boom(*args: object, **kwargs: object) -> None:
+    def boom(self: Argon2Library, stored: str, secret: bytes) -> None:
         raise RuntimeError("argon2-cffi exploded")
 
-    monkeypatch.setattr(password_hasher, "verify", boom)
+    monkeypatch.setattr(Argon2Library, "verify", boom)
 
-    response = await client.post(
-        LOGIN_URL,
-        json=_credentials("hasher.floor@example.com", "a-real-password"),
-        headers=_origin_headers(settings),
-    )
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            LOGIN_URL,
+            json=_credentials("hasher.floor@example.com", password),
+            headers=_origin_headers(settings),
+        )
 
     assert response.status_code == 503, response.text
     assert _error_code(response) == "service_unavailable"
+
+    # The floor's own promise (password_hasher.py's `_hashing_failed`): the exception's type is
+    # loggable, its message and the password are not.
+    assert "RuntimeError" in caplog.text, "the exception's type should reach the log"
+    assert password not in caplog.text
+    assert "argon2-cffi exploded" not in caplog.text
 
 
 # ---------------------------------------------------------------------------------------------
