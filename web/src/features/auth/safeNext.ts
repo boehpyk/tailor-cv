@@ -15,10 +15,29 @@
  * - `javascript:alert(1)` — not a path at all.
  * - `''`, `null`, `undefined` — nothing asked for.
  *
+ * - `/\t/evil.example` — the URL parser *deletes* tab, CR and LF before it parses, so this is
+ *   `//evil.example` too. Any control character anywhere falls back, rather than listing the
+ *   three the WHATWG parser happens to strip today.
+ *
  * Returns the path unchanged when it is safe; never throws.
  */
 export function safeNext(next: string | null | undefined): string {
-  throw new Error(
-    `safeNext(${JSON.stringify(next ?? null)}): not implemented (T36 skeleton; T38 GREEN)`,
-  );
+  if (typeof next !== 'string') {
+    return '/';
+  }
+  // `/` first, then anything except a second `/` or a `\` — or nothing at all (`/` itself).
+  if (!/^\/(?![/\\])/.test(next) || hasControlCharacter(next)) {
+    return '/';
+  }
+  return next;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) {
+      return true;
+    }
+  }
+  return false;
 }

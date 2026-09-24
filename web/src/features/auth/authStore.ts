@@ -43,8 +43,21 @@
  *   previous test (a back-off timer, an unresolved fetch) belongs to an older **generation** and
  *   must not dispatch into the fresh store when it lands.
  */
-import type { AuthState, SignOutReason } from './authMachine';
+import { INITIAL_AUTH_STATE, authReducer } from './authMachine';
+
+import { refresh as refreshRequest } from '@/api/auth';
+import { ApiError } from '@/api/client';
+
+import type { AuthEvent, AuthState, SignOutReason } from './authMachine';
 import type { AuthenticatedResponse, User } from './types';
+
+// **The import cycle, and why it is safe.** `api/client.ts` imports this module (for
+// `accessTokenForRequest` and `refresh`), and this module imports `api/auth.ts`, which imports
+// `api/client.ts`. ES modules resolve a cycle by handing out live bindings before the module body
+// has run, so the rule is: **no module in the cycle may *use* an import at its top level.** Every
+// use of `refreshRequest` and `ApiError` below is inside a function body that runs long after all
+// three modules have finished evaluating. A top-level `ApiError.prototype…` or a store built by
+// calling into the client at import time would read an uninitialised binding and throw.
 
 /** A request whose token has less than this left refreshes **first** (AC-38). */
 export const REFRESH_AHEAD_MS = 30_000;
@@ -83,12 +96,21 @@ export type AuthSnapshot =
 export type RefreshResult =
   | { readonly kind: 'authenticated'; readonly user: User }
   | { readonly kind: 'anonymous'; readonly reason: SignOutReason | null }
-  | { readonly kind: 'unavailable' };
+  | { readonly kind: 'unavailable' }
+  /**
+   * The answer arrived, but the reducer **ignored** it: something newer had already decided the
+   * state (a login landed while the boot was out, a logout while a refresh was out), or the store
+   * was reset. There is nothing for the caller to act on — in particular no `user` to seed, because
+   * a boot refresh that loses to a login may carry a *different* user than the one now logged in.
+   */
+  | { readonly kind: 'superseded' };
 
 interface ModuleState {
   /** Bumped by `__resetForTests`; async work captures it and drops its result if it changed. */
   readonly generation: number;
   state: AuthState;
+  /** The token-free view of `state`, rebuilt only when `state` changes (identity-stable). */
+  snapshot: AuthSnapshot;
   bootPromise: Promise<RefreshResult> | null;
   inFlightRefresh: Promise<RefreshResult> | null;
   readonly listeners: Set<() => void>;
@@ -97,7 +119,8 @@ interface ModuleState {
 function freshModuleState(generation: number): ModuleState {
   return {
     generation,
-    state: { status: 'booting' },
+    state: INITIAL_AUTH_STATE,
+    snapshot: snapshotOf(INITIAL_AUTH_STATE),
     bootPromise: null,
     inFlightRefresh: null,
     listeners: new Set(),
@@ -106,15 +129,156 @@ function freshModuleState(generation: number): ModuleState {
 
 let current: ModuleState = freshModuleState(0);
 
+const SUPERSEDED: RefreshResult = { kind: 'superseded' };
+
+/** The token-free view of a state. Built once per state change, never per read. */
+function snapshotOf(state: AuthState): AuthSnapshot {
+  switch (state.status) {
+    case 'authenticated':
+      // Deliberately *not* a spread of `state`: listing the one field keeps the token out by
+      // construction rather than by remembering to delete it.
+      return { status: 'authenticated' };
+    case 'anonymous':
+      return { status: 'anonymous', reason: state.reason };
+    case 'booting':
+    case 'unavailable':
+      return { status: state.status };
+  }
+}
+
+function sameSnapshot(a: AuthSnapshot, b: AuthSnapshot): boolean {
+  if (a.status === 'anonymous' && b.status === 'anonymous') {
+    return a.reason === b.reason;
+  }
+  return a.status === b.status;
+}
+
+/** Has `__resetForTests` run since `store` was captured? Stale work must land on nothing. */
+function isCurrent(store: ModuleState): boolean {
+  return store.generation === current.generation;
+}
+
 /**
- * The skeleton's body. The arguments are taken so the real parameters are *used* (the compiler and
- * the linter both refuse an unused one) — only their count reaches the message, never a value,
- * because one of them is a token response.
+ * Run `event` through the reducer and publish the result. Returns whether the event was
+ * **honoured** — the reducer returns the very same object for an ignored event, so identity is
+ * the answer, and no second copy of the table's "ignored" cells has to live here.
  */
-function notImplemented(name: string, ...args: readonly unknown[]): never {
-  throw new Error(
-    `authStore.${name}(${String(args.length)} args): not implemented (T36 skeleton; T38 GREEN)`,
-  );
+function dispatch(store: ModuleState, event: AuthEvent): boolean {
+  if (!isCurrent(store)) {
+    return false;
+  }
+  const next = authReducer(store.state, event);
+  if (next === store.state) {
+    return false;
+  }
+  store.state = next;
+  const nextSnapshot = snapshotOf(next);
+  // A token rotation (authenticated → authenticated) changes nothing React can see; keeping the
+  // old snapshot object means `useSyncExternalStore` does not re-render for it.
+  if (!sameSnapshot(store.snapshot, nextSnapshot)) {
+    store.snapshot = nextSnapshot;
+  }
+  // Copy first: a listener that unsubscribes while being notified must not skip its neighbour.
+  for (const listener of [...store.listeners]) {
+    listener();
+  }
+  return true;
+}
+
+function grantFrom(response: AuthenticatedResponse): { accessToken: string; expiresAt: number } {
+  return {
+    accessToken: response.access_token,
+    expiresAt: performance.now() + response.expires_in * 1000,
+  };
+}
+
+/** One `POST /api/auth/refresh`, classified by `code` — never by status alone. */
+type AttemptOutcome =
+  | { readonly kind: 'ok'; readonly response: AuthenticatedResponse }
+  | { readonly kind: 'signed_out'; readonly reason: 'expired' | 'reused' }
+  | { readonly kind: 'conflict' }
+  | { readonly kind: 'failed' };
+
+async function attemptRefresh(): Promise<AttemptOutcome> {
+  try {
+    return { kind: 'ok', response: await refreshRequest() };
+  } catch (error) {
+    // Not an `ApiError` means the request never got an answer (network down, a proxy's HTML page):
+    // "could not find out", which is `failed` — not "you are logged out".
+    if (!(error instanceof ApiError)) {
+      return { kind: 'failed' };
+    }
+    switch (error.code) {
+      case 'not_signed_in':
+        return { kind: 'signed_out', reason: 'expired' };
+      case 'refresh_token_reused':
+        return { kind: 'signed_out', reason: 'reused' };
+      case 'refresh_in_progress':
+        return { kind: 'conflict' };
+      default:
+        // 5xx, 403 `origin_not_allowed`, an unknown code: we still do not know who this is.
+        return { kind: 'failed' };
+    }
+  }
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** The first attempt plus one per entry in `REFRESH_CONFLICT_RETRY_DELAYS_MS`, 409s only. */
+async function attemptWithConflictRetries(store: ModuleState): Promise<AttemptOutcome> {
+  for (let retry = 0; ; retry += 1) {
+    const outcome = await attemptRefresh();
+    if (outcome.kind !== 'conflict') {
+      return outcome;
+    }
+    const delay = REFRESH_CONFLICT_RETRY_DELAYS_MS[retry];
+    if (delay === undefined || !isCurrent(store)) {
+      return { kind: 'failed' };
+    }
+    await wait(delay);
+  }
+}
+
+/**
+ * One refresh, start to finish. `startedBooting` is captured by the caller **before** the request
+ * goes out: it is what decides `BOOT_*` versus the non-boot events, so a boot answer that lands
+ * after a login still arrives as a boot answer — and the reducer ignores it.
+ */
+async function runRefresh(store: ModuleState, startedBooting: boolean): Promise<RefreshResult> {
+  const outcome = await attemptWithConflictRetries(store);
+
+  switch (outcome.kind) {
+    case 'ok': {
+      const grant = grantFrom(outcome.response);
+      const event: AuthEvent = startedBooting
+        ? { type: 'BOOT_OK', ...grant }
+        : { type: 'AUTHENTICATED', ...grant };
+      return dispatch(store, event)
+        ? { kind: 'authenticated', user: outcome.response.user }
+        : SUPERSEDED;
+    }
+    case 'signed_out': {
+      // A boot 401 is "there was no login to resume", not "your login just ended": no reason,
+      // because nothing the user did or saw has ended.
+      if (startedBooting) {
+        return dispatch(store, { type: 'BOOT_ANON' })
+          ? { kind: 'anonymous', reason: null }
+          : SUPERSEDED;
+      }
+      return dispatch(store, { type: 'SIGNED_OUT', reason: outcome.reason })
+        ? { kind: 'anonymous', reason: outcome.reason }
+        : SUPERSEDED;
+    }
+    case 'conflict':
+    case 'failed':
+      return dispatch(store, { type: startedBooting ? 'BOOT_FAILED' : 'REFRESH_FAILED' })
+        ? { kind: 'unavailable' }
+        : SUPERSEDED;
+  }
 }
 
 /**
@@ -124,7 +288,9 @@ function notImplemented(name: string, ...args: readonly unknown[]): never {
  * ended, after the store has dispatched `BOOT_OK` / `BOOT_ANON` / `BOOT_FAILED`.
  */
 function bootstrap(): Promise<RefreshResult> {
-  return notImplemented('bootstrap');
+  const store = current;
+  store.bootPromise ??= refresh();
+  return store.bootPromise;
 }
 
 /**
@@ -142,10 +308,24 @@ function bootstrap(): Promise<RefreshResult> {
  * the third 409 is a failure. "While `booting`" means **the refresh started in `booting`** — it is
  * decided when the request goes out, not when the answer lands. A boot 401 that lands after a login
  * must arrive as `BOOT_ANON` (which the reducer ignores in `authenticated`), never as `SIGNED_OUT`,
- * which it would honour. Never rejects.
+ * which it would honour. When the reducer ignores the answer the result is `superseded`. Never
+ * rejects.
  */
 function refresh(): Promise<RefreshResult> {
-  return notImplemented('refresh');
+  const store = current;
+  if (store.inFlightRefresh !== null) {
+    return store.inFlightRefresh;
+  }
+  const startedBooting = store.state.status === 'booting';
+  const promise = runRefresh(store, startedBooting).then((result) => {
+    // Clear only our own slot: after a reset, `store` is an orphaned object and nobody reads it.
+    if (store.inFlightRefresh === promise) {
+      store.inFlightRefresh = null;
+    }
+    return result;
+  });
+  store.inFlightRefresh = promise;
+  return promise;
 }
 
 /**
@@ -154,7 +334,15 @@ function refresh(): Promise<RefreshResult> {
  * `refresh()`.
  */
 function retry(): Promise<RefreshResult> {
-  return notImplemented('retry');
+  dispatch(current, { type: 'RETRY' });
+  return refresh();
+}
+
+/** The token if the state holds one, else `null`. Synchronous; no refresh. */
+function heldToken(store: ModuleState): string | null {
+  return isCurrent(store) && store.state.status === 'authenticated'
+    ? store.state.accessToken
+    : null;
 }
 
 /**
@@ -166,8 +354,21 @@ function retry(): Promise<RefreshResult> {
  * - `anonymous` / `unavailable` → `null`, no network: there is nothing to refresh with that the
  *   boot did not already try.
  */
-function accessTokenForRequest(): Promise<string | null> {
-  return notImplemented('accessTokenForRequest');
+async function accessTokenForRequest(): Promise<string | null> {
+  const store = current;
+  if (store.state.status === 'booting') {
+    // After a Retry the question is being asked again by a refresh that is not the boot promise.
+    await (store.inFlightRefresh ?? bootstrap());
+  }
+  const state = store.state;
+  if (!isCurrent(store) || state.status !== 'authenticated') {
+    return null;
+  }
+  if (state.expiresAt - performance.now() >= REFRESH_AHEAD_MS) {
+    return state.accessToken;
+  }
+  await refresh();
+  return heldToken(store);
 }
 
 /**
@@ -175,7 +376,7 @@ function accessTokenForRequest(): Promise<string | null> {
  * of `performance.now() + expires_in * 1000`. The mutation hook seeds `['auth', 'me']` itself.
  */
 function setAuthenticated(response: AuthenticatedResponse): void {
-  notImplemented('setAuthenticated', response);
+  dispatch(current, { type: 'AUTHENTICATED', ...grantFrom(response) });
 }
 
 /**
@@ -184,17 +385,21 @@ function setAuthenticated(response: AuthenticatedResponse): void {
  * answered 503, I-31).
  */
 function signOut(reason: SignOutReason): void {
-  notImplemented('signOut', reason);
+  dispatch(current, { type: 'SIGNED_OUT', reason });
 }
 
 /** `useSyncExternalStore`'s subscribe: call `listener` after every state change; returns unsubscribe. */
 function subscribe(listener: () => void): () => void {
-  return notImplemented('subscribe', listener);
+  const store = current;
+  store.listeners.add(listener);
+  return () => {
+    store.listeners.delete(listener);
+  };
 }
 
 /** `useSyncExternalStore`'s getSnapshot: the token-free view, identity-stable between changes. */
 function getSnapshot(): AuthSnapshot {
-  return notImplemented('getSnapshot');
+  return current.snapshot;
 }
 
 /**

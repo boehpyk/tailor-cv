@@ -98,7 +98,35 @@ export const INITIAL_AUTH_STATE: AuthState = { status: 'booting' };
  * returns the **same** `state` object, so a subscriber comparing by identity sees no change.
  */
 export function authReducer(state: AuthState, event: AuthEvent): AuthState {
-  throw new Error(
-    `authReducer(${state.status}, ${event.type}): not implemented (T36 skeleton; T38 GREEN)`,
-  );
+  switch (event.type) {
+    // A boot answer means something only while the boot question is still open.
+    case 'BOOT_OK':
+      return state.status === 'booting' ? grantedState(event) : state;
+    case 'BOOT_ANON':
+      return state.status === 'booting' ? { status: 'anonymous', reason: null } : state;
+    case 'BOOT_FAILED':
+      return state.status === 'booting' ? { status: 'unavailable' } : state;
+
+    // Only a logged-in user has a refresh that can fail *after* the boot.
+    case 'REFRESH_FAILED':
+      return state.status === 'authenticated' ? { status: 'unavailable' } : state;
+
+    // A login, register or later refresh is fresh news in every state.
+    case 'AUTHENTICATED':
+      return grantedState(event);
+    case 'SIGNED_OUT':
+      return { status: 'anonymous', reason: event.reason };
+
+    // Retry is the way out of `unavailable`, and only of it.
+    case 'RETRY':
+      return state.status === 'unavailable' ? { status: 'booting' } : state;
+  }
+}
+
+/**
+ * Copy only the grant's two fields: an event object also carries `type`, and spreading it into
+ * the state would smuggle that in (and make the state share structure with the event).
+ */
+function grantedState(grant: AccessGrant): AuthState {
+  return { status: 'authenticated', accessToken: grant.accessToken, expiresAt: grant.expiresAt };
 }

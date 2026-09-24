@@ -6,6 +6,11 @@
  * and JSON. Change the transport and exactly one directory changes.
  */
 
+// A cycle, on purpose and safe: `authStore` → `api/auth` → this module → `authStore`. Nothing here
+// touches `authStore` at module top level — only inside `requestWithAuth` — so the live binding is
+// always initialised by the time it is read. See the note in `authStore.ts`.
+import { authStore } from '@/features/auth/authStore';
+
 /** An error the API reported, carrying the status so a caller can distinguish 4xx from 5xx. */
 export class ApiError extends Error {
   constructor(
@@ -161,15 +166,42 @@ interface RequestOptions {
  * The `auth: 'required'` path: token → request → on 401 `invalid_access_token`, one refresh and one
  * retry → give up.
  *
- * **T36 skeleton** — stubbed so the option type-checks and every *existing* request, none of which
- * declares it, is untouched. T38 GREEN implements it against `authStore`.
+ * **Branch on `code`, never on status.** A 401 on a guest route is `guest_session_expired`, and
+ * refreshing a *login* cannot fix a *guest session* (I-48); a second 401 after the retry is
+ * surfaced as-is, because a loop of refreshes is the one thing worse than an error.
+ *
+ * **Refresh only if the token we sent is still the current one.** Three requests that all went out
+ * with the same stale token all come back 401; the first to land refreshes, and the others must
+ * retry with the token that refresh produced rather than rotate the cookie again. The store's
+ * single-flight covers the ones that overlap the refresh; this comparison covers the ones that land
+ * after it finished.
  */
-function requestWithAuth<T>(path: string, options: RequestOptions): Promise<T> {
-  return Promise.reject(
-    new Error(
-      `request(${options.method ?? 'GET'} ${path}, auth: "required"): not implemented (T36 skeleton; T38 GREEN)`,
-    ),
-  );
+async function requestWithAuth<T>(path: string, options: RequestOptions): Promise<T> {
+  const sentToken = await authStore.accessTokenForRequest();
+  try {
+    return await send<T>(path, options, sentToken);
+  } catch (error) {
+    // No token sent means nothing to refresh: `accessTokenForRequest` already gave the store its
+    // chance, and the server's answer is the truthful one to surface.
+    if (
+      sentToken === null ||
+      !(error instanceof ApiError) ||
+      error.code !== 'invalid_access_token'
+    ) {
+      throw error;
+    }
+    let retryToken = await authStore.accessTokenForRequest();
+    if (retryToken === null || retryToken === sentToken) {
+      await authStore.refresh();
+      retryToken = await authStore.accessTokenForRequest();
+    }
+    if (retryToken === null || retryToken === sentToken) {
+      // The refresh did not produce a new token (logged out, or unavailable): the store has
+      // already said so to React. The original refusal is the honest answer to this request.
+      throw error;
+    }
+    return send<T>(path, options, retryToken);
+  }
 }
 
 /**
@@ -184,22 +216,36 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   if (options.auth === 'required') {
     return requestWithAuth<T>(path, options);
   }
+  return send<T>(path, options, null);
+}
 
-  // A multipart upload (`FormData`) must NOT get a hand-set `Content-Type` and must NOT be run
-  // through `JSON.stringify` — this looks wrong until you know why. `multipart/form-data` requires
-  // a `boundary` parameter that only the browser's own `fetch` implementation can generate (it is
-  // derived per-request), and setting the header yourself produces a `Content-Type` with no
-  // boundary at all: the server can see the request is multipart but can never find where one part
-  // ends and the next begins, so parsing fails on every upload. Leaving `headers` and `body` alone
-  // for `FormData` lets the browser set its own `Content-Type: multipart/form-data; boundary=...`.
-  // Spread rather than `headers: undefined`: under `exactOptionalPropertyTypes` an optional
-  // `RequestInit` field may be absent but not explicitly `undefined`.
+/** Headers for one request: JSON's `Content-Type` when there is a JSON body, and the bearer. */
+function headersFor(options: RequestOptions, bearer: string | null): Record<string, string> {
+  const headers: Record<string, string> = {};
+  // A multipart upload (`FormData`) must NOT get a hand-set `Content-Type` — this looks wrong until
+  // you know why. `multipart/form-data` requires a `boundary` parameter that only the browser's own
+  // `fetch` implementation can generate (it is derived per-request), and setting the header yourself
+  // produces a `Content-Type` with no boundary at all: the server can see the request is multipart
+  // but can never find where one part ends and the next begins, so parsing fails on every upload.
+  if (options.body !== undefined && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (bearer !== null) {
+    headers.Authorization = `Bearer ${bearer}`;
+  }
+  return headers;
+}
+
+/** One `fetch`, one parse, one verdict. `bearer` is `null` for every request not `auth: 'required'`. */
+async function send<T>(path: string, options: RequestOptions, bearer: string | null): Promise<T> {
+  const headers = headersFor(options, bearer);
+  // A `FormData` body is passed through untouched rather than `JSON.stringify`-ed (see
+  // `headersFor`). Spread rather than `headers: undefined`: under `exactOptionalPropertyTypes` an
+  // optional `RequestInit` field may be absent but not explicitly `undefined`.
   const response = await fetch(path, {
     method: options.method ?? 'GET',
     credentials: 'include',
-    ...(options.body === undefined || options.body instanceof FormData
-      ? {}
-      : { headers: { 'Content-Type': 'application/json' } }),
+    ...(Object.keys(headers).length === 0 ? {} : { headers }),
     ...(options.body === undefined
       ? {}
       : { body: options.body instanceof FormData ? options.body : JSON.stringify(options.body) }),
