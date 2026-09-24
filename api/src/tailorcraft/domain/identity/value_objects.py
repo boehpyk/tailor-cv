@@ -492,3 +492,18 @@ class AccessTokenRefusal(StrEnum):
     BAD_CLAIMS = "bad_claims"
     EXPIRED = "expired"
     ISSUED_IN_FUTURE = "issued_in_future"
+
+
+class LoginNotFoundReason(StrEnum):
+    """Why a refresh answered `LoginNotFound` (I-20, I-21). Closed; carried by `LoginNotFound`, logged
+    as `identity.refresh_refused reason=`, and **never** sent to the client — both are the same 401
+    `not_signed_in`, because after a revocation "gone" and "never existed" are indistinguishable by
+    design (ADR-0020).
+
+    `UNKNOWN`: the token matched no live login — forged, revoked, or never issued (I-20); there is no
+    login to name. `EXPIRED`: it matched a login at or past its absolute `expires_at`, which was deleted
+    on sight (I-21); the login id is known and logged.
+    """
+
+    UNKNOWN = "unknown"
+    EXPIRED = "expired"

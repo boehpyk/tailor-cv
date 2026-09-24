@@ -21,6 +21,8 @@ from __future__ import annotations
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
     InvalidEmailReason,
+    LoginId,
+    LoginNotFoundReason,
     WeakPasswordReason,
 )
 from tailorcraft.domain.shared.errors import DomainError
@@ -98,7 +100,22 @@ class LoginNotFound(DomainError):
     """The presented refresh token belongs to no live login: unknown, forged, already revoked, or the
     login just expired and was deleted on sight (I-20, I-21, I-27). All of them are the same
     `not_signed_in` to the client, because after a revocation "revoked" and "never existed" are
-    indistinguishable by design (ADR-0020: revocation is deletion)."""
+    indistinguishable by design (ADR-0020: revocation is deletion).
+
+    Carries a closed reason and, where one exists, the login's **id** — the two things the Logged
+    column of I-20/I-21 asks for, and nothing a stranger presented: never the token, never its hash,
+    never an email. `login_id` is `None` for `UNKNOWN` by nature (no login matched). The defaults keep
+    the bare `LoginNotFound()` meaning what it always meant — "unknown, nothing to name".
+    """
+
+    def __init__(
+        self,
+        reason: LoginNotFoundReason = LoginNotFoundReason.UNKNOWN,
+        login_id: LoginId | None = None,
+    ) -> None:
+        super().__init__(f"refresh refused: {reason.value}")
+        self.reason = reason
+        self.login_id = login_id
 
 
 class LoginExpired(DomainError):
@@ -111,7 +128,15 @@ class RefreshInProgress(DomainError):
     """Another refresh of this login won a race this one lost (I-23, I-25): the immediate predecessor
     presented within the grace, or a concurrent rotation of the same current token. **Nothing
     changed**; the client waits and retries, by when its cookie is the winner's (technical plan
-    §0.3). Never a revocation."""
+    §0.3). Never a revocation.
+
+    Carries the login's **id** for I-23's `identity.refresh_raced login_id=` line — an id, never the
+    token or its hash. Optional so a raise site that has no login in hand stays valid.
+    """
+
+    def __init__(self, login_id: LoginId | None = None) -> None:
+        super().__init__("refresh in progress")
+        self.login_id = login_id
 
 
 class RefreshTokenReused(DomainError):
