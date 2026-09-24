@@ -56,6 +56,29 @@ const CASES: readonly Case[] = [
     input: ' /account',
     expected: '/',
   },
+  // T44 (`qa`, test-after) — AC-43/I-52: a control character between the leading "/" and a second
+  // "/" would otherwise slip past the regex's `(?![/\\])` lookahead — a tab, CR or LF is neither
+  // "/" nor "\", so `/^\/(?![/\\])/` alone accepts `/\t/evil.example`. The WHATWG URL parser
+  // *strips* ASCII tab/CR/LF before it parses anything (the "C0 control or space" trim step in the
+  // URL parsing spec applies to the whole input, not just the ends), so a browser resolving this
+  // "safe" path sees exactly `//evil.example` — protocol-relative, another host. `safeNext.ts`'s own
+  // docstring names this case; these three assert it, one control character at a time, so the guard
+  // cannot regress to matching only the WHATWG spec's own worked example.
+  {
+    name: 'a tab immediately after the leading "/" would parse as "//evil.example" — falls back',
+    input: '/\t/evil.example',
+    expected: '/',
+  },
+  {
+    name: 'a line feed immediately after the leading "/" would parse as "//evil.example" — falls back',
+    input: '/\n/evil.example',
+    expected: '/',
+  },
+  {
+    name: 'a carriage return immediately after the leading "/" would parse as "//evil.example" — falls back',
+    input: '/\r/evil.example',
+    expected: '/',
+  },
 ];
 
 describe('safeNext', () => {
