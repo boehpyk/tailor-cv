@@ -1,3 +1,7 @@
+import { Link } from 'react-router';
+
+import { authErrorCopy } from '../authCopy';
+
 import type { AuthAction } from '../authCopy';
 
 export interface AuthErrorNoticeProps {
@@ -14,12 +18,32 @@ export interface AuthErrorNoticeProps {
 
 /**
  * One `role="alert"` notice per form, its sentence from `authErrorCopy(action, error)` (AC-39,
- * AC-40). **T40 SKELETON** — nothing without an error; with one, an empty element carrying the id
- * and no role and no text.
+ * AC-40).
+ *
+ * `role="alert"` is announced the moment it is inserted, which is exactly when a refusal arrives —
+ * so the notice is rendered only while there is an error, not kept in the tree empty. The message
+ * sits in its own element so the sentence is one text node whatever link follows it.
  */
 export function AuthErrorNotice({ id, action, error }: AuthErrorNoticeProps) {
   if (error === null) {
     return null;
   }
-  return <div id={id} data-auth-action={action} />;
+  const copy = authErrorCopy(action, error);
+  return (
+    <div
+      id={id}
+      role="alert"
+      className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
+    >
+      <span>{copy.message}</span>
+      {copy.link !== undefined && (
+        <>
+          {' '}
+          <Link to={copy.link.to} className="font-medium underline underline-offset-2">
+            {copy.link.label}
+          </Link>
+        </>
+      )}
+    </div>
+  );
 }
