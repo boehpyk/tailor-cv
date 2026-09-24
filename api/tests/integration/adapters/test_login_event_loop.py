@@ -41,43 +41,67 @@ runs, and deletes them all at teardown by deleting the one seeded `identity_user
 
 ---
 
-**Mutation record (2026-09-24).** `password_hasher.py`'s `verify` was rewritten to call
-`self._verify_sync(...)` directly — dropping `await loop.run_in_executor(self._executor, ...)` around
-it, leaving everything else byte-identical — then restored.
+**First pass (2026-09-24, superseded below).** This file originally gated on p50, exactly as AC-20
+was first written. Mutation-tested the same way (`verify`'s executor hop dropped, byte-exact restore
+confirmed by `md5sum`, `06078b0ab2071c2615ba12cd9b8843a5` before and after both times), p50 stayed
+green across five separate mutated runs (three at floor 200: 1.55/1.64/1.63 ms; one at floor
+2000/n=2000/44 s: 1.607 ms) against healthy p50s of 1.015-1.022 ms — never crossing the 5 ms budget,
+even though `max` turnaround roughly doubled (93-125 ms healthy to 196-253 ms mutated) and the
+wall-clock to reach the same floor stretched 2.5-20x (2.0-2.1 s to 5.2-44.1 s). That result was
+recorded rather than forced, and reported to AC-20's owner as a real, reproduced instance of the
+weakness `loop_liveness.py`'s own docstring already names: "p50 is only sensitive when the blocked
+fraction is comfortably over half," and this workload — mostly async I/O (two Postgres round trips
+plus a Redis rate-limiter check per login) with one CPU-bound step — keeps that fraction under half
+under 8-way concurrency.
+
+**Amendment (2026-09-24): AC-20 now gates on `loop_liveness.unavailable_fraction`
+(`sum(turnarounds) / wall_clock`), never on p50** — the owner's decision on the finding above, made
+explicit in `feature-spec.md`'s own "Amended 2026-09-24" note on AC-20. p50 is still computed and
+reported in the assertion message, for a human reading a failure to have it, but nothing here passes
+or fails because of it.
+
+**Mutation record for the amended assertion.** Same mutation as the first pass — `verify` rewritten
+to call `self._verify_sync(...)` directly, dropping `await loop.run_in_executor(self._executor,
+...)` around it, leaving everything else byte-identical — then restored.
 
     before: 06078b0ab2071c2615ba12cd9b8843a5  password_hasher.py
     after:  06078b0ab2071c2615ba12cd9b8843a5  password_hasher.py   (identical — byte-exact restore)
 
-| run | p50 turnaround | samples | max | wall-clock | note |
+| run | unavailable_fraction | p50 | samples | max | wall-clock |
 |---|---|---|---|---|---|
-| healthy (x2) | 1.015 ms / 1.022 ms | 200 | 93.6 ms / 125.3 ms | 2.0 s / 2.1 s | asserted `< 5 ms` — passes with an 80-200x margin |
-| mutated (x3, floor 200) | 1.55 / 1.64 / 1.63 ms | 200 | 196-203 ms | 5.2-5.5 s | **stayed green** — p50 never crossed the budget |
-| mutated (floor 2000, one run) | 1.607 ms | 2000 | 253 ms | 44.1 s | same result at 10x the samples and a 20x longer window |
+| healthy 1 | 0.5428 | 1.134 ms | 200 | 123.8 ms | 1.054 s |
+| healthy 2 | 0.5523 | 1.110 ms | 200 | 88.3 ms | 1.080 s |
+| healthy 3 | 0.5623 | 1.154 ms | 200 | 110.2 ms | 1.090 s |
+| mutated 1 | 0.9018 | 1.866 ms | 200 | 198.6 ms | 4.756 s |
+| mutated 2 | 0.8881 | 1.664 ms | 200 | 197.0 ms | 4.618 s |
+| mutated 3 | 0.8672 | 1.673 ms | 200 | 246.1 ms | 4.667 s |
 
-**This is not the "observe red" outcome the task anticipated, and it is not a hang either — recorded
-honestly rather than forced.** The mutation is real (max turnaround roughly doubled, and the whole
-batch took 2.5-20x longer to reach the same sample floor — "blocking suppresses sampling",
-`loop_liveness.py`'s own lesson two, working exactly as documented), but **p50 specifically never
-crosses 5 ms**, reproduced across five separate runs including a 10x-larger sample. The reason is the
-same one CLAUDE.md already records for AC-10's fetcher test: this workload is *mostly async I/O*
-(two Postgres round trips and a Redis rate-limiter check per login) with *one* synchronous CPU step —
-under 8-way concurrency the blocked fraction of wall-clock time stays comfortably under half, so most
-samples land in the free gaps between blocking calls and pull the median down regardless of how bad
-the blocked calls themselves are. `max` and total wall-clock both show the regression plainly; p50
-does not. CLAUDE.md already names the fix for this shape of test — "the loop's *unavailable fraction*
-over the window (`sum(turnarounds) / wall-clock`) ... is the right eventual answer" — and just as
-explicitly declines to make that call outside the criterion's own owner: "adopting it changes what
-[the criterion] asserts and therefore a decision for [its] owner". AC-20 as written asserts p50, so
-this file asserts p50, and this paragraph is the record that the assertion — passing here on real,
-production-cost argon2 over a genuinely concurrent, genuinely committing 8-way login load — has *not*
-yet been observed to fail against the regression it exists to catch. Owner: AC-20's owner; trigger:
-adopt the unavailable-fraction statistic, or accept the gap in writing.
+Healthy `unavailable_fraction` ranges **0.543-0.562**; mutated ranges **0.867-0.902** — a clean,
+reproducible gap of roughly 0.30-0.36 with no overlap across three runs on each side. **The bound is
+`_UNAVAILABLE_FRACTION_BUDGET = 0.7`**, chosen at (rather than merely inside) the numeric midpoint of
+the worst healthy run (0.562) and the worst-case mutated run (0.867) — 0.7145 rounded down to one
+readable decimal — giving healthy a **0.138** margin below the bound and mutated a **0.167** margin
+above it: the mutated side, the one where a false negative is the dangerous failure mode, gets the
+larger cushion on purpose. Every one of the three mutated runs above fails this bound; every one of
+the three healthy runs passes it — the "observe red" outcome the task asked for, now genuinely
+observed rather than reported absent.
+
+**Why this number is not close to 0, and that is not a bug in the statistic.** Even the healthy
+runs show `unavailable_fraction` above one half, because `sum(turnarounds)` is a sum across *every*
+one of 200 samples' excess-over-pacing, including brief, ordinary scheduling jitter under 8-way
+concurrent load — not a fraction of time that is literally "the loop could not respond at all" the
+way the name might suggest read informally. `loop_liveness.unavailable_fraction`'s own docstring says
+so explicitly: it is not bounded to `[0, 1]` by construction, and a caller compares it against a
+bound measured for its *own* workload and sampler configuration, never a borrowed threshold. What
+carries the proof here is not the absolute number but the **separation** between the two clusters,
+verified above with margin on both sides.
 """
 
 from __future__ import annotations
 
 import asyncio
 import statistics
+import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -98,7 +122,7 @@ from tailorcraft.infrastructure.persistence.mapping.identity.user import user_ta
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
 
-from .loop_liveness import hammer_health_live_until_floor
+from .loop_liveness import hammer_health_live_until_floor, unavailable_fraction
 
 pytestmark = pytest.mark.slow
 
@@ -109,10 +133,13 @@ _CONCURRENT_LOGINS = 8
 # Ten times the shared default (`loop_liveness.SAMPLE_FLOOR`), matching AC-10's own reasoning: the
 # executor hop is awaited I/O from the loop's own perspective, so a short batch would sample mostly
 # warm-up before any login has even reached the executor. Measured at 200 and again at 2000 (module
-# docstring's mutation record) — the higher floor changes the batch's duration, not its p50, so 200
-# is kept as this file's floor.
+# docstring's mutation record) — the higher floor changes the batch's duration, not the statistic
+# below, so 200 is kept as this file's floor.
 _SAMPLE_FLOOR = 200
-_BUDGET_SECONDS = 0.005
+# AC-20's amended bound (2026-09-24), chosen with margin on both sides of the measured healthy and
+# mutated `unavailable_fraction` values — the full set of numbers is in the module docstring's
+# mutation record, which is also where "why this number and not p50" is argued in full.
+_UNAVAILABLE_FRACTION_BUDGET = 0.7
 
 
 def _with_raised_login_limits(settings: Settings) -> Settings:
@@ -181,16 +208,24 @@ async def _delete_user(engine: AsyncEngine, user_id: UserId) -> None:
         await conn.execute(user_table.delete().where(user_table.c.id == user_id))
 
 
-async def test_loop_turnaround_p50_stays_under_5ms_during_8_concurrent_logins(
+async def test_loop_unavailable_fraction_stays_under_budget_during_8_concurrent_logins(
     live_app: FastAPI,
     engine: AsyncEngine,
     production_hasher: Argon2PasswordHasher,
     clear_redis: None,
 ) -> None:
-    """AC-20. Eight logins against one seeded, production-cost account, held in flight continuously
-    (re-submitted until the sampler signals it has its floor) while `/health/live`'s turnaround is
-    sampled on the same event loop. p50 must stay under 5 ms — argon2's ~50-250 ms per verify never
-    reaches the loop if `loop.run_in_executor` is doing its job.
+    """AC-20 (amended 2026-09-24). Eight logins against one seeded, production-cost account, held in
+    flight continuously (re-submitted until the sampler signals it has its floor) while
+    `/health/live`'s turnaround is sampled on the same event loop.
+
+    **Gates on the loop's unavailable fraction, `sum(turnarounds) / wall_clock`
+    (`loop_liveness.unavailable_fraction`), not on p50.** The amendment's own reason, recorded in
+    full in this module's docstring: p50 was measured, across five separate mutated runs including a
+    10x-larger sample, to stay under its 5 ms budget even with the executor hop removed from
+    `password_hasher.py`'s `verify` — this workload's blocked fraction stays under half under 8-way
+    concurrency, which is precisely where CLAUDE.md already documents p50 losing its sensitivity.
+    p50 is still computed and reported in the assertion message for context; it is never what this
+    test's pass/fail depends on.
     """
     settings: Settings = live_app.state.settings
     email = f"t34-{uuid4().hex}@example.com"
@@ -199,7 +234,7 @@ async def test_loop_turnaround_p50_stays_under_5ms_during_8_concurrent_logins(
     )
     client = AsyncClient(transport=ASGITransport(app=live_app), base_url="http://testserver")
     try:
-        turnarounds = await _hammer_logins_and_sample(client, settings, email)
+        turnarounds, wall_clock_seconds = await _hammer_logins_and_sample(client, settings, email)
     finally:
         await client.aclose()
         await _delete_user(engine, user_id)
@@ -209,19 +244,24 @@ async def test_loop_turnaround_p50_stays_under_5ms_during_8_concurrent_logins(
         "logins — the sampler returned before reaching its own floor, which should be impossible; "
         "see loop_liveness.hammer_health_live_until_floor"
     )
+    fraction = unavailable_fraction(turnarounds, wall_clock_seconds)
     p50 = statistics.median(turnarounds)
-    assert p50 < _BUDGET_SECONDS, (
-        f"/health/live turnaround p50 was {p50 * 1000:.2f} ms during eight concurrent logins "
-        f"(n={len(turnarounds)}, max={max(turnarounds) * 1000:.2f} ms) — the event loop was blocked"
+    assert fraction < _UNAVAILABLE_FRACTION_BUDGET, (
+        f"the loop's unavailable fraction was {fraction:.4f} during eight concurrent logins "
+        f"(budget {_UNAVAILABLE_FRACTION_BUDGET}; n={len(turnarounds)}, wall_clock="
+        f"{wall_clock_seconds:.2f}s, p50={p50 * 1000:.2f}ms, max={max(turnarounds) * 1000:.2f}ms) "
+        "— the event loop was blocked"
     )
 
 
 async def _hammer_logins_and_sample(
     client: AsyncClient, settings: Settings, email: str
-) -> list[float]:
-    """Runs the sampler and the eight login workers together, and returns the sampler's turnarounds.
-    Factored out so the mutation run below can call exactly this and nothing else — the same
-    procedure, unmutated except for the one line under test.
+) -> tuple[list[float], float]:
+    """Runs the sampler and the eight login workers together, and returns the sampler's turnarounds
+    plus the wall-clock span of the whole window (module docstring: `unavailable_fraction` needs
+    both, and the wall-clock half can only be measured by the caller — the sampler itself only ever
+    times individual requests, never its own batch). Factored out so the mutation run below can call
+    exactly this and nothing else — the same procedure, unmutated except for the one line under test.
     """
     enough = asyncio.Event()
     hammer_task = asyncio.ensure_future(
@@ -237,6 +277,7 @@ async def _hammer_logins_and_sample(
             response = await client.post(LOGIN_URL, json=body, headers=headers)
             assert response.status_code == 200, response.text
 
+    started = time.perf_counter()
     try:
         # A generous but finite ceiling — `enough` is set by the sampler the instant it has its
         # floor. Wide enough to let a MUCH slower (mutated) run still finish and be measured, per
@@ -250,4 +291,6 @@ async def _hammer_logins_and_sample(
         )
     finally:
         enough.set()
-    return await asyncio.wait_for(hammer_task, timeout=30)
+    turnarounds = await asyncio.wait_for(hammer_task, timeout=30)
+    wall_clock_seconds = time.perf_counter() - started
+    return turnarounds, wall_clock_seconds

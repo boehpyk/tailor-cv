@@ -56,8 +56,16 @@ blocks from the first instant and satisfies that; AC-10's is I/O *then* CPU and 
 why that file raises its floor to 200 and still records a margin rather than claiming one. A
 statistic with no such weakness — the loop's unavailable *fraction*, `sum(turnarounds)` over the
 window's wall-clock — exists and is the right eventual answer; adopting it changes what those
-criteria assert, so it is recorded in `test_posting_fetcher_event_loop.py` with an owner rather than
-done here.
+criteria assert, so it was recorded in `test_posting_fetcher_event_loop.py` with an owner rather than
+done there.
+
+**AC-20 (`tests/integration/adapters/test_login_event_loop.py`, T34) hit exactly this weakness and
+adopted the fix, on its owner's decision.** Eight concurrent logins against a real, production-cost
+argon2 verify are *mostly* async I/O (two Postgres round trips and a Redis check) with *one*
+CPU-bound step, so the blocked fraction under that concurrency stayed under half and p50 never went
+red against the executor-hop mutation across five separate runs, even though `max` and the batch's
+own wall-clock both showed the regression plainly. `unavailable_fraction` below is what that file
+gates on now; p50 is still computed and reported alongside it, never as the assertion.
 
 **AC-11's copy in `tests/api/test_export_inline.py` is not fixed and not proven blind.** Its own
 banner records that removing `asyncio.to_thread` from the renderer hangs the process outright, which
@@ -114,3 +122,27 @@ async def hammer_health_live_until_floor(
         if len(turnarounds) >= floor:
             enough.set()
     return turnarounds
+
+
+def unavailable_fraction(turnarounds: list[float], wall_clock_seconds: float) -> float:
+    """The loop's *unavailable fraction* over the sampling window: `sum(turnarounds) /
+    wall_clock_seconds` (module docstring, lesson two's corollary).
+
+    Pure and synchronous — it does not sample anything itself. A caller brackets the whole
+    sampling-plus-workload window with its own `time.perf_counter()` pair (never the sampler's own
+    loop, which only measures individual request turnarounds, not the batch's total span) and hands
+    both here. Unlike p50, this statistic is not blind to a blocked loop that answers *most* samples
+    quickly and a few very slowly: a blocked sample still contributes its full delay to the sum, so a
+    workload whose blocked fraction is well under half — the exact shape that defeated p50 for AC-20
+    — still moves this number in proportion to how much of the window was actually lost.
+
+    Not itself a fraction of `[0, 1]` by construction: `sum(turnarounds)` is excess time *beyond* the
+    sampler's own pacing across every request the sampler happened to make, and a caller with a
+    tighter `PACE_SECONDS` or a longer batch takes more samples, changing the sum for a reason that
+    has nothing to do with how blocked the loop was. Callers therefore compare it against a bound
+    measured empirically for their own workload and their own sampler configuration, never against a
+    borrowed threshold.
+    """
+    if wall_clock_seconds <= 0:
+        raise ValueError(f"wall_clock_seconds must be positive, got {wall_clock_seconds!r}")
+    return sum(turnarounds) / wall_clock_seconds
