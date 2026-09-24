@@ -17,6 +17,20 @@ services:
       # outranks `env_file:`, so it also wins over the root .env.
       APP_ENV: dev
       LOG_LEVEL: debug
+      # The root .env's PUBLIC_BASE_URL/CORS_ORIGINS are `https://tailorcraft.app` — a production-
+      # shaped value, safe as the `env_file:` default but wrong for a browser actually sitting at
+      # http://localhost:8080 (the integrated dev app, behind nginx's dev.conf). AC-25's origin check
+      # trusts PUBLIC_BASE_URL by construction (deps.py's `_trusted_origins` = {public_base_url} ∪
+      # cors_origin_list) — that field exists precisely to name "the app's own origin", which in dev
+      # *is* :8080, not "an extra trusted origin" the way CORS_ORIGINS means. Overriding CORS_ORIGINS
+      # instead would also turn on CORSMiddleware for that origin (main.py), which dev does not need:
+      # the browser loads both the UI and /api/* from :8080 through this same nginx, so the request is
+      # same-origin and no preflight/CORS path is exercised at all — only the AC-25 Origin check is.
+      # Same shape as APP_ENV: `environment:` outranks `env_file:`, so dev-ness follows this override
+      # file rather than a value someone edited into the gitignored .env. This also happens to match
+      # `Settings.public_base_url`'s own compiled-in default of "http://localhost:8080" — the .env
+      # value is what overrides it away from that default; this line restores it for dev only.
+      PUBLIC_BASE_URL: http://localhost:8080
     command: ["uvicorn", "tailorcraft.infrastructure.api.main:app",
               "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
