@@ -642,17 +642,37 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   posting fetch, which runs in the API. The Gemini call does not — it runs in the worker, which is
   where it would have surfaced as a `ModuleNotFoundError` in a process nobody is watching. This is
   the image-verification lesson one level down: same failure, a venv instead of an image.
-- **A startup refusal under `uvicorn --workers N` does not exit the container.** The production
-  guard (`MisconfiguredSettings` when `APP_ENV=production` has no `GEMINI_API_KEY`) fires at import in
-  every worker process, and uvicorn's multiprocess supervisor respawns the crashing import forever. The
-  container never becomes ready and never serves a request — **and never exits**, so
-  `restart: unless-stopped` never cycles it and nothing reads as a restart loop. On a real box it
-  presents as one traceback logged endlessly. Measured against the production image in slice 1.3 (T36).
+- **A startup refusal under `uvicorn --workers N` used to not exit the container — fixed in slice 2.1
+  (T46, OQ-2).** The production `CMD` in `docker/api/Dockerfile` is now
+  `sh -c "python -m tailorcraft.cli check-settings && exec uvicorn … --workers 2"`.
+  `check-settings` (`infrastructure/check_settings_command.py`) builds `Settings` and runs the Celery
+  stale-window check **once, in a single pre-flight process**, before uvicorn is `exec`'d — so a
+  refusal exits the shell non-zero and uvicorn never starts, and success replaces the shell with
+  uvicorn (still PID 1, still receives signals directly). It covers **all five** refusals the API
+  process has, the same code paths a request would hit, not a copy:
+  1. `GEMINI_API_KEY` empty under `APP_ENV=production` (`Settings` validator).
+  2. `JWT_SIGNING_KEY` missing, whitespace, the `.env.example` placeholder, or shorter than 32 bytes,
+     under `APP_ENV=production` (`Settings` validator, AC-22/I-46).
+  3. `TEST_REDIS_URL` resolving to the same `(host, port, db)` as a live Redis role — broker, result
+     backend or cache (`Settings` validator).
+  4. `TAILORING_STALE_AFTER_SECONDS` at or below the Celery hard time limit
+     (`tasks/limits.refuse_stale_windows_within_time_limit`).
+  5. `EXPORT_STALE_AFTER_SECONDS` at or below the same hard time limit (same function).
+  It prints `settings ok` and exits 0, or `check-settings: <sentence>` on stderr and exits 1 — never
+  a secret: a `MisconfiguredSettings` sentence names the variable, not the value; a pydantic
+  `ValidationError` is reduced to field names and error types.
+  **Measured (T46, the same method as 1.3's T36):** production image, `APP_ENV=production`, a dummy
+  `GEMINI_API_KEY` (so refusal 2 is the one that fires) and the `.env.example` placeholder
+  `JWT_SIGNING_KEY` → the container exits **1 in 0.78 s**, stderr carries the `check-settings:`
+  sentence and never uvicorn's banner. With a valid 32-byte-plus key and the other defaults → stdout
+  prints `settings ok`, uvicorn starts both `--workers 2` processes, and `/health/live` returns 200.
+  **The in-process guards described below still exist and still matter** — `check-settings` only
+  changes what happens in the container built from this Dockerfile with this `CMD`. Anyone who runs
+  `uvicorn` directly (a hand-rolled `docker run` overriding `CMD`, a different image, a future
+  entry point that forgets the `&&`) is back to the old behaviour: the guard fires at import in every
+  worker process and the supervisor respawns the crashing import forever, never exiting.
   When a release's readiness check never goes green, read the logs for a settings refusal before
-  suspecting the network. Slice 1.3's `/verify` added a second refusal that behaves the same way.
-  `create_celery` refuses a `TAILORING_STALE_AFTER_SECONDS` at or below the 180 s hard time limit.
-  `infrastructure/api/main.py` imports the Celery app, so a bad value there also leaves the API
-  respawning for ever, while the worker and beat exit loudly.
+  suspecting the network — `check-settings` makes that refusal loud, but only if it ran.
 - **A dev box with a real `GEMINI_API_KEY` spends money from the UI.** There is no dev-mode fake: the
   worker reads the key and makes a paid call for every tailoring run started at localhost. The test
   suite never reaches it — it replaces the LLM on the worker's own composition-root path and asserts
