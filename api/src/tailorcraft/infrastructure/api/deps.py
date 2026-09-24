@@ -98,6 +98,7 @@ from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
+from tailorcraft.infrastructure.identity.reuse_alert import ReuseAlertingEventPublisher
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
@@ -1173,8 +1174,11 @@ def get_refresh_login(
     events: EventPublisherDep,
 ) -> RefreshLogin:
     """No lifetime and no hasher: rotation never extends a login (OQ-9), and a refresh token is
-    looked up by its SHA-256, never verified by a KDF (ADR-0010 §3)."""
-    return RefreshLogin(logins, users, tokens, clock, events)
+    looked up by its SHA-256, never verified by a KDF (ADR-0010 §3).
+
+    The publisher is wrapped in `ReuseAlertingEventPublisher` so a reuse revocation also writes
+    I-24's `identity.refresh_reuse_detected` at `warning` — the router never sees the event."""
+    return RefreshLogin(logins, users, tokens, clock, ReuseAlertingEventPublisher(events))
 
 
 RefreshLoginDep = Annotated[RefreshLogin, Depends(get_refresh_login)]
