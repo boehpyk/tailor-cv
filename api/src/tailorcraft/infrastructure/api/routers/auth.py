@@ -62,7 +62,7 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.user import User
-from tailorcraft.domain.identity.value_objects import EmailAddress
+from tailorcraft.domain.identity.value_objects import EmailAddress, LoginId, LoginNotFoundReason
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
     GetCurrentUserDep,
@@ -144,6 +144,12 @@ EVENT_REGISTER_REFUSED: Final = "identity.register_refused"
 EVENT_REFRESH_REFUSED: Final = "identity.refresh_refused"
 EVENT_REFRESH_RACED: Final = "identity.refresh_raced"
 EVENT_USER_MISSING: Final = "identity.user_missing"
+
+
+def _login_id(login_id: LoginId | None) -> str | None:
+    """A login's id as a log field: the UUID's text, or `None` where the raise site had no login in
+    hand. An **id** — the only thing about a login the refresh lines ever carry (I-21, I-23)."""
+    return str(login_id.value) if login_id is not None else None
 
 
 def _no_store(response: Response) -> None:
@@ -431,7 +437,7 @@ async def refresh(
     if presented.token_hash is None:
         # I-40: not shaped like a token we mint (a JWT pasted in, a truncated value). Never used as a
         # lookup key; the browser holds junk it should drop.
-        log.info(EVENT_REFRESH_REFUSED, reason="unknown")
+        log.info(EVENT_REFRESH_REFUSED, reason=LoginNotFoundReason.UNKNOWN.value)
         return _cleared(_error_response(domain_error_to_http_exception(LoginNotFound())), settings)
 
     replacement = mint_refresh_token()
@@ -440,7 +446,7 @@ async def refresh(
     except RefreshInProgress as exc:
         # I-23, I-25: a second tab lost a race. Nothing changed, and the cookie is left alone — by
         # the time the client retries it holds the winner's.
-        log.info(EVENT_REFRESH_RACED)
+        log.info(EVENT_REFRESH_RACED, login_id=_login_id(exc.login_id))
         await _commit(session)
         raise domain_error_to_http_exception(exc) from None
     except RefreshTokenReused as exc:
@@ -451,7 +457,14 @@ async def refresh(
     except LoginNotFound as exc:
         # I-20, I-21, I-27. Unknown, revoked, or expired and deleted on sight — the last one wrote,
         # so this is committed and returned exactly like the reuse above.
-        log.info(EVENT_REFRESH_REFUSED)
+        # `reason=unknown` (I-20, I-27) carries no id — no login matched. `reason=expired` (I-21)
+        # names the login that was deleted on sight. Never the token, never its hash.
+        if exc.reason is LoginNotFoundReason.EXPIRED:
+            log.info(
+                EVENT_REFRESH_REFUSED, reason=exc.reason.value, login_id=_login_id(exc.login_id)
+            )
+        else:
+            log.info(EVENT_REFRESH_REFUSED, reason=exc.reason.value)
         await _commit(session)
         return _cleared(_error_response(domain_error_to_http_exception(exc)), settings)
 
