@@ -966,9 +966,11 @@ async def require_trusted_origin(request: Request, settings: SettingsDep) -> Non
     stripped from either side. Missing or foreign is 403 `origin_not_allowed`.
 
     Declared in each route decorator's `dependencies=[...]`, which FastAPI resolves **before** the
-    route's own parameters and body — so a refusal happens before the rate limiter, the database or
-    the hasher is touched (a recording hasher sees zero calls), and before a malformed body can turn
-    the 403 into a 422.
+    route's own parameters and before body validation — so a refusal happens before the rate
+    limiter, the database or the hasher is touched (a recording hasher sees zero calls). The one
+    thing FastAPI does earlier is decode the JSON: bytes that are not JSON at all are a 422 before
+    this runs (measured; `routers/auth.py`'s docstring has the detail). Nothing is touched then
+    either.
 
     **Why `Origin` and not a CSRF token:** `SameSite=Strict` already keeps the cookie off cross-site
     requests in every current browser; this is the second lock for the ones that do not honour it,
