@@ -10,6 +10,11 @@ arguments. Its code lives in `infrastructure/retention/purge_command.py`, which 
 four exit codes are defined; `--orphans` selects the second use case, the volume sweep that is
 **only** ever run from here and never on beat.
 
+`revoke-logins --all [--dry-run]` is implemented (slice 2.1, `identity-register-and-login`, T33):
+the break-glass that deletes every `Login` (AC-13, OQ-5). Its code lives in
+`infrastructure/identity/revoke_logins_command.py`; exit 0 on success (including zero logins), 1 on
+a database failure, 2 for a usage error — `--all` is required.
+
 `eval-prompts` is implemented (slice 1.3, T37) and is **not a use case**: it is a measurement an
 operator runs by hand against the real Gemini API, and it costs money. Its code lives in
 `infrastructure/llm/evaluation/`.
@@ -77,6 +82,19 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
+    # AC-13 / OQ-5: the break-glass. Rotating `JWT_SIGNING_KEY` logs nobody out (I-44); this does.
+    # `--all` is **required**, so the bare command is argparse's usage error (exit 2) rather than a
+    # mass sign-out — the flag is the command's whole safety, since it has no other mode.
+    revoke = sub.add_parser("revoke-logins", help="delete every login, signing every user out")
+    revoke.add_argument(
+        "--all",
+        dest="revoke_all",
+        action="store_true",
+        required=True,
+        help="required: revoke every login (there is no narrower mode)",
+    )
+    revoke.add_argument("--dry-run", action="store_true", help="report the count; delete nothing")
+
     # ADR-0004: prompt quality is evaluated by hand against a committed corpus, not asserted in a
     # test. The defaults are what `make eval` runs: the whole corpus, relative to api/ (the
     # container's working directory).
@@ -120,6 +138,13 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             grace_hours=args.grace_hours,
         )
+    if args.command == "revoke-logins":
+        # Imported here: it builds a database engine, which neither other command's path needs.
+        from tailorcraft.infrastructure.identity.revoke_logins_command import (
+            run_from_cli as run_revoke,
+        )
+
+        return run_revoke(dry_run=args.dry_run)
     if args.command == "eval-prompts":
         # Imported here, not at the top: it pulls in the Gemini SDK, which `purge-guests` has no
         # reason to load.
