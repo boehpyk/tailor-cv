@@ -140,7 +140,12 @@ describe('AccountPage', () => {
   });
 
   it("AC-44: a successful logout removes ['auth', …] from the cache and leaves a guest-workspace query untouched", async () => {
-    const queryClient = makeQueryClient();
+    // gcTime: Infinity here (not makeQueryClient()'s gcTime: 0): setQueryData with no observer is
+    // otherwise garbage-collected on the next macrotask regardless of what logout does, which would
+    // make this assertion test cache GC rather than AC-44's scoping of removeQueries to ['auth', …].
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } },
+    });
     queryClient.setQueryData(['base-cvs'], [{ id: 'guest-cv-1' }]);
     authStore.setAuthenticated(AUTHENTICATED_RESPONSE);
     makeFetchMock({
