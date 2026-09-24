@@ -3040,3 +3040,326 @@ start of every session — behind a check that the database's name ends in `_tes
 statement it runs is `DROP SCHEMA … CASCADE`. The proof was a number, not a green run: dead columns
 grew by 5 per run before, and read 5 after each of three runs since.
 
+
+# Slice 2.1 — identity, or: the first thing that keeps a secret
+
+Every slice so far has been about a stranger's CV: taking it in, rewriting it, rendering it,
+deleting it. Slice 2.1 is the first one where the product holds something that is **not** the
+user's content but the user's *key* — a password — and the first time anybody here is somebody
+rather than an anonymous cookie.
+
+It ships as `feature/identity-register-and-login`: **58 commits, 1818 backend and 647 frontend
+tests**, two new ADRs (0020 and 0021), an amended one (0008), one migration with three tables, and a
+React surface of `/login`, `/register`, `/account` and a little status block in the header. It is
+**not merged**. Since 2026-09-22 a merge to `main` is a real release to `cv.samolit.com`, so this one
+waits for `/verify` and for the owner to press the approve button. The code is done; the release is
+a decision.
+
+## Two kinds of visitor, never weighed on one scale
+
+The tempting model is a ladder: a guest is a weak user, a user is a strong guest, and there is one
+`current_principal` somewhere that is either. This codebase refuses the ladder on purpose.
+
+A **guest session** is a cookie that owns some work for 24 hours. A **login** is a proof that a
+person typed a password. They answer different questions — "whose half-finished CV is this?" versus
+"who is this?" — and mixing them is how you get the classic bug where owning a session id quietly
+becomes authority over somebody's account. So: two cookies, two resolvers (`require_guest_session`,
+`require_user`), two aggregates with **no shared base class**, and **no route in 2.1 depends on
+both**. That last sentence is not a comment — a test walks FastAPI's dependency graph for every
+route and fails if one ever does. Another test pins `guest_session.py` by its SHA-256 digest, so the
+file this slice must not touch goes red the moment someone touches it.
+
+Think of a coat check and a membership card. The coat-check ticket gets your coat back; it does not
+get you into the members' lounge, and the membership card does not fetch coats. The one place the
+two meet — a guest who registers and wants to keep their work — is slice 2.4's "claim", designed in
+this spec and deliberately not built.
+
+## Two hashes, for opposite reasons
+
+Here is a thing that looks inconsistent and is the opposite. The refresh token is stored as a plain
+**SHA-256** hash. The password is stored as **argon2id**, which is deliberately slow and eats 64 MiB
+of memory per attempt. Both are secrets. Why would one get a fast hash and the other a slow one?
+
+Because **entropy decides the hash, not how secret the thing feels.** The refresh token is 256 random
+bits from `secrets.token_urlsafe(32)`. Nobody will ever guess one; an attacker holding the hash
+cannot brute-force 2²⁵⁶ possibilities, fast hash or slow. Making it slow would just burn CPU on a
+path that runs every 15 minutes in every open tab. A password is the opposite: a human chose it, it
+lives in a space small enough to enumerate, and the *only* defence left once a database leaks is
+making each guess expensive. SHA-256 there would be negligence.
+
+Same codebase, opposite answers, one rule — and it's the same rule ADR-0010 wrote down for the guest
+cookie back in slice 1.1. It's like the difference between a bank vault and a lottery ticket number.
+The vault needs a thick door because people will try the handle. Nobody needs to lock up a
+twenty-digit random number: the number *is* the lock.
+
+## A login is a family, and the arithmetic is the whole design
+
+ADR-0008 promised "rotating refresh tokens with reuse detection" back in Phase 0, and said nothing
+about how. ADR-0020 is the how, and it turns out to be a small piece of arithmetic.
+
+A **`Login`** is one row per sign-in on one device. It holds the hash of the *current* refresh
+token, a **generation** (1 at login, +1 on every refresh), when it last rotated, and an absolute
+expiry 30 days out. Every refresh swaps the current token for a fresh one and files the old hash in
+an append-only table of retired hashes, tagged with its generation. Then any token that comes back
+can be sorted into one of four piles:
+
+- **The current one** → rotate: new token, generation + 1.
+- **Unknown** → 401, you are not signed in.
+- **Retired, and it's the immediate predecessor (`current − 1`), within 10 seconds of the rotation** →
+  `RACED`: a 409 `refresh_in_progress`, and *nothing changes*. That's two tabs of the same browser
+  waking up together. The honest second tab looks exactly like a thief for a few hundred
+  milliseconds, and ADR-0008 had warned that getting this wrong presents as "it randomly logs me
+  out" — the least debuggable bug report there is.
+- **Retired, anything else** → `REUSED`: somebody is replaying an old token. The whole login is
+  deleted, a warning is logged with ids and generations, and both the thief and the real user are
+  signed out. The real user types a password; the thief has nothing.
+
+Two design choices worth stealing. First, **the 10-second grace is a domain constant, not a
+setting**: it's a property of what a race *is*, and this codebase does not hand out knobs that
+weaken a control. Second, **revocation is `DELETE`**. There is no `revoked` flag, no `revoked_at`
+column "for forensics". A row whose only job is to say "this is dead" needs its own retention policy,
+its own purge, its own privacy review — and it has no reader. After a revocation, every token of that
+login is simply *unknown*, which is the correct answer anyway. The product's whole premise is keeping
+less; the auth model agrees with it.
+
+And the lifetime is **absolute**. A rotation on day 29 does not buy another 30 days, or a stolen
+token that keeps being used would live for ever. The cookie's `Max-Age` is the *remaining* lifetime,
+measured from the use case's own instant, never from a second clock read.
+
+## The concession: registration tells you whether an email exists
+
+Login never tells. An unknown email and a wrong password return **byte-identical** responses — same
+status, same body, same headers apart from `Date` — and, the part people forget, **the same time**.
+If the server skipped the slow hash for an email it doesn't know, a stopwatch would answer the
+question the body refuses to. So an unknown email is verified against a **decoy hash** computed at
+start-up with the live parameters. On the production image the medians came out **0.64 %** apart
+(the budget was 10 %).
+
+Registration, though, *does* tell: a duplicate gets 409 `email_already_registered`. That isn't an
+oversight, it's arithmetic again. Without an out-of-band channel (an email you can send), **every**
+registration design leaks existence: either immediately, or one step later when the attacker tries
+logging in with the password they just "registered". The only design that doesn't leak is "always
+say *check your inbox* and send the email", which needs a sender domain, deliverability and a
+verification-token table — a slice of its own (roadmap 2.5). So the residual risk is **stated**, in
+ADR-0008's amendment, and bounded with a 5-per-hour-per-IP limit, rather than pretended away.
+
+The lesson I'd keep: when a promise in an ADR turns out to be unkeepable, amend it in the open.
+A security claim that isn't true is worse than a smaller one that is, because people plan around it.
+
+## CSRF on a domain with neighbours
+
+`cv.samolit.com` shares its registrable domain with every other `*.samolit.com` app on the same box.
+To a browser, those siblings are **same-site**. That quietly defeats the usual advice — `SameSite=Lax`
+stops cross-*site* requests, and a sibling isn't cross-site. An XSS on some other app on the box
+would be a CSRF on us.
+
+So the refresh cookie gets four layers, each named for the attack it stops:
+
+- `SameSite=Strict` — stops cross-site requests entirely (it costs nothing: only our own `fetch` ever
+  needs the cookie, never a top-level navigation).
+- **Host-only** (no `Domain`) — a sibling never even *receives* the cookie.
+- `Path=/api/auth` — the cookie rides on the five auth endpoints and nothing else.
+- A **trusted-`Origin` check** on the four endpoints that touch the cookie — stops a same-site
+  sibling *sending* a request, and stops login CSRF — run **before** the rate limiter, the database
+  and the hasher, so a forged request costs us nothing.
+
+Plus JSON-only bodies, which a cross-origin `<form>` cannot produce. The rejected alternative is
+instructive: a classic double-submit CSRF token needs a second cookie that JavaScript can **read**,
+i.e. a readable credential on the very page the whole design keeps credentials off. The `Origin`
+header buys the same guarantee and exposes nothing.
+
+## argon2, the job whose whole purpose is to be slow
+
+This codebase has now met "synchronous CPU work inside an async route" four times: DOCX sniffing,
+WeasyPrint, the orphan scanner, and now a password hash that is slow *on purpose*. The new wrinkle is
+**memory**. Each argon2id hash at our parameters (`m=65536, t=3, p=4` — module constants, passed
+explicitly so a library upgrade can't move them, and no setting that could weaken them) takes 64 MiB.
+Put that in an unbounded thread pool and a burst of logins is a memory bomb on a small VDS.
+
+So it runs on a **dedicated `ThreadPoolExecutor(max_workers=2)`**, created in the app's lifespan. Not
+`asyncio.to_thread`, which shares the loop's default pool with CV extraction — a login burst would
+starve somebody's upload. The neat part: **the pool size *is* the memory cap.** Two workers per
+process, two processes: 256 MiB worst case, by construction, no monitoring required. argon2-cffi
+releases the GIL, so the two hashes really do run in parallel; a burst simply waits in the queue, and
+the rate limiters bound the queue.
+
+The numbers, on the production image: one hash **51 ms**; `login` p95 **69.9 ms** (budget 300);
+`refresh` p95 **7.8 ms** (50); `me` p95 **4.2 ms** (30). The tight one is memory: RSS grew **128.5
+and 128.0 MiB** per worker under 8 concurrent logins, against a 160 MiB budget. That's the number to
+watch — and the ADR already says what gives first if the box is tight: the executor drops to 1
+before the parameters drop.
+
+One more property of the limiters worth understanding. The codebase's rule is *fail open when the
+cost is ours and bounded; fail closed when the cost is somebody else's.* An unlimited password
+guesser spends somebody else's account, so the login and registration limiters **fail closed** —
+Redis down means no new logins. But refresh, logout and `/me` touch no Redis at all, so a Redis
+outage never logs anyone *out*. Half an outage, deliberately chosen.
+
+## A credential is not server state
+
+On the React side, the tempting move is to put the access token in TanStack Query, next to the user
+profile. It fits there badly. Query is a *cache of server state*: it refetches, it garbage-collects,
+it dedupes, it shows up in devtools. A 15-minute bearer token is none of those things — it's a
+credential the client **holds** and must refresh on its own schedule.
+
+So there is one tiny module-level **store** — a state machine (`booting`, `anonymous`, `unavailable`,
+`authenticated`) plus the token — and React reads it through **`useSyncExternalStore`**, which is
+exactly the hook for "a value that lives outside React and tells you when it changes". The profile
+*is* server state, so it lives in Query under `['auth','me']`; the token never does, and a grep test
+fails the build if `accessToken` ever appears next to `useState`, `setQueryData` or `useQuery`, or if
+anything under `features/auth/` touches `localStorage` or `document.cookie`.
+
+Two details show how much of auth is about timing. The boot refresh runs **at module scope** in
+`main.tsx`, not in an effect — `<StrictMode>` runs effects twice in development, and two refreshes
+from one tab would make the server's race grace answer *our own double-mount*. And the store answers
+`superseded` when a slow boot refresh loses to a login that happened meanwhile, so user A's profile
+can't land in the cache after user B signed in. A mutation test proved that one: remove the guard,
+and the test goes red with A's profile where B's should be.
+
+## War stories
+
+### The median that couldn't see a blocked loop
+
+AC-20 said: while eight logins run, `/health/live` should stay responsive — p50 under 5 ms. The
+point was to prove argon2 is off the event loop. The discipline since 1.6 is to *prove the proof*:
+put the regression back (run the hash inline on the loop) and watch the test go red.
+
+It didn't. Five mutated runs, all green. The worst case roughly doubled, the run took up to twenty
+times longer — and the median didn't budge. Slice 1.6 had already named why: **a median only notices
+a blocked loop if the loop is blocked more than half the time.** A login is mostly I/O — two Postgres
+round trips and a Redis check — with one slow CPU step, so even with the hash inlined, most samples
+still land in the gaps and come back fast. It's like judging a restaurant's service by the median
+wait when the kitchen closes for ten minutes every half hour: most diners never notice, and the
+statistic agrees with them.
+
+The test's author didn't quietly change the criterion; they reported it and left the decision to its
+owner, who amended AC-20 to measure **the fraction of time the loop was unavailable**.
+
+### The fraction that measured latency instead
+
+The first version of that fraction was `sum(turnarounds) / wall_clock`, and it separated healthy
+(0.54–0.56) from mutated (0.87–0.90) beautifully. Then, the same day and before review, someone did
+the algebra. For a sampler that sleeps a fixed `pace` and then makes a request, wall-clock is roughly
+`N × (pace + t̄)`, so the ratio is about `t̄ / (pace + t̄)` — **it measures how slow each request is,
+not whether the loop is blocked.** Run the suite on a slower CI box and it creeps toward the bound
+with no blocking at all. That's 1.5's lesson ("a timing test's precondition can scale with machine
+speed") arriving one level up, in the statistic itself.
+
+The shipped formula subtracts a same-run, no-load **baseline** from each sample and divides by the
+sum of samples: `Σ max(0, t − baseline) / Σ t`. Slow everything down by a factor K and K cancels
+top and bottom — invariant *by proof*, not by hope. It is honestly *not* invariant to changing the
+pace (5 ms instead of 1 ms dropped the healthy value to 0.56), and that's written down too; the pace
+is a constant nobody varies. Healthy **0.775–0.799**, mutated **0.971–0.974**, bound **0.88**. The
+margin is thin, so the first CI runs are the real test.
+
+### The test that removed the floor it was testing
+
+Failure row I-45: "argon2 raises something unexpected → the adapter's `except Exception` floor turns
+it into `PasswordHashingFailed` → 503". The first version of the test monkeypatched the adapter's
+public `verify` to explode. Which means it replaced the adapter — **including the floor**. The
+exception went straight past the thing the test was named after. It's like testing a smoke alarm by
+unscrewing it from the ceiling and holding a lighter under the empty bracket. The fix is to inject the
+fault *below* the floor, into the library call the adapter wraps, so the floor still stands between
+the fault and the route.
+
+### The cache that garbage-collected the evidence
+
+AC-44: logging out must remove `['auth','me']` from the query cache and *keep* the guest's work
+(`['base-cvs']`). The test client used `gcTime: 0`, a common test setting — and with nothing
+observing the guest entry, TanStack Query collected it on the next macrotask. So the assertion about
+what logout kept was really an assertion about the garbage collector. With `gcTime: Infinity`, the
+test asserts both halves, and a mutation (logout calling `removeQueries()` with no key, wiping
+everything) turns it red on exactly the line you'd hope.
+
+A cousin of it lives in the login form. `isPending` updates on the *next* notify, so two clicks in the
+same tick both read `false` and submit twice. `queryClient.isMutating({ mutationKey })` is updated
+synchronously by `mutate()`, so that's the guard.
+
+### The commit that ran after the response
+
+On FastAPI 0.141, a dependency's teardown runs **after the response has been sent**. Our database
+session is such a dependency, and it commits in its teardown. So for any endpoint relying on it, a
+failed commit could not change the answer — the client already had its 200.
+
+That matters most in the least obvious place: the 401 for a reused refresh token. The use case
+*deletes the login* (that's the revocation) and then raises. If the handler let that exception
+propagate, the session dependency would take its rollback branch — the deletion would silently
+un-happen, and the thief's family would live on behind a response saying it didn't. So the handler
+catches the refusal, **commits inside the handler**, and *returns* the 401 as a response. Logout
+clears the cookie only after its commit succeeds. Even `/me` commits explicitly. The lesson is
+bigger than FastAPI: **know when your framework runs your cleanup relative to the moment the user
+hears the answer.**
+
+### The tab character that became a slash
+
+After login, the app sends you to `?next=…` — but only if `next` is a path on *our* site, or it's an
+open redirect. The check refused `//evil.example`, `/\evil.example`, `https://…`, `javascript:`. Then
+someone read the URL spec: the WHATWG parser **silently strips tab, CR and LF** from anywhere in the
+input. So `/<TAB>/evil.example` passes a prefix check and then *navigates* as `//evil.example`. It was
+confirmed against Node's real `new URL()` before anything was written, and `safeNext` now refuses any
+control character at all, rather than listing the three we happen to know about. Same move as the
+`except Exception` floor: when you can't enumerate the attacker's options, refuse the whole class.
+
+### Smaller ones, still worth keeping
+
+- **The name of the broken rule was hidden by our own privacy fix.** Telling "that email is taken"
+  (`uq_identity_user_email`) from "that email isn't normalised" (a CHECK) needs asyncpg's
+  `constraint_name` — which lives only on the driver exception our `handle_error` listener cuts out of
+  the chain so it can't leak data. The listener now copies the allow-listed identifiers across, and
+  repositories ask `violated_constraint(exc)`. Never parse the message: it was withheld on purpose.
+- **`begin_nested()` flushes on entry — past your version check.** `save_rotation` writes its own
+  `UPDATE … WHERE version = :v`. With the rotated `Login` still attached, opening the SAVEPOINT first
+  flushed the ORM's *unchecked* `UPDATE`, so a race loser overwrote the winner and both got 200. The
+  fix is to `expunge` the aggregate first. That's the 1.4 identity-map lesson from a new angle.
+- **FastAPI 0.141 stopped flattening `app.routes`**, so a naive version of the route walker above
+  would have walked nothing and passed. It descends into `original_router`.
+- **The `.env.example` placeholder key is 33 bytes** — longer than the 32-byte minimum. A length check
+  alone would accept it, so it's refused by name.
+- **Dev refused every login from `:8080`** with 403: the root `.env` trusted the production-shaped
+  origin. `docker-compose.dev.yml` now pins `PUBLIC_BASE_URL`, the same way it pins `APP_ENV`.
+  Recreating the api then died on `ModuleNotFoundError: jwt` — a recreate goes back to the *image*,
+  which predated the new dependency. `up -d --build`.
+- **`tailorcraft-api:local` was the dev image.** Measuring "the production image" under that tag would
+  have timed a `--reload` development server. T48 built `--target production` under its own tag.
+  And httpx refused to send the `Secure` refresh cookie over the measurement container's plain HTTP,
+  so the script re-attached it by hand.
+- **Two access tokens minted in the same second are byte-identical** — no `jti`, whole-second
+  timestamps. Harmless, as long as nothing ever treats "the token changed" as meaning anything.
+
+## Also closed: the refusal that never exited
+
+Since slice 1.3 there had been an embarrassing footgun: when the production config was wrong (no
+Gemini key, say), every uvicorn worker refused at import, the supervisor respawned it, and the
+container sat there **for ever**, never ready and never exiting. This slice added a fifth refusal (a
+weak `JWT_SIGNING_KEY`), which was the moment to fix it properly. The production command is now
+`check-settings && exec uvicorn …`: every refusal is asked once, in one process, before anything
+starts. With the placeholder key the container now **exits 1 in 0.78 s**, printing the variable's
+name and never its value. The production box's real key was checked over SSH for length and
+not-being-the-placeholder — without ever printing it.
+
+And a correction the slice made to its own documentation: three places said **rotating the JWT key
+logs everyone out**. It doesn't, and never could have — refresh tokens are database rows, not signed
+values, so a new key only retires the 15-minute access tokens and the next silent refresh mints new
+ones. The real break-glass is `python -m tailorcraft.cli revoke-logins --all`, which deletes every
+login. A security control you *think* you have is the most dangerous kind.
+
+## The common thread, a ninth time
+
+Look at the war stories together: a median that couldn't see blocking, a fraction that measured
+latency, a test that removed its own subject, a cache assertion that was really about GC, a commit
+that happened after the answer. **Every one was a check that passed while measuring something other
+than what its name said.** None of them was found by a red test. Each was found by someone asking
+"what would this look like if it were broken?" and then *making* it broken — the mutation habit this
+project has been building since 1.4, now doing most of the work.
+
+## What's next
+
+- `/verify` (T50), including a manual pass through `:8080`: register, reload (still signed in — the
+  silent refresh), two tabs reloading at once (still signed in — the grace), log out, reload.
+- Then the merge, which is a release: an approval in the Actions UI and a live `cv.samolit.com` with
+  accounts.
+- **Owed by the owner:** Phase 1's gate. It was never recorded as met, and Phase 2 began anyway
+  (OQ-7). The roadmap now says so plainly; the next line there should be evidence, or a reason.
+- **Carried:** account deletion is an operator deleting the `identity_user` row until 2.2 (OQ-8);
+  retired hashes of logins nobody returns to pile up with no sweep until 100 k rows or 2.2; and AC-20's
+  bound needs watching on CI.

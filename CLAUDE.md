@@ -18,10 +18,12 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: six slices shipped. Slice 1.6 was verified (`/verify` PASS), rehearsed on real data,
-> switched on and merged as PR #8, 2026-09-22.** `GUEST_PURGE_ENABLED=true`; `/health/ready` reads
-> `scheduled: true`, `stale: false`, `overdue: 0`. Every task in the slice is closed.
-> Phase 1 is under way. The architecture now carries a paid external call, a worker, three scheduled
+> **Status: six slices shipped; slice 2.1 is implemented on `feature/identity-register-and-login`
+> and NOT merged** — merging is a release to `cv.samolit.com`, so it waits on `/verify` (T50) and the
+> owner's deploy approval. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
+> `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
+> roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
 > jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
 > written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
 > in two systems at once.**
@@ -57,7 +59,37 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
 >   `overdue` probe **2.1 ms p95** against 20 ms.
 >
-> **`/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
+> - **2.1 `identity-register-and-login`** (branch, **implemented, not merged**) — the first
+>   registered principal and the first password. `User` and `Login` aggregates beside an untouched
+>   `GuestSession` (its file is pinned by digest; no route depends on both resolvers). A `Login`
+>   **is** a refresh-token family: generations, a **10 s race grace** answered 409
+>   `refresh_in_progress`, retired hashes in an append-only lookup table, and **revocation is
+>   `DELETE`** (**ADR-0020**). Passwords are argon2id (`m=65536,t=3,p=4` — constants, no setting)
+>   on a **dedicated two-worker executor whose size is the memory cap**, verified against a decoy
+>   for an unknown email (**ADR-0021**). Access tokens: HS256, 15 min, exactly five claims, judged
+>   by the `Clock`. Refresh cookie `tc_refresh`: opaque, stored as SHA-256, `HttpOnly;
+>   SameSite=Strict; Path=/api/auth`, host-only, rotated on every use, 30-day absolute lifetime.
+>   The four cookie-touching endpoints check a trusted `Origin` **before** the limiter, the
+>   database and the hasher; the login/register limiters **fail closed** and refresh has none, so
+>   Redis down stops new logins and never logs anyone out. Registration **enumerates** (409) until
+>   an email channel exists (ADR-0008 amendment (b), roadmap 2.5). React: `/login`, `/register`,
+>   `/account`, a header block, one auth store read through `useSyncExternalStore`, a boot refresh
+>   at module scope, a bearer interceptor that refreshes once. One expand-only migration, three
+>   tables. **1818 backend and 647 frontend tests.** **AC-52 holds**: `git diff main --stat` over
+>   `domain/tailoring`, `application/tailoring` and `infrastructure/llm` is empty — the prompt
+>   cannot have gained an email or an account id.
+>   Measured on the **production image** (T48): argon2 hash **51 ms** (budget 40–250 ms); `login`
+>   p95 **69.9 ms** (300); `refresh` p95 **7.8 ms** (50); `me` p95 **4.2 ms** (30); unknown-email
+>   vs wrong-password median Δ **0.64 %** (≤ 10 %, AC-28); RSS growth under 8 concurrent logins
+>   **128.5 / 128.0 MiB** per worker against **160 MiB** — the budget closest to its limit. If the
+>   box is tight, the executor drops to 1 before the parameters drop.
+>   **Rotating `JWT_SIGNING_KEY` logs nobody out** — refresh tokens are rows, not signatures, so a
+>   new key only retires 15-minute access tokens and the next silent refresh mints new ones. The
+>   break-glass is `revoke-logins --all` (Commands). Account deletion until 2.2 is an operator
+>   deleting the `identity_user` row (OQ-8, `docs/infrastructure.md`). The footguns it hit are
+>   filed under Conventions and Infrastructure footguns below, not here.
+>
+> **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
 >   including `GUEST_PURGE_ENABLED` — the single control keeping the first `DELETE` off a schedule
@@ -78,30 +110,15 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > - **The symlink seam**, below.
 >
 > **The `.part`/symlink pattern appeared three times in one slice, all in the file store, all
-> invisible to a recording fake.** One lesson, worth learning once: *the thing named is not always the
-> thing acted on.*
-> 1. The partial that survived while a live file beside it died (T18b, below).
-> 2. **A symlink whose target died while the link survived.** The scanner passes `follow_symlinks=False`
->    everywhere and is correct; `_resolve_contained` called `.resolve()`, which **follows**. Opposite
->    policies either side of one seam. The orphan sweep is the **first caller in the codebase that
->    deletes by a name it discovered on disk**, which is what turned a pre-existing `resolve()` into a
->    deletion primitive: a link at a `FileRef`-shaped key is reported by the scanner, clears the
->    cross-check (the *link's* key is in no row), and is "reclaimed" — destroying a live, referenced
->    file belonging to a **different session** while the orphan survives.
-> 3. **`_put_sync` opened `<key>.part` with a plain `open()`**, which follows a link — so bytes landed
->    on the target and `os.replace`, which renames the link rather than following it, then installed
->    **the link itself** at the real key. One upload overwriting an arbitrary file on the volume, and
->    that key a symlink from then on. Found by following the fix rather than closing the ticket.
->
-> **The fix is uniform and is now stated once in the module docstring** so nobody re-derives which
-> path was which: `put` and `get` open `O_NOFOLLOW` through one `_nofollow_opener` passed to
-> `open()`'s `opener=` hook and work on the **descriptor**; `delete`/`delete_partial` call `unlink`,
-> which removes a link and never its target; `_resolve_contained` resolves the **parent** and never
-> the basename, refusing a final-component link — but it is a **check-then-use**, so it is the outer
-> lock and never the only one. `os.fchmod(fd, …)` replaced `os.chmod(path, …)`: a descriptor cannot be
-> re-pointed between the open and the chmod, and `fchmod` is immune to the umask that `O_CREAT`'s mode
-> argument is not. The opener also closed a descriptor leak **by construction** — `open()` owns the fd
-> it returns — which removed code instead of adding a handler.
+> invisible to a recording fake** — *the thing named is not always the thing acted on*: (1) a
+> partial that survived while the live file beside it died (below); (2) a symlink whose **target**
+> the orphan sweep destroyed — the scanner never follows links, `_resolve_contained` called
+> `.resolve()`, which does, and the sweep is the first caller that deletes by a name it *discovered on
+> disk*; (3) `_put_sync` opening `<key>.part` with a plain `open()`, writing through a link that
+> `os.replace` then installed at the real key. **The uniform fix is stated once in the file store's
+> module docstring**: `O_NOFOLLOW` through one `_nofollow_opener` on `put`/`get`, work on the
+> descriptor (`fchmod`, not `chmod`); `unlink` for deletes; `_resolve_contained` resolves the parent
+> and never the basename — a check-then-use, so the outer lock and never the only one.
 >
 > **What 1.6 found that no passing test could:**
 > - **A test that samples an in-process route cannot see a blocked event loop** — found at T47, by
@@ -195,39 +212,22 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > - **markdown-it does not hand back a link without an `href`** — a refused scheme fails the whole
 >   rule and leaves the literal `[text](javascript:…)` as one text token.
 >
-> **What `/verify` found on top of that, in code 1293 green tests were happy with:**
-> - **The refused-link helper deleted the author's own characters.** `Negotiated salary range
->   [100k](150k)` came out of every PDF, DOCX and TXT as `…range 100k`. One predicate was being asked
->   two different questions: `_allow_three_schemes` is the *parser's* gate ("may this become an
->   `href`?"), while the helper runs over text markdown-it has **already refused** and must ask "was
->   this ever a URL?". A destination with no scheme was never a URL attempt. **`_is_refused_url` is
->   the second question**, and the corpus now carries a `[label](plain-word)` fixture — its absence is
->   why AC-47's 28/28 could not see this.
->   **A one-character scheme is a drive letter, not a scheme** (`urlsplit("C:/…").scheme == "c"`), so
->   the guard is `len(scheme) > 1`. The argument for that is worth more than the line: **the harm is
->   asymmetric.** Over-stripping deletes text and the reader never learns anything went; under-
->   stripping shows inert text the parser already refused, with *zero* security cost, because by then
->   there is no `href`. Put a heuristic's error on the side that shows too much.
-> - **An error state whose only affordance reproduced the error.** A 410 `export_file_gone` does not
->   change the job row — the download endpoint writes nothing, correctly — so a control that asked
->   the *row* what a click meant went on answering "download this ready file" for ever, under copy
->   reading *"no longer available — Export again"*. The click's meaning now comes from the **view**,
->   which deletes the second derivation that was the actual cause.
-> - **Five failure-contract rows reached nobody.** `requestExport.isError` was read nowhere, so X-14,
->   X-18, X-19, X-21 and X-22 all rendered silence. Three of them **commit no row** (ADR-0014 §2), so
->   the poll could never surface them either — and the obvious response to silence is to click again,
->   which for the 429 and the session cap is exactly what the limit exists to stop.
-> - **A test that could no longer fail.** Deleting the unsanitized `render_html` was right; re-pointing
->   its three assertions at the sanitized composition was right for two of them and made the third
->   vacuous, because `sanitize_html` emits only the allow-list *by construction*. Break the emitter's
->   heading clamp and all 13 tests stayed green. **The emitter's promise is "for any stream anybody
->   hands it", so testing it requires a stream the pipeline would never produce** — the fixture needs
->   a raw `h4` that `normalize_to_grammar` would have clamped away.
+> **What 1.5's `/verify` found on top of that, in code 1293 green tests were happy with** (the full
+> stories are in `FORboehpyk.md`):
+> - **The refused-link helper deleted the author's own characters** (`range [100k](150k)` → `range
+>   100k`): one predicate asked two questions. `_is_refused_url` is the second one ("was this ever a
+>   URL?"), and a one-character scheme is a drive letter (`len(scheme) > 1`). **Put a heuristic's
+>   error on the side that shows too much** — under-stripping shows inert text at zero security cost.
+> - **An error state whose only affordance reproduced the error** — the click's meaning now comes
+>   from the view, not a second derivation from the row.
+> - **Five failure-contract rows reached nobody** (`requestExport.isError` read nowhere); three
+>   commit no row, so silence invited the very retry the 429 exists to stop.
+> - **A test that could no longer fail** — an emitter's promise is "for any stream", so its fixture
+>   needs a stream the pipeline would never produce (a raw `h4`).
 >
 > **Carried out of 1.5, each with an owner and a trigger:**
-> - **Startup refusals never exit under `uvicorn --workers N`** — now **three** guards (the API key,
->   the tailoring stale window, the export stale window). Owner: `devops`, before the deploy SSH
->   secrets are set.
+> - **Startup refusals never exiting under `uvicorn --workers N`** — **closed in 2.1** (T46): the
+>   production `CMD` pre-flights `check-settings`; see the footgun below.
 > - **AC-37 forces an a11y regression** (the ticking count cannot hide in an `aria-hidden` span), and
 >   **AC-42's 401 copy ships without its link home** — the latter still blocked, because the view's
 >   union was **re-pinned** by `toEqual` in the same commit that widened it. Both recorded in the spec.
@@ -459,6 +459,14 @@ python -m tailorcraft.cli purge-guests --orphans --dry-run
 # Exit codes: 0 success (including deleting nothing) · 1 failed · 2 usage · 3 THE LOCK WAS HELD.
 # 3 is the point: a run that did nothing because another holds the lock must not exit 0.
 
+# Identity (slice 2.1). THE BREAK-GLASS: deletes every login, signing every user out. Dry run first.
+# Rotating JWT_SIGNING_KEY is NOT this — it logs nobody out. Either way, access tokens already
+# issued stay valid until they expire (≤ 15 min). No make target, on purpose: not a routine step.
+python -m tailorcraft.cli revoke-logins --all --dry-run   # the count; deletes nothing
+python -m tailorcraft.cli revoke-logins --all             # 0 ok (incl. zero) · 1 db failure · 2 usage
+python -m tailorcraft.cli check-settings                  # every startup refusal, once; exit 1 + the
+                                                          # sentence (never a value), or `settings ok`
+
 # Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
 # deliberately NO setting that weakens the SSRF address policy.
@@ -493,6 +501,14 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   from "this failed" (a user who cannot tell will refresh and pay for a second LLM call). No `any`,
   no `!` to silence the compiler, no access token in `localStorage`, no business rule re-implemented
   in TypeScript.
+  **Two TanStack timing traps from 2.1.** `gcTime: 0` garbage-collects an *unobserved*
+  `setQueryData` entry on the next macrotask, so an absence/presence assertion on one tests GC, not
+  your code — AC-44's logout-scoping test was measuring the collector, not logout. Its client now
+  uses `gcTime: Infinity` and asserts both halves (`['auth','me']` gone, the guest query kept). And `isPending` updates on the next notify, so a
+  same-tick double click reads `false` twice: guard a submit with
+  `queryClient.isMutating({ mutationKey }) > 0`, which `mutate()` updates synchronously.
+  **A credential is not server state:** the access token lives in one module store read through
+  `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
 - **Tests are tiered red-first** (docs/sdlc.md §2). Domain, application, **every row of the failure
   contract**, the HTTP contract and the React loading/error/empty/success states are written
   **before** their implementation, against a skeleton of real signatures with `NotImplementedError`
@@ -549,6 +565,17 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   named (T47) — not because the code was fine, but because the *measurement* could not observe it.
   Re-introduce the regression, watch the assertion go red, restore the source byte-exact, and write
   both numbers into the test. An assertion that has never been observed failing is a docblock.
+  **Pick the statistic for the workload, too.** 2.1's AC-20 p50 stayed green across five runs with
+  argon2 inlined on the loop: login is mostly I/O, so the blocked fraction stays under ½ and a
+  median cannot see it. The owner amended AC-20 to the loop's **unavailable fraction**. Its first
+  formula, `Σt / wall`, is ≈ `t̄ / (pace + t̄)` — it measured *latency*, not blocking, and climbs on
+  any slower box. The shipped one is `Σ max(0, t − baseline) / Σ t` with a same-run no-load
+  baseline: invariant to a uniform slow-down (not to the pace, which is a module constant). Healthy
+  0.775–0.799, mutated 0.971–0.974, bound **0.88** — a thin margin; **watch its first CI runs**.
+- **Inject a fault *below* the floor you are testing.** Monkeypatching an adapter's public method
+  replaces the adapter — including its own `except Exception` floor, which is the thing an
+  "unexpected failure → 503" row exists to prove. Patch the library call the adapter wraps, so the
+  floor still stands between the fault and the route (I-45's correction, `1ef5afb`).
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
@@ -626,6 +653,12 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `.env.example` therefore defaults to `APP_ENV=production` (the safe value) and
   `docker-compose.dev.yml` pins `APP_ENV: dev` in `environment:` (which outranks `env_file:`), so
   dev-ness follows the override file you load rather than a value someone remembered to change.
+  **The same holds for `PUBLIC_BASE_URL`**, the origin 2.1's `Origin` check trusts: the root `.env`
+  carried a production-shaped value, so every auth `POST` from `:8080` was 403
+  `origin_not_allowed`. `docker-compose.dev.yml` pins `PUBLIC_BASE_URL: http://localhost:8080`.
+  Recreating `api` to pick that up then died on `ModuleNotFoundError: jwt`: `make deps` syncs a
+  *running* container, and a recreate goes back to the image, which predated the dependency. After
+  a dependency lands, it is `up -d --build api worker beat`.
 - **WeasyPrint needs system libraries at runtime** (Pango, Cairo, HarfBuzz, fontconfig, and actual
   fonts). Without them the import succeeds and the *first render* fails — in the worker, where nobody
   is watching. They are installed in `docker/api/Dockerfile` **and** in CI; keep the two in step, and
@@ -729,6 +762,11 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   off switch. Postgres's **server log** holds a fourth copy, so `docker-compose.yml` pins
   `log_error_verbosity=terse` and `log_parameter_max_length_on_error=0`. A test that checks only
   `str(exc)` will pass a one-flag fix, so assert on `traceback.format_exception(exc)`.
+  **Consequence met in 2.1: cutting the chain also cut asyncpg's `constraint_name`**, the only object
+  that knew *which* constraint refused a write. The listener now copies the allow-listed identifiers
+  onto the error it keeps; a repository recognises a violation with
+  `database.violated_constraint(exc) == "uq_…"` and **never by parsing the message**, which is
+  withheld on purpose and is prose for a person, not a format for a program.
 - **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
   `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
   `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`
@@ -757,6 +795,11 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   (`expunge` → `begin_nested()` → flush → commit; `begin_nested()` itself flushes on entry, so a
   dirty aggregate handed to it flushes *outside* the SAVEPOINT). A `rollback()` is a statement about
   the session, not about the one object that failed.
+  **That entry flush also walks straight past a version check** (2.1, `save_rotation`). The
+  repository writes a Core `UPDATE … WHERE version = :v`; with the rotated `Login` still attached,
+  `begin_nested()` first flushed the ORM's own `UPDATE` with **no** version predicate, so a race
+  loser overwrote the winner's token and both answered 200. `expunge` the aggregate before the
+  SAVEPOINT; on success re-attach it clean with `set_committed_value`.
 - **`get_settings()` under `APP_ENV=test` still returns the *dev* `database_url`.** Only
   `tests/conftest.py` swaps in `test_database_url`, by overriding Alembic's option and the engine
   fixture. A probe or cleanup script that builds its own engine from `settings.database_url` — even
@@ -780,6 +823,30 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global
   bucket instead of one per visitor.
+- **On FastAPI 0.141, a dependency's teardown runs *after* the response is sent.** `get_session`'s
+  commit therefore cannot change the answer: a failed commit ships a 200, or a 401 claiming a
+  deletion that never landed. Any response that must reflect a committed write **commits inside the
+  handler** — the reuse/expiry deletion behind a 401 (caught and *returned* as a response, so the
+  dependency never takes its rollback branch), logout's cookie clear (only after the commit), even
+  `/me`. Measured, not read in a changelog.
+- **FastAPI 0.141 no longer flattens `app.routes` on `include_router`.** The real `APIRoute`s sit
+  behind `_IncludedRouter.original_router.routes`, so a walker over `app.routes` finds nothing and
+  passes vacuously. Descend, duck-typed (the class is private).
+- **Two access tokens minted in the same second for one user are byte-identical** — no `jti`, and
+  `iat`/`exp` are whole seconds. Never key anything (a cache, a denylist, a test's "it changed") on
+  token identity.
+- **`JWT_SIGNING_KEY`'s `.env.example` placeholder is 33 bytes**, so a ≥ 32-byte check alone accepts
+  it. The production validator refuses it **by name**, and never with a `Field(min_length=…)`, whose
+  `ValidationError` renders `input_value` — the key.
+- **The WHATWG URL parser strips tab, CR and LF**, so a `next=/\t/evil.example` navigates as
+  `//evil.example` — an open redirect straight past a prefix check for `//` and `/\`.
+  `safeNext` refuses any control character rather than listing the three.
+- **`tailorcraft-api:local` is whatever the dev override last built** — the `development` target,
+  `--reload` and all. A "production image" measurement must `docker build --target production` under
+  its own tag, or it measures the wrong thing and supplies confidence anyway.
+- **httpx's cookie jar will not send a `Secure` cookie over plain HTTP**, so a production-mode app
+  measured without TLS never gets `tc_refresh` back and every refresh reads as "not signed in".
+  Parse `Set-Cookie` and re-attach it by hand in such a script.
 
 ## SDLC
 
