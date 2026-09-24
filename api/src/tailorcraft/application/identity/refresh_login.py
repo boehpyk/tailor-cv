@@ -27,7 +27,11 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ports import AccessTokenPort, LoginRepository, UserRepository
-from tailorcraft.domain.identity.value_objects import RetiredTokenVerdict, TokenHash
+from tailorcraft.domain.identity.value_objects import (
+    LoginNotFoundReason,
+    RetiredTokenVerdict,
+    TokenHash,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -82,29 +86,35 @@ class RefreshLogin:
         if found is None:
             raise LoginNotFound()  # unknown (I-20): nothing changed
         login, generation = found
+        # Read before anything that can expire the instance: after a remove (or a failed flush)
+        # the next attribute read would be a lazy load (CLAUDE.md, the failed-flush footgun).
+        login_id = login.id
         try:
             verdict = login.judge_retired(generation, now)
         except LoginExpired:
-            await self._logins.remove(login.id)
-            raise LoginNotFound() from None
+            await self._logins.remove(login_id)
+            raise LoginNotFound(reason=LoginNotFoundReason.EXPIRED, login_id=login_id) from None
         if verdict is RetiredTokenVerdict.RACED:
-            raise RefreshInProgress()  # raced (I-23): nothing changed
+            raise RefreshInProgress(login_id=login_id)  # raced (I-23): nothing changed
         # reused (I-24): the revocation is the deletion. Removed and published *before* the raise;
         # committing despite the raise is the route's obligation (module docstring).
-        await self._logins.remove(login.id)
+        await self._logins.remove(login_id)
         await self._events.publish(*login.release_events())
         raise RefreshTokenReused()
 
     async def _rotate(self, login: Login, replacement: TokenHash, now: datetime) -> Authenticated:
+        # Read before the remove and before `save_rotation`, whose refusal may expire the instance.
+        login_id = login.id
         try:
             retired = login.rotate(replacement, now)
         except LoginExpired:
-            await self._logins.remove(login.id)  # expired (I-21): deleted on sight
-            raise LoginNotFound() from None
+            await self._logins.remove(login_id)  # expired (I-21): deleted on sight
+            raise LoginNotFound(reason=LoginNotFoundReason.EXPIRED, login_id=login_id) from None
         try:
             await self._logins.save_rotation(login, retired)
         except LoginConcurrentlyRotated:
-            raise RefreshInProgress() from None  # a lost race (I-25), never a revocation
+            # a lost race (I-25), never a revocation
+            raise RefreshInProgress(login_id=login_id) from None
         user = await self._users.get(login.user_id)
         access_token = self._tokens.issue(user.id, now)
         return Authenticated(user=user, login=login, access_token=access_token)
