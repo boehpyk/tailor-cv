@@ -126,7 +126,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    | `tailoring` | the LLM run and its output documents | `TailoringRun` — `TailoredDocument` is a value object on it, not an aggregate ([ADR-0014 §9](./adr/0014-tailoring-runs-on-a-queue-and-is-polled.md), [ADR-0015](./adr/0015-edits-are-a-revision-on-the-run-stored-as-markdown.md)) |
    | `export` | rendering a document to PDF/DOCX/MD/TXT | `ExportJob` |
    | `identity` | accounts, sessions, tokens | `GuestSession`, `User`, `Login` — two principals, no shared base ([ADR-0010](./adr/0010-guest-session-cookie-is-an-opaque-hashed-token.md), [ADR-0020](./adr/0020-a-login-is-a-refresh-token-family-revocation-is-deletion.md)) |
-   | `retention` | the guest 1-day purge (no aggregate — a policy + a port method) | — |
+   | `retention` | deleting everything an owner has, rows committed then files: the guest 1-day purge on a timer, and account erasure on request (no aggregate — a policy, use cases and ports that *return* their failures) ([ADR-0006](./adr/0006-guest-retention-and-local-file-storage.md), [ADR-0018](./adr/0018-the-guest-purge-is-a-policy-with-no-aggregate.md)) | — |
 
    Ubiquitous language: keep a glossary in each context's spec. A **base CV** is never a "resume" in
    code; a **tailored document** is never an "output"; a **job posting** is never a "job" or a
