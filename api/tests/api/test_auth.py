@@ -43,9 +43,11 @@ directly through its repository.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -1829,3 +1831,314 @@ async def test_refresh_succeeds_after_the_jwt_signing_key_changes_since_login(
     new_tokens = JwtAccessTokens(new_key, timedelta(minutes=modified.access_token_ttl_minutes))
     verified_user_id = new_tokens.verify(new_access_token, clock.now())
     assert verified_user_id == user.id
+
+
+# ---------------------------------------------------------------------------------------------
+# Slice 2.2 (intake-saved-base-cvs, T19) — AC-29 / AC-30: `POST /api/auth/delete-account`, and the
+# S-rows it can produce (S-39...S-46). `routers/auth.py::delete_account` currently does nothing but
+# `raise NotImplementedError` (T18's SKELETON) — every assertion below is written against
+# `docs/specs/intake-saved-base-cvs/feature-spec.md`, never against that body.
+#
+# Dedicated tests rather than widening the existing `@pytest.mark.parametrize("url", [REGISTER_URL,
+# LOGIN_URL, REFRESH_URL, LOGOUT_URL])` lists above: the task list does not name those parametrize
+# blocks as needing amendment for 2.2 (unlike the walker and the intake key sets, which it names
+# explicitly), and `require_trusted_origin` already covers `delete-account` identically — widening
+# an existing green parametrization is not what red-first asks for here.
+# ---------------------------------------------------------------------------------------------
+
+DELETE_ACCOUNT_URL = "/api/auth/delete-account"
+
+
+async def _register_2_2(
+    client: AsyncClient, settings: Settings, *, email: str | None = None
+) -> tuple[str, str]:
+    email = email or f"t19-delacct-{uuid4().hex}@example.com"
+    response = await client.post(
+        REGISTER_URL,
+        json=_credentials(email, A_STRONG_PASSWORD),
+        headers=_origin_headers(settings),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    return str(body["access_token"]), str(body["user"]["id"])
+
+
+def _delete_account_headers(settings: Settings, token: str) -> dict[str, str]:
+    return {**_origin_headers(settings), "Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-29 — the happy path
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_the_correct_password_is_204_and_clears_the_refresh_cookie(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 204, response.text
+    cleared = _refresh_cookie_attrs(response)
+    assert cleared["max-age"] == "0"
+
+
+async def test_delete_account_removes_the_user_so_a_second_register_of_the_same_email_succeeds(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """The strongest proof the row is really gone: registration enumerates (2.1's ADR-0008
+    amendment (b)), so a *second* register of the same address answering 201 rather than 409
+    `email_already_registered` means the first account no longer exists."""
+    email = f"t19-delacct-reuse-{uuid4().hex}@example.com"
+    token, _ = await _register_2_2(client, settings, email=email)
+
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    second_register = await client.post(
+        REGISTER_URL, json=_credentials(email, A_STRONG_PASSWORD), headers=_origin_headers(settings)
+    )
+    assert second_register.status_code == 201, second_register.text
+
+
+# ---------------------------------------------------------------------------------------------
+# S-39 — missing / foreign Origin: 403, before anything
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_no_origin_is_403_and_nothing_is_touched(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL, json={"password": A_STRONG_PASSWORD}, headers=_bearer_delacct(token)
+    )
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "origin_not_allowed"
+
+    still_signed_in = await client.get(ME_URL, headers=_bearer_delacct(token))
+    assert still_signed_in.status_code == 200, still_signed_in.text
+
+
+async def test_delete_account_with_a_foreign_origin_is_403(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers={**_bearer_delacct(token), "Origin": "https://evil.example"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "origin_not_allowed"
+
+
+def _bearer_delacct(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------------------------
+# S-40 — the login limiters, fail closed
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_rate_limited_by_ip_is_429(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    _override_settings(app, settings, login_rate_limit_per_ip_per_hour=1)
+    token, _ = await _register_2_2(client, settings)
+
+    first = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": "definitely-the-wrong-password"},
+        headers=_delete_account_headers(settings, token),
+    )
+    second = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": "definitely-the-wrong-password"},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert first.status_code == 403, first.text  # the wrong password, not yet limited
+    assert second.status_code == 429, second.text
+    assert _error_code(second) == "rate_limited"
+
+
+async def test_delete_account_with_redis_unreachable_is_503_rate_limit_unavailable(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+    _override_settings(app, settings, redis_url="redis://127.0.0.1:1/0")
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 503, response.text
+    assert _error_code(response) == "rate_limit_unavailable"
+
+
+# ---------------------------------------------------------------------------------------------
+# S-41 — wrong password: 403 password_incorrect, nothing deleted
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_the_wrong_password_is_403_password_incorrect(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": "definitely-the-wrong-password"},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "password_incorrect"
+
+    still_signed_in = await client.get(ME_URL, headers=_bearer_delacct(token))
+    assert still_signed_in.status_code == 200, still_signed_in.text
+
+
+# ---------------------------------------------------------------------------------------------
+# S-42 — argon2 fails: 503 service_unavailable, nothing deleted
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_argon2_failure_is_503(
+    client: AsyncClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected below the adapter's own floor, exactly `test_argon2_hasher_failure_on_login_is_503`
+    above: the underlying `argon2.PasswordHasher.verify` explodes, not the adapter's own method."""
+    token, _ = await _register_2_2(client, settings)
+
+    def boom(self: Argon2Library, stored: str, secret: bytes) -> None:
+        raise RuntimeError("argon2-cffi exploded (S-42)")
+
+    monkeypatch.setattr(Argon2Library, "verify", boom)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 503, response.text
+    assert _error_code(response) == "service_unavailable"
+
+
+# ---------------------------------------------------------------------------------------------
+# S-43 — the commit fails: 503, cookie not cleared, nothing deleted
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_commit_failure_is_503_and_does_not_clear_the_cookie(
+    client: AsyncClient, settings: Settings, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    async def _raise_sqlalchemy_error() -> None:
+        raise SQLAlchemyError("simulated commit failure (S-43)")
+
+    monkeypatch.setattr(session, "commit", _raise_sqlalchemy_error)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 503, response.text
+    assert _cookie_header_named(response, REFRESH_COOKIE_NAME) is None, (
+        "a failed commit must never clear tc_refresh — the server still honours it (I-31's rule)"
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# S-46 — two concurrent deletions of one account: one 204, one 401 not_signed_in
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_two_concurrent_correct_deletions_exactly_one_204_one_401(
+    app: FastAPI, client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    async with _new_client(app) as second_client:
+        results = await asyncio.gather(
+            client.post(
+                DELETE_ACCOUNT_URL,
+                json={"password": A_STRONG_PASSWORD},
+                headers=_delete_account_headers(settings, token),
+            ),
+            second_client.post(
+                DELETE_ACCOUNT_URL,
+                json={"password": A_STRONG_PASSWORD},
+                headers=_delete_account_headers(settings, token),
+            ),
+        )
+
+    statuses = sorted(r.status_code for r in results)
+    assert statuses == [204, 401], [r.text for r in results]
+    the_401 = next(r for r in results if r.status_code == 401)
+    assert _error_code(the_401) == "not_signed_in"
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-30 — after the 204, the still-unexpired access token is dead everywhere
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_after_deletion_the_still_valid_access_token_is_401_not_signed_in_on_me(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    response = await client.get(ME_URL, headers=_bearer_delacct(token))
+
+    assert response.status_code == 401, response.text
+    assert _error_code(response) == "not_signed_in"
+
+
+async def test_after_deletion_a_copy_with_the_old_token_is_401_and_mints_no_guest_session(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    response = await client.post(
+        "/api/base-cvs/copies",
+        json={"saved_base_cv_id": str(uuid4())},
+        headers=_bearer_delacct(token),
+    )
+
+    assert response.status_code == 401, response.text
+    assert _error_code(response) == "not_signed_in"
+    assert _cookie_header_named(response, GUEST_COOKIE_NAME) is None
