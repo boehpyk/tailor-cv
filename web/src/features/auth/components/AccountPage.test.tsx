@@ -1,12 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter } from 'react-router';
+import { MemoryRouter, Route, Routes } from 'react-router';
 
 import { jsonResponse } from '@/test/fixtures';
 
 import { __resetForTests, authStore } from '../authStore';
 import { AccountPage } from './AccountPage';
+import { RequireAuth } from './RequireAuth';
 
 /**
  * T41 RED — `/account` (AC-41's `['auth','me']` states and the Log out control; AC-44's cache
@@ -161,4 +162,70 @@ describe('AccountPage', () => {
     });
     expect(queryClient.getQueryData(['base-cvs'])).toEqual([{ id: 'guest-cv-1' }]);
   });
+});
+
+/**
+ * /verify round 1 finding 2 — a deleted (or otherwise gone) user: `GET /api/auth/me` answers 401
+ * `not_signed_in` while the store still says `authenticated`. Today `useCurrentUser` only surfaces
+ * this as `query.isError`; nothing ends the local session, so `/account` — always reached through
+ * `RequireAuth` in the real app — is stuck rendering "Couldn't load your account" with a Retry
+ * button that, clicked, asks `GET /me` again and gets 401 again, forever.
+ */
+function renderAccountPageBehindGuard(queryClient?: QueryClient) {
+  const client = queryClient ?? makeQueryClient();
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/account']}>
+        <Routes>
+          <Route
+            path="/account"
+            element={
+              <RequireAuth>
+                <AccountPage />
+              </RequireAuth>
+            }
+          />
+          <Route path="/login" element={<div>LOGIN PAGE</div>} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+describe('/verify round 1 finding 2: a 401 not_signed_in from GET /me must end the local session', () => {
+  it(
+    'signs the store out (reason "expired") instead of leaving the query merely errored — ' +
+      'so a later render sees `anonymous`, not a permanently authenticated-but-broken state',
+    async () => {
+      authStore.setAuthenticated(AUTHENTICATED_RESPONSE);
+      makeFetchMock({
+        'GET /api/auth/me': () =>
+          jsonResponse(401, { error: { code: 'not_signed_in', message: 'gone' } }),
+      });
+
+      renderAccountPage();
+
+      await waitFor(() => {
+        expect(authStore.getSnapshot()).toEqual({ status: 'anonymous', reason: 'expired' });
+      });
+    },
+  );
+
+  it(
+    'behind RequireAuth (as /account is always reached in the real app), a 401 not_signed_in ' +
+      'redirects to /login instead of getting stuck on "Couldn\'t load your account" with Retry',
+    async () => {
+      authStore.setAuthenticated(AUTHENTICATED_RESPONSE);
+      makeFetchMock({
+        'GET /api/auth/me': () =>
+          jsonResponse(401, { error: { code: 'not_signed_in', message: 'gone' } }),
+      });
+
+      renderAccountPageBehindGuard();
+
+      expect(await screen.findByText('LOGIN PAGE')).toBeInTheDocument();
+      expect(screen.queryByText("Couldn't load your account")).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+    },
+  );
 });

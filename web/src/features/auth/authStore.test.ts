@@ -285,6 +285,53 @@ describe('AC-38 / I-48 shape: the refresh outcome table (both codes, boot vs non
   });
 });
 
+describe('/verify round 1 finding 1: SIGNED_OUT must supersede an in-flight non-boot refresh', () => {
+  it(
+    'a refresh already in flight when the user logs out must not re-authenticate them when it ' +
+      'later answers 200 — the store stays anonymous, holds no token, and the refresh resolves superseded',
+    async () => {
+      vi.spyOn(performance, 'now').mockReturnValue(0);
+      authStore.setAuthenticated(authResponse({ access_token: 'old-token', expires_in: 900 }));
+
+      // A proactive refresh (or the client's one-retry-on-401) starts while still authenticated —
+      // exactly `authStore.refresh()`'s own contract: "While not booting" (module docstring table).
+      // Its request is held open under our control, so logout can land while it is still in flight.
+      let resolveRefreshFetch: (response: Response) => void = () => {
+        throw new Error('resolveRefreshFetch called before it was assigned');
+      };
+      const refreshFetchPromise = new Promise<Response>((resolve) => {
+        resolveRefreshFetch = resolve;
+      });
+      const fetchMock = vi.fn((input: string | URL, init?: RequestInit): Promise<Response> => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const method = init?.method ?? 'GET';
+        if (url === '/api/auth/refresh' && method === 'POST') {
+          return refreshFetchPromise;
+        }
+        return Promise.reject(new Error(`unhandled fetch: ${method} ${url}`));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const inFlightRefresh = authStore.refresh();
+
+      // The user logs out before that refresh has answered.
+      authStore.signOut('logged_out');
+      expect(authStore.getSnapshot()).toEqual({ status: 'anonymous', reason: 'logged_out' });
+
+      // The stale refresh finally answers 200, carrying a token for the account that just logged out.
+      resolveRefreshFetch(jsonResponse(200, authResponse({ access_token: 'late-token' })));
+      const result = await inFlightRefresh;
+
+      // The finding: `AUTHENTICATED` is honoured unconditionally (authMachine.ts's AUTHENTICATED
+      // case, dispatched from authStore.ts's runRefresh 'ok' branch), so today this re-authenticates
+      // the user the moment the stale refresh lands — undoing the logout they just performed.
+      expect(result).toEqual({ kind: 'superseded' });
+      expect(authStore.getSnapshot()).toEqual({ status: 'anonymous', reason: 'logged_out' });
+      expect(await authStore.accessTokenForRequest()).toBeNull();
+    },
+  );
+});
+
 describe('AC-35: the snapshot never carries the access token', () => {
   it('getSnapshot() after setAuthenticated has no accessToken field, and JSON.stringify does not contain the token', () => {
     authStore.setAuthenticated(authResponse({ access_token: 'super-secret-token-xyz' }));

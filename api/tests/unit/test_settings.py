@@ -392,3 +392,65 @@ def test_refresh_token_ttl_days_within_bounds_boots(days: int) -> None:
     settings = Settings(app_env="test", refresh_token_ttl_days=days)
 
     assert settings.refresh_token_ttl_days == days
+
+
+# --- /verify round 1 finding 3: the auth rate-limit fields have no floor -----------------------
+#
+# `login_rate_limit_per_ip_per_hour`, `login_rate_limit_per_email_per_hour` and
+# `register_rate_limit_per_ip_per_hour` are plain `int` fields today — no `Field(gt=...)`, unlike
+# `access_token_ttl_minutes`/`refresh_token_ttl_days` just above. A limit of `0` means "the very
+# first request of every window is refused", which is a self-inflicted denial of service on the
+# login and register endpoints; a negative limit means `count <= limit` in
+# `RedisFixedWindowRateLimiter.check` can never be true, which is the same outcome reached by
+# ACCIDENT rather than by a number anyone chose. Both must be refused at construction, the same way
+# the TTL fields already are.
+#
+# RED: today none of these raises — `Settings(..., login_rate_limit_per_ip_per_hour=0)` constructs
+# successfully, so every case below is expected to fail with
+# `Failed: DID NOT RAISE <class 'pydantic_core._pydantic_core.ValidationError'>`.
+
+# One explicit function per field rather than a `**{field: value}` dispatch: `Settings` is a
+# pydantic model with a concrete `__init__` signature, and mypy --strict correctly refuses to accept
+# an unpacked `dict[str, int]` against it (each keyword has its own type). Explicit kwargs keep the
+# boundary honest at the type-checker too, matching every other test in this file.
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_login_rate_limit_per_ip_per_hour_of_zero_or_negative_refuses_to_boot(value: int) -> None:
+    with pytest.raises(ValidationError, match="login_rate_limit_per_ip_per_hour"):
+        Settings(app_env="test", login_rate_limit_per_ip_per_hour=value)
+
+
+def test_login_rate_limit_per_ip_per_hour_of_one_boots() -> None:
+    """The boundary from the other side: `1` — the smallest legal limit — must be accepted."""
+    settings = Settings(app_env="test", login_rate_limit_per_ip_per_hour=1)
+
+    assert settings.login_rate_limit_per_ip_per_hour == 1
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_login_rate_limit_per_email_per_hour_of_zero_or_negative_refuses_to_boot(
+    value: int,
+) -> None:
+    with pytest.raises(ValidationError, match="login_rate_limit_per_email_per_hour"):
+        Settings(app_env="test", login_rate_limit_per_email_per_hour=value)
+
+
+def test_login_rate_limit_per_email_per_hour_of_one_boots() -> None:
+    settings = Settings(app_env="test", login_rate_limit_per_email_per_hour=1)
+
+    assert settings.login_rate_limit_per_email_per_hour == 1
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_register_rate_limit_per_ip_per_hour_of_zero_or_negative_refuses_to_boot(
+    value: int,
+) -> None:
+    with pytest.raises(ValidationError, match="register_rate_limit_per_ip_per_hour"):
+        Settings(app_env="test", register_rate_limit_per_ip_per_hour=value)
+
+
+def test_register_rate_limit_per_ip_per_hour_of_one_boots() -> None:
+    settings = Settings(app_env="test", register_rate_limit_per_ip_per_hour=1)
+
+    assert settings.register_rate_limit_per_ip_per_hour == 1
