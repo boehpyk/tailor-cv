@@ -450,6 +450,61 @@ function getSnapshot(): AuthSnapshot {
   return current.snapshot;
 }
 
+// --- The cross-tab channel (slice 2.2, AC-42) ----------------------------------------------------
+
+/** The one `BroadcastChannel` name every tab of this origin shares for auth news. */
+export const AUTH_CHANNEL_NAME = 'tailorcraft-auth';
+
+/**
+ * The only message the channel carries. **Signing out is broadcast; signing in is not** (AC-42):
+ * a broadcast login would make N tabs refresh at once and race the server's grace window, whereas
+ * a tab that missed a login simply converges on its next request.
+ */
+export interface SignedOutMessage {
+  readonly type: 'signed-out';
+}
+
+/**
+ * The part of a `BroadcastChannel` the store touches — typed as a subset so a test can hand in a
+ * real channel (Node and jsdom-in-Node both have one) or a small fake, and so the store cannot
+ * grow a dependency on anything else the class offers.
+ */
+export type AuthChannel = Pick<
+  BroadcastChannel,
+  'postMessage' | 'addEventListener' | 'removeEventListener'
+>;
+
+/**
+ * Tell every other tab of this origin that the user signed out (a logout, or an account deletion)
+ * by posting a `SignedOutMessage` on the connected channel. A `BroadcastChannel` never delivers a
+ * message to the object that posted it, so this tab does not hear its own news. No channel
+ * connected (a browser without `BroadcastChannel`, or a test that never connected one) → nothing.
+ *
+ * SKELETON (T25): a no-op. GREEN is T27.
+ */
+function broadcastSignOut(): void {
+  // Deliberately empty until T27.
+}
+
+/**
+ * Listen on `channel` for another tab's sign-out. On a `SignedOutMessage` — and on nothing else;
+ * a message of any other shape is ignored (AC-42) — this tab dispatches `SIGNED_OUT` with reason
+ * `signed_out_elsewhere` **without** calling `/refresh` or `/logout`, then calls
+ * `onSignedOutElsewhere` so the caller can drop every `['auth', …]` query (the store knows nothing
+ * of TanStack; `authCache.connectCrossTabSignOut` is that caller). The same channel is the one
+ * `broadcastSignOut` posts on. Returns a disconnect.
+ *
+ * Connected **once, at module scope** beside the boot refresh (`main.tsx`), never from a
+ * component's `useEffect`, so `<StrictMode>` cannot double-subscribe it (technical plan §7).
+ *
+ * SKELETON (T25): listens to nothing and returns a no-op disconnect. GREEN is T27.
+ */
+// Typed as a function value only while it is a stub, so the parameters are real without being unused.
+const connectChannel: (channel: AuthChannel, onSignedOutElsewhere: () => void) => () => void =
+  () => () => {
+    // Nothing was connected, so there is nothing to disconnect — until T27.
+  };
+
 /**
  * The store. Methods are plain functions over module state, so they can be passed as callbacks
  * (`useSyncExternalStore(authStore.subscribe, authStore.getSnapshot)`) without binding.
@@ -464,6 +519,8 @@ export const authStore = {
   signOutIfHolding,
   subscribe,
   getSnapshot,
+  broadcastSignOut,
+  connectChannel,
 } as const;
 
 /**

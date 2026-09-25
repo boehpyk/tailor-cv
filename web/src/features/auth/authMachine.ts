@@ -45,7 +45,14 @@ export type SignOutReason =
   /** A refresh answered 401 `not_signed_in`: the login is gone (expired, revoked, user deleted). */
   | 'expired'
   /** A refresh answered 401 `refresh_token_reused`: the server revoked the login as a replay. */
-  | 'reused';
+  | 'reused'
+  /** This tab deleted the account (slice 2.2, AC-40): there is no login left to end. */
+  | 'account_deleted'
+  /**
+   * Another tab of this origin logged out or deleted the account and said so on the
+   * `BroadcastChannel` (slice 2.2, AC-42). This tab made no request to learn it.
+   */
+  | 'signed_out_elsewhere';
 
 /**
  * A usable access token and the moment it stops being usable, on the `performance.now()` clock
