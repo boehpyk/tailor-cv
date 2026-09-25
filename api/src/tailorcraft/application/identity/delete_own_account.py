@@ -11,22 +11,22 @@ nothing deleted. `MATCH_NEEDS_REHASH` is a match, and no rehash is written: the 
 deleted, and a write to a row one step from its `DELETE` would only lengthen the transaction.
 
 **No command dataclass**, like `GetCurrentUser`: a verified id and an already-validated `Password`.
-
-**SKELETON step (T8).** `__init__` is real; `__call__`'s body lands in T10.
 """
 
 from __future__ import annotations
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.application.retention.erase_account import EraseAccount
+from tailorcraft.domain.identity.errors import InvalidCredentials
 from tailorcraft.domain.identity.ports import PasswordHasherPort, UserRepository
-from tailorcraft.domain.identity.value_objects import Password, UserId
+from tailorcraft.domain.identity.value_objects import Password, PasswordVerdict, UserId
 from tailorcraft.domain.retention.value_objects import AccountErasureReport
 
 
 class DeleteOwnAccount:
     """Erase `user_id`'s account if `password` is theirs.
 
-    Flow (technical plan §2): ``users.get(user_id)`` (→ `UserNotFound`) →
+    Flow (technical plan §2): ``resolve_existing_user`` (→ `UserNotFound`) →
     ``hasher.verify(password, user.password_hash)`` (→ `PasswordHashingFailed` propagates) →
     `MISMATCH` → `InvalidCredentials`, nothing deleted → ``erase_account(user_id)`` → its report.
     """
@@ -42,4 +42,12 @@ class DeleteOwnAccount:
         self._erase_account = erase_account
 
     async def __call__(self, user_id: UserId, password: Password) -> AccountErasureReport:
-        raise NotImplementedError
+        user = await resolve_existing_user(self._users, user_id)
+
+        # `PasswordHashingFailed` propagates from here untouched, before anything is read for
+        # deletion. `MATCH_NEEDS_REHASH` falls through as a match, and no rehash is written.
+        verdict = await self._hasher.verify(password, user.password_hash)
+        if verdict is PasswordVerdict.MISMATCH:
+            raise InvalidCredentials()
+
+        return await self._erase_account(user.id)

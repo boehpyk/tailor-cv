@@ -17,13 +17,12 @@ R-3/R-4 fix, reused). A failed unlink leaves an orphan for the operator's sweep;
 erasure, because the rows are already gone.
 
 **No command dataclass**: one verified id, the purge's precedent for a one-value input.
-
-**SKELETON step (T8).** `__init__` is real; `__call__`'s body lands in T10.
 """
 
 from __future__ import annotations
 
 from tailorcraft.domain.identity.value_objects import UserId
+from tailorcraft.domain.retention.errors import AccountNotFound
 from tailorcraft.domain.retention.ports import AccountDataPort
 from tailorcraft.domain.retention.value_objects import AccountErasureReport
 from tailorcraft.domain.shared.files import FileStorePort
@@ -43,4 +42,29 @@ class EraseAccount:
         self._files = files
 
     async def __call__(self, user_id: UserId) -> AccountErasureReport:
-        raise NotImplementedError
+        # Collected before anything is deleted: once the rows are gone, the keys cannot be
+        # recovered, and a key nobody collected is a file nobody unlinks until the sweep.
+        refs = tuple(await self._accounts.files_of_account(user_id))
+
+        if not await self._accounts.delete_account(user_id):
+            # A concurrent erasure won between the read and the delete (S-46). Its unlinks are its
+            # own; this loser's snapshot is thrown away rather than acted on twice.
+            raise AccountNotFound(str(user_id))
+
+        unlinked = 0
+        failures: list[str] = []
+        for ref in refs:
+            try:
+                await self._files.delete(ref)
+            except Exception as exc:
+                # `Exception`, never `BaseException`: a cancellation must still cancel. The class
+                # name is the only thing kept — a message can quote a path — and it is returned,
+                # not logged: the rows are already gone, so this is an orphan for the sweep, never
+                # a reason to fail the erasure.
+                failures.append(type(exc).__name__)
+            else:
+                unlinked += 1
+
+        return AccountErasureReport(
+            base_cvs=len(refs), files_unlinked=unlinked, unlink_failures=tuple(failures)
+        )

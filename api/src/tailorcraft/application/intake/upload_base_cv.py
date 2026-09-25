@@ -10,11 +10,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.errors import GuestSessionExpired
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
 from tailorcraft.domain.intake.base_cv import BaseCv
-from tailorcraft.domain.intake.errors import CvExtractionFailed, TooManyBaseCvs
+from tailorcraft.domain.intake.errors import (
+    CvExtractionFailed,
+    TooManyBaseCvs,
+    TooManySavedBaseCvs,
+)
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
@@ -61,11 +66,10 @@ class UploadBaseCv:
     store the bytes, create the aggregate, and attempt extraction — recording success or failure as
     a state rather than letting either escape as an exception (ADR-0004).
 
-    **SKELETON step (slice 2.2, T8).** The `GuestOwner` arm is 1.1's body, unchanged; the
-    `UserOwner` arm raises `NotImplementedError` until T10. The user arm's flow (technical plan §2,
-    AC-7): ``user = await users.get(owner.user_id)`` (→ `UserNotFound`), then
-    ``count_for_user >= max_per_user`` → `TooManySavedBaseCvs`, then steps 4 to 10 below exactly as for
-    a guest — file first, in both arms.
+    The `GuestOwner` arm is 1.1's body, unchanged. The `UserOwner` arm (slice 2.2, technical plan
+    §2, AC-7): ``resolve_existing_user`` (→ `UserNotFound`), then ``count_for_user >= max_per_user``
+    → `TooManySavedBaseCvs`, then steps 4 to 10 below exactly as for a guest — file first, in both
+    arms.
 
     Guest-arm flow (technical-plan.md "Application layer"):
 
@@ -128,8 +132,14 @@ class UploadBaseCv:
                 if await self._cvs.count_for_session(session.id) >= self._max_per_session:
                     raise TooManyBaseCvs(str(session.id))
                 owner = GuestOwner(session.id)
-            case UserOwner():
-                raise NotImplementedError
+            case UserOwner(user_id=user_id):
+                user = await resolve_existing_user(self._users, user_id)
+
+                # The same cross-aggregate policy on the other owner, with its own cap and its own
+                # error: a saved CV outlives the 24 hours, so the two caps are separate settings.
+                if await self._cvs.count_for_user(user.id) >= self._max_per_user:
+                    raise TooManySavedBaseCvs(str(user.id))
+                owner = UserOwner(user.id)
             case _:
                 assert_never(cmd.owner)
 

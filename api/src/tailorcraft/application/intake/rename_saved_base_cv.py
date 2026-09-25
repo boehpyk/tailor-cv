@@ -10,12 +10,12 @@ name before this use case was called (`InvalidLabel`, AC-4).
 
 **No command dataclass**, like `GetBaseCvForSession`: three already-validated values, each a domain
 type, with nothing to validate between them.
-
-**SKELETON step (T8).** `__init__` is real; `__call__`'s body lands in T10.
 """
 
 from __future__ import annotations
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
+from tailorcraft.application.intake.owned_saved_base_cv import get_owned_saved_base_cv
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -41,4 +41,8 @@ class RenameSavedBaseCv:
     async def __call__(
         self, base_cv_id: BaseCvId, user_id: UserId, label: BaseCvLabel | None
     ) -> BaseCv:
-        raise NotImplementedError
+        user = await resolve_existing_user(self._users, user_id)
+        cv = await get_owned_saved_base_cv(self._cvs, base_cv_id, user.id)
+        cv.rename(label, self._clock.now())
+        await self._cvs.save_label(cv)
+        return cv

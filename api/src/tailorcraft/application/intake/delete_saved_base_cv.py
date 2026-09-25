@@ -12,21 +12,22 @@ the exception's **type name**, never its message (a message can quote a path); t
 that into one warning line. This layer does not log.
 
 **No command dataclass**, like the other saved-CV use cases: two verified ids.
-
-**SKELETON step (T8).** `__init__` is real; `__call__`'s body lands in T10.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
+from tailorcraft.application.intake.owned_saved_base_cv import get_owned_saved_base_cv
+from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.ports import BaseCvRepository
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
-from tailorcraft.domain.shared.files import FileStorePort
+from tailorcraft.domain.shared.files import FileRef, FileStorePort
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,4 +68,37 @@ class DeleteSavedBaseCv:
         self._clock = clock
 
     async def __call__(self, base_cv_id: BaseCvId, user_id: UserId) -> DeleteSavedBaseCvResult:
-        raise NotImplementedError
+        user = await resolve_existing_user(self._users, user_id)
+        cv = await get_owned_saved_base_cv(self._cvs, base_cv_id, user.id)
+
+        # Both read into locals *before* `remove`: once the row is gone (and, in the real adapter,
+        # the transaction committed) the aggregate is the only thing left that knows its key, and a
+        # still-attached instance is expired by a commit — 1.4's "read ids before the flush".
+        cv_id, ref = cv.id, cv.file
+        cv.delete(self._clock.now())
+
+        # Rows first (ADR-0006 §2). Zero rows → `BaseCvNotFound` propagates from here, and the file
+        # below is never touched: a concurrent delete that won owns that unlink, not this loser.
+        await self._cvs.remove(cv_id, UserOwner(user.id))
+
+        result = await self._unlink(ref)
+
+        # The row-level fact happened whatever the file's fate, so the event is published either
+        # way — after the remove, never before.
+        await self._events.publish(*cv.release_events())
+        return result
+
+    async def _unlink(self, ref: FileRef) -> DeleteSavedBaseCvResult:
+        """`files.delete`, never `delete_partial` — a row's key is always a final key.
+
+        `Exception`, never `BaseException`: a cancellation must still cancel. Only the class name
+        leaves this method; the message can quote a path, and this layer does not log (the entry
+        point writes the one warning line).
+        """
+        try:
+            await self._files.delete(ref)
+        except Exception as exc:
+            return DeleteSavedBaseCvResult(
+                file_unlinked=False, unlink_error_type=type(exc).__name__
+            )
+        return DeleteSavedBaseCvResult(file_unlinked=True, unlink_error_type=None)

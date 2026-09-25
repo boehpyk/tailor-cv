@@ -7,15 +7,13 @@ the query.
 
 **No command dataclass**, like the guest reads it mirrors: the only input is the verified `UserId`,
 and a one-field wrapper would be a contract with nothing to say.
-
-**SKELETON step (T8).** `__init__` is real and stores its ports, so `qa`'s T9 tests fail on their
-assertions rather than on a `TypeError`; `__call__`'s body lands in T10.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -33,4 +31,5 @@ class ListSavedBaseCvs:
         self._users = users
 
     async def __call__(self, user_id: UserId) -> Sequence[BaseCv]:
-        raise NotImplementedError
+        user = await resolve_existing_user(self._users, user_id)
+        return await self._cvs.list_for_user(user.id)
