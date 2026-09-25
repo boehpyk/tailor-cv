@@ -31,6 +31,14 @@ export type CvContentType =
   | 'text/plain';
 
 /**
+ * How a guest `BaseCv` came to be in this workspace (slice 2.2, additive on the wire): uploaded
+ * here, or a **working copy** of one of the signed-in user's saved CVs (`POST
+ * /api/base-cvs/copies`). Derived by the server from the row, never stored as a column — the client
+ * only reads it, to decide whether the base-CV card shows the Working copy badge (AC-41).
+ */
+export type BaseCvOrigin = 'uploaded' | 'copied_from_saved';
+
+/**
  * One `BaseCv`, as the client sees it.
  *
  * `extracted_text` is deliberately not a field here either — the API never returns it
@@ -49,6 +57,13 @@ export interface BaseCv {
   readonly failure_message: string | null;
   readonly uploaded_at: string;
   readonly expires_at: string;
+  /**
+   * Optional on purpose, although the 2.2 API always sends it. The deploy runs two versions briefly
+   * (CLAUDE.md, expand → migrate → contract): for a moment the new bundle can talk to a 2.1 API
+   * that has never heard of `origin`. **Absent means `'uploaded'`** — the only kind of guest CV a
+   * 2.1 API could have made — so the badge is simply not shown, which is the true answer.
+   */
+  readonly origin?: BaseCvOrigin;
 }
 
 /** Every `BaseCv` a guest session owns. `items` is `[]` for a session with none. */

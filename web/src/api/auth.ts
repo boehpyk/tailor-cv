@@ -3,7 +3,7 @@ import { request } from './client';
 import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/types';
 
 /**
- * The five `/api/auth/*` endpoints (technical plan §4) — transport only.
+ * The `/api/auth/*` endpoints (2.1's five, plus 2.2's `delete-account`) — transport only.
  *
  * **None of these touches the auth store.** They return what the server said and throw an
  * `ApiError` keyed by `code` when it refused; deciding what a response *means* for the session
@@ -20,7 +20,7 @@ import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/t
  * (technical plan §0.5). A browser sets that header on every same-origin `POST` by itself; it is a
  * forbidden header name, so nothing here could set it even if it tried.
  *
- * **Which of these carries the access token.** Only `me` — it is the one declared
+ * **Which of these carries the access token.** `me` and `deleteAccount` — the two declared
  * `auth: 'required'`. `refresh` and `logout` must never be: `refresh` is what the interceptor calls
  * *when* the token is missing or stale, so routing it through the interceptor would recurse, and
  * `logout` must work precisely when the access token has expired (its cookie names the login).
@@ -108,6 +108,33 @@ export async function logout(signal?: AbortSignal): Promise<void> {
  */
 export function me(signal?: AbortSignal): Promise<User> {
   return request<User>('/api/auth/me', {
+    auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Delete the signed-in account (slice 2.2): **204** and a cleared `tc_refresh` cookie. Irreversible —
+ * the account, every saved CV and its file, and every login on every device.
+ *
+ * `auth: 'required'` **and** the password: the bearer says who, the password says it is really them —
+ * a borrowed, unlocked laptop must not be able to do this. A `POST` under `/api/auth` rather than a
+ * `DELETE` on `/api/me`, because only a route under `Path=/api/auth` can clear `tc_refresh`, and a
+ * body on a `DELETE` is dropped by enough intermediaries to be a bug waiting.
+ *
+ * **A wrong password is 403 `password_incorrect`, not 401** (AC-43): the requester *is* signed in,
+ * so the interceptor — which refreshes only on 401 `invalid_access_token` — never refreshes on it.
+ * Also: 403 `origin_not_allowed`; 401 `invalid_access_token` / `not_signed_in`; 422
+ * `validation_error`; 429 `rate_limited`; 503 `rate_limit_unavailable` / `service_unavailable` —
+ * and on any refusal **nothing was deleted**.
+ *
+ * Like the rest of this module, this does not touch the auth store: signing this tab out, clearing
+ * the cache and telling other tabs is `useDeleteAccount`'s job.
+ */
+export async function deleteAccount(password: string, signal?: AbortSignal): Promise<void> {
+  await request<null>('/api/auth/delete-account', {
+    method: 'POST',
+    body: { password },
     auth: 'required',
     ...(signal ? { signal } : {}),
   });
