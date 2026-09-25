@@ -499,9 +499,12 @@ class Settings(BaseSettings):
     # the endpoint a credential-stuffing script aims at. The fail-closed direction is deliberately not a setting.
     # Per IP bounds one network; per email bounds a targeted guess spread across many IPs, keyed on
     # an HMAC of the normalized address so the email never appears in a Redis key.
-    login_rate_limit_per_ip_per_hour: int = 20
-    login_rate_limit_per_email_per_hour: int = 10
-    register_rate_limit_per_ip_per_hour: int = 5
+    # `gt=0` because these limiters fail closed: `0` refuses the first request of every window and a
+    # negative limit makes `count <= limit` unsatisfiable — a lockout reached by typo, not by choice.
+    # Safe to render in a `ValidationError` for the same reason as the TTLs above: an integer.
+    login_rate_limit_per_ip_per_hour: int = Field(default=20, gt=0)
+    login_rate_limit_per_email_per_hour: int = Field(default=10, gt=0)
+    register_rate_limit_per_ip_per_hour: int = Field(default=5, gt=0)
 
     @model_validator(mode="after")
     def _refuse_to_boot_without_a_key_in_production(self) -> Settings:

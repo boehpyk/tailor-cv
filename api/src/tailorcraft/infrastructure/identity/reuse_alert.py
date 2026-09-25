@@ -31,16 +31,27 @@ EVENT_REFRESH_REUSE_DETECTED: Final = "identity.refresh_reuse_detected"
 class ReuseAlertingEventPublisher:
     """Delegate every event to `inner`, then write one `warning` per `RefreshTokenReuseDetected`.
 
-    **The warning never raises.** It runs inside the request whose response must *commit* the
-    revocation (technical plan §2): an exception escaping here would roll the deletion back and leave
-    the thief's login alive. A failure to record the alarm is strictly better than that.
+    **`publish` never raises** — neither the delegation nor the warning. It runs inside the request
+    whose response must *commit* the revocation (technical plan §2): an exception escaping here would
+    roll the deletion back and leave the thief's login alive. A failure to deliver or record the
+    event is strictly better than that. The floor is `Exception`, never `BaseException`, so
+    `asyncio.CancelledError` still cancels; a delegation failure is logged by `error_type` only —
+    never the message or `exc_info`, which could quote the event — and the alarm is still written.
     """
 
     def __init__(self, inner: EventPublisherPort) -> None:
         self._inner = inner
 
     async def publish(self, *events: DomainEvent) -> None:
-        await self._inner.publish(*events)
+        try:
+            await self._inner.publish(*events)
+        except Exception as exc:
+            with contextlib.suppress(Exception):
+                log.warning(
+                    "identity.event_publish_failed",
+                    error_type=type(exc).__name__,
+                    event_count=len(events),
+                )
         for event in events:
             if isinstance(event, RefreshTokenReuseDetected):
                 with contextlib.suppress(Exception):

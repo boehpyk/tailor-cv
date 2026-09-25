@@ -98,9 +98,10 @@ export type RefreshResult =
   | { readonly kind: 'anonymous'; readonly reason: SignOutReason | null }
   | { readonly kind: 'unavailable' }
   /**
-   * The answer arrived, but the reducer **ignored** it: something newer had already decided the
-   * state (a login landed while the boot was out, a logout while a refresh was out), or the store
-   * was reset. There is nothing for the caller to act on — in particular no `user` to seed, because
+   * The answer arrived and was **dropped**: something newer had already decided the state — a
+   * login landed while the boot was out (the reducer ignores the boot answer), a sign-out of any
+   * kind was honoured while a refresh was out (the store drops the answer: `signOuts`, see
+   * `runRefresh`), or the store was reset. There is nothing for the caller to act on — in particular no `user` to seed, because
    * a boot refresh that loses to a login may carry a *different* user than the one now logged in.
    */
   | { readonly kind: 'superseded' };
@@ -108,6 +109,11 @@ export type RefreshResult =
 interface ModuleState {
   /** Bumped by `__resetForTests`; async work captures it and drops its result if it changed. */
   readonly generation: number;
+  /**
+   * Bumped by every honoured `SIGNED_OUT`, whatever sent it — see `dispatch`. A refresh captures it
+   * when its request goes out and drops its answer if it moved (the logout race; see `runRefresh`).
+   */
+  signOuts: number;
   state: AuthState;
   /** The token-free view of `state`, rebuilt only when `state` changes (identity-stable). */
   snapshot: AuthSnapshot;
@@ -119,6 +125,7 @@ interface ModuleState {
 function freshModuleState(generation: number): ModuleState {
   return {
     generation,
+    signOuts: 0,
     state: INITIAL_AUTH_STATE,
     snapshot: snapshotOf(INITIAL_AUTH_STATE),
     bootPromise: null,
@@ -172,6 +179,11 @@ function dispatch(store: ModuleState, event: AuthEvent): boolean {
     return false;
   }
   store.state = next;
+  // Counted here, not in `signOut`, so that *every* path to `anonymous`-by-sign-out moves it —
+  // `signOut`, `signOutIfHolding`, and a refresh's own 401 — without each having to remember.
+  if (event.type === 'SIGNED_OUT') {
+    store.signOuts += 1;
+  }
   const nextSnapshot = snapshotOf(next);
   // A token rotation (authenticated → authenticated) changes nothing React can see; keeping the
   // old snapshot object means `useSyncExternalStore` does not re-render for it.
@@ -228,15 +240,24 @@ function wait(ms: number): Promise<void> {
   });
 }
 
+/** Has the user been signed out since `signOutsAtStart` was read? Then this answer is stale. */
+function signedOutSince(store: ModuleState, signOutsAtStart: number): boolean {
+  return store.signOuts !== signOutsAtStart;
+}
+
 /** The first attempt plus one per entry in `REFRESH_CONFLICT_RETRY_DELAYS_MS`, 409s only. */
-async function attemptWithConflictRetries(store: ModuleState): Promise<AttemptOutcome> {
+async function attemptWithConflictRetries(
+  store: ModuleState,
+  signOutsAtStart: number,
+): Promise<AttemptOutcome> {
   for (let retry = 0; ; retry += 1) {
     const outcome = await attemptRefresh();
     if (outcome.kind !== 'conflict') {
       return outcome;
     }
     const delay = REFRESH_CONFLICT_RETRY_DELAYS_MS[retry];
-    if (delay === undefined || !isCurrent(store)) {
+    // Signed out meanwhile: the answer will be dropped anyway, so do not keep asking for it.
+    if (delay === undefined || !isCurrent(store) || signedOutSince(store, signOutsAtStart)) {
       return { kind: 'failed' };
     }
     await wait(delay);
@@ -247,9 +268,22 @@ async function attemptWithConflictRetries(store: ModuleState): Promise<AttemptOu
  * One refresh, start to finish. `startedBooting` is captured by the caller **before** the request
  * goes out: it is what decides `BOOT_*` versus the non-boot events, so a boot answer that lands
  * after a login still arrives as a boot answer — and the reducer ignores it.
+ *
+ * **A sign-out while the request is out supersedes it** (/verify round 1, finding 1). The reducer
+ * cannot tell this case apart: it must honour `AUTHENTICATED` in `anonymous`, because a real login
+ * submitted while logged out has to win (`authMachine.ts`'s table pins that). What it cannot know
+ * is that *this* `AUTHENTICATED` answers a question asked before the logout — a refresh presenting
+ * the cookie of a login the server has since deleted, or racing it. The store knows, so the store
+ * decides: `signOuts` is read synchronously here, before the first `await`, and if any sign-out
+ * has been honoured by the time the answer lands, every outcome is dropped — a 200 would undo the
+ * logout, a 401 would overwrite its reason, a failure would mean nothing in `anonymous`.
  */
 async function runRefresh(store: ModuleState, startedBooting: boolean): Promise<RefreshResult> {
-  const outcome = await attemptWithConflictRetries(store);
+  const signOutsAtStart = store.signOuts;
+  const outcome = await attemptWithConflictRetries(store, signOutsAtStart);
+  if (signedOutSince(store, signOutsAtStart)) {
+    return SUPERSEDED;
+  }
 
   switch (outcome.kind) {
     case 'ok': {
@@ -388,6 +422,20 @@ function signOut(reason: SignOutReason): void {
   dispatch(current, { type: 'SIGNED_OUT', reason });
 }
 
+/**
+ * A bearer-authenticated request sent with `sentToken` answered 401 `not_signed_in`: the server
+ * says the login behind that token is gone (the user was deleted). Dispatch `SIGNED_OUT` with
+ * reason `expired` — **only if the store still holds `sentToken`**. If the token has changed since
+ * the request went out (a rotation, or a logout and a new login), the answer describes a login
+ * this tab has already moved past, and ending the current one on its word would be wrong. Called
+ * by `api/client.ts`, which is where the server's codes are classified.
+ */
+function signOutIfHolding(sentToken: string): void {
+  if (heldToken(current) === sentToken) {
+    signOut('expired');
+  }
+}
+
 /** `useSyncExternalStore`'s subscribe: call `listener` after every state change; returns unsubscribe. */
 function subscribe(listener: () => void): () => void {
   const store = current;
@@ -413,6 +461,7 @@ export const authStore = {
   accessTokenForRequest,
   setAuthenticated,
   signOut,
+  signOutIfHolding,
   subscribe,
   getSnapshot,
 } as const;

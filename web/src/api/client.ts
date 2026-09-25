@@ -179,7 +179,7 @@ interface RequestOptions {
 async function requestWithAuth<T>(path: string, options: RequestOptions): Promise<T> {
   const sentToken = await authStore.accessTokenForRequest();
   try {
-    return await send<T>(path, options, sentToken);
+    return await sendWithBearer<T>(path, options, sentToken);
   } catch (error) {
     // No token sent means nothing to refresh: `accessTokenForRequest` already gave the store its
     // chance, and the server's answer is the truthful one to surface.
@@ -200,7 +200,33 @@ async function requestWithAuth<T>(path: string, options: RequestOptions): Promis
       // already said so to React. The original refusal is the honest answer to this request.
       throw error;
     }
-    return send<T>(path, options, retryToken);
+    return sendWithBearer<T>(path, options, retryToken);
+  }
+}
+
+/**
+ * `send`, plus the one answer to a bearer request that is about the **login** rather than the
+ * request: 401 `not_signed_in` means the token verified but the user behind it no longer exists
+ * (/verify round 1, finding 2). Refreshing cannot fix that, and neither can asking again, so the
+ * store is told — `SIGNED_OUT` reason `expired`, which sends `RequireAuth` to `/login` — instead of
+ * leaving the tab `authenticated` with a query that fails the same way on every Retry.
+ *
+ * The error is still thrown: this request failed, and its caller should see why. The store only
+ * acts if it still holds `bearer` (see `signOutIfHolding`), so a late answer about an older login
+ * cannot end a newer one.
+ */
+async function sendWithBearer<T>(
+  path: string,
+  options: RequestOptions,
+  bearer: string | null,
+): Promise<T> {
+  try {
+    return await send<T>(path, options, bearer);
+  } catch (error) {
+    if (bearer !== null && error instanceof ApiError && error.code === 'not_signed_in') {
+      authStore.signOutIfHolding(bearer);
+    }
+    throw error;
   }
 }
 
