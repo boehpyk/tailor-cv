@@ -4,7 +4,7 @@
 parsing to the framework *before your handler body runs*: FastAPI resolves that parameter by calling
 `await request.form()` during dependency resolution, and Starlette's `MultiPartParser` drains the
 entire request stream into a `SpooledTemporaryFile` while doing it. By the time a handler's own code
-— including `routers/intake.py::_read_capped`'s chunked-read loop — starts executing, the whole body
+— including `routers/_upload.py::read_capped`'s chunked-read loop — starts executing, the whole body
 has already arrived and been spooled to disk. A cap enforced only inside the handler therefore bounds
 nothing about the network transfer; it can only bound how much of an *already-received* body a
 function holds in memory at once. Verified empirically against this app: an 11 MB upload against a
@@ -15,18 +15,18 @@ ASGI middleware, wrapping every request ahead of FastAPI's own parameter resolut
 by `Content-Length`, before calling `receive()`, means this app never asks the ASGI server for the
 body: a compliant client sending `Expect: 100-continue` (curl and most HTTP clients do, once a body
 crosses their own threshold) is still waiting for permission to send it, gets this 413 instead, and
-never transmits the payload at all. That is the actual protection `_read_capped`'s docstring used to
+never transmits the payload at all. That is the actual protection `read_capped`'s docstring used to
 claim for itself.
 
 This is one of three layers, each bounding a different failure, none of them redundant with the
-others (see `routers/intake.py::_read_capped`'s docstring for the other two):
+others (see `routers/_upload.py::read_capped`'s docstring for the other two):
 
 1. **This middleware** — rejects an honest client (one that sends `Content-Length`) before the body
    crosses the wire, for every route it is mounted in front of.
 2. **nginx's `client_max_body_size`** — bounds a client that lies about `Content-Length` or omits it;
    nginx buffers to disk, not memory, and drops the connection past the cap regardless of what this
    app does.
-3. **`_read_capped`** — bounds memory *within a handler that already has a body* (chunked
+3. **`read_capped`** — bounds memory *within a handler that already has a body* (chunked
    transfer-encoding carries no `Content-Length`, so layer 1 cannot see it coming).
 """
 
