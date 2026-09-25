@@ -18,11 +18,17 @@ The aggregates are not faked — `BaseCv` and `GuestSession` are the real domain
 Every assertion below states what `UploadBaseCv.__call__` should do per technical-plan.md's
 "Flow" section and feature-spec.md's failure contract, never what the (currently `NotImplementedError`)
 code was observed doing.
+
+**Section 7 (T9, slice 2.2)** adds the `UserOwner` arm (AC-7, S-2, S-4): the same use case storing a
+signed-in user's saved CV rather than a guest's workspace one. The guest-arm tests above are
+untouched in meaning — 1.1's command field was renamed mechanically (T8) and every one of them
+already passes against the skeleton's unchanged guest arm; only section 7 is new, and only it is
+red against the `UserOwner` arm's `NotImplementedError` (`upload_base_cv.py`'s own `match`).
 """
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -32,10 +38,20 @@ from tailorcraft.application.intake.upload_base_cv import (
     UploadBaseCvCommand,
     UploadBaseCvResult,
 )
-from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
+from tailorcraft.domain.identity.errors import (
+    GuestSessionExpired,
+    GuestSessionNotFound,
+    UserNotFound,
+)
 from tailorcraft.domain.identity.guest_session import GuestSession
-from tailorcraft.domain.identity.ownership import GuestOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
+from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.value_objects import (
+    EmailAddress,
+    GuestSessionId,
+    PasswordHash,
+    UserId,
+)
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import (
     CorruptCvFile,
@@ -45,6 +61,7 @@ from tailorcraft.domain.intake.errors import (
     CvTextTooShort,
     EncryptedCvFile,
     TooManyBaseCvs,
+    TooManySavedBaseCvs,
 )
 from tailorcraft.domain.intake.errors import (
     CvExtractionTimedOut as CvExtractionTimedOutError,
@@ -323,3 +340,144 @@ async def test_missing_guest_session_raises_guest_session_not_found(clock: Fixed
     assert cvs.all() == []
     assert files.data == {}
     assert events.published == []
+
+
+# --- 7. Slice 2.2 — the `UserOwner` arm (AC-7, S-2, S-4) ------------------------------------------
+
+
+def _user_command(
+    user_id: UserId,
+    *,
+    filename: str = "cv.pdf",
+    content_type: CvContentType = CvContentType.PDF,
+    content: bytes = b"content bytes for a fake upload, not a real PDF",
+) -> UploadBaseCvCommand:
+    return UploadBaseCvCommand(
+        owner=UserOwner(user_id),
+        original_filename=OriginalFilename(filename),
+        content_type=content_type,
+        content=content,
+    )
+
+
+async def _seed_user(users: FakeUserRepository, *, email: str = "alex@example.com") -> User:
+    """A user "already in the database" — mirrors `test_log_in.py`'s helper of the same name:
+    built directly through `User.register_with_password`, its creation event discarded, since this
+    file tests `UploadBaseCv`, not registration."""
+    user = User.register_with_password(
+        users.next_identity(),
+        EmailAddress.parse(email),
+        PasswordHash(value="$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$ZmFrZWhhc2g"),
+        at=datetime(2026, 9, 4, 0, 0, 0, tzinfo=UTC),
+    )
+    user.release_events()
+    await users.add(user)
+    return user
+
+
+async def test_uploading_for_a_user_owner_stores_the_cv_owned_by_the_user(
+    clock: FixedClock,
+) -> None:
+    """AC-7's `UserOwner` arm: `users.get` resolves the owner, and the stored `BaseCv` ends up
+    `UserOwner`-owned — never `GuestOwner`-owned, and never the guest arm's session lookup."""
+    users = FakeUserRepository()
+    user = await _seed_user(users)
+    sessions = FakeGuestSessionRepository()  # never touched by this arm
+    cvs = FakeBaseCvRepository()
+    files = InMemoryFileStore()
+    text = ExtractedText("word " * 200)
+    extractor = FakeExtractor(outcome=text)
+    events = RecordingEventPublisher()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
+
+    cmd = _user_command(user.id)
+    result = await use_case(cmd)
+
+    assert result.status is BaseCvStatus.EXTRACTED
+    stored = await cvs.get(result.base_cv_id)
+    assert stored.owner == UserOwner(user.id)
+
+    event_types = [type(event) for event in events.published]
+    assert event_types == [BaseCvUploaded, BaseCvTextExtracted]
+
+
+async def test_uploading_for_a_gone_user_raises_user_not_found_and_stores_nothing(
+    clock: FixedClock,
+) -> None:
+    """S-2: a valid bearer whose user row is gone (erased within the access token's 15 minutes).
+    Checked before the file write, exactly as the guest arm's cap and expiry checks are."""
+    users = FakeUserRepository()  # empty: no such user
+    sessions = FakeGuestSessionRepository()
+    cvs = FakeBaseCvRepository()
+    files = InMemoryFileStore()
+    extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
+    events = RecordingEventPublisher()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
+
+    gone_user_id = UserId(value=uuid4())
+    cmd = _user_command(gone_user_id)
+
+    with pytest.raises(UserNotFound):
+        await use_case(cmd)
+
+    assert cvs.all() == []
+    assert files.data == {}
+    assert events.published == []
+
+
+async def test_sixth_saved_base_cv_for_one_user_raises_too_many_saved_base_cvs(
+    clock: FixedClock,
+) -> None:
+    """S-4 / AC-7's cap: `TooManySavedBaseCvs`, `max_saved_base_cvs_per_user`'s sibling of the
+    guest arm's `TooManyBaseCvs` — checked before the file write, so a refused 6th CV writes
+    nothing."""
+    users = FakeUserRepository()
+    user = await _seed_user(users)
+    sessions = FakeGuestSessionRepository()
+    cvs = FakeBaseCvRepository()
+
+    for _ in range(5):
+        existing_id = cvs.next_identity()
+        existing = BaseCv.upload(
+            id=existing_id,
+            owner=UserOwner(user.id),
+            original_filename=OriginalFilename("old.pdf"),
+            content_type=CvContentType.PDF,
+            size_bytes=10,
+            file=FileRef.for_base_cv(existing_id, CvContentType.PDF),
+            uploaded_at=clock.now(),
+        )
+        await cvs.add(existing)
+
+    files = InMemoryFileStore()
+    extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
+    events = RecordingEventPublisher()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users, max_per_user=5)
+
+    cmd = _user_command(user.id)
+
+    with pytest.raises(TooManySavedBaseCvs):
+        await use_case(cmd)
+
+    assert len(cvs.all()) == 5
+    assert files.data == {}
+    assert events.published == []
+
+
+async def test_user_owned_file_is_written_before_the_row_is_added(clock: FixedClock) -> None:
+    """AC-7: "the file is written **before** the row in both arms" — the guest arm's ordering test
+    (section 4 above), repeated for the `UserOwner` arm rather than assumed to carry over."""
+    users = FakeUserRepository()
+    user = await _seed_user(users)
+    sessions = FakeGuestSessionRepository()
+    cvs = FakeBaseCvRepository()
+    files = InMemoryFileStore(repo=cvs)
+    extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
+    events = RecordingEventPublisher()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
+
+    cmd = _user_command(user.id)
+    await use_case(cmd)
+
+    assert files.repo_size_at_put == 0
+    assert len(cvs.all()) == 1
