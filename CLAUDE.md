@@ -18,9 +18,10 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: six slices shipped; slice 2.1 is implemented on `feature/identity-register-and-login`
-> and NOT merged** — merging is a release to `cv.samolit.com`, so it waits on `/verify` (T50) and the
-> owner's deploy approval. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> **Status: seven slices shipped; slice 2.1 was verified (two rounds, 2026-09-25) and merged as
+> PR #13** — its release to `cv.samolit.com` waits on the owner's deploy approval **and on the box's
+> `.env` reading `TRUSTED_PROXY_HOPS=2`** (it read 1 on 2026-09-25; see the footgun below). Next:
+> 2.2 `intake-saved-base-cvs`, spec approved 2026-09-25. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -59,7 +60,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
 >   `overdue` probe **2.1 ms p95** against 20 ms.
 >
-> - **2.1 `identity-register-and-login`** (branch, **implemented, not merged**) — the first
+> - **2.1 `identity-register-and-login`** (PR #13, **verified and merged**) — the first
 >   registered principal and the first password. `User` and `Login` aggregates beside an untouched
 >   `GuestSession` (its file is pinned by digest; no route depends on both resolvers). A `Login`
 >   **is** a refresh-token family: generations, a **10 s race grace** answered 409
@@ -88,6 +89,14 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   break-glass is `revoke-logins --all` (Commands). Account deletion until 2.2 is an operator
 >   deleting the `identity_user` row (OQ-8, `docs/infrastructure.md`). The footguns it hit are
 >   filed under Conventions and Infrastructure footguns below, not here.
+>   **2.1's `/verify` took two rounds.** Round 1's CRITICAL was not in 2.1's code at all: the box's
+>   `TRUSTED_PROXY_HOPS=1` had keyed every IP limiter on Traefik since Phase 1, and 2.1's fail-closed
+>   limiters would have turned that into a site-wide login lockout. Found by reading the proxy chain,
+>   never by a test — every test hard-codes its `X-Forwarded-For`. Round 1 also fixed a refresh that
+>   re-authenticated a tab after logout (a sign-out counter in the store, not the reducer) and a
+>   deleted user's endless Retry. **Carried, filed in the PR:** `SignOutReason` is never rendered;
+>   logout lands on `/login?next=/account`; a stale in-flight refresh can capture one made after a
+>   quick re-login; AC-25's Redis assertion is unobserved red under the limiter-first mutation.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**

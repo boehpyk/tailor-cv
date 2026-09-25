@@ -3352,14 +3352,65 @@ than what its name said.** None of them was found by a red test. Each was found 
 "what would this look like if it were broken?" and then *making* it broken — the mutation habit this
 project has been building since 1.4, now doing most of the work.
 
+## `/verify`, or: the bug that wasn't in the slice
+
+The slice's own code came through review nearly clean. The one CRITICAL finding was a single digit
+in a config file, and it had been wrong since Phase 1.
+
+Picture the building's front desk. Every visitor walks in the street door (Traefik), past the lobby
+receptionist (our nginx), and up to the office (the api). Each one writes on the visitor's badge who
+handed them over. So when the badge reaches the office it reads *"street: 203.0.113.10, lobby
+desk: Traefik"*. `TRUSTED_PROXY_HOPS` tells the office how many handwritten lines to count back
+from the bottom to find the real visitor. It said **1**: *"the last line is the visitor."* The last
+line is the lobby desk. So every visitor in production has been, as far as the rate limiters could
+tell, the same person: Traefik.
+
+Through all of Phase 1 that was quietly wrong but survivable. The upload limit was effectively one
+bucket for the whole planet, and a busy afternoon would have looked like "the site is rate-limiting
+me for no reason". 2.1 made it dangerous, because its login and register limiters **fail closed**,
+on purpose: when in doubt, refuse. Fail-closed on a shared bucket means **twenty bad logins by
+anyone lock everyone out of login for the rest of the hour.** A security control whose failure mode
+is a site-wide denial of service is the kind that turns an attacker's afternoon into your outage.
+
+Why no test caught it: every test writes its own `X-Forwarded-For` header, so every test *is* the
+visitor and the lobby desk at once. Dev has no Traefik at all. The only place the chain exists is
+the box. The reviewer found it by **reading the topology and doing the arithmetic**, and a read-only
+SSH afterwards confirmed the box said `1`. The fix is `2`, pinned to `1` in the dev override (where
+there really is only one hop). A runbook check now proves it after every release: two source IPs
+must produce two different rate-limit keys.
+
+A footnote, because round 2 corrected round 1's own reasoning. The first draft said Traefik *must*
+discard a client's forged header or the count is defeated. It needn't. Counting two from the
+bottom lands on the line Traefik wrote itself, whatever a visitor scribbled above it. What actually
+defeats the count is **a hop nobody counted**, such as a CDN someone adds in front of Traefik next
+year. So the check looks for that instead. When your fix comes with a reason, test the reason too.
+
+Two smaller ones from round 1, both worth keeping:
+
+- **Logout that didn't stick.** If a silent refresh was already in flight when you clicked "Log
+  out", its 200 arrived afterwards and signed the tab back in, holding a token the server had
+  already revoked. The tempting fix was the state machine: "ignore `AUTHENTICATED` while anonymous."
+  But that transition is legal, because it is what a real login does. The fix went in the
+  **store**: a sign-out counter every refresh reads before it leaves and checks when it returns.
+  The machine answers *which moves are ever legal*; the store answers *whether this particular
+  answer is still about the present*.
+- **A deleted user stuck in a loop.** `/me` said "no such user", the page said "couldn't load, retry?",
+  and Retry asked `/me` again. Now a 401 `not_signed_in` signs the store out, but only if the store
+  still holds *the token that request carried*, so a late answer about an old login can't end a
+  new one.
+
+The pattern, a tenth time: **the dangerous bug sat where the tests could not reach**, in the gap
+between the test's world and the box's. The only instrument that works there is someone reading
+the real system and asking what it does.
+
 ## What's next
 
-- `/verify` (T50), including a manual pass through `:8080`: register, reload (still signed in — the
-  silent refresh), two tabs reloading at once (still signed in — the grace), log out, reload.
-- Then the merge, which is a release: an approval in the Actions UI and a live `cv.samolit.com` with
-  accounts.
+- **The release waits on two things:** the box's `.env` changed to `TRUSTED_PROXY_HOPS=2` (by the
+  owner), then the deploy approval, then the two-IP key check.
+- **2.2 `intake-saved-base-cvs`**, spec approved 2026-09-25: a registered user's saved CVs, reuse by
+  working copy, account deletion.
 - **Owed by the owner:** Phase 1's gate. It was never recorded as met, and Phase 2 began anyway
   (OQ-7). The roadmap now says so plainly; the next line there should be evidence, or a reason.
-- **Carried:** account deletion is an operator deleting the `identity_user` row until 2.2 (OQ-8);
-  retired hashes of logins nobody returns to pile up with no sweep until 100 k rows or 2.2; and AC-20's
-  bound needs watching on CI.
+- **Carried:** retired hashes of logins nobody returns to pile up with no sweep until 100 k rows or
+  2.3 (2.2's spec re-armed it); AC-20's bound needs watching on CI; and round 2's four MINORs (in PR
+  #13).
