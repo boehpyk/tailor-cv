@@ -345,3 +345,70 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
     ):
         remaining = await session.execute(select(table.c.id).where(table.c.id == row_id))
         assert remaining.scalar_one_or_none() is None, f"a row survived in {table.name}"
+
+
+# --- T15 / AC-13: the user half of the owner — CHECK, FK and index by name, read from the catalog --
+
+
+async def test_ck_intake_base_cv_label_only_when_user_owned_by_name_and_definition(
+    session: AsyncSession,
+) -> None:
+    """AC-13's second CHECK: I-7's "a label only on a saved CV", read from `pg_constraint` by the
+    exact name the migration gave it, never trusted from the mapping module's comment."""
+    result = await session.execute(
+        text(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conrelid = 'intake_base_cv'::regclass "
+            "AND conname = 'ck_intake_base_cv_label_only_when_user_owned'"
+        )
+    )
+    definition = result.scalar_one_or_none()
+    assert definition is not None, (
+        "intake_base_cv carries no constraint named ck_intake_base_cv_label_only_when_user_owned"
+    )
+    assert "label IS NULL" in definition, (
+        f"ck_intake_base_cv_label_only_when_user_owned's definition is {definition!r}, missing "
+        "the 'label IS NULL' branch of I-7's rule"
+    )
+    assert "user_id IS NOT NULL" in definition, (
+        f"ck_intake_base_cv_label_only_when_user_owned's definition is {definition!r}, missing "
+        "the 'user_id IS NOT NULL' branch of I-7's rule"
+    )
+
+
+async def test_fk_intake_base_cv_user_id_identity_user_is_named_and_cascades_on_delete(
+    session: AsyncSession,
+) -> None:
+    """AC-13: `user_id`'s foreign key, by the name `SqlAlchemyBaseCvRepository.add` recognises via
+    `violated_constraint` (S-12) and `SqlAlchemyAccountData.delete_account`'s cascade (AC-11) both
+    depend on — proven here as a fact about the schema, independent of either adapter."""
+    result = await session.execute(
+        text(
+            "SELECT con.confdeltype::text, refrel.relname FROM pg_constraint con "
+            "JOIN pg_class rel ON rel.oid = con.conrelid "
+            "JOIN pg_class refrel ON refrel.oid = con.confrelid "
+            "WHERE con.contype = 'f' AND con.conname = 'fk_intake_base_cv_user_id_identity_user' "
+            "AND rel.relname = 'intake_base_cv'"
+        )
+    )
+    row = result.one_or_none()
+    assert row is not None, (
+        "intake_base_cv carries no foreign key named fk_intake_base_cv_user_id_identity_user"
+    )
+    delete_type, referenced_table = row
+    assert referenced_table == "identity_user"
+    assert delete_type == "c", (
+        f"fk_intake_base_cv_user_id_identity_user is not ON DELETE CASCADE ({delete_type!r})"
+    )
+
+
+async def test_ix_intake_base_cv_user_id_exists(session: AsyncSession) -> None:
+    """Serves `list_for_user`, `count_for_user`, `SqlAlchemyAccountData.files_of_account` and the
+    cascade above."""
+    result = await session.execute(
+        text(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE tablename = 'intake_base_cv' AND indexname = 'ix_intake_base_cv_user_id'"
+        )
+    )
+    assert result.scalar_one_or_none() == "ix_intake_base_cv_user_id"
