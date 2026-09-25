@@ -274,7 +274,9 @@ async def test_the_guest_session_expired_raises_guest_session_expired(clock: Fix
     with pytest.raises(GuestSessionExpired):
         await use_case(source.id, user.id, expired.id)
 
-    assert files.data == {}
+    # the source's own bytes are untouched and no copy was written (I-9/AC-17: copy never deletes
+    # the source's file)
+    assert files.data == {source.file.key: b"bytes"}
     assert events.published == []
 
 

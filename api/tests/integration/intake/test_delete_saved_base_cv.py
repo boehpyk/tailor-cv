@@ -91,7 +91,7 @@ async def _seed_user(users: FakeUserRepository, *, email: str = "alex@example.co
 
 def _saved_cv(cvs: FakeBaseCvRepository, owner: UserOwner, at: datetime) -> BaseCv:
     cv_id = cvs.next_identity()
-    return BaseCv.upload(
+    cv = BaseCv.upload(
         id=cv_id,
         owner=owner,
         original_filename=OriginalFilename("cv.pdf"),
@@ -100,6 +100,8 @@ def _saved_cv(cvs: FakeBaseCvRepository, owner: UserOwner, at: datetime) -> Base
         file=FileRef.for_base_cv(cv_id, CvContentType.PDF),
         uploaded_at=at,
     )
+    cv.release_events()
+    return cv
 
 
 async def test_happy_path_removes_the_row_then_unlinks_the_file_in_that_order(
