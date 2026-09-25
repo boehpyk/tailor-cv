@@ -822,7 +822,12 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global
-  bucket instead of one per visitor.
+  bucket instead of one per visitor. **`TRUSTED_PROXY_HOPS` is the same trap wearing a number
+  instead of a module name**: it must equal the count of proxies *we* run in front of the api, which
+  on the box is **two** — Traefik, then nginx — not one. It read `1` from Phase 1 through 2.1's
+  `/verify`, which would have keyed every visitor, on every IP-scoped rate limiter, on Traefik's own
+  address; with 2.1's login/register limiters failing closed that is a site-wide lockout, not a
+  slow-degrade. The dev override pins it to `1`, since dev has only nginx in front.
 - **On FastAPI 0.141, a dependency's teardown runs *after* the response is sent.** `get_session`'s
   commit therefore cannot change the answer: a failed commit ships a 200, or a 401 claiming a
   deletion that never landed. Any response that must reflect a committed write **commits inside the

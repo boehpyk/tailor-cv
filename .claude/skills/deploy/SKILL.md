@@ -65,6 +65,42 @@ migration window by up to 60s.** `beat` gets no grace period; it holds no in-fli
   a way no health check sees.
 - A fresh `make db.dump` exists before any migration that is not cleanly reversible.
 - Migrations are additive (expand → migrate → contract) — the deploy runs two versions briefly.
+- **`TRUSTED_PROXY_HOPS=2` on the box.** The chain in front of the api is Traefik, then nginx — two
+  proxies we run, not one. It stayed at `1` from Phase 1 through 2.1's `/verify`, which would key
+  every visitor on Traefik's own address (one global bucket, not one per visitor) across every
+  IP-scoped rate limiter, and with 2.1's login/register limiters failing closed, a site-wide
+  lockout. See "The trusted-proxy hop count" below for the exact checks and post-deploy proof.
+
+### The trusted-proxy hop count
+
+Config check, box, before any release touching rate limiting or the proxy chain:
+
+```bash
+grep ^TRUSTED_PROXY_HOPS= .env                       # must read 2
+```
+
+Traefik must not be the thing defeating the count — it must discard a client-supplied
+`X-Forwarded-For` rather than append to it, which holds by default as long as the `websecure`
+entrypoint has no `forwardedHeaders.insecure=true` and no `0.0.0.0/0` in
+`forwardedHeaders.trustedIPs`:
+
+```bash
+docker inspect <traefik-container> --format '{{json .Config.Cmd}}'
+# or, if Traefik reads a static config file rather than CLI flags (path depends on that box's setup):
+docker exec <traefik-container> cat /etc/traefik/traefik.yml
+```
+
+Post-deploy proof, not just a config read — two requests from two different source IPs must produce
+two distinct rate-limiter keys, never one. The rate limiter shares the cache role's Redis database
+(`REDIS_URL`, db `0` — never `/1`, the broker, or `/2`, the result backend):
+
+```bash
+redis-cli -a "$REDIS_PASSWORD" --no-auth-warning -n 0 --scan --pattern 'rl:*:ip:*'
+```
+
+Two addresses, two distinct `rl:<namespace>:ip:<address>:<epoch_hour>` keys. One key for both is the
+single-bucket collapse, live again — a release blocker, not a follow-up. Full detail:
+`docs/infrastructure.md`, "The trusted-proxy hop count (before any release)".
 
 ## Rollback
 

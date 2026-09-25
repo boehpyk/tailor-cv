@@ -31,6 +31,12 @@ services:
       # `Settings.public_base_url`'s own compiled-in default of "http://localhost:8080" — the .env
       # value is what overrides it away from that default; this line restores it for dev only.
       PUBLIC_BASE_URL: http://localhost:8080
+      # Same shape again. `.env.example` defaults to 2 (Traefik, then nginx — the production chain),
+      # but dev has only nginx in front of this process, so the trusted hop count here is 1. Get this
+      # wrong and `client_ip` (infrastructure/rate_limit.py) keys every rate limiter on nginx's own
+      # address instead of the developer's — a silent single-bucket collapse, the same failure shape
+      # that hit every production IP limiter from Phase 1 through 2.1's `/verify`.
+      TRUSTED_PROXY_HOPS: 1
     command: ["uvicorn", "tailorcraft.infrastructure.api.main:app",
               "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
