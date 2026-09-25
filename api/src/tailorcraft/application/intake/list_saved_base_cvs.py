@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.ports import BaseCvRepository
@@ -31,4 +32,7 @@ class ListSavedBaseCvs:
         self._users = users
 
     async def __call__(self, user_id: UserId) -> Sequence[SavedBaseCvSummary]:
-        raise NotImplementedError
+        # Resolved for its refusal, not its value: a deleted account is `UserNotFound`, never an
+        # empty list that reads as "this account has no CVs".
+        await resolve_existing_user(self._users, user_id)
+        return await self._cvs.list_for_user(user_id)
