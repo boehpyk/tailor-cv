@@ -152,6 +152,13 @@ def _withhold_driver_message(context: ExceptionContext) -> DBAPIError | None:
         value = getattr(source, field, None)
         if value:
             facts.append(f"{field}={value}")
+        # Carried over as attributes too, not only into the message, because cutting the chain
+        # below makes asyncpg's exception — the only object holding them — unreachable, and a
+        # repository that must recognise *which* constraint refused a write (`violated_constraint`)
+        # would otherwise be left parsing this function's own prose. Same allow-list as the
+        # message: identifiers this codebase chose in a migration, never data. Set on every field,
+        # `None` included, so the attribute's absence can never be mistaken for a missing listener.
+        setattr(driver_error, field, value if isinstance(value, str) else None)
 
     source_type = f"{type(source).__module__}.{type(source).__qualname__}"
     driver_error.args = (
@@ -173,6 +180,27 @@ def _withhold_driver_message(context: ExceptionContext) -> DBAPIError | None:
         code=wrapped.code,
         ismulti=wrapped.ismulti,
     )
+
+
+def violated_constraint(exc: DBAPIError) -> str | None:
+    """The name of the constraint that refused a statement, or `None` if none is known.
+
+    **This is how a repository tells one refusal from another** — `uq_identity_user_email` from
+    `ck_identity_user_email_normalized`, say — and it is the only sanctioned way. Never parse the
+    message: the driver's message is withheld by `_withhold_driver_message` precisely because it can
+    quote data, and the replacement is prose for a person, not a format for a program.
+
+    Reads the attribute `_withhold_driver_message` copies onto `exc.orig` from asyncpg's
+    `constraint_name` (the SQLAlchemy dialect's adapted error carries only `sqlstate`/`pgcode`, and
+    the asyncpg exception behind it is cut from the chain). A constraint name is a schema identifier
+    chosen in a migration, so returning it leaks nothing.
+
+    `None` on an engine without the listener, which in this codebase means a bug in how the engine
+    was built — a caller comparing the result with a name then falls through to re-raising, which is
+    the safe direction: an unrecognised refusal propagates, it is never mistranslated.
+    """
+    name = getattr(exc.orig, "constraint_name", None)
+    return name if isinstance(name, str) else None
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

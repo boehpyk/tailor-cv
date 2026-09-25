@@ -84,4 +84,14 @@ RUN useradd --create-home --uid 1000 app \
 USER app
 
 EXPOSE 8000
-CMD ["uvicorn", "tailorcraft.infrastructure.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+# `check-settings` runs every startup refusal ONCE, in a single process, before uvicorn forks its
+# workers (infrastructure/check_settings_command.py, T46/OQ-2). Without this, a refusal — a missing
+# GEMINI_API_KEY or JWT_SIGNING_KEY under APP_ENV=production, a too-short JWT_SIGNING_KEY, a
+# TEST_REDIS_URL colliding with a live Redis db, or a stale-window setting at or below the Celery
+# hard time limit — fires at import in EVERY `--workers N` process, and uvicorn's multiprocess
+# supervisor respawns the crashing import for ever: the container never becomes ready and never
+# exits, so `restart: unless-stopped` never cycles it and nothing reads as a restart loop (measured
+# in 1.3's T36, and again here in T46 — see CLAUDE.md). `&& exec` replaces this shell with uvicorn on
+# success, so uvicorn is still PID 1 and receives signals directly; on refusal the shell exits
+# non-zero and uvicorn never starts.
+CMD ["sh", "-c", "python -m tailorcraft.cli check-settings && exec uvicorn tailorcraft.infrastructure.api.main:app --host 0.0.0.0 --port 8000 --workers 2"]

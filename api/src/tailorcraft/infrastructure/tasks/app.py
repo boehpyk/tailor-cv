@@ -38,7 +38,14 @@ from celery.signals import celeryd_init, worker_process_init
 from kombu import Queue
 
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
-from tailorcraft.infrastructure.settings import MisconfiguredSettings, Settings, get_settings
+from tailorcraft.infrastructure.settings import Settings, get_settings
+
+# `as` is an explicit re-export: `tasks.app.TASK_TIME_LIMIT_SECONDS` was this module's name for the
+# limit before it moved to `limits.py`, and existing importers keep it.
+from tailorcraft.infrastructure.tasks.limits import (
+    TASK_TIME_LIMIT_SECONDS as TASK_TIME_LIMIT_SECONDS,
+)
+from tailorcraft.infrastructure.tasks.limits import refuse_stale_windows_within_time_limit
 
 # The queue Celery publishes to when nothing says otherwise — Celery's own default name, written
 # down rather than left implicit, because `task_queues` below turns the set of consumed queues into
@@ -102,11 +109,10 @@ GUEST_PURGE_EXPIRES_SECONDS: Final = 3500.0
 # restarted.
 GUEST_PURGE_STALE_AFTER_SECONDS: Final = int(3 * GUEST_PURGE_INTERVAL_SECONDS)  # 10800 (3 h)
 
-# The hard time limit: the pool child running a task is killed at this many seconds. Named because
-# three things read it now — the config below, the stale-window check at the top of `create_celery`,
-# and `PURGE_LOCK_TTL_SECONDS` immediately underneath — and a limit written twice is a limit that
-# drifts from the check guarding it.
-TASK_TIME_LIMIT_SECONDS: Final = 180
+# `TASK_TIME_LIMIT_SECONDS` — the hard time limit the config below, the stale-window refusals and
+# `PURGE_LOCK_TTL_SECONDS` immediately underneath all read — lives in `tasks/limits.py` with the
+# refusals it bounds, so `cli check-settings` can run them without building this app (T46, OQ-2).
+# It is imported above and stays importable from here.
 
 # How long the guest purge's Redis lock lives before Redis expires it on its own (slice 1.6,
 # ADR-0018 decision 7). It must outlast the longest run that can possibly still be holding it, and
@@ -137,63 +143,15 @@ def create_celery() -> Celery:
     """
     settings = get_settings()
 
-    # **Refuse a stale window that is not above the hard time limit, in every environment.** Only
-    # this ordering keeps the sweep from deciding a live call. With a window at or below the limit,
-    # this sequence can happen:
-    #   1. The sweep records a run `abandoned` while its worker is still waiting on the model.
-    #   2. The worker's later `succeeded` save meets the row the sweep already decided, and the
-    #      table's CHECK constraints reject it.
-    #   3. The documents are lost after being paid for, and the user sees "That run was
-    #      interrupted", with **Try again** inviting them to pay a second time.
-    # Above the limit, the pool child is killed before its run is old enough to sweep. At the 181 s
-    # boundary the margin is about a second (whole-second `started_at`, strict `>`), and it holds
-    # only while the worker's timer fires on time. At the 300 s default the margin is wide.
-    # Equality is refused too: a kill at second 180 and a sweep judging the same run at second 180
-    # is exactly the race this rules out.
-    #
-    # Checked here because this is the one place the setting and the limit meet. It is not
-    # production-only: the sweep acts on whatever `Settings` the worker holds, whatever `APP_ENV`
-    # says.
+    # The two stale-window refusals (tailoring and export), in every environment. They live in
+    # `tasks/limits.py` — see there for why each window must exceed the hard time limit — so that
+    # `cli check-settings` runs the very same checks without building a Celery app (T46, OQ-2).
     #
     # **This runs at API import as well**, not only in the worker and beat:
-    # `infrastructure/api/main.py` imports `app` from this module to publish tasks. The refusal
-    # therefore inherits CLAUDE.md's `uvicorn --workers N` footgun. Under the production image's
-    # `--workers 2`, the supervisor respawns the failing import for ever, and the container never
-    # becomes ready and never exits. Worker and beat fail loudly by contrast: the celery CLI cannot
-    # load the app, so the process exits and `restart: unless-stopped` shows a restart loop. When a
-    # release's API never goes ready, read its log for this message. Not solved here.
-    if settings.tailoring_stale_after_seconds <= TASK_TIME_LIMIT_SECONDS:
-        raise MisconfiguredSettings(
-            "TAILORING_STALE_AFTER_SECONDS must be greater than Celery's task_time_limit: "
-            f"tailoring_stale_after_seconds={settings.tailoring_stale_after_seconds} is not above "
-            f"task_time_limit={TASK_TIME_LIMIT_SECONDS}. The stale-run sweep would record a call "
-            "that is still running as abandoned, and its paid-for result would be lost. Set it "
-            f"above {TASK_TIME_LIMIT_SECONDS} (the default is 300)."
-        )
-
-    # **The second guard, beside the first, same shape, same reason.** Slice 1.5's stale-job sweep
-    # (`AbandonStaleExportJobs`) is `AbandonStaleTailoringRuns`'s sibling: a live render must never
-    # be swept. With `export_stale_after_seconds` at or below the hard limit, the sweep can record a
-    # job `abandoned` while its worker is still writing the file, the worker's later `mark_ready`
-    # then meets a row the sweep already decided, and the render is lost after being paid for in
-    # worker seconds and disk. Above the limit, the pool child is killed before its job is old
-    # enough to sweep.
-    #
-    # **This runs at API import too**, for the same reason as the guard above:
-    # `infrastructure/api/main.py` imports `app` from this module. Under `uvicorn --workers N` this
-    # refusal does NOT exit the container — the supervisor respawns the failing import for ever, and
-    # the container never becomes ready and never exits, so `restart: unless-stopped` never cycles
-    # it and nothing reads as a restart loop. Worker and beat fail loudly by contrast: the celery CLI
-    # cannot load the app, so the process exits and shows as a restart loop. When a release's API
-    # never goes ready, read its log for this message before suspecting the network (CLAUDE.md).
-    if settings.export_stale_after_seconds <= TASK_TIME_LIMIT_SECONDS:
-        raise MisconfiguredSettings(
-            "EXPORT_STALE_AFTER_SECONDS must be greater than Celery's task_time_limit: "
-            f"export_stale_after_seconds={settings.export_stale_after_seconds} is not above "
-            f"task_time_limit={TASK_TIME_LIMIT_SECONDS}. The stale-job sweep would record a render "
-            "that is still running as abandoned, and its paid-for result would be lost. Set it "
-            f"above {TASK_TIME_LIMIT_SECONDS} (the default is 300)."
-        )
+    # `infrastructure/api/main.py` imports `app` from this module to publish tasks. Under
+    # `uvicorn --workers N` a refusal here respawns the failing import for ever rather than exiting,
+    # which is why the production `api` command runs `check-settings` first.
+    refuse_stale_windows_within_time_limit(settings)
 
     celery_app = Celery(
         "tailorcraft",

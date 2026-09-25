@@ -56,8 +56,16 @@ blocks from the first instant and satisfies that; AC-10's is I/O *then* CPU and 
 why that file raises its floor to 200 and still records a margin rather than claiming one. A
 statistic with no such weakness — the loop's unavailable *fraction*, `sum(turnarounds)` over the
 window's wall-clock — exists and is the right eventual answer; adopting it changes what those
-criteria assert, so it is recorded in `test_posting_fetcher_event_loop.py` with an owner rather than
-done here.
+criteria assert, so it was recorded in `test_posting_fetcher_event_loop.py` with an owner rather than
+done there.
+
+**AC-20 (`tests/integration/adapters/test_login_event_loop.py`, T34) hit exactly this weakness and
+adopted the fix, on its owner's decision.** Eight concurrent logins against a real, production-cost
+argon2 verify are *mostly* async I/O (two Postgres round trips and a Redis check) with *one*
+CPU-bound step, so the blocked fraction under that concurrency stayed under half and p50 never went
+red against the executor-hop mutation across five separate runs, even though `max` and the batch's
+own wall-clock both showed the regression plainly. `unavailable_fraction` below is what that file
+gates on now; p50 is still computed and reported alongside it, never as the assertion.
 
 **AC-11's copy in `tests/api/test_export_inline.py` is not fixed and not proven blind.** Its own
 banner records that removing `asyncio.to_thread` from the renderer hangs the process outright, which
@@ -114,3 +122,55 @@ async def hammer_health_live_until_floor(
         if len(turnarounds) >= floor:
             enough.set()
     return turnarounds
+
+
+def unavailable_fraction(turnarounds: list[float], *, baseline_seconds: float = 0.0) -> float:
+    """The share of the sampler's own answered time that was **excess beyond `baseline_seconds`**:
+    `sum(max(0, t - baseline)) / sum(turnarounds)` (module docstring, lesson two's corollary, twice
+    amended below — read both amendments before using this on a new workload).
+
+    Pure and synchronous — it does not sample anything itself. Unlike p50, this statistic is not
+    blind to a blocked loop that answers *most* samples quickly and a few very slowly: a blocked
+    sample still contributes its full delay to the sum, so a workload whose blocked fraction is well
+    under half — the exact shape that defeated p50 for AC-20 — still moves this number in proportion
+    to how much of the sampled time was actually lost. Bounded to `[0, 1]` by construction (`excess
+    <= t` for every `t >= 0`, so the sum in the numerator can never exceed the sum in the
+    denominator), which the first version below was not.
+
+    **Amendment one — `baseline_seconds` (lesson three, found hours after the first version
+    shipped).** A caller that hands raw `turnarounds` with no baseline measures *latency*, not
+    *blocking*, because a healthy loop's turnaround is not zero — it is the ambient per-request cost
+    of answering `/health/live` at all, call it `t̄`. Subtracting `baseline_seconds` (the median
+    turnaround measured with **nothing else in flight**, on the same box, right before the workload
+    under test) removes that ambient cost before summing, so a uniformly slower box — higher baseline
+    *and* higher loaded turnarounds, moving together — contributes close to zero excess, while
+    genuine blocking, which grows turnarounds *relative to that same box's own baseline*, still shows
+    up in full. The default `0.0` is the original, baseline-free statistic (harmless for a caller
+    with no baseline available, since every turnaround is already non-negative).
+
+    **Amendment two — normalised by `sum(turnarounds)`, never by wall-clock (found the same day,
+    measuring amendment one against a changed `PACE_SECONDS`).** An earlier version of this function
+    divided by the caller's own measured wall-clock span instead. For a single-coroutine, paced
+    sampler, `wall_clock ≈ N x (PACE_SECONDS + t̄)` for `N` samples — so a larger `PACE_SECONDS`
+    inflates the denominator with sampler-induced *idle* time that has nothing to do with blocking,
+    and the healthy value measurably shrinks purely because the sampler was told to sleep longer
+    between requests (measured: raising `PACE_SECONDS` five-fold roughly halved the healthy value
+    under wall-clock normalisation, on a workload whose genuine blocked share had not changed at
+    all — the very "precondition scales with an unrelated knob" shape this whole file exists to
+    avoid). `sum(turnarounds)` excludes `PACE_SECONDS` by construction (each turnaround already has
+    it subtracted, per sample, in `hammer_health_live_until_floor`), so this ratio is answered-time
+    against answered-time and the pace no longer enters it *arithmetically*. It is not
+    invariant to the pace in practice, though: re-running the same healthy workload at five times
+    the pace moved the healthy value from the 0.775-0.799 cluster to **0.564** (a sparser poll samples
+    the same contention with a different density), which is why `PACE_SECONDS` is a module
+    constant and the bound was measured at it — see `test_login_event_loop.py`'s own record.
+
+    A caller still measures its own bound empirically for its own workload — this ratio removes ambient
+    latency and takes sampler pacing out of the arithmetic (not out of the measurement, above) — it
+    does not remove the need for an empirical bound.
+    """
+    total = sum(turnarounds)
+    if total <= 0:
+        raise ValueError(f"sum(turnarounds) must be positive, got {total!r}")
+    excess = sum(max(0.0, t - baseline_seconds) for t in turnarounds)
+    return excess / total

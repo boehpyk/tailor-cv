@@ -6,6 +6,11 @@
  * and JSON. Change the transport and exactly one directory changes.
  */
 
+// A cycle, on purpose and safe: `authStore` → `api/auth` → this module → `authStore`. Nothing here
+// touches `authStore` at module top level — only inside `requestWithAuth` — so the live binding is
+// always initialised by the time it is read. See the note in `authStore.ts`.
+import { authStore } from '@/features/auth/authStore';
+
 /** An error the API reported, carrying the status so a caller can distinguish 4xx from 5xx. */
 export class ApiError extends Error {
   constructor(
@@ -136,6 +141,93 @@ interface RequestOptions {
    * replace it with "request failed" — the failure is the payload.
    */
   readonly acceptStatuses?: readonly number[];
+  /**
+   * `'required'` makes this a **bearer-authenticated** request (slice 2.1, AC-38). Absent — the
+   * default, and every guest endpoint — and the request carries no `Authorization` header at all.
+   *
+   * Opt-in rather than "attach the token whenever there is one", for two reasons:
+   *
+   * - **No request carries two credentials by accident.** Guest endpoints are authorized by the
+   *   `tc_guest` cookie; a guest request that also carried a bearer token would be the first step
+   *   of the claim (slice 2.4) happening without anyone designing it.
+   * - **The retry is keyed on the declaration.** A 401 whose `code` is `invalid_access_token`, on
+   *   a request declared `'required'`, gets one `authStore.refresh()` and one retry. A 401
+   *   `guest_session_expired` never refreshes (I-48): the branch is on `code`, never on status,
+   *   because "401" alone means different things on different routes.
+   *
+   * Before sending, the token comes from `authStore.accessTokenForRequest()`, which refreshes
+   * *first* when less than 30 s remain. `api/auth.ts`'s `refresh` and `logout` must never set this:
+   * the first is what the interceptor calls, and the second must work with an expired token.
+   */
+  readonly auth?: 'required';
+}
+
+/**
+ * The `auth: 'required'` path: token → request → on 401 `invalid_access_token`, one refresh and one
+ * retry → give up.
+ *
+ * **Branch on `code`, never on status.** A 401 on a guest route is `guest_session_expired`, and
+ * refreshing a *login* cannot fix a *guest session* (I-48); a second 401 after the retry is
+ * surfaced as-is, because a loop of refreshes is the one thing worse than an error.
+ *
+ * **Refresh only if the token we sent is still the current one.** Three requests that all went out
+ * with the same stale token all come back 401; the first to land refreshes, and the others must
+ * retry with the token that refresh produced rather than rotate the cookie again. The store's
+ * single-flight covers the ones that overlap the refresh; this comparison covers the ones that land
+ * after it finished.
+ */
+async function requestWithAuth<T>(path: string, options: RequestOptions): Promise<T> {
+  const sentToken = await authStore.accessTokenForRequest();
+  try {
+    return await sendWithBearer<T>(path, options, sentToken);
+  } catch (error) {
+    // No token sent means nothing to refresh: `accessTokenForRequest` already gave the store its
+    // chance, and the server's answer is the truthful one to surface.
+    if (
+      sentToken === null ||
+      !(error instanceof ApiError) ||
+      error.code !== 'invalid_access_token'
+    ) {
+      throw error;
+    }
+    let retryToken = await authStore.accessTokenForRequest();
+    if (retryToken === null || retryToken === sentToken) {
+      await authStore.refresh();
+      retryToken = await authStore.accessTokenForRequest();
+    }
+    if (retryToken === null || retryToken === sentToken) {
+      // The refresh did not produce a new token (logged out, or unavailable): the store has
+      // already said so to React. The original refusal is the honest answer to this request.
+      throw error;
+    }
+    return sendWithBearer<T>(path, options, retryToken);
+  }
+}
+
+/**
+ * `send`, plus the one answer to a bearer request that is about the **login** rather than the
+ * request: 401 `not_signed_in` means the token verified but the user behind it no longer exists
+ * (/verify round 1, finding 2). Refreshing cannot fix that, and neither can asking again, so the
+ * store is told — `SIGNED_OUT` reason `expired`, which sends `RequireAuth` to `/login` — instead of
+ * leaving the tab `authenticated` with a query that fails the same way on every Retry.
+ *
+ * The error is still thrown: this request failed, and its caller should see why. The store only
+ * acts if it still holds `bearer` (see `signOutIfHolding`), so a late answer about an older login
+ * cannot end a newer one.
+ */
+async function sendWithBearer<T>(
+  path: string,
+  options: RequestOptions,
+  bearer: string | null,
+): Promise<T> {
+  try {
+    return await send<T>(path, options, bearer);
+  } catch (error) {
+    if (bearer !== null && error instanceof ApiError && error.code === 'not_signed_in') {
+      authStore.signOutIfHolding(bearer);
+    }
+    throw error;
+  }
 }
 
 /**
@@ -147,21 +239,39 @@ interface RequestOptions {
  * be the thing standing between an attacker and a session.
  */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  // A multipart upload (`FormData`) must NOT get a hand-set `Content-Type` and must NOT be run
-  // through `JSON.stringify` — this looks wrong until you know why. `multipart/form-data` requires
-  // a `boundary` parameter that only the browser's own `fetch` implementation can generate (it is
-  // derived per-request), and setting the header yourself produces a `Content-Type` with no
-  // boundary at all: the server can see the request is multipart but can never find where one part
-  // ends and the next begins, so parsing fails on every upload. Leaving `headers` and `body` alone
-  // for `FormData` lets the browser set its own `Content-Type: multipart/form-data; boundary=...`.
-  // Spread rather than `headers: undefined`: under `exactOptionalPropertyTypes` an optional
-  // `RequestInit` field may be absent but not explicitly `undefined`.
+  if (options.auth === 'required') {
+    return requestWithAuth<T>(path, options);
+  }
+  return send<T>(path, options, null);
+}
+
+/** Headers for one request: JSON's `Content-Type` when there is a JSON body, and the bearer. */
+function headersFor(options: RequestOptions, bearer: string | null): Record<string, string> {
+  const headers: Record<string, string> = {};
+  // A multipart upload (`FormData`) must NOT get a hand-set `Content-Type` — this looks wrong until
+  // you know why. `multipart/form-data` requires a `boundary` parameter that only the browser's own
+  // `fetch` implementation can generate (it is derived per-request), and setting the header yourself
+  // produces a `Content-Type` with no boundary at all: the server can see the request is multipart
+  // but can never find where one part ends and the next begins, so parsing fails on every upload.
+  if (options.body !== undefined && !(options.body instanceof FormData)) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (bearer !== null) {
+    headers.Authorization = `Bearer ${bearer}`;
+  }
+  return headers;
+}
+
+/** One `fetch`, one parse, one verdict. `bearer` is `null` for every request not `auth: 'required'`. */
+async function send<T>(path: string, options: RequestOptions, bearer: string | null): Promise<T> {
+  const headers = headersFor(options, bearer);
+  // A `FormData` body is passed through untouched rather than `JSON.stringify`-ed (see
+  // `headersFor`). Spread rather than `headers: undefined`: under `exactOptionalPropertyTypes` an
+  // optional `RequestInit` field may be absent but not explicitly `undefined`.
   const response = await fetch(path, {
     method: options.method ?? 'GET',
     credentials: 'include',
-    ...(options.body === undefined || options.body instanceof FormData
-      ? {}
-      : { headers: { 'Content-Type': 'application/json' } }),
+    ...(Object.keys(headers).length === 0 ? {} : { headers }),
     ...(options.body === undefined
       ? {}
       : { body: options.body instanceof FormData ? options.body : JSON.stringify(options.body) }),

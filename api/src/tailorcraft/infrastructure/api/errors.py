@@ -32,7 +32,21 @@ from tailorcraft.domain.export.errors import (
     TailoringRunNotExportable,
     TooManyExportJobs,
 )
-from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
+from tailorcraft.domain.identity.errors import (
+    AccessTokenInvalid,
+    EmailAlreadyRegistered,
+    GuestSessionExpired,
+    GuestSessionNotFound,
+    InvalidCredentials,
+    InvalidEmailAddress,
+    LoginNotFound,
+    PasswordHashingFailed,
+    RefreshInProgress,
+    RefreshTokenReused,
+    UserNotFound,
+    WeakPassword,
+)
+from tailorcraft.domain.identity.value_objects import WeakPasswordReason
 from tailorcraft.domain.intake.errors import BaseCvNotFound, InvalidFilename, TooManyBaseCvs
 from tailorcraft.domain.posting.errors import (
     EmptyJobPostingText,
@@ -70,6 +84,46 @@ GUEST_SESSION_EXPIRED_DETAIL = {
     "message": "Your session has expired or could not be found. Please try again.",
 }
 
+# -- identity (slice 2.1) ------------------------------------------------------------------------
+# Shared details, for `GUEST_SESSION_EXPIRED_DETAIL`'s reason: a dependency (`require_user`,
+# `require_trusted_origin`) and a route that raises the same refusal from its own body (a refresh with
+# no cookie, I-19) must read identically, and one constant is the only way that stays true.
+
+NOT_SIGNED_IN_DETAIL = {
+    "code": "not_signed_in",
+    "message": "You are not signed in.",
+}
+"""401 for every "this refresh cookie names no live login" (I-19, I-20, I-21, I-27) and for a valid
+access token whose user is gone (I-39). One code: after a revocation, "revoked" and "never existed"
+are indistinguishable by design (ADR-0020)."""
+
+INVALID_ACCESS_TOKEN_DETAIL = {
+    "code": "invalid_access_token",
+    "message": "Your session needs to be refreshed.",
+}
+"""401 for every refused bearer token (I-32 … I-38, I-40). **Never says why** (AC-34): a forger learns
+nothing about which check caught them; the reason goes to the log line only."""
+
+WWW_AUTHENTICATE_INVALID_TOKEN = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
+"""RFC 6750 §3's challenge, on every `invalid_access_token` (AC-34)."""
+
+ORIGIN_NOT_ALLOWED_DETAIL = {
+    "code": "origin_not_allowed",
+    "message": "This request did not come from TailorCraft.",
+}
+"""403 from `require_trusted_origin` (AC-25, I-28). Not a `DomainError`: an `Origin` header is an HTTP
+fact the domain has no word for."""
+
+
+def invalid_access_token_exception() -> HTTPException:
+    """The 401 `invalid_access_token` with its `WWW-Authenticate` challenge — one builder, used by
+    `deps.require_user` and by this module's `AccessTokenInvalid` branch, so the two cannot drift."""
+    return HTTPException(
+        status.HTTP_401_UNAUTHORIZED,
+        detail=INVALID_ACCESS_TOKEN_DETAIL,
+        headers=WWW_AUTHENTICATE_INVALID_TOKEN,
+    )
+
 
 def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     """Map one `DomainError` to the `HTTPException` the API returns for it.
@@ -82,6 +136,27 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     """
     if isinstance(exc, GuestSessionExpired | GuestSessionNotFound):
         return HTTPException(status.HTTP_401_UNAUTHORIZED, detail=GUEST_SESSION_EXPIRED_DETAIL)
+
+    # -- identity: registration, login, refresh, access tokens (slice 2.1) ----------------------
+    # The same function once more, for the module docstring's reason. The union is the specification
+    # of what 2.1's use cases and adapters can raise across HTTP. Two identity errors are absent on
+    # purpose: `LoginExpired` and `LoginConcurrentlyRotated` are translated inside `RefreshLogin`
+    # (into `LoginNotFound` and `RefreshInProgress`) and never reach a route — reaching the floor
+    # with either is a bug, and a real 500 is the honest answer to it.
+    if isinstance(
+        exc,
+        InvalidEmailAddress
+        | WeakPassword
+        | EmailAlreadyRegistered
+        | InvalidCredentials
+        | LoginNotFound
+        | UserNotFound
+        | RefreshInProgress
+        | RefreshTokenReused
+        | AccessTokenInvalid
+        | PasswordHashingFailed,
+    ):
+        return _identity_error_to_http(exc)
 
     if isinstance(exc, BaseCvNotFound):
         return HTTPException(
@@ -412,6 +487,127 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         return _export_error_to_http(exc)
 
     raise exc
+
+
+def _identity_error_to_http(exc: DomainError) -> HTTPException:
+    """Map one `identity` `DomainError` to its status and `code` (the API contract, technical plan §4).
+
+    **Every `message` is a fixed sentence and never `str(exc)`.** Identity is the context where an
+    error is raised *about* an email or a password; the domain's messages carry reasons only (its
+    module docstring), and a fixed sentence here keeps that true whatever a future message includes.
+    """
+    if isinstance(exc, InvalidEmailAddress):
+        # I-1, I-12. One code for every `InvalidEmailReason`: which rule failed helps nobody type an
+        # address, and on login it would be a statement about input shaped like an account.
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": "invalid_email", "message": "That doesn't look like an email address."},
+        )
+
+    if isinstance(exc, WeakPassword):
+        return _weak_password_to_http(exc)
+
+    if isinstance(exc, EmailAlreadyRegistered):
+        # I-5, I-6. Conceded enumeration at registration (OQ-1): the alternative is an account-
+        # creation flow that cannot tell a person their address is already in use.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "email_already_registered",
+                "message": "An account with that email already exists. Log in instead.",
+            },
+        )
+
+    if isinstance(exc, InvalidCredentials):
+        # I-9, I-10 — **byte-identical for an unknown email and a wrong password** (AC-28). This
+        # branch reads nothing off `exc` (it carries nothing, AC-9), so it cannot vary.
+        return HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "invalid_credentials",
+                "message": "That email and password don't match an account.",
+            },
+        )
+
+    if isinstance(exc, LoginNotFound | UserNotFound):
+        # I-20, I-21, I-27 (refresh) and I-39 (`/me`, the user row gone). Clearing the cookie on the
+        # refresh path is the route's job — this mapping has no response to set it on.
+        return HTTPException(status.HTTP_401_UNAUTHORIZED, detail=NOT_SIGNED_IN_DETAIL)
+
+    if isinstance(exc, RefreshInProgress):
+        # I-23, I-25. 409 and not 429: a conflict with concurrent state, not a limit. The cookie is
+        # left alone — by the time the client retries, it holds the winner's.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "refresh_in_progress",
+                "message": "Another tab is refreshing your session. Try again in a moment.",
+            },
+        )
+
+    if isinstance(exc, RefreshTokenReused):
+        # I-24. The login is already deleted; the route must answer this *inside* the request so the
+        # deletion commits, and must clear the cookie.
+        return HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "refresh_token_reused",
+                "message": "For your security you've been logged out. Please log in again.",
+            },
+        )
+
+    if isinstance(exc, AccessTokenInvalid):
+        # I-33 … I-38. `exc.reason` is for the log line (`deps.require_user` writes it) and is never
+        # read here: every refusal is the same 401, and the body never says why (AC-34).
+        return invalid_access_token_exception()
+
+    if isinstance(exc, PasswordHashingFailed):
+        # I-45. The same code and message as a dead Postgres (`main.py`'s handler): to the client,
+        # "the server cannot check passwords right now" and "the server is down" ask for one action.
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "service_unavailable",
+                "message": "The service is temporarily unavailable. Please try again.",
+            },
+        )
+
+    raise exc
+
+
+def _weak_password_to_http(exc: WeakPassword) -> HTTPException:
+    """I-2 … I-4. **Each reason is its own wire code** (`WeakPasswordReason`'s values are the codes),
+    because the user can act on the difference. The bound travels in the envelope from the object
+    that applied it — `min_length` for too-short, `max_length` for too-long — so the client never
+    hard-codes 12 as a rule, only as copy (technical plan §1: the policy is data)."""
+    reason = exc.reason
+    if reason is WeakPasswordReason.TOO_SHORT:
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": reason.value,
+                "message": f"Use at least {exc.min_length} characters.",
+                "min_length": exc.min_length,
+            },
+        )
+    if reason is WeakPasswordReason.TOO_LONG:
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": reason.value,
+                "message": f"Use at most {exc.max_length} characters.",
+                "max_length": exc.max_length,
+            },
+        )
+    if reason is WeakPasswordReason.MATCHES_EMAIL:
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": reason.value,
+                "message": "Your password can't be your email address.",
+            },
+        )
+    assert_never(reason)
 
 
 def _export_error_to_http(exc: DomainError) -> HTTPException:

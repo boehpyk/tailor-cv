@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Final, Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Environment = Literal["production", "dev", "test"]
@@ -24,6 +24,14 @@ Environment = Literal["production", "dev", "test"]
 # The Redis database the test suite owns. Redis ships with 16 (0-15) and this system uses three of
 # them — cache/rate limiter, Celery broker, Celery result backend — so this is the first free one.
 _TEST_REDIS_DB: Final = 3
+
+# The `.env.example` value of `JWT_SIGNING_KEY`, refused by name in production (AC-22). It is 33
+# bytes long, so the length rule alone would let it through — which is exactly why it is named: the
+# value most likely to reach a real box is the one copied out of the example file.
+JWT_SIGNING_KEY_PLACEHOLDER: Final = "change-me-to-32-plus-random-bytes"
+# The production floor on the signing key, in UTF-8 bytes (AC-22). HS256's key is an HMAC-SHA256 key,
+# and RFC 7518 §3.2 requires at least the hash's output size — 256 bits.
+JWT_SIGNING_KEY_MIN_BYTES: Final = 32
 
 
 def _with_redis_database(url: str, database: int) -> str:
@@ -75,6 +83,42 @@ class MisconfiguredSettings(RuntimeError):
     exactly the sentence it was given and nothing else. It still kills uvicorn and the Celery worker
     at import of the composition root, which is the whole point.
     """
+
+
+def _refuse_weak_jwt_signing_key(key: SecretStr) -> None:
+    """AC-22/I-46: refuse an empty, whitespace-only, placeholder or sub-32-byte key.
+
+    Called only when `APP_ENV=production`, from
+    `Settings._refuse_a_weak_jwt_signing_key_in_production`. Raises `MisconfiguredSettings` naming
+    the variable and never its value.
+
+    The four rules, and why each is its own line rather than one clever predicate:
+
+    - **Empty or whitespace-only** — the same "a space is not a key" rule the Gemini guard applies.
+    - **The `.env.example` placeholder, by name** — it is 33 bytes, so the length rule alone would
+      wave through exactly the value most likely to reach a real box.
+    - **Fewer than `JWT_SIGNING_KEY_MIN_BYTES` UTF-8 bytes** — counted in bytes, not characters,
+      because bytes are what HMAC-SHA256 keys on; sixteen `é` are 32 bytes and 16 characters.
+
+    Each message is a constant string. Nothing derived from the key — not its length, not a prefix —
+    goes into it, and the raise happens outside any `except`, so there is no `__context__` to carry
+    the value out through a rendered traceback.
+    """
+    value = key.get_secret_value()
+    reason: str | None = None
+    if not value.strip():
+        reason = "is empty"
+    elif value == JWT_SIGNING_KEY_PLACEHOLDER:
+        reason = "is still the .env.example placeholder"
+    elif len(value.encode("utf-8")) < JWT_SIGNING_KEY_MIN_BYTES:
+        reason = f"is shorter than {JWT_SIGNING_KEY_MIN_BYTES} bytes"
+    if reason is None:
+        return
+    raise MisconfiguredSettings(
+        f"JWT_SIGNING_KEY {reason}; APP_ENV=production refuses to sign access tokens with it. "
+        f"Generate one with `openssl rand -hex {JWT_SIGNING_KEY_MIN_BYTES}` and set it in the "
+        "box's .env (mode 600, created by hand), or run with APP_ENV=dev."
+    )
 
 
 class Settings(BaseSettings):
@@ -426,9 +470,41 @@ class Settings(BaseSettings):
     # silent failure paths from its first slice (roadmap).
     sentry_dsn: str = Field(default="")
 
-    # NOTE: JWT_* is declared in .env.example but deliberately absent here. A setting with no
-    # consumer is a promise the code does not keep. It lands with the slice that reads it —
-    # identity (2.1). GEMINI_* was in this note until slice 1.3; it has a consumer now.
+    # -- Identity: accounts, access tokens, logins (slice 2.1, ADR-0008/0010) --
+    # The HS256 key that signs ACCESS tokens, and the root of the rate limiter's per-email HMAC
+    # subkey (derived under a fixed label, so the key itself is never used for a second purpose).
+    # Read once, by `infrastructure/identity/access_tokens.py` and the limiter provider.
+    #
+    # A `SecretStr`, so neither `repr(settings)` nor a traceback's locals print it. The production
+    # floor is `_refuse_a_weak_jwt_signing_key_in_production` below and deliberately NOT a
+    # `Field(min_length=32)`: pydantic's `ValidationError` renders `input_value`, which for this field
+    # is the key — the refusal would print the secret it is refusing into the crash log.
+    #
+    # The placeholder default is legal in dev and test and refused in production, the same split as
+    # `gemini_api_key`'s empty default: a missing key and the placeholder are one case.
+    #
+    # **Rotating it does NOT log anyone out** (ADR-0008 amendment (d)). Refresh tokens are opaque
+    # rows, not JWTs, so rotation invalidates only the outstanding access tokens (at most
+    # ACCESS_TOKEN_TTL_MINUTES old), and the next silent refresh mints new ones. The break-glass that ends every session is
+    # `python -m tailorcraft.cli revoke-logins --all`.
+    jwt_signing_key: SecretStr = SecretStr(JWT_SIGNING_KEY_PLACEHOLDER)
+    # `Field` bounds are safe HERE, unlike on the key: the rejected value is an integer, and printing
+    # it leaks nothing (I-47). The ceilings bound a typo, not a taste: an access token is a bearer
+    # credential nothing can revoke before it expires, and a refresh token's lifetime is how long a
+    # stolen laptop stays signed in.
+    access_token_ttl_minutes: int = Field(default=15, gt=0, le=60)
+    refresh_token_ttl_days: int = Field(default=30, gt=0, le=90)
+    # AC-27. All three limiters fail CLOSED (Redis down -> 503 `rate_limit_unavailable`, no hash
+    # computed): every attempt that reaches the hasher holds 64 MiB of argon2 memory, and login is
+    # the endpoint a credential-stuffing script aims at. The fail-closed direction is deliberately not a setting.
+    # Per IP bounds one network; per email bounds a targeted guess spread across many IPs, keyed on
+    # an HMAC of the normalized address so the email never appears in a Redis key.
+    # `gt=0` because these limiters fail closed: `0` refuses the first request of every window and a
+    # negative limit makes `count <= limit` unsatisfiable — a lockout reached by typo, not by choice.
+    # Safe to render in a `ValidationError` for the same reason as the TTLs above: an integer.
+    login_rate_limit_per_ip_per_hour: int = Field(default=20, gt=0)
+    login_rate_limit_per_email_per_hour: int = Field(default=10, gt=0)
+    register_rate_limit_per_ip_per_hour: int = Field(default=5, gt=0)
 
     @model_validator(mode="after")
     def _refuse_to_boot_without_a_key_in_production(self) -> Settings:
@@ -467,6 +543,20 @@ class Settings(BaseSettings):
                 "had already waited for it. Set it in the box's .env (mode 600, created by hand) or "
                 "run with APP_ENV=dev."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_a_weak_jwt_signing_key_in_production(self) -> Settings:
+        """AC-22/I-46: `APP_ENV=production` with a weak `JWT_SIGNING_KEY` must not start.
+
+        A signing key is the whole of the access token's authority: anyone who can guess it can
+        mint a token for any user. Dev and test accept the placeholder, for the same reason they
+        accept an empty Gemini key — nothing signed there authorises a real login. Same
+        `MisconfiguredSettings` (never a `ValueError`) and the same uvicorn `--workers N` caveat as
+        the Gemini guard above.
+        """
+        if self.app_env == "production":
+            _refuse_weak_jwt_signing_key(self.jwt_signing_key)
         return self
 
     @property

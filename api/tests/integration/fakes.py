@@ -43,13 +43,29 @@ Used by:
   (one instance, one configured outcome, a `.calls` / `.enqueued` log); `MissingFileStore` is a third
   `FileStorePort` stand-in beside the pre-existing `InMemoryFileStore` and `AlwaysFailingFileStore`,
   for the one case neither covers — a `ready` job's `get` finding nothing (X-47).
+- `tests/integration/identity/{test_register_user,test_log_in,test_refresh_login,test_log_out,
+  test_get_current_user,test_revoke_all_logins}.py` (T13 — the six slice-2.1 use cases).
+  `FakeUserRepository` and `FakeLoginRepository` are `add`-is-the-uniqueness-check and
+  revocation-is-deletion respectively (technical plan §0.4, ADR-0020), mirroring
+  `FakeGuestSessionRepository`'s shape one context over. `FakeLoginRepository.
+  conflict_on_save_rotation` is `FakeTailoringRunRepository.conflict_on_save`'s pattern applied to
+  `save_rotation` (I-25) — a stand-in for the real `UPDATE … WHERE version = :v` race, whose actual
+  truth is T31's, against real Postgres. `RecordingPasswordHasher`, `FakeAccessTokenPort` and
+  `RecordingFailedLoginObserver` are one-instance-per-test recorders in `FakeLlm`'s shape: a
+  configured outcome plus a full argument log, because AC-9 needs to assert not just how many times
+  `verify` ran but *what* it was called with (`against=None` on the unknown-email path). The
+  pre-existing `RecordingEventPublisher` below (added for the `export`/`tailoring` suites) is reused
+  as-is — its `repo` parameter is simply left `None` here, since no T13 test needs the
+  publish-after-save snapshot. `CountingClock` wraps a `FixedClock` and counts `.now()` calls, which
+  `FixedClock` itself does not track — what T13's "one `clock.now()` per use-case call" assertion
+  needs.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import UUID, uuid4
 
@@ -61,9 +77,29 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
-from tailorcraft.domain.identity.errors import GuestSessionNotFound
+from tailorcraft.domain.identity.errors import (
+    AccessTokenInvalid,
+    EmailAlreadyRegistered,
+    GuestSessionNotFound,
+    LoginConcurrentlyRotated,
+    UserNotFound,
+)
 from tailorcraft.domain.identity.guest_session import GuestSession
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.login import Login
+from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.value_objects import (
+    AccessTokenRefusal,
+    EmailAddress,
+    GuestSessionId,
+    IssuedAccessToken,
+    LoginId,
+    Password,
+    PasswordHash,
+    PasswordVerdict,
+    RetiredRefreshToken,
+    TokenHash,
+    UserId,
+)
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound, CvExtractionFailed
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
@@ -152,6 +188,215 @@ class FakeGuestSessionRepository:
             if session.token_hash == token_hash:
                 return session
         return None
+
+
+class FakeUserRepository:
+    """In-memory `UserRepository` (slice 2.1, T13).
+
+    **`add` is the uniqueness check** (technical plan §0.4, I-5, I-6): it raises
+    `EmailAlreadyRegistered` for a second user whose *normalized* email matches an existing one —
+    never a `find_by_email` first, mirroring the real unique index rather than a look-up-then-insert
+    race a fake could get away with pretending is safe.
+    """
+
+    def __init__(self) -> None:
+        self._by_id: dict[UserId, User] = {}
+
+    def next_identity(self) -> UserId:
+        return UserId(value=uuid4())
+
+    async def add(self, user: User) -> None:
+        for existing in self._by_id.values():
+            if existing.email == user.email:
+                raise EmailAlreadyRegistered()
+        self._by_id[user.id] = user
+
+    async def get(self, user_id: UserId) -> User:
+        try:
+            return self._by_id[user_id]
+        except KeyError:
+            raise UserNotFound(str(user_id)) from None
+
+    async def find_by_email(self, email: EmailAddress) -> User | None:
+        for user in self._by_id.values():
+            if user.email == email:
+                return user
+        return None
+
+    async def save(self, user: User) -> None:
+        self._by_id[user.id] = user
+
+    def all(self) -> list[User]:
+        """Test-only inspection, not part of `UserRepository`."""
+        return list(self._by_id.values())
+
+
+class FakeLoginRepository:
+    """In-memory `LoginRepository` (slice 2.1, T13). **Revocation is deletion** (ADR-0020): `remove`
+    is idempotent — popping an id already gone is success, never an error, exactly like the real
+    port's contract for a logout racing a reuse revocation (AC-11).
+
+    `conflict_on_save_rotation` mirrors `FakeTailoringRunRepository.conflict_on_save` above: a
+    repository built with `conflict_on_save_rotation=N` raises `LoginConcurrentlyRotated` on its next
+    `N` calls to `save_rotation`, decrementing each time, then reverts to its ordinary behaviour —
+    the in-memory stand-in for two concurrent rotations racing the real `version` column (I-25),
+    without this fake pretending to reimplement `UPDATE … WHERE version = :v` honestly (that truth
+    is T31's, against real Postgres). Genuinely honoured for free, because it costs nothing to be
+    honest about: a `retired` token already present at that hash is refused the same way a second
+    `INSERT` at one primary key really would be.
+    """
+
+    def __init__(self, *, conflict_on_save_rotation: int = 0) -> None:
+        self._by_id: dict[LoginId, Login] = {}
+        self._retired_by_hash: dict[TokenHash, tuple[LoginId, int]] = {}
+        self._conflict_on_save_rotation = conflict_on_save_rotation
+        self.removed: list[LoginId] = []
+
+    def next_identity(self) -> LoginId:
+        return LoginId(value=uuid4())
+
+    async def add(self, login: Login) -> None:
+        self._by_id[login.id] = login
+
+    async def find_by_current_token_hash(self, token_hash: TokenHash) -> Login | None:
+        for login in self._by_id.values():
+            if login.current_token_hash == token_hash:
+                return login
+        return None
+
+    async def find_by_retired_token_hash(self, token_hash: TokenHash) -> tuple[Login, int] | None:
+        entry = self._retired_by_hash.get(token_hash)
+        if entry is None:
+            return None
+        login_id, generation = entry
+        login = self._by_id.get(login_id)
+        if login is None:
+            return None
+        return login, generation
+
+    async def save_rotation(self, login: Login, retired: RetiredRefreshToken) -> None:
+        if self._conflict_on_save_rotation > 0:
+            self._conflict_on_save_rotation -= 1
+            raise LoginConcurrentlyRotated()
+        if retired.token_hash in self._retired_by_hash:
+            raise LoginConcurrentlyRotated()
+        self._by_id[login.id] = login
+        self._retired_by_hash[retired.token_hash] = (login.id, retired.generation)
+
+    async def remove(self, login_id: LoginId) -> None:
+        self._by_id.pop(login_id, None)
+        self.removed.append(login_id)
+
+    async def count_all(self) -> int:
+        return len(self._by_id)
+
+    async def remove_all(self) -> int:
+        count = len(self._by_id)
+        self._by_id.clear()
+        return count
+
+    def all(self) -> list[Login]:
+        """Test-only inspection, not part of `LoginRepository`."""
+        return list(self._by_id.values())
+
+
+class RecordingPasswordHasher:
+    """In-memory `PasswordHasherPort` (slice 2.1, T13). Records every call instead of hashing
+    anything real — AC-8/AC-9's assertions ("zero hasher calls", "exactly one `verify(password,
+    None)` call") are call-log assertions, not cryptographic ones; a real argon2 adapter earns its
+    own tests at T25.
+
+    One instance per test, configured with the `verify` outcome that test is about — `FakeLlm`'s
+    shape, one instance and one configured outcome. `hash_calls` and `verify_calls` are full argument
+    logs, not counts: AC-9 needs to assert `against is None` on the unknown-email path and that the
+    wrong-password path was verified against the real stored hash, which a count cannot distinguish.
+    """
+
+    def __init__(
+        self,
+        *,
+        verify_result: PasswordVerdict = PasswordVerdict.MATCH,
+        hash_result: PasswordHash | None = None,
+    ) -> None:
+        self._verify_result = verify_result
+        self._hash_result = hash_result or PasswordHash(
+            value="$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$ZmFrZWhhc2g"
+        )
+        self.hash_calls: list[Password] = []
+        self.verify_calls: list[tuple[Password, PasswordHash | None]] = []
+
+    async def hash(self, password: Password) -> PasswordHash:
+        self.hash_calls.append(password)
+        return self._hash_result
+
+    async def verify(self, password: Password, against: PasswordHash | None) -> PasswordVerdict:
+        self.verify_calls.append((password, against))
+        return self._verify_result
+
+
+class FakeAccessTokenPort:
+    """In-memory `AccessTokenPort` (slice 2.1, T13). `issue` mints a distinct token string per call
+    and records `(user_id, at)`; `verify` looks up the id that was returned for that exact string,
+    refusing an unrecognized one. None of T13's six use cases call `verify` — only `issue`, from
+    `RegisterUser`, `LogIn` and `RefreshLogin` — but the fake still needs a working `verify` to
+    satisfy `AccessTokenPort`'s `Protocol` under `mypy --strict`; the real adapter's own decode/claim
+    rules (I-32 … I-40) are T25's.
+    """
+
+    def __init__(self, *, lifetime: timedelta = timedelta(minutes=15)) -> None:
+        self._lifetime = lifetime
+        self._issued: dict[str, UserId] = {}
+        self._counter = 0
+        self.issue_calls: list[tuple[UserId, datetime]] = []
+
+    def issue(self, user_id: UserId, at: datetime) -> IssuedAccessToken:
+        self.issue_calls.append((user_id, at))
+        self._counter += 1
+        token = f"fake-access-token-{self._counter}"
+        self._issued[token] = user_id
+        return IssuedAccessToken(token=token, expires_in=self._lifetime)
+
+    def verify(self, token: str, at: datetime) -> UserId:
+        try:
+            return self._issued[token]
+        except KeyError:
+            raise AccessTokenInvalid(AccessTokenRefusal.MALFORMED) from None
+
+
+class RecordingFailedLoginObserver:
+    """In-memory `FailedLoginObserver` (slice 2.1, T13). Records which of the two methods `LogIn`
+    called and with what, so I-9 and I-10 can be told apart at the port even though the
+    `InvalidCredentials` it raises carries nothing itself (AC-9)."""
+
+    def __init__(self) -> None:
+        self.unknown_email_calls = 0
+        self.wrong_password_calls: list[UserId] = []
+
+    def unknown_email(self) -> None:
+        self.unknown_email_calls += 1
+
+    def wrong_password(self, user_id: UserId) -> None:
+        self.wrong_password_calls.append(user_id)
+
+
+class CountingClock:
+    """Wraps a `FixedClock` and counts `.now()` calls (slice 2.1, T13) — what "one `clock.now()`
+    call per use-case call" (technical plan §2) needs and `FixedClock` itself does not track
+    (`infrastructure/clock.py`). Seed test fixtures through the wrapped `FixedClock` directly (its
+    `.now()` does not count), and pass only this wrapper to the use case under test — otherwise
+    seeding inflates the call count the assertion is trying to pin.
+    """
+
+    def __init__(self, inner: FixedClock) -> None:
+        self._inner = inner
+        self.calls = 0
+
+    def now(self) -> datetime:
+        self.calls += 1
+        return self._inner.now()
+
+    def advance(self, seconds: int) -> None:
+        self._inner.advance(seconds)
 
 
 class FakeJobPostingRepository:

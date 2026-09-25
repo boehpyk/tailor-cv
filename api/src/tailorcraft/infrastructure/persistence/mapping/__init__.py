@@ -24,17 +24,24 @@ def load_all() -> None:
 
     `export_job` is the same shape one slice later: it names a `tailoring_run_id` with no foreign key
     to `tailoring_run`, and its only real dependency is the `guest_session_table.c.id` its cascading
-    FK references. It is imported **last** rather than alphabetically first, so that this list reads
-    in the order the schema was built — and so that the one import whose position matters
-    (`guest_session`, still first) keeps looking like the rule rather than the exception.
+    FK references. It is imported after `tailoring_run` rather than alphabetically first, so that
+    this list reads in the order the schema was built — and so that the one import whose position
+    matters (`guest_session`, still first) keeps looking like the rule rather than the exception.
+
+    Slice 2.1's `user` and `login` come last for the same reading order, and here the order between
+    the two *is* load-bearing: `login.py` imports `user_table` for its foreign key (it would import
+    it itself regardless, so the explicit order below states the dependency rather than creating it).
+    Neither references `guest_session_table` — deliberately (AC-15).
     """
     from tailorcraft.infrastructure.persistence.mapping.identity import guest_session
     from tailorcraft.infrastructure.persistence.mapping.intake import base_cv
     from tailorcraft.infrastructure.persistence.mapping.posting import job_posting
     from tailorcraft.infrastructure.persistence.mapping.tailoring import tailoring_run
     from tailorcraft.infrastructure.persistence.mapping.export import export_job  # isort: skip
+    from tailorcraft.infrastructure.persistence.mapping.identity import user  # isort: skip
+    from tailorcraft.infrastructure.persistence.mapping.identity import login  # isort: skip
 
     # Imported for their side effect (each module calls `map_imperatively` at import time); the
     # assignment silences "unused import". A module missing from this list is silently unmapped —
     # which is why the list is explicit rather than a directory scan.
-    _ = (guest_session, base_cv, job_posting, tailoring_run, export_job)
+    _ = (guest_session, base_cv, job_posting, tailoring_run, export_job, user, login)
