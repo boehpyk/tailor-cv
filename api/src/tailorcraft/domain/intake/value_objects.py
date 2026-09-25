@@ -12,6 +12,7 @@ business rules that have nothing to do with the HTTP boundary.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
@@ -211,7 +212,22 @@ class BaseCvLabel:
 
     def __post_init__(self) -> None:
         """Strip, then refuse empty, over 80 code points, and any control character or NUL."""
-        raise NotImplementedError
+        # Deferred import for the same module-cycle reason `OriginalFilename.__post_init__` gives.
+        from tailorcraft.domain.intake.errors import InvalidLabel
+
+        label = self.value.strip()
+
+        if not label:
+            raise InvalidLabel("label must not be empty")
+        if len(label) > 80:
+            raise InvalidLabel("label must be at most 80 characters")
+        # Unicode category `Cc` is every control character: C0 (NUL and the rest below 0x20), DEL
+        # and the C1 block (0x80-0x9F). `OriginalFilename` checks only C0 and DEL; a label is newer
+        # and purely a display string, so it takes the whole category rather than repeat a subset.
+        if any(unicodedata.category(char) == "Cc" for char in label):
+            raise InvalidLabel("label must not contain control characters or NUL")
+
+        object.__setattr__(self, "value", label)
 
 
 class BaseCvOrigin(StrEnum):
