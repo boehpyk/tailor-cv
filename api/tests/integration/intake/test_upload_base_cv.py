@@ -34,6 +34,7 @@ from tailorcraft.application.intake.upload_base_cv import (
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import (
@@ -242,7 +243,7 @@ async def test_sixth_base_cv_for_one_session_raises_too_many_base_cvs(clock: Fix
         existing_id = cvs.next_identity()
         existing = BaseCv.upload(
             id=existing_id,
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             original_filename=OriginalFilename("old.pdf"),
             content_type=CvContentType.PDF,
             size_bytes=10,

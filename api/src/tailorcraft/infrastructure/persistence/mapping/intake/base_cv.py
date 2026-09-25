@@ -81,7 +81,10 @@ mapper_registry.map_imperatively(
     base_cv_table,
     properties={
         "_id": base_cv_table.c.id,
-        "_guest_session_id": base_cv_table.c.guest_session_id,
+        # The guest half of the owner (ADR-0022). `_owner_user_id`, `_label` and `_copied_from` are
+        # not mapped until T11's migration adds their columns; `BaseCv` gives them class-level
+        # `None` meanwhile.
+        "_owner_guest_session_id": base_cv_table.c.guest_session_id,
         "_original_filename": base_cv_table.c.original_filename,
         "_content_type": base_cv_table.c.content_type,
         "_size_bytes": base_cv_table.c.size_bytes,

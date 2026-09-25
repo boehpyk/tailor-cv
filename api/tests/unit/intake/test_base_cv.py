@@ -12,6 +12,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import ExtractionAlreadyDecided
@@ -35,7 +36,7 @@ def _upload(*, size_bytes: int = 1024, at: datetime = _UPLOADED_AT) -> BaseCv:
     """A minimally valid upload, so every test below only names the one thing it is varying."""
     return BaseCv.upload(
         id=_CV_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         original_filename=OriginalFilename("cv.pdf"),
         content_type=CvContentType.PDF,
         size_bytes=size_bytes,

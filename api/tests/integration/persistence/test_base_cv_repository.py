@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound
@@ -66,7 +67,7 @@ def _upload(
     cv_id = cvs.next_identity()
     return BaseCv.upload(
         id=cv_id,
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         original_filename=OriginalFilename(filename),
         content_type=content_type,
         size_bytes=size_bytes,
@@ -93,8 +94,8 @@ async def test_round_trip_of_an_extracted_cv_preserves_value_object_types(
 
     assert isinstance(reloaded.id, BaseCvId)
     assert reloaded.id == cv.id
-    assert isinstance(reloaded.guest_session_id, GuestSessionId)
-    assert reloaded.guest_session_id == owner.id
+    assert isinstance(reloaded.owner, GuestOwner)
+    assert reloaded.owner == GuestOwner(owner.id)
     assert isinstance(reloaded.original_filename, OriginalFilename)
     assert reloaded.original_filename == cv.original_filename
     assert isinstance(reloaded.content_type, CvContentType)
@@ -234,7 +235,7 @@ async def test_file_key_is_unique(session: AsyncSession, clock: FixedClock) -> N
     duplicate_id = cvs.next_identity()
     duplicate = BaseCv.upload(
         id=duplicate_id,
-        guest_session_id=owner.id,
+        owner=GuestOwner(owner.id),
         original_filename=OriginalFilename("dup.pdf"),
         content_type=CvContentType.PDF,
         size_bytes=1,

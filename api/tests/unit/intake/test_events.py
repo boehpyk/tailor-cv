@@ -13,6 +13,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.events import (
@@ -38,7 +39,7 @@ _UPLOADED_AT = datetime(2026, 9, 7, 10, 0, 0, tzinfo=UTC)
 def _uploaded_cv(*, size_bytes: int = 1024) -> BaseCv:
     return BaseCv.upload(
         id=_CV_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         original_filename=OriginalFilename("cv.pdf"),
         content_type=CvContentType.PDF,
         size_bytes=size_bytes,
@@ -59,7 +60,7 @@ def test_upload_records_exactly_one_base_cv_uploaded_event() -> None:
     event = events[0]
     assert isinstance(event, BaseCvUploaded)
     assert event.base_cv_id == _CV_ID
-    assert event.guest_session_id == _SESSION_ID
+    assert event.owner == GuestOwner(_SESSION_ID)
     assert event.content_type is CvContentType.PDF
     assert event.size_bytes == 2048
     assert event.occurred_at == _UPLOADED_AT

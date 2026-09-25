@@ -9,8 +9,10 @@ shared shape is not shared behaviour and a base class ends up guessing at rules 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import assert_never
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.errors import ExtractionAlreadyDecided
 from tailorcraft.domain.intake.events import (
     BaseCvExtractionFailed,
@@ -19,6 +21,8 @@ from tailorcraft.domain.intake.events import (
 )
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
+    BaseCvLabel,
+    BaseCvOrigin,
     BaseCvStatus,
     CvContentType,
     ExtractedText,
@@ -45,7 +49,7 @@ class BaseCv(RecordsEvents):
 
     Invariants (technical-plan.md):
 
-    - **I-1** — A `BaseCv` always has exactly one owner session, one `FileRef` and a
+    - **I-1** — A `BaseCv` always has exactly one owner (I-6, since 2.2), one `FileRef` and a
       `size_bytes > 0`. Enforced by `upload()`, which raises `InvariantViolated`; there is no other
       way to construct one.
     - **I-2** — `status == EXTRACTED` iff `extracted_text is not None`; `status ==
@@ -70,7 +74,18 @@ class BaseCv(RecordsEvents):
     # how mypy --strict learns the attribute types that `upload` sets directly on `self` and the
     # properties below read back. SQLAlchemy's imperative mapping targets these exact names.
     _id: BaseCvId
-    _guest_session_id: GuestSessionId
+    # Two attributes, one fact: the owner (ADR-0022). The domain's `Owner` is a sum type; a foreign
+    # key has one target, so storage is a product of two nullable ids, and these two private fields
+    # are that product. `_assign_owner` is their only writer and `owner` their only reader.
+    _owner_guest_session_id: GuestSessionId | None
+    # SKELETON (T4): `_owner_user_id`, `_label` and `_copied_from` have no column until T11's
+    # migration, so the mapping cannot load them yet and a CV read back from the database would have
+    # no such attribute at all. The class-level `None` is what such a CV reads meanwhile — which is
+    # the truth for every row that exists today. T11 maps them (the mapper then replaces each with
+    # an instrumented attribute) and removes these three defaults.
+    _owner_user_id: UserId | None = None
+    _label: BaseCvLabel | None = None
+    _copied_from: BaseCvId | None = None
     _original_filename: OriginalFilename
     _content_type: CvContentType
     _size_bytes: int
@@ -114,7 +129,7 @@ class BaseCv(RecordsEvents):
     def upload(
         cls,
         id: BaseCvId,
-        guest_session_id: GuestSessionId,
+        owner: Owner,
         original_filename: OriginalFilename,
         content_type: CvContentType,
         size_bytes: int,
@@ -122,7 +137,8 @@ class BaseCv(RecordsEvents):
         uploaded_at: datetime,
     ) -> BaseCv:
         """The only constructor. Sets `status = UPLOADED`, `extracted_text = None`,
-        `failure_reason = None`, `extracted_at = None`, and records `BaseCvUploaded`.
+        `failure_reason = None`, `extracted_at = None`, `label = None`, `copied_from = None`, and
+        records `BaseCvUploaded`. `owner` is either variant (AC-2).
 
         Raises `InvariantViolated` if `size_bytes <= 0` (I-1) — the 10 MB *upper* bound is a
         boundary/config concern checked before this is ever called, not by this method.
@@ -132,7 +148,7 @@ class BaseCv(RecordsEvents):
 
         cv = cls()
         cv._id = id
-        cv._guest_session_id = guest_session_id
+        cv._assign_owner(owner)
         cv._original_filename = original_filename
         cv._content_type = content_type
         cv._size_bytes = size_bytes
@@ -142,17 +158,65 @@ class BaseCv(RecordsEvents):
         cv._failure_reason = None
         cv._uploaded_at = uploaded_at
         cv._extracted_at = None
+        cv._label = None
+        cv._copied_from = None
 
         cv.record(
             BaseCvUploaded(
                 base_cv_id=id,
-                guest_session_id=guest_session_id,
+                owner=owner,
                 content_type=content_type,
                 size_bytes=size_bytes,
                 occurred_at=uploaded_at,
             )
         )
         return cv
+
+    @classmethod
+    def copy_from(
+        cls,
+        source: BaseCv,
+        id: BaseCvId,
+        into: GuestOwner,
+        file: FileRef,
+        at: datetime,
+    ) -> BaseCv:
+        """Build a working copy of a saved base CV in a guest workspace (ADR-0022 §4, I-8, I-9).
+
+        The copy is `EXTRACTED` with an equal `ExtractedText` (no re-extraction), the source's
+        filename, content type and size, its own `id` and `file`, `copied_from = source.id`,
+        `uploaded_at = extracted_at = at` and no label; records `BaseCvCopied`. The source is never
+        mutated.
+
+        Raises `InvariantViolated` if the source is not `UserOwner`-owned or not `EXTRACTED`, if
+        `id == source.id`, or if `file == source.file`. `into` is typed `GuestOwner`, not `Owner`:
+        the only copy 2.2 has is the working copy, and the narrow type says so.
+        """
+        raise NotImplementedError
+
+    def _assign_owner(self, owner: Owner) -> None:
+        """The only writer of the two owner attributes (I-6): exactly one is set, by construction."""
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                self._owner_guest_session_id = guest_session_id
+                self._owner_user_id = None
+            case UserOwner():
+                raise NotImplementedError
+            case _:
+                assert_never(owner)
+
+    def rename(self, label: BaseCvLabel | None, at: datetime) -> None:
+        """Set or clear (`None`) the label. Only a `UserOwner` CV has one (I-7): raises
+        `InvariantViolated` on a `GuestOwner` CV. Records no event — a label is user text."""
+        raise NotImplementedError
+
+    def delete(self, at: datetime) -> None:
+        """Record that a registered user deleted this saved CV: records `BaseCvDeleted`.
+
+        Only a `UserOwner` CV (I-10) — a guest CV is deleted by the purge, never by a request —
+        raises `InvariantViolated` otherwise. Mutates no state: the repository removes the row.
+        """
+        raise NotImplementedError
 
     def _guard_extraction_not_yet_decided(self, at: datetime) -> None:
         """The I-3/I-4 guard shared by both `mark_*` methods, written once rather than copy-pasted:
@@ -216,8 +280,24 @@ class BaseCv(RecordsEvents):
         return self._id
 
     @property
-    def guest_session_id(self) -> GuestSessionId:
-        return self._guest_session_id
+    def owner(self) -> Owner:
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3)."""
+        if self._owner_guest_session_id is not None:
+            return GuestOwner(self._owner_guest_session_id)
+        raise NotImplementedError
+
+    @property
+    def label(self) -> BaseCvLabel | None:
+        raise NotImplementedError
+
+    @property
+    def copied_from(self) -> BaseCvId | None:
+        raise NotImplementedError
+
+    @property
+    def origin(self) -> BaseCvOrigin:
+        """`COPIED_FROM_SAVED` iff `copied_from is not None` — derived, never stored."""
+        raise NotImplementedError
 
     @property
     def original_filename(self) -> OriginalFilename:

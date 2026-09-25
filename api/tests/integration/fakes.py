@@ -86,6 +86,7 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
@@ -155,7 +156,7 @@ class FakeBaseCvRepository:
             raise BaseCvNotFound(str(cv_id)) from None
 
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[BaseCv]:
-        return [cv for cv in self._by_id.values() if cv.guest_session_id == sid]
+        return [cv for cv in self._by_id.values() if cv.owner == GuestOwner(sid)]
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return len(await self.list_for_session(sid))

@@ -186,3 +186,42 @@ class ExtractionFailureReason(StrEnum):
     TOO_SHORT = "too_short"
     TOO_MANY_PAGES = "too_many_pages"
     EXTRACTOR_ERROR = "extractor_error"
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.2 — saved base CVs.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BaseCvLabel:
+    """The name a registered user gives one of their saved base CVs, so five files all called
+    `CV.pdf` can be told apart in a picker (OQ-5).
+
+    Stripped; 1 to 80 code points; no control characters and no NUL — refused with `InvalidLabel`. A
+    label is a **display string**, never a path and never markup: there is no HTML escaping here,
+    because escaping is a rendering concern and React renders it as a text node. It is also user
+    text, so no domain event ever carries one (AC-4, AC-6).
+
+    A label exists only on a `UserOwner` CV (I-7) — that rule belongs to `BaseCv.rename`, not here:
+    a value object cannot know who owns the aggregate holding it.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Strip, then refuse empty, over 80 code points, and any control character or NUL."""
+        raise NotImplementedError
+
+
+class BaseCvOrigin(StrEnum):
+    """How a `BaseCv` came to exist: uploaded directly, or copied from a saved one into the
+    workspace (ADR-0022 §4).
+
+    **Derived, never stored.** `BaseCv.origin` is `COPIED_FROM_SAVED` iff `copied_from is not None`;
+    a stored copy of that fact would be a second representation that can disagree with the first.
+    The wire's `origin` field reads this.
+    """
+
+    UPLOADED = "uploaded"
+    COPIED_FROM_SAVED = "copied_from_saved"

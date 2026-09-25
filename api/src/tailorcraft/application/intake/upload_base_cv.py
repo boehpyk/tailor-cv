@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tailorcraft.domain.identity.errors import GuestSessionExpired
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -122,7 +123,7 @@ class UploadBaseCv:
 
         cv = BaseCv.upload(
             id=cv_id,
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             original_filename=cmd.original_filename,
             content_type=cmd.content_type,
             size_bytes=len(cmd.content),

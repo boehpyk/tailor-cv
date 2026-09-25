@@ -43,6 +43,7 @@ from tailorcraft.application.tailoring.request_tailoring_run import (
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound, BaseCvNotOwnedBySession
@@ -106,7 +107,7 @@ def _uploaded_base_cv(session_id: GuestSessionId, *, at: object) -> BaseCv:
     """A `BaseCv` still in `UPLOADED` — one of G-8's two non-extracted statuses."""
     return BaseCv.upload(
         BaseCvId(value=uuid4()),
-        session_id,
+        GuestOwner(session_id),
         OriginalFilename("cv.pdf"),
         CvContentType.PDF,
         1024,

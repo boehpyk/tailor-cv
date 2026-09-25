@@ -1,8 +1,8 @@
 """`SqlAlchemyBaseCvRepository` — the `BaseCvRepository` port (ADR-0007).
 
-Filters below query `BaseCv._id` / `BaseCv._guest_session_id`, the **private** attributes the
+Filters below query `BaseCv._id` / `BaseCv._owner_guest_session_id`, the **private** attributes the
 imperative mapping in `infrastructure/persistence/mapping/intake/base_cv.py` targets — never
-`BaseCv.id` / `BaseCv.guest_session_id`. Those short names are plain read-only `@property` objects on
+`BaseCv.id` / `BaseCv.owner`. Those short names are plain read-only `@property` objects on
 the domain class, not `InstrumentedAttribute`s: `select(BaseCv).where(BaseCv.id == x)` would call the
 property, get back a `BaseCvId`, evaluate a bare Python `==` against `x`, and build
 `select(...).where(True)` or `.where(False)` — a predicate that matches everything or nothing,
@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 # silently-empty query. These `cast`s tell mypy what is actually there at runtime without touching
 # behaviour; each is a `cast`, not an `Any`, so CLAUDE.md's ban on unjustified `Any` does not apply.
 _BASE_CV_ID: InstrumentedAttribute[BaseCvId] = cast("InstrumentedAttribute[BaseCvId]", BaseCv._id)
-_BASE_CV_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId] = cast(
-    "InstrumentedAttribute[GuestSessionId]", BaseCv._guest_session_id
+_BASE_CV_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
+    "InstrumentedAttribute[GuestSessionId | None]", BaseCv._owner_guest_session_id
 )
 _BASE_CV_UPLOADED_AT: InstrumentedAttribute[datetime] = cast(
     "InstrumentedAttribute[datetime]", BaseCv._uploaded_at

@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, OriginalFilename
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -108,7 +109,7 @@ async def test_deleting_a_guest_session_cascades_to_its_base_cvs(
     cv_id = cvs.next_identity()
     cv = BaseCv.upload(
         id=cv_id,
-        guest_session_id=owner.id,
+        owner=GuestOwner(owner.id),
         original_filename=OriginalFilename("cv.pdf"),
         content_type=CvContentType.PDF,
         size_bytes=1,
@@ -253,7 +254,7 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
     await cvs.add(
         BaseCv.upload(
             id=cv_id,
-            guest_session_id=owner.id,
+            owner=GuestOwner(owner.id),
             original_filename=OriginalFilename("cv.pdf"),
             content_type=CvContentType.PDF,
             size_bytes=1,

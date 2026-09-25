@@ -1,8 +1,8 @@
 """Application tests for `GetBaseCvForSession` and `ListBaseCvsForSession` (T12, RED).
 
 This is the slice's security test (AC-8/F-20, ADR-0008): "owning a session id is not authority over
-an object that references it." Both use cases check **the link** — `cv.guest_session_id == the
-resolved session id` — on every read, and a caller must not be able to tell "exists but belongs to
+an object that references it." Both use cases check **the link** — `cv.owner == GuestOwner(the
+resolved session id)` — on every read, and a caller must not be able to tell "exists but belongs to
 someone else" from "does not exist at all", because a distinguishable answer would confirm the id
 exists. See `application/intake/get_base_cv.py`'s docstring for the exact contract this file tests
 against: `BaseCvNotFound` for both cases, chained from `BaseCvNotOwnedBySession` (visible on
@@ -31,6 +31,7 @@ from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound, BaseCvNotOwnedBySession
@@ -56,7 +57,7 @@ async def _add_base_cv(
     cv_id = cvs.next_identity()
     cv = BaseCv.upload(
         id=cv_id,
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         original_filename=OriginalFilename(filename),
         content_type=CvContentType.PDF,
         size_bytes=10,
@@ -80,7 +81,7 @@ async def test_get_returns_the_cv_for_the_session_that_owns_it(clock: FixedClock
     result = await use_case(cv.id, session.id)
 
     assert result.id == cv.id
-    assert result.guest_session_id == session.id
+    assert result.owner == GuestOwner(session.id)
 
 
 async def test_get_for_a_cv_owned_by_a_different_session_raises_base_cv_not_found(

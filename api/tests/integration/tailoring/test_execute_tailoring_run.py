@@ -57,6 +57,7 @@ from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRunCommand,
     ExecuteTailoringRunOutcome,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import (
@@ -145,7 +146,7 @@ def _uploaded_base_cv(session_id: GuestSessionId) -> BaseCv:
     non-extracted state exercises the same branch."""
     return BaseCv.upload(
         BaseCvId(value=uuid4()),
-        session_id,
+        GuestOwner(session_id),
         OriginalFilename("cv.pdf"),
         CvContentType.PDF,
         1024,
@@ -158,7 +159,7 @@ def _extracted_base_cv(session_id: GuestSessionId) -> BaseCv:
     """A `BaseCv` in `EXTRACTED` — the ordinary case this use case expects to find."""
     cv = BaseCv.upload(
         BaseCvId(value=uuid4()),
-        session_id,
+        GuestOwner(session_id),
         OriginalFilename("cv.pdf"),
         CvContentType.PDF,
         1024,
