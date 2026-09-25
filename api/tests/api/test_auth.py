@@ -52,6 +52,7 @@ import pytest_asyncio
 from argon2 import PasswordHasher as Argon2Library
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
+from pydantic import SecretStr
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -69,7 +70,12 @@ from tailorcraft.domain.identity.value_objects import (
     PasswordHash,
     PasswordVerdict,
 )
-from tailorcraft.infrastructure.api.deps import get_app_settings, get_clock, get_session
+from tailorcraft.infrastructure.api.deps import (
+    get_app_settings,
+    get_clock,
+    get_refresh_login,
+    get_session,
+)
 from tailorcraft.infrastructure.api.guest_session import (
     COOKIE_NAME as GUEST_COOKIE_NAME,
 )
@@ -88,7 +94,7 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
 from tailorcraft.infrastructure.redis_client import create_redis
-from tailorcraft.infrastructure.settings import Settings
+from tailorcraft.infrastructure.settings import JWT_SIGNING_KEY_MIN_BYTES, Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
 
 REGISTER_URL = "/api/auth/register"
@@ -1547,3 +1553,279 @@ async def test_a_guest_route_called_with_a_valid_bearer_and_no_guest_cookie_beha
     # 401 `guest_session_expired` (there is no guest cookie either).
     assert response.status_code == 401, response.text
     assert _error_code(response) == "guest_session_expired"
+
+
+# ---------------------------------------------------------------------------------------------
+# /verify round 1, findings 5-9 — test-after (the reviewer believes each of these is already
+# correct); every test below was proven sensitive by a LOCAL mutation of the production line it
+# guards, observed red, then the source restored byte-exact
+# (`git diff --quiet <file>`) before this commit. The mutation and the exact failure are recorded in
+# each test's own docstring or in the commit body, per CLAUDE.md's rule that an assertion which has
+# never been observed failing is a docblock, not a test.
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_two_clients_through_the_same_two_proxy_chain_get_different_rate_limit_keys(
+    app: FastAPI, settings: Settings
+) -> None:
+    """Finding 5, HTTP level. Production is client -> Traefik -> nginx -> api
+    (`trusted_proxy_hops=2`); two distinct clients whose requests both pass through the same
+    Traefik hop must land in two separate `rl:auth:login:ip:*` buckets, keyed on the real client
+    address — never a shared bucket, and never one keyed on a client-forged prefix.
+    `test_client_ip.py` pins the pure function; this pins the same property through a real request
+    and a real Redis SCAN, reading the actual identifier out of the key rather than only counting
+    keys — a count alone cannot tell "keyed correctly" from "keyed on the wrong, but still
+    per-client-distinct, entry".
+
+    Each simulated client sends a 3-entry chain (`<client-forged>, <real-client>, <traefik>`) — a
+    client can prepend anything to its own `X-Forwarded-For` before Traefik ever sees the request,
+    so this is the adversarial shape, not the clean 2-entry case both proxies alone would produce.
+
+    Mutation: `client_ip`'s `hops[-trusted_proxy_hops]` changed to `hops[0]` and back (the same
+    "trust the client-forged leftmost entry" bug `test_client_ip.py` mutates). Under the mutation
+    this test went RED: `assert identifiers == {"203.0.113.10", "203.0.113.20"}` failed with
+    `identifiers == {"9.9.9.9", "8.8.8.8"}` — both clients still got *a* key each (a bare key-count
+    assertion would have missed this), but keyed on the forged prefix instead of the real address.
+    Restored byte-exact; `git diff --quiet api/src/tailorcraft/infrastructure/rate_limit.py`
+    confirmed it.
+    """
+    modified = _override_settings(
+        app, settings, trusted_proxy_hops=2, login_rate_limit_per_ip_per_hour=1000
+    )
+
+    async with _new_client(app) as c:
+        await c.post(
+            LOGIN_URL,
+            json=_credentials("proxy.client.a@example.com", "whatever-password-1"),
+            headers={
+                **_origin_headers(modified),
+                "x-forwarded-for": "9.9.9.9, 203.0.113.10, 10.0.0.1",
+            },
+        )
+    async with _new_client(app) as c:
+        await c.post(
+            LOGIN_URL,
+            json=_credentials("proxy.client.b@example.com", "whatever-password-1"),
+            headers={
+                **_origin_headers(modified),
+                "x-forwarded-for": "8.8.8.8, 203.0.113.20, 10.0.0.1",
+            },
+        )
+
+    redis = create_redis(modified.redis_url)
+    try:
+        ip_keys = [
+            key.decode() if isinstance(key, bytes) else key
+            async for key in redis.scan_iter(match="rl:auth:login:ip:*")
+        ]
+    finally:
+        await redis.aclose()
+
+    # rl:auth:login:ip:<identifier>:<epoch_hour>
+    identifiers = {key.split(":")[4] for key in ip_keys}
+    assert identifiers == {"203.0.113.10", "203.0.113.20"}, ip_keys
+
+
+@pytest.mark.parametrize("url", [REGISTER_URL, LOGIN_URL])
+async def test_a_403_origin_refusal_creates_no_rate_limit_key(
+    client: AsyncClient, settings: Settings, url: str
+) -> None:
+    """Finding 6 / AC-25 / I-28, first half. `require_trusted_origin` is resolved before the
+    handler body that calls `_enforce(...)` — proven here by scanning Redis, not by inference from
+    the hasher-call-count test above.
+
+    Mutation: `require_trusted_origin` (`deps.py`) changed to an unconditional `return` (never
+    raising, as if the check had been moved past the limiter, per the finding's instruction). Under
+    the mutation this test went RED on its first assertion — `assert response.status_code == 403`
+    failed (`201`/`200` instead, the request actually went through) — before the Redis assertion was
+    even reached. Restored byte-exact; `git diff --quiet api/src/tailorcraft/infrastructure/api/deps.py`
+    confirmed it.
+    """
+    response = await client.post(
+        url,
+        json=_credentials("origin.refused@example.com", A_STRONG_PASSWORD),
+        headers={"Origin": "https://evil.example"},
+    )
+    assert response.status_code == 403, response.text
+
+    redis = create_redis(settings.redis_url)
+    try:
+        auth_keys = [key async for key in redis.scan_iter(match="rl:auth:*")]
+    finally:
+        await redis.aclose()
+
+    assert auth_keys == [], auth_keys
+
+
+async def test_a_403_origin_refusal_on_refresh_rotates_nothing(
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+) -> None:
+    """Finding 6 / AC-25 / I-28, second half (I-28: "nothing rotated"). A seeded login, presented
+    with a valid cookie but a foreign `Origin`, must come back 403 with the login's `generation` and
+    `version` exactly as seeded — the origin check must refuse before `refresh_login` ever touches
+    the row.
+
+    Mutation: same as above (`require_trusted_origin` forced to always return). Under the mutation
+    this test went RED on `assert response.status_code == 403` (the refresh actually ran and
+    rotated the cookie, answering `200`). Restored byte-exact.
+    """
+    user = await _seed_user(
+        session, password_hasher, clock, email="origin.refused.refresh@example.com"
+    )
+    _login, raw_token = await _seed_login(session, user, clock)
+    client.cookies.set(REFRESH_COOKIE_NAME, raw_token)
+
+    response = await client.post(REFRESH_URL, headers={"Origin": "https://evil.example"})
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "origin_not_allowed"
+
+    # Looked up by the ORIGINAL token's hash: if a rotation had gone through, this hash would no
+    # longer be the login's *current* one and the lookup would come back `None`.
+    reloaded = await _login_repository(session).find_by_current_token_hash(
+        hash_refresh_token(raw_token)
+    )
+    assert reloaded is not None, "the seeded token is no longer current — a rotation happened"
+    assert reloaded.generation == 1
+    assert reloaded.version == 1
+
+
+async def test_a_successful_login_carries_cache_control_no_store(
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+) -> None:
+    """Finding 7 / AC-26. `register`, `refresh` and `me` already have this test; `login` and
+    `logout` did not.
+
+    Mutation: the `_no_store(response)` call inside `login`'s handler (`routers/auth.py`) commented
+    out. Under the mutation this test went RED:
+    `assert response.headers.get("cache-control") == "no-store"` failed with `None`. Restored
+    byte-exact; `git diff --quiet api/src/tailorcraft/infrastructure/api/routers/auth.py` confirmed
+    it (checked together with the logout mutation below, one at a time).
+    """
+    await _seed_user(session, password_hasher, clock, email="cache.control.login@example.com")
+
+    response = await client.post(
+        LOGIN_URL,
+        json=_credentials("cache.control.login@example.com", A_STRONG_PASSWORD),
+        headers=_origin_headers(settings),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers.get("cache-control") == "no-store"
+
+
+async def test_a_successful_logout_carries_cache_control_no_store(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """Finding 7 / AC-26, the other endpoint the existing tests skip.
+
+    Mutation: the `_no_store(response)` call inside `logout`'s handler commented out. Under the
+    mutation this test went RED the same way: `cache-control` came back `None`. Restored
+    byte-exact.
+    """
+    response = await client.post(LOGOUT_URL, headers=_origin_headers(settings))
+
+    assert response.status_code == 204, response.text
+    assert response.headers.get("cache-control") == "no-store"
+
+
+class _FailIfCalledRefreshLogin:
+    """A `RefreshLogin`-shaped double that fails the test the instant it is invoked — I-40's "never
+    used as a lookup key" proven as "never even reached the use case", not inferred from the
+    response alone."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, presented: object, replacement: object) -> object:
+        self.calls += 1
+        raise AssertionError(
+            "RefreshLogin must not be called for a malformed (I-40) refresh cookie"
+        )
+
+
+async def test_a_jwt_shaped_refresh_cookie_is_401_cleared_with_no_db_lookup(
+    app: FastAPI, client: AsyncClient, settings: Settings
+) -> None:
+    """Finding 8 / I-40. A JWT pasted into `tc_refresh` is never used as a lookup key:
+    `read_refresh_token`'s shape check (`refresh_cookie.py`) already turns it into
+    `PresentedRefreshToken(token_hash=None)` before the router's `if presented.token_hash is None:`
+    branch returns 401 without ever calling `refresh_login` — proven here by replacing
+    `RefreshLoginDep` with a spy that raises if it is ever invoked at all, not merely by asserting
+    the response shape (which a lookup that happened to also return "not found" could produce too).
+
+    Mutation: `refresh_cookie.py`'s `_TOKEN_SHAPE` regex widened from `[A-Za-z0-9_-]{43}` to `.*`
+    (so a JWT is wrongly accepted as "shaped like a token we mint"). Under the mutation this test
+    went RED: the spy's `AssertionError` propagated out of the handler, and with this module's
+    `raise_app_exceptions=False` client that surfaced as `response.status_code == 500` instead of
+    the expected `401` — `assert response.status_code == 401` failed. Restored byte-exact;
+    `git diff --quiet api/src/tailorcraft/infrastructure/api/refresh_cookie.py` confirmed it.
+    """
+    spy = _FailIfCalledRefreshLogin()
+    app.dependency_overrides[get_refresh_login] = lambda: spy
+    # Header.payload.signature shape: three dot-separated base64url segments, far longer than the
+    # 43 characters `mint_refresh_token` always produces, and containing `.` at all — which alone
+    # is outside `_TOKEN_SHAPE`'s character class.
+    fake_jwt = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhdHRhY2tlciJ9.c2lnbmF0dXJlLWdvZXMtaGVyZQ"
+    )
+    client.cookies.set(REFRESH_COOKIE_NAME, fake_jwt)
+
+    response = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+
+    assert response.status_code == 401, response.text
+    assert _error_code(response) == "not_signed_in"
+    cleared = _refresh_cookie_attrs(response)
+    assert cleared["max-age"] == "0"
+    assert spy.calls == 0
+
+
+async def test_refresh_succeeds_after_the_jwt_signing_key_changes_since_login(
+    app: FastAPI,
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+) -> None:
+    """Finding 9 / I-44. Refresh tokens are opaque, SHA-256-hashed rows in `identity_login` — never
+    JWTs (ADR-0010 §3, ADR-0020 §7) — so rotating `JWT_SIGNING_KEY` between a login and a later
+    refresh must not affect the refresh at all: `refresh` looks the cookie up by hash and mints a
+    brand-new access token signed with whatever key is live *now*, never one signed at login time.
+
+    Mutation: `get_access_tokens` (`deps.py`) changed to read a hard-coded key
+    (`"mutated-signing-key-that-ignores-settings-32b"`) instead of `settings.jwt_signing_key`. Under
+    the mutation this test went RED: `new_tokens.verify(...)`, built from the key this test actually
+    configured, raised `AccessTokenInvalid: access token refused: bad_signature` instead of
+    returning the user's id — the refreshed token was signed with a key the test never set.
+    Restored byte-exact; `git diff --quiet api/src/tailorcraft/infrastructure/api/deps.py`
+    confirmed it.
+    """
+    user = await _seed_user(session, password_hasher, clock, email="key.rotation@example.com")
+    _login, raw_token = await _seed_login(session, user, clock)
+    client.cookies.set(REFRESH_COOKIE_NAME, raw_token)
+    # The access token this refresh mints is judged by the `Clock` port (AC-21) — pin it to the
+    # same fixed instant `verify` below checks against, or the real wall clock's `iat` reads as
+    # "issued in the future" against a stopped test clock and this test would fail for a reason
+    # that has nothing to do with I-44.
+    app.dependency_overrides[get_clock] = lambda: clock
+
+    # A rotation that happened *after* login, simulated by overriding settings only now.
+    new_key = "b" * JWT_SIGNING_KEY_MIN_BYTES
+    modified = _override_settings(app, settings, jwt_signing_key=SecretStr(new_key))
+
+    response = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+
+    assert response.status_code == 200, response.text
+    new_access_token = response.json()["access_token"]
+    new_tokens = JwtAccessTokens(new_key, timedelta(minutes=modified.access_token_ttl_minutes))
+    verified_user_id = new_tokens.verify(new_access_token, clock.now())
+    assert verified_user_id == user.id
