@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import pytest
 
-from tailorcraft.domain.intake.errors import EmptyExtraction, ExtractedTextTooShort, InvalidFilename
-from tailorcraft.domain.intake.value_objects import ExtractedText, OriginalFilename
+from tailorcraft.domain.intake.errors import (
+    EmptyExtraction,
+    ExtractedTextTooShort,
+    InvalidFilename,
+    InvalidLabel,
+)
+from tailorcraft.domain.intake.value_objects import BaseCvLabel, ExtractedText, OriginalFilename
 
 # --- ExtractedText -----------------------------------------------------------------------------
 
@@ -118,3 +123,69 @@ def test_original_filename_rejects_a_string_that_is_empty_after_strip() -> None:
 def test_original_filename_rejects_an_empty_string() -> None:
     with pytest.raises(InvalidFilename):
         OriginalFilename("")
+
+
+# --- BaseCvLabel (AC-4, slice 2.2) ---------------------------------------------------------------
+#
+# A label is a display string a registered user gives a saved base CV — 1 to 80 code points after
+# `strip()`, refusing control characters and NUL, exactly as `OriginalFilename` refuses them for the
+# same reason: a label is text for a screen, never a path and never markup. Unlike
+# `OriginalFilename` there is no basename reduction — a label was never a filename to begin with.
+
+
+def test_base_cv_label_strips_surrounding_whitespace() -> None:
+    label = BaseCvLabel("  Senior Backend Role  ")
+
+    assert label.value == "Senior Backend Role"
+
+
+def test_base_cv_label_rejects_a_string_that_is_empty_after_strip() -> None:
+    with pytest.raises(InvalidLabel):
+        BaseCvLabel("   ")
+
+
+def test_base_cv_label_rejects_an_empty_string() -> None:
+    with pytest.raises(InvalidLabel):
+        BaseCvLabel("")
+
+
+def test_base_cv_label_rejects_more_than_80_code_points_after_strip() -> None:
+    value = "a" * 81
+
+    with pytest.raises(InvalidLabel):
+        BaseCvLabel(value)
+
+
+def test_base_cv_label_accepts_exactly_80_code_points() -> None:
+    value = "a" * 80
+
+    label = BaseCvLabel(value)
+
+    assert label.value == value
+
+
+def test_base_cv_label_accepts_exactly_1_code_point() -> None:
+    label = BaseCvLabel("x")
+
+    assert label.value == "x"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("cv\x00label", id="embedded-nul"),
+        pytest.param("cv\x01label", id="control-character"),
+        pytest.param("cv\x7flabel", id="delete-control-character"),
+        pytest.param("first line\nsecond line", id="embedded-newline"),
+    ],
+)
+def test_base_cv_label_rejects_control_characters_and_nul(value: str) -> None:
+    with pytest.raises(InvalidLabel):
+        BaseCvLabel(value)
+
+
+def test_base_cv_label_equality_by_value() -> None:
+    """A label is a plain value object like every other in this module — compared structurally, not
+    by identity, so two labels typed the same way are interchangeable."""
+    assert BaseCvLabel("My CV") == BaseCvLabel("My CV")
+    assert BaseCvLabel("My CV") != BaseCvLabel("Other CV")
