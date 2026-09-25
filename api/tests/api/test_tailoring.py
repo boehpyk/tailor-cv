@@ -1342,3 +1342,63 @@ async def test_get_list_summary_carries_version_and_edited_at_fields(
     )
     assert items[0]["tailored_cv_edited_at"] is None
     assert items[0]["cover_letter_edited_at"] is None
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-19 (slice 2.2, intake-saved-base-cvs, T19) — no ownership graph crosses owners: a tailoring
+# run requested with a saved (user-owned) CV id is 404, not a run over a stranger's CV.
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_a_saved_user_owned_cv_id_is_404_and_creates_no_run(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """AC-19. `RequestTailoringRun` is untouched by 2.2 (feature-spec.md's non-goals, AC-58) — this
+    proves the *existing*, unedited session-ownership check already refuses a saved CV, because a
+    saved CV's `guest_session_id` is `NULL` and can never equal the requester's session id. The
+    precondition (a real saved CV id) needs `POST /api/me/base-cvs`, still T18's skeleton today, so
+    this red is currently the upload's own `NotImplementedError` rather than AC-19's own assertion
+    — the same shape every other T19 test blocked on that route takes — and it becomes AC-19's real
+    proof the moment T21 lands, without editing this test.
+    """
+    register = await client.post(
+        "/api/auth/register",
+        json={"email": f"t19-ac19-{uuid4().hex}@example.com", "password": "a strong password 12"},
+        headers={"Origin": settings.public_base_url},
+    )
+    assert register.status_code == 201, register.text
+    token = register.json()["access_token"]
+
+    uploaded = await client.post(
+        "/api/me/base-cvs",
+        files={
+            "file": (
+                "sample.txt",
+                (
+                    "Experienced engineer with a decade of backend systems work, on-call rotations, "
+                    "incident response, mentoring, and cross-team platform migrations at scale. "
+                    * 4
+                ).encode(),
+                "text/plain",
+            )
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    saved_cv_id = uploaded.json()["id"]
+
+    job_posting_id = await _create_ready_job_posting(client)
+
+    response = await client.post(
+        "/api/tailoring-runs",
+        json={"base_cv_id": saved_cv_id, "job_posting_id": job_posting_id},
+    )
+
+    assert response.status_code == 404, response.text
+    assert _error_code(response) == "base_cv_not_found"
+
+    rows = await session.execute(
+        sql_text("SELECT count(*) FROM tailoring_run WHERE base_cv_id = :id"),
+        {"id": UUID(saved_cv_id)},
+    )
+    assert rows.scalar_one() == 0, "a refused request must create no row"
