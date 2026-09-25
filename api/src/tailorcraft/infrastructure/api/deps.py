@@ -268,6 +268,7 @@ def get_upload_base_cv(
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
+    users: UserRepositoryDep,
 ) -> UploadBaseCv:
     return UploadBaseCv(
         cvs,
@@ -276,7 +277,12 @@ def get_upload_base_cv(
         extractor,
         events,
         clock,
+        users,
         max_per_session=settings.max_base_cvs_per_session,
+        # PLACEHOLDER until T18 adds `Settings.max_saved_base_cvs_per_user` (OQ-3's 5). Only the
+        # guest arm is reachable through this binding until the account upload route lands, so
+        # this literal governs nothing yet; T18 replaces it with the setting.
+        max_per_user=5,
     )
 
 

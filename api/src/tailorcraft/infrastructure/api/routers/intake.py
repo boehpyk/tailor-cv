@@ -22,6 +22,7 @@ from fastapi.exceptions import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCvCommand
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
@@ -337,7 +338,7 @@ async def upload_base_cv(
         )
 
     command = UploadBaseCvCommand(
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         original_filename=original_filename,
         content_type=content_type,
         content=data,

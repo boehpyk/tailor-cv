@@ -68,6 +68,7 @@ from tests.integration.fakes import (
     FakeBaseCvRepository,
     FakeExtractor,
     FakeGuestSessionRepository,
+    FakeUserRepository,
     InMemoryFileStore,
     RecordingEventPublisher,
     create_active_session,
@@ -84,7 +85,7 @@ def _command(
     content: bytes = b"content bytes for a fake upload, not a real PDF",
 ) -> UploadBaseCvCommand:
     return UploadBaseCvCommand(
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         original_filename=OriginalFilename(filename),
         content_type=content_type,
         content=content,
@@ -102,7 +103,8 @@ async def test_happy_path_stores_extracts_and_publishes(clock: FixedClock) -> No
     text = ExtractedText("word " * 200)
     extractor = FakeExtractor(outcome=text)
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
 
     cmd = _command(session.id)
     result = await use_case(cmd)
@@ -159,7 +161,8 @@ async def test_extraction_failure_is_recorded_as_a_state_and_does_not_propagate(
     files = InMemoryFileStore()
     extractor = FakeExtractor(outcome=exc)
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
 
     cmd = _command(session.id)
     result = await use_case(cmd)  # must not raise
@@ -196,7 +199,8 @@ async def test_file_store_unavailable_propagates_and_creates_no_row(clock: Fixed
     files = AlwaysFailingFileStore()
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
 
     cmd = _command(session.id)
 
@@ -220,7 +224,8 @@ async def test_file_is_written_before_the_row_is_added(clock: FixedClock) -> Non
     files = InMemoryFileStore(repo=cvs)
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
 
     cmd = _command(session.id)
     await use_case(cmd)
@@ -255,7 +260,10 @@ async def test_sixth_base_cv_for_one_session_raises_too_many_base_cvs(clock: Fix
     files = InMemoryFileStore()
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, max_per_session=5)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(
+        cvs, sessions, files, extractor, events, clock, users, max_per_session=5
+    )
 
     cmd = _command(session.id)
 
@@ -284,7 +292,8 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     files = InMemoryFileStore()
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
 
     cmd = _command(expired.id)
 
@@ -302,7 +311,8 @@ async def test_missing_guest_session_raises_guest_session_not_found(clock: Fixed
     files = InMemoryFileStore()
     extractor = FakeExtractor(outcome=ExtractedText("a" * 200))
     events = RecordingEventPublisher()
-    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock)
+    users = FakeUserRepository()
+    use_case = UploadBaseCv(cvs, sessions, files, extractor, events, clock, users)
 
     unknown_session_id = GuestSessionId(value=uuid4())
     cmd = _command(unknown_session_id)
