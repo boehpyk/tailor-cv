@@ -1,4 +1,5 @@
-"""The purge's two data-access wrappers, shared by every root that runs a purge.
+"""The purge's two data-access wrappers, shared by every root that runs a purge — and, since slice
+2.2, erasure's one (`CommittingAccountData`), which is the same durability rule on request.
 
 Both classes lived in `infrastructure/tasks/container.py` until the CLI needed them (slice 1.6,
 T23). They moved here rather than being copied, and the reason is the thing they encode:
@@ -22,12 +23,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
-from tailorcraft.domain.retention.value_objects import ExpiringGuestSession, RetentionWindow
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.retention.ports import AccountDataPort, ExpiredGuestDataPort
+from tailorcraft.domain.retention.value_objects import (
+    AccountCounts,
+    ExpiringGuestSession,
+    RetentionWindow,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.files import FileRef
 
@@ -100,6 +106,48 @@ class CommittingExpiredGuestDataAdapter:
         return await self._inner.which_are_referenced(keys)
 
 
+class CommittingAccountData:
+    """Erasure's `AccountDataPort`: the ordinary one, except that **`delete_account` commits** (slice
+    2.2, technical plan §0.4).
+
+    `CommittingExpiredGuestDataAdapter` above, on request instead of on a timer, for the same
+    sentence: *"rows first, **committed**, then files"*. `EraseAccount` unlinks every collected key
+    after `delete_account` returns, and a crash between the two must leave orphan files for the sweep
+    — never a user row, a login or a saved CV pointing at bytes that are gone. Only a commit makes
+    that true, and `application/` may not name one (ADR-0002).
+
+    **The commit is also what releases the row lock** `SqlAlchemyAccountData.files_of_account` took
+    on the user. That is the right moment and the only one: an upload waiting on it then fails its FK
+    check against a committed deletion (S-12), and a second erasure finds no user (S-46). A commit
+    before the delete would release the lock with the race still open.
+
+    **One commit, whatever the answer.** `False` (a concurrent erasure won) wrote nothing, so the
+    commit is empty — and it still ends the transaction holding the lock, rather than leaving that to
+    whenever the request's session closes.
+
+    Delegation, not a subclass, for the import-order reason given above.
+    """
+
+    def __init__(self, inner: AccountDataPort, session: AsyncSession) -> None:
+        self._inner = inner
+        self._session = session
+
+    async def files_of_account(self, user_id: UserId) -> Sequence[FileRef]:
+        """A read — but one that takes the lock, so **no commit**: committing here would release it
+        before the delete, which is the race the lock exists to close."""
+        return await self._inner.files_of_account(user_id)
+
+    async def delete_account(self, user_id: UserId) -> bool:
+        """The inner `DELETE`, **then commit** — the whole reason this class exists."""
+        deleted = await self._inner.delete_account(user_id)
+        await self._session.commit()
+        return deleted
+
+    async def count_account(self, user_id: UserId) -> AccountCounts | None:
+        """A read, so **no commit**."""
+        return await self._inner.count_account(user_id)
+
+
 class OverdueBacklog:
     """How many guest sessions are still expired-and-present, asked with the purge's own predicate.
 
@@ -135,3 +183,10 @@ class OverdueBacklog:
         box that is behind, which is exactly the box an operator is reading the line on.
         """
         return await self._data.count_expired(self._window.expiry_cutoff(self._clock.now()))
+
+
+if TYPE_CHECKING:
+    # Makes mypy prove the structural conformance of erasure's wrapper here, where it is defined,
+    # rather than only at whichever composition root binds it first. Never executed.
+    def _assert_implements_account_data(adapter: CommittingAccountData) -> None:
+        _: AccountDataPort = adapter

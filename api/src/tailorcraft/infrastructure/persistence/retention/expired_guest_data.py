@@ -68,6 +68,24 @@ class SqlAlchemyExpiredGuestData:
     the batch with it, but the *commit* that makes "rows first, committed, then files" a true
     statement about durability is `CommittingExpiredGuestDataAdapter`'s, in the composition roots
     (`infrastructure/tasks/container.py`). The use case names no transaction and may not (ADR-0002).
+
+    **Why this stays owner-blind — and why making it "owner-aware" would be a bug** (slice 2.2,
+    ADR-0022, R-1). Since 2.2 `intake_base_cv` holds registered users' saved CVs beside guest rows,
+    and nothing in this class mentions an owner. That is the design, not an omission:
+
+    - `list_expired` and `delete_session` reach a base CV **only** through `guest_session_id`. A
+      saved CV has `guest_session_id IS NULL`, so `IN (…)` never matches it and the cascade from
+      `identity_guest_session` has no path to it. It is spared **by the schema**, not by a filter
+      that a later edit could loosen (S-52, AC-15).
+    - `which_are_referenced` reads `file_key` from **every** row, whoever owns it. That is what keeps
+      the orphan sweep from deleting a saved CV's file: the sweep unlinks whatever is *not* in the
+      answer, so a cross-check that learned to look only at guest rows (`… AND guest_session_id IS
+      NOT NULL`, the "tidy" edit) would declare every saved file an orphan once it aged past the
+      window — and saved files do not expire. AC-16 is that edit, observed red as a named mutation.
+
+    So the rule for this class is the opposite of the usual one: **the less it knows about owners,
+    the safer it is.** An owner-aware predicate belongs to erasure (`SqlAlchemyAccountData`), which
+    deletes by owner on request, never to a job that deletes on a timer.
     """
 
     def __init__(self, session: AsyncSession) -> None:

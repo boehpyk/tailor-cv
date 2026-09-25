@@ -1,11 +1,20 @@
 """Migration tests for `66c9e18acc5c` — "add identity user and login" (T22, after).
 
 **AC-14.** Purely additive: exactly three new tables, and no pre-existing table's columns,
-constraints or indexes differ before and after `upgrade head`. Proven by downgrading to
+constraints or indexes differ before and after `66c9e18acc5c` itself. Proven by downgrading to
 `fa1bef4468bf` and back within this one test, snapshotting `information_schema.columns`,
 `pg_constraint` (via `pg_get_constraintdef`, which normalises column order and expression text so the
 comparison is not fooled by cosmetic differences) and `pg_indexes` for every pre-existing table at
 both revisions, and asserting the two snapshots are equal.
+
+**Pinned to `66c9e18acc5c` explicitly, not `"head"`** (T15/T16, 2.2): real head moved one revision
+past this migration when `1a2676aa3759` gave `intake_base_cv` nullable owner columns and two CHECKs.
+Comparing at `"head"` would have folded 2.2's own additive change into a test whose claim is about
+`66c9e18acc5c` alone — `intake_base_cv` is the one table where "before and after" would silently
+start meaning something else. The test downgrades from real head to `66c9e18acc5c` first to take its
+"after" snapshot there, continues down to `fa1bef4468bf` for the "before" snapshot, then upgrades
+back to real head to restore the schema for the rest of the session — same unconditional-recovery
+shape as before, with one more step in the descent.
 
 Follows `test_tailoring_run_repository.py`'s up/down/up precedent closely: a plain `def test_...`,
 not `async def` (Alembic's `env.py` opens its own `asyncio.run()`, which refuses to nest inside
@@ -38,6 +47,7 @@ from sqlalchemy.pool import NullPool
 
 from tailorcraft.infrastructure.settings import Settings
 
+_TARGET_REVISION: Final = "66c9e18acc5c"
 _DOWN_REVISION: Final = "fa1bef4468bf"
 
 _PRE_EXISTING_TABLES: Final[tuple[str, ...]] = (
@@ -142,10 +152,19 @@ def test_migration_66c9e18acc5c_up_down_up_touches_no_pre_existing_table_and_add
     for table in _NEW_TABLES:
         assert asyncio.run(_table_exists(url, table)) is True, f"{table} must exist at head"
 
-    after_snapshot = asyncio.run(_snapshot_all(url, _PRE_EXISTING_TABLES))
-
+    # Real head sits one revision past this migration since 2.2 (`1a2676aa3759`, `intake_base_cv`
+    # only). Descend to `66c9e18acc5c` itself first, so "after" is this migration's own schema, not
+    # a later slice's — otherwise `intake_base_cv`'s snapshot below would carry 2.2's columns and
+    # CHECKs, which have nothing to do with what `66c9e18acc5c` added.
     downgrade_error: Exception | None = None
+    after_snapshot: dict[str, dict[str, list[tuple[Any, ...]]]] | None = None
     try:
+        command.downgrade(config, _TARGET_REVISION)
+        for table in _NEW_TABLES:
+            assert asyncio.run(_table_exists(url, table)) is True, (
+                f"{table} must exist at {_TARGET_REVISION}"
+            )
+        after_snapshot = asyncio.run(_snapshot_all(url, _PRE_EXISTING_TABLES))
         command.downgrade(config, _DOWN_REVISION)
     except Exception as exc:
         downgrade_error = exc
@@ -159,6 +178,8 @@ def test_migration_66c9e18acc5c_up_down_up_touches_no_pre_existing_table_and_add
             raise downgrade_error from recovery_exc
         raise downgrade_error
 
+    assert after_snapshot is not None  # downgrade_error is None, so the try block ran to completion
+
     assertion_error: AssertionError | None = None
     try:
         for table in _NEW_TABLES:
@@ -169,7 +190,7 @@ def test_migration_66c9e18acc5c_up_down_up_touches_no_pre_existing_table_and_add
         before_snapshot = asyncio.run(_snapshot_all(url, _PRE_EXISTING_TABLES))
         assert before_snapshot == after_snapshot, (
             "a pre-existing table's columns, constraints or indexes differ between the down "
-            "revision and head — this migration must be purely additive (AC-14)"
+            f"revision and {_TARGET_REVISION} — this migration must be purely additive (AC-14)"
         )
     except AssertionError as exc:
         assertion_error = exc

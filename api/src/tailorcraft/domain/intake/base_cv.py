@@ -94,14 +94,9 @@ class BaseCv(RecordsEvents):
     # `owner` their only reader, which refuses the two states the product allows and the sum does
     # not (both set, neither set).
     _owner_guest_session_id: GuestSessionId | None
-    # SKELETON (T4): `_owner_user_id`, `_label` and `_copied_from` have no column until T11's
-    # migration, so the mapping cannot load them yet and a CV read back from the database would have
-    # no such attribute at all. The class-level `None` is what such a CV reads meanwhile — which is
-    # the truth for every row that exists today. T11 maps them (the mapper then replaces each with
-    # an instrumented attribute) and removes these three defaults.
-    _owner_user_id: UserId | None = None
-    _label: BaseCvLabel | None = None
-    _copied_from: BaseCvId | None = None
+    _owner_user_id: UserId | None
+    _label: BaseCvLabel | None
+    _copied_from: BaseCvId | None
     _original_filename: OriginalFilename
     _content_type: CvContentType
     _size_bytes: int

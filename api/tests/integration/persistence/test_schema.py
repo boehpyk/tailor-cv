@@ -65,10 +65,20 @@ from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run
     SqlAlchemyTailoringRunRepository,
 )
 
-# The four tables AC-2 and AC-12 both read the schema of — the ones ADR-0006's retention obligation
-# names as "a guest-owned row" (feature-spec.md's ubiquitous-language table).
+# The four tables AC-2 reads the schema of — the ones ADR-0006's retention obligation names as "a
+# guest-owned row" (feature-spec.md's ubiquitous-language table). Index and cascade still hold for
+# all four after 2.2; only the NOT NULL half of the claim now differs by table (below).
 _GUEST_OWNED_TABLES: Final[tuple[str, ...]] = (
     "intake_base_cv",
+    "posting_job_posting",
+    "tailoring_run",
+    "export_job",
+)
+
+# AC-18: 2.2 made `intake_base_cv.guest_session_id` nullable (`ck_intake_base_cv_exactly_one_owner`
+# now carries the "exactly one owner" invariant the NOT NULL used to), so it is retired from AC-12's
+# tripwire. The other three tables are untouched — 2.3/2.4 are the slices expected to widen them next.
+_GUEST_OWNED_TABLES_STILL_NOT_NULL: Final[tuple[str, ...]] = (
     "posting_job_posting",
     "tailoring_run",
     "export_job",
@@ -135,15 +145,18 @@ async def test_deleting_a_guest_session_cascades_to_its_base_cvs(
 async def test_guest_session_id_is_not_null_indexed_and_cascades_to_identity_guest_session(
     session: AsyncSession, table_name: str
 ) -> None:
-    """AC-2. For each of the four guest-owned tables: `guest_session_id` is `NOT NULL`, is the first
-    column of at least one index (the cascade delete and, on `intake_base_cv`/`export_job`, a real
-    application query both depend on it existing), and carries a foreign key to
-    `identity_guest_session.id` with `ON DELETE CASCADE` (`confdeltype = 'c'`).
+    """AC-2. For each of the four guest-owned tables: `guest_session_id` is the first column of at
+    least one index (the cascade delete and, on `intake_base_cv`/`export_job`, a real application
+    query both depend on it existing) and carries a foreign key to `identity_guest_session.id` with
+    `ON DELETE CASCADE` (`confdeltype = 'c'`). On three of the four it is also still `NOT NULL`;
+    `intake_base_cv` is the exception since 2.2 (AC-13) — a saved CV can be user-owned instead of
+    guest-owned, so the column is nullable and `ck_intake_base_cv_exactly_one_owner` carries the
+    "exactly one owner" invariant the `NOT NULL` used to.
 
     This is a proof, not a discovery: the task list and CLAUDE.md both record that every column here
-    was written correctly one slice early, specifically so this slice would add no migration. The
-    test exists so a future edit that "cleans up" an index nothing in *this* slice's queries appears
-    to use goes red — reading `pg_constraint`/`pg_index` rather than `test_schema.py`'s own prose is
+    was written correctly one slice early, specifically so 1.6 would add no migration. The test
+    exists so a future edit that "cleans up" an index nothing in *this* slice's queries appears to
+    use goes red — reading `pg_constraint`/`pg_index` rather than `test_schema.py`'s own prose is
     what makes that a fact about the database instead of a fact about a comment.
     """
     not_null = await session.execute(
@@ -153,7 +166,28 @@ async def test_guest_session_id_is_not_null_indexed_and_cascades_to_identity_gue
         ),
         {"table_name": table_name},
     )
-    assert not_null.scalar_one() == "NO", f"{table_name}.guest_session_id is nullable"
+    if table_name == "intake_base_cv":
+        assert not_null.scalar_one() == "YES", (
+            "intake_base_cv.guest_session_id is NOT NULL — AC-13's migration was expected to make "
+            "it nullable so a saved CV can be user-owned"
+        )
+        check = await session.execute(
+            text(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'intake_base_cv'::regclass "
+                "AND conname = 'ck_intake_base_cv_exactly_one_owner'"
+            )
+        )
+        definition = check.scalar_one_or_none()
+        assert definition is not None, (
+            "intake_base_cv carries no constraint named ck_intake_base_cv_exactly_one_owner"
+        )
+        assert "num_nonnulls(guest_session_id, user_id) = 1" in definition, (
+            f"ck_intake_base_cv_exactly_one_owner's definition is {definition!r}, not the "
+            "'exactly one owner' invariant AC-13 specifies"
+        )
+    else:
+        assert not_null.scalar_one() == "NO", f"{table_name}.guest_session_id is nullable"
 
     indexed = await session.execute(
         text(
@@ -202,19 +236,19 @@ async def test_identity_guest_session_expires_at_is_indexed(session: AsyncSessio
 # --- T31 / AC-12: the 2.2 tripwire ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("table_name", _GUEST_OWNED_TABLES)
+@pytest.mark.parametrize("table_name", _GUEST_OWNED_TABLES_STILL_NOT_NULL)
 async def test_guest_session_id_is_not_null_today_the_2_2_tripwire(
     session: AsyncSession, table_name: str
 ) -> None:
-    """AC-12. Today there is no `User` aggregate and `guest_session_id` is `NOT NULL` on all four
-    guest-owned tables, so a row the purge must spare — a registered user's — does not exist yet
-    (feature-spec.md, "The registered-user obligation, discharged honestly"). This test pins that
-    fact for its own reason, separate from AC-2's schema-completeness proof above, even though the
-    query is the same one: **when Phase 2.2 makes `guest_session_id` nullable so a row can belong to
-    a user instead of a session, this test goes red**, and that is the one moment the real "a
-    registered user's CV survives a purge run" test can be written — before that moment, the row this
-    test would need to construct (an owned row with no guest session) is not a state the schema can
-    hold, so a test claiming to prove it would be asserting against nothing.
+    """AC-12 / AC-18. `guest_session_id` was `NOT NULL` on all four guest-owned tables until 2.2
+    (AC-13) made `intake_base_cv`'s nullable so a saved CV can be user- instead of guest-owned —
+    that table is retired from this tripwire's parameter list on purpose, in the same commit that
+    adds the "a registered user's CV survives a purge run" proof its firing was meant to unblock
+    (feature-spec.md AC-18, AC-15). The other three tables have no such column yet, so the fact this
+    test pins for them still holds: a row the purge must spare — a registered user's — cannot exist
+    on `posting_job_posting`, `tailoring_run` or `export_job` today. **When 2.3 or 2.4 makes one of
+    those nullable too, that table's parametrization goes red here**, and that is the signal to write
+    the equivalent survives-a-purge-run proof for it and retire it from this list in turn.
     """
     result = await session.execute(
         text(

@@ -105,9 +105,17 @@ tailoring_run_table = Table(
     # and a second cascade path for a guarantee the session FK already gives.
     #
     # The alternative (add both FKs for referential integrity) is recorded as considered. The
-    # trigger to revisit it: if Phase 2 ever lets a user delete a single base CV while keeping the
-    # session. The answer then is a **nullable reference plus a "the source CV was deleted" state**,
-    # not a cascade that silently erases the history of what was produced and what it cost.
+    # trigger to revisit it: a user deletes a base CV that a surviving run references. The answer
+    # then is a **nullable reference plus a "the source CV was deleted" state**, not a cascade that
+    # silently erases the history of what was produced and what it cost.
+    #
+    # **Slice 2.2 lets a user delete a single saved CV, and the trigger still does not fire** (AC-19).
+    # A saved CV is user-owned and every run is guest-owned, and no ownership graph crosses owners:
+    # a run requested with a saved CV's id is 404, and a saved CV reaches tailoring only as a
+    # *working copy* — a guest-owned row with its own id and file (ADR-0022). So every `base_cv_id`
+    # here still names a CV in the run's own session, and still dies with it. **The trigger is
+    # 2.3's**: when runs become ownable by a user, a user-owned run will reference a saved CV
+    # directly, and deleting that CV is the moment this column needs the nullable-plus-state answer.
     #
     # They still use the typed decorators rather than a bare `postgresql.UUID`, so a loaded run
     # hands back a `BaseCvId` and a `JobPostingId` — with four UUID columns in one table, the types
