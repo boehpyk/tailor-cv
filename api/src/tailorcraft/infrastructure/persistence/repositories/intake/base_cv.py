@@ -35,7 +35,7 @@ from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound
 from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
-from tailorcraft.domain.intake.value_objects import BaseCvId, ExtractedText
+from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
@@ -59,9 +59,6 @@ _BASE_CV_USER_ID: InstrumentedAttribute[UserId | None] = cast(
 )
 _BASE_CV_UPLOADED_AT: InstrumentedAttribute[datetime] = cast(
     "InstrumentedAttribute[datetime]", BaseCv._uploaded_at
-)
-_BASE_CV_EXTRACTED_TEXT: InstrumentedAttribute[ExtractedText | None] = cast(
-    "InstrumentedAttribute[ExtractedText | None]", BaseCv._extracted_text
 )
 
 # Recognised by name, never by message (`violated_constraint`). Renaming the FK in
@@ -168,12 +165,51 @@ class SqlAlchemyBaseCvRepository:
         """Newest first, like `list_for_session`, as `SavedBaseCvSummary` rows, and **without ever
         selecting `extracted_text`** (AC-52, technical plan §3 amendment 2026-09-25).
 
-        T13b SKELETON (domain-modeler): the signature only. `api-dev` implements it in T13b GREEN
-        as a Core `SELECT` over named columns with `char_length(extracted_text)` for
-        `character_count` (code points, equal to Python's `len`), `WHERE user_id = :uid ORDER BY
-        uploaded_at DESC`, mapping each row into a `SavedBaseCvSummary`.
+        A Core `SELECT` over `base_cv_table`'s named columns, not `select(BaseCv)`: the ORM would
+        build aggregates, and an aggregate carries its text. `character_count` is computed by
+        Postgres — `char_length` counts **code points**, which is what Python's `len` counts, so the
+        list and `ExtractedText.character_count` agree on a CV full of non-ASCII names — and is
+        `NULL` exactly when `extracted_text` is (a CV not yet, or never, extracted). The column
+        appears inside the function call and nowhere in the select list, so no byte of the text
+        leaves the database.
+
+        The columns keep their `TypeDecorator`s, so each row arrives already as the domain's value
+        objects (`BaseCvId`, `BaseCvLabel`, `BaseCvStatus`, …) — the same translation `get` gets,
+        not a second one written here.
         """
-        raise NotImplementedError
+        c = base_cv_table.c
+        result = await self._session.execute(
+            select(
+                c.id,
+                c.label,
+                c.original_filename,
+                c.content_type,
+                c.size_bytes,
+                c.status,
+                func.char_length(c.extracted_text).label("character_count"),
+                c.extraction_failure_reason,
+                c.uploaded_at,
+            )
+            .where(c.user_id == uid)
+            # `id` breaks a tie within one whole second (`uploaded_at` is whole-second by the
+            # `Clock`'s contract): a UUIDv7 is time-ordered, so it agrees with "newest first" and
+            # makes the order total rather than whatever the planner returns that day.
+            .order_by(c.uploaded_at.desc(), c.id.desc())
+        )
+        return [
+            SavedBaseCvSummary(
+                id=row.id,
+                label=row.label,
+                original_filename=row.original_filename,
+                content_type=row.content_type,
+                size_bytes=row.size_bytes,
+                status=row.status,
+                character_count=row.character_count,
+                failure_reason=row.extraction_failure_reason,
+                uploaded_at=row.uploaded_at,
+            )
+            for row in result
+        ]
 
     async def count_for_user(self, uid: UserId) -> int:
         """`SELECT count(*)` over `ix_intake_base_cv_user_id`, for the same reason
