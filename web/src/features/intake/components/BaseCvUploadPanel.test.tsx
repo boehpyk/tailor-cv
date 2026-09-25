@@ -33,6 +33,7 @@ function makeExtractedCv(overrides: Partial<BaseCv> = {}): BaseCv {
     failure_message: null,
     uploaded_at: '2026-09-07T10:00:00Z',
     expires_at: '2026-09-08T10:00:00Z',
+    origin: 'uploaded',
     ...overrides,
   };
 }
