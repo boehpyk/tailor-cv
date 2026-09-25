@@ -165,8 +165,9 @@ def unavailable_fraction(turnarounds: list[float], *, baseline_seconds: float = 
     the same contention with a different density), which is why `PACE_SECONDS` is a module
     constant and the bound was measured at it — see `test_login_event_loop.py`'s own record.
 
-    A caller still measures its own bound empirically for its own workload — this ratio removes two
-    confounds (ambient latency, sampler pacing), not the need for an empirical bound.
+    A caller still measures its own bound empirically for its own workload — this ratio removes ambient
+    latency and takes sampler pacing out of the arithmetic (not out of the measurement, above) — it
+    does not remove the need for an empirical bound.
     """
     total = sum(turnarounds)
     if total <= 0:

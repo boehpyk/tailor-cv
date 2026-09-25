@@ -79,10 +79,12 @@ Config check, box, before any release touching rate limiting or the proxy chain:
 grep ^TRUSTED_PROXY_HOPS= .env                       # must read 2
 ```
 
-Traefik must not be the thing defeating the count — it must discard a client-supplied
-`X-Forwarded-For` rather than append to it, which holds by default as long as the `websecure`
-entrypoint has no `forwardedHeaders.insecure=true` and no `0.0.0.0/0` in
-`forwardedHeaders.trustedIPs`:
+A client-forged `X-Forwarded-For` cannot defeat a count of 2: whether Traefik discards the client's
+header or appends to it, entry -2 is the address Traefik itself saw (`test_client_ip.py`'s
+forged-prefix case). What defeats the count is a hop nobody counted — a CDN or load balancer put in
+front of Traefik, which Traefik is then told to trust. So confirm the `websecure` entrypoint has no
+`forwardedHeaders.insecure=true` and no `forwardedHeaders.trustedIPs`; if either appears, someone
+added an upstream proxy and this number must change with it:
 
 ```bash
 docker inspect <traefik-container> --format '{{json .Config.Cmd}}'
