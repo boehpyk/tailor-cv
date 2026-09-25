@@ -159,10 +159,11 @@ def unavailable_fraction(turnarounds: list[float], *, baseline_seconds: float = 
     all — the very "precondition scales with an unrelated knob" shape this whole file exists to
     avoid). `sum(turnarounds)` excludes `PACE_SECONDS` by construction (each turnaround already has
     it subtracted, per sample, in `hammer_health_live_until_floor`), so this ratio is answered-time
-    against answered-time and does not move when the sampler's pacing does — verified the same way,
-    by re-running the same healthy workload at five times the pace and finding this version's number
-    unchanged within measurement noise (see `test_login_event_loop.py`'s own mutation record for the
-    figures).
+    against answered-time and the pace no longer enters it *arithmetically*. It is not
+    invariant to the pace in practice, though: re-running the same healthy workload at five times
+    the pace moved the healthy value from the 0.775-0.799 cluster to **0.564** (a sparser poll samples
+    the same contention with a different density), which is why `PACE_SECONDS` is a module
+    constant and the bound was measured at it — see `test_login_event_loop.py`'s own record.
 
     A caller still measures its own bound empirically for its own workload — this ratio removes two
     confounds (ambient latency, sampler pacing), not the need for an empirical bound.
