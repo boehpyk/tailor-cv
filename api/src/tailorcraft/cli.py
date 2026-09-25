@@ -15,6 +15,14 @@ the break-glass that deletes every `Login` (AC-13, OQ-5). Its code lives in
 `infrastructure/identity/revoke_logins_command.py`; exit 0 on success (including zero logins), 1 on
 a database failure, 2 for a usage error — `--all` is required.
 
+`erase-account --user-id <uuid> [--dry-run]` is implemented (slice 2.2, `intake-saved-base-cvs`,
+T22): the operator's account erasure — the user, every login, every retired hash, every saved CV and
+every saved file, rows committed first, then files — through the same `EraseAccount` use case as
+`POST /api/auth/delete-account`, with no password (operator authority). `--dry-run` prints the
+counts and deletes nothing. Exit 0 erased (or found, on a dry run), 1 no such account / a foreign
+database / a database failure, 2 usage. Its code lives in
+`infrastructure/retention/erase_account_command.py`.
+
 `check-settings` is implemented (slice 2.1, T46, OQ-2): it runs every startup refusal the API
 process has — the `Settings` validators and the Celery stale-window checks — without starting
 anything, and exits 1 printing the refusal's sentence (never a value) or 0 printing `settings ok`.
@@ -30,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from uuid import UUID
 
 
 def _positive_int(raw: str) -> int:
@@ -101,6 +110,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     revoke.add_argument("--dry-run", action="store_true", help="report the count; delete nothing")
 
+    # AC-31: the operator's erasure. `--user-id` is **required** and parsed as a UUID by argparse, so
+    # a missing or malformed id is a usage error (exit 2) before any database is touched. There is
+    # no `--all` and no `--email`: one account, named by the id nobody can mistype into someone
+    # else's, and never looked up by a person's address.
+    erase = sub.add_parser(
+        "erase-account",
+        help="delete one account and everything it owns (rows, then files)",
+    )
+    erase.add_argument(
+        "--user-id",
+        type=UUID,
+        required=True,
+        help="the account's id (identity_user.id)",
+    )
+    erase.add_argument(
+        "--dry-run", action="store_true", help="print what would be deleted; delete nothing"
+    )
+
     # T46 / OQ-2: every startup refusal the API has, asked once in one process before uvicorn is
     # exec'd — so a refusal exits the container instead of respawning under `--workers N`.
     sub.add_parser(
@@ -158,6 +185,14 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         return run_revoke(dry_run=args.dry_run)
+    if args.command == "erase-account":
+        # Imported here: it builds a database engine and a file store, which no other command's
+        # path needs.
+        from tailorcraft.infrastructure.retention.erase_account_command import (
+            run_from_cli as run_erase,
+        )
+
+        return run_erase(user_id=args.user_id, dry_run=args.dry_run)
     if args.command == "check-settings":
         # Imported here: it must build nothing but `Settings`, and loading the other commands'
         # modules would import a database driver it has no use for.
