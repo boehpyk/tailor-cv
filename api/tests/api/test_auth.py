@@ -47,7 +47,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -55,6 +55,7 @@ from argon2 import PasswordHasher as Argon2Library
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from pydantic import SecretStr
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -95,6 +96,7 @@ from tailorcraft.infrastructure.api.refresh_cookie import (
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
+from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import JWT_SIGNING_KEY_MIN_BYTES, Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
@@ -1867,6 +1869,40 @@ def _delete_account_headers(settings: Settings, token: str) -> dict[str, str]:
     return {**_origin_headers(settings), "Authorization": f"Bearer {token}"}
 
 
+def _assert_test_database(settings: Settings) -> None:
+    """CLAUDE.md's 1.4 guard, reproduced locally exactly as every other deleting test file in this
+    suite does (`test_identity_database_truths.py`'s own copy, T31): `get_settings()` under
+    `APP_ENV=test` still returns the **dev** `database_url` — only the `settings` fixture swaps in
+    `test_database_url`. Asserted before the first statement of any test below that writes for real."""
+    assert "_test" in settings.database_url, (
+        "refusing to run a deleting test against a URL that is not the test database: "
+        f"{settings.database_url!r}"
+    )
+
+
+@pytest.fixture
+def concurrent_app(
+    settings: Settings, engine: AsyncEngine, password_hasher: Argon2PasswordHasher
+) -> FastAPI:
+    """A second application wired for genuine per-request sessions — `test_identity_database_truths.py`'s
+    `concurrent_app` fixture (T31), reproduced here for the identical reason. `tests/conftest.py`'s
+    shared `app` fixture binds every request in a test to the **same** already-open `AsyncSession`
+    (`_committing_session_override`) — exactly right for isolation, and exactly wrong for two
+    coroutines racing a real DELETE against one row: they would corrupt that one session object
+    (`IllegalStateChangeError` -> an honest-looking 503 that actually proves nothing about S-46),
+    never reproduce two independent HTTP clients contending for one database row. This app instead
+    opens and commits its own session per request (`app.state.session_factory =
+    create_session_factory(engine)`), exactly as `main.py`'s lifespan wires production. Every write a
+    test drives through it is a real, committed row against `tailorcraft_test` — cleaned up by hand."""
+    app = create_app(settings)
+    app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
+    app.state.celery = celery_app
+    app.state.password_hasher = password_hasher
+    return app
+
+
 # ---------------------------------------------------------------------------------------------
 # AC-29 — the happy path
 # ---------------------------------------------------------------------------------------------
@@ -2076,28 +2112,44 @@ async def test_delete_account_commit_failure_is_503_and_does_not_clear_the_cooki
 
 
 async def test_two_concurrent_correct_deletions_exactly_one_204_one_401(
-    app: FastAPI, client: AsyncClient, settings: Settings
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
-    token, _ = await _register_2_2(client, settings)
+    """S-46, on `concurrent_app` (see its docstring above) rather than the shared `app`/`client`
+    fixtures: the shared fixture binds both in-flight requests to one `AsyncSession`, which is not
+    safe for concurrent use and answers `IllegalStateChangeError` -> 503 for a reason that has
+    nothing to do with S-46's race. Real, committed rows; cleaned up by hand — a `finally` that
+    tolerates the row already being gone (whichever request won the race deleted it for real)."""
+    _assert_test_database(settings)
+    async with _new_client(concurrent_app) as setup_client:
+        token, user_id = await _register_2_2(setup_client, settings)
 
-    async with _new_client(app) as second_client:
-        results = await asyncio.gather(
-            client.post(
-                DELETE_ACCOUNT_URL,
-                json={"password": A_STRONG_PASSWORD},
-                headers=_delete_account_headers(settings, token),
-            ),
-            second_client.post(
-                DELETE_ACCOUNT_URL,
-                json={"password": A_STRONG_PASSWORD},
-                headers=_delete_account_headers(settings, token),
-            ),
-        )
+    try:
+        async with (
+            _new_client(concurrent_app) as client_a,
+            _new_client(concurrent_app) as client_b,
+        ):
+            results = await asyncio.gather(
+                client_a.post(
+                    DELETE_ACCOUNT_URL,
+                    json={"password": A_STRONG_PASSWORD},
+                    headers=_delete_account_headers(settings, token),
+                ),
+                client_b.post(
+                    DELETE_ACCOUNT_URL,
+                    json={"password": A_STRONG_PASSWORD},
+                    headers=_delete_account_headers(settings, token),
+                ),
+            )
 
-    statuses = sorted(r.status_code for r in results)
-    assert statuses == [204, 401], [r.text for r in results]
-    the_401 = next(r for r in results if r.status_code == 401)
-    assert _error_code(the_401) == "not_signed_in"
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [204, 401], [r.text for r in results]
+        the_401 = next(r for r in results if r.status_code == 401)
+        assert _error_code(the_401) == "not_signed_in"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM identity_user WHERE id = :id"), {"id": UUID(user_id)}
+            )
 
 
 # ---------------------------------------------------------------------------------------------

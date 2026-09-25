@@ -1828,16 +1828,22 @@ async def test_copy_at_the_guest_cap_is_409_too_many_base_cvs(
 async def test_copy_rate_limited_by_session_scope_returns_429(
     client: AsyncClient, app: FastAPI, settings: Settings
 ) -> None:
-    _override_settings(app, settings, upload_rate_limit_per_hour=1)
+    """S-31. `upload_rate_limit_per_hour=1` set *before* two account uploads trips the account
+    upload's own `user` scope on the second upload — a different bucket from the copy route's, even
+    though both read the same setting (plan §4) — so the source CV must be uploaded first, under the
+    unmodified default limit, and only the copy calls themselves run under the lowered cap. Two
+    copies of the *same* source rather than two distinct sources: a copy is not idempotent (S-36),
+    so this still exercises the limiter and not a dedupe rule."""
     token, _ = await _register_2_2(client, settings)
-    first_source = await _upload_extracted_saved_cv_2_2(client, token)
-    second_source = await _upload_extracted_saved_cv_2_2(client, token)
+    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
+
+    _override_settings(app, settings, upload_rate_limit_per_hour=1)
 
     first = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": first_source}, headers=_bearer_2_2(token)
+        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
     )
     second = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": second_source}, headers=_bearer_2_2(token)
+        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
     )
 
     assert first.status_code == 201, first.text

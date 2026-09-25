@@ -42,14 +42,18 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.api.deps import get_app_settings
+from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
+from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
+from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.settings import Settings
+from tailorcraft.infrastructure.tasks.app import app as celery_app
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "cvs"
 
@@ -98,6 +102,17 @@ def _override_settings(app: FastAPI, base: Settings, **updates: object) -> Setti
     return modified
 
 
+def _assert_test_database(settings: Settings) -> None:
+    """CLAUDE.md's 1.4 guard, reproduced locally exactly as every other deleting test file in this
+    suite does (`test_identity_database_truths.py`'s own copy, T31): `get_settings()` under
+    `APP_ENV=test` still returns the **dev** `database_url` — only the `settings` fixture swaps in
+    `test_database_url`. Asserted before the first statement of any test below that writes for real."""
+    assert "_test" in settings.database_url, (
+        "refusing to run a deleting test against a URL that is not the test database: "
+        f"{settings.database_url!r}"
+    )
+
+
 # ---------------------------------------------------------------------------------------------
 # Module-local fixtures
 # ---------------------------------------------------------------------------------------------
@@ -119,6 +134,29 @@ def _new_client(app: FastAPI) -> AsyncClient:
     return AsyncClient(
         transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
     )
+
+
+@pytest.fixture
+def concurrent_app(
+    settings: Settings, engine: AsyncEngine, password_hasher: Argon2PasswordHasher
+) -> FastAPI:
+    """A second application wired for genuine per-request sessions — `test_identity_database_truths.py`'s
+    `concurrent_app` fixture (T31), reproduced here for the identical reason. `tests/conftest.py`'s
+    shared `app` fixture binds every request in a test to the **same** already-open `AsyncSession`
+    (`_committing_session_override`) — exactly right for isolation, and exactly wrong for two
+    coroutines racing a real DELETE against one row: they would corrupt that one session object
+    (`IllegalStateChangeError` -> an honest-looking 503 that actually proves nothing about S-19),
+    never reproduce two independent HTTP clients contending for one database row. This app instead
+    opens and commits its own session per request (`app.state.session_factory =
+    create_session_factory(engine)`), exactly as `main.py`'s lifespan wires production. Every write a
+    test drives through it is a real, committed row against `tailorcraft_test` — cleaned up by hand."""
+    app = create_app(settings)
+    app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
+    app.state.celery = celery_app
+    app.state.password_hasher = password_hasher
+    return app
 
 
 @pytest.fixture(autouse=True)
@@ -451,9 +489,9 @@ async def test_at_the_cap_the_next_upload_is_409_and_writes_no_file(
     modified = _override_settings(app, settings, max_saved_base_cvs_per_user=2)
     token, _ = await _register(client, settings)
 
-    first = await _upload_saved(client, token, filename="a.txt")
-    second = await _upload_saved(client, token, filename="b.txt")
-    third = await _upload_saved(client, token, filename="c.txt")
+    first = await _upload_saved(client, token, filename="a.txt", data=_read_fixture("sample.txt"))
+    second = await _upload_saved(client, token, filename="b.txt", data=_read_fixture("sample.txt"))
+    third = await _upload_saved(client, token, filename="c.txt", data=_read_fixture("sample.txt"))
 
     assert first.status_code == 201, first.text
     assert second.status_code == 201, second.text
@@ -474,9 +512,9 @@ async def test_more_than_the_per_user_hourly_limit_returns_429(
     _override_settings(app, settings, upload_rate_limit_per_hour=2)
     token, _ = await _register(client, settings)
 
-    first = await _upload_saved(client, token, filename="a.txt")
-    second = await _upload_saved(client, token, filename="b.txt")
-    third = await _upload_saved(client, token, filename="c.txt")
+    first = await _upload_saved(client, token, filename="a.txt", data=_read_fixture("sample.txt"))
+    second = await _upload_saved(client, token, filename="b.txt", data=_read_fixture("sample.txt"))
+    third = await _upload_saved(client, token, filename="c.txt", data=_read_fixture("sample.txt"))
 
     assert first.status_code == 201, first.text
     assert second.status_code == 201, second.text
@@ -798,22 +836,39 @@ async def test_a_second_delete_is_404(client: AsyncClient, settings: Settings) -
 
 
 async def test_two_concurrent_deletes_exactly_one_204_one_404_no_5xx(
-    client: AsyncClient, app: FastAPI, settings: Settings
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
-    token, _ = await _register(client, settings)
-    cv_id = await _upload_extracted_saved_cv(client, token)
+    """S-19, on `concurrent_app` (module docstring above) rather than the shared `app`/`client`
+    fixtures: the shared fixture binds both in-flight requests to one `AsyncSession`, which is not
+    safe for concurrent use and answers `IllegalStateChangeError` -> 503 for a reason that has
+    nothing to do with S-19's race. Real, committed rows; the seeded user is deleted by hand at
+    teardown, cascading (`ondelete="CASCADE"`) onto the saved CV row."""
+    _assert_test_database(settings)
+    async with _new_client(concurrent_app) as setup_client:
+        token, user_id = await _register(setup_client, settings)
+        cv_id = await _upload_extracted_saved_cv(setup_client, token)
 
-    async with _new_client(app) as second_client:
-        results = await asyncio.gather(
-            client.delete(f"{ME_BASE_CVS_URL}/{cv_id}", headers=_bearer(token)),
-            second_client.delete(f"{ME_BASE_CVS_URL}/{cv_id}", headers=_bearer(token)),
-        )
+    try:
+        async with (
+            _new_client(concurrent_app) as client_a,
+            _new_client(concurrent_app) as client_b,
+        ):
+            results = await asyncio.gather(
+                client_a.delete(f"{ME_BASE_CVS_URL}/{cv_id}", headers=_bearer(token)),
+                client_b.delete(f"{ME_BASE_CVS_URL}/{cv_id}", headers=_bearer(token)),
+            )
 
-    statuses = sorted(r.status_code for r in results)
-    assert statuses == [204, 404], [r.text for r in results]
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [204, 404], [r.text for r in results]
 
-    listing = await client.get(ME_BASE_CVS_URL, headers=_bearer(token))
-    assert listing.json()["items"] == []
+        async with _new_client(concurrent_app) as listing_client:
+            listing = await listing_client.get(ME_BASE_CVS_URL, headers=_bearer(token))
+        assert listing.json()["items"] == []
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM identity_user WHERE id = :id"), {"id": UUID(user_id)}
+            )
 
 
 async def test_delete_when_the_commit_fails_returns_503_and_keeps_the_row_and_file(

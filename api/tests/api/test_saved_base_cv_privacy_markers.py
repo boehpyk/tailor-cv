@@ -24,9 +24,18 @@ positive control (a `base_cv_id`-bearing line exists) is false** — this file r
 checked *any* known id against the captured lines, including `user_id` — which passed **vacuously**,
 because `register`'s own already-implemented `UserRegistered` event line already carries it. Scoping
 the control to `base_cv_id` specifically, which only ever enters `ids` once the account upload
-itself succeeds, is what makes this file's red mean something.) As T21 (and T22, the
-`erase-account` CLI, not yet built at all) land, the same test drives further and its positive
-control starts finding real lines, without an edit.
+itself succeeds, is what makes this file's red mean something.) As T21 lands, the same test drives
+further and its positive control starts finding real lines, without an edit.
+
+**`erase-account` (T22) is deliberately not exercised here.** An earlier draft of this file tried the
+CLI's real entry point speculatively, swallowing `ImportError` for the "not built yet" case — once
+the module existed but the CLI's actual shape did not match what this file guessed, that speculative
+call was itself a defect one level up from what it tried to guard: `mypy --strict` flagged the
+`# type: ignore` as unused and the import as `attr-defined`, and the call was a sync invocation
+inside a running event loop besides. The CLI's own privacy claim (a marker planted on a second user,
+never logged) is T23's test to write against the real signature once it exists — this file only
+registers that second marker user so its email is present in the run for T23 to build on, and does
+not speculate about how it gets erased.
 
 **Why every step below is "soft"** (records the response, proceeds only if it succeeded, never
 raises on a non-2xx). A hard `assert response.status_code == 201` at the account-upload step would
@@ -39,7 +48,6 @@ today, and worth exercising for real the moment each skeleton goes GREEN.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from collections.abc import AsyncIterator
 from typing import Final
@@ -208,8 +216,10 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
             )
             responses.append(deleted_account)
 
-        # --- erase-account on a SECOND marker user, via the operator CLI (T22 — not yet built at
-        # all) ------------------------------------------------------------------------------------
+        # --- a second marker user, registered so its email is a marker present in the run too.
+        # `erase-account`, the operator CLI (T22), is not built at all yet — its own privacy claim is
+        # T23's to assert, against the real CLI entry point once it exists, not speculated here
+        # against an import that does not resolve. ------------------------------------------------
         second_marker_email = _marker_email("second-user-email")
         second_register = await client.post(
             REGISTER_URL,
@@ -219,7 +229,6 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
         responses.append(second_register)
         if _ok(second_register):
             ids["second_user_id"] = str(second_register.json()["user"]["id"])
-            await _try_erase_account_cli(ids["second_user_id"])
 
     # --- The actual claim: no marker anywhere it must not be ---------------------------------
     log_text = caplog.text
@@ -237,8 +246,12 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
             f"Full captured text:\n{log_text}"
         )
 
+    # `original_filename` IS a pinned field of `SavedBaseCvResponse` (AC-20) — a saved CV's response
+    # body is its one legitimate channel, exactly as the label is for `PATCH` (AC-26). AC-49 pins
+    # what must never appear in a log record, a Sentry-bound body, a domain event field or a Redis
+    # key; it says nothing about a response body echoing back a field the API contract itself
+    # promises to expose. Only the label is checked here, and only outside its own legitimate echo.
     never_in_a_response_body = {
-        "the marker filename": marker_filename,  # not an error-body concern; never in the body at all
         "the marker label": marker_label,
     }
     for response in responses:
@@ -322,18 +335,3 @@ async def _try_tailor(
     if not fake_llm.calls:
         return None
     return fake_llm.calls[0]
-
-
-async def _try_erase_account_cli(user_id: str) -> None:
-    """`python -m tailorcraft.cli erase-account --user-id ... --dry-run` — T22, not built at all
-    yet (task-list.md). Tries the real entry point and swallows exactly the "not built" shape
-    (`ImportError`/`AttributeError`/`SystemExit`) rather than failing this file over a task that is
-    not this one's to implement; any other exception is a real bug and must still surface."""
-    try:
-        from tailorcraft.infrastructure.retention.erase_account_command import (  # type: ignore[import-not-found]
-            run_erase_account_command,
-        )
-    except ImportError:
-        return
-    with contextlib.suppress(SystemExit):
-        run_erase_account_command(["--user-id", user_id, "--dry-run"])
