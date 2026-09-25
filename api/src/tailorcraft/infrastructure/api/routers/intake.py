@@ -13,15 +13,19 @@ job is to make it true.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, File, Request, Response, UploadFile, status
-from fastapi.exceptions import HTTPException
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
+from tailorcraft.application.intake.owned_saved_base_cv import get_owned_saved_base_cv
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCvCommand
+from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.base_cv import BaseCv
+from tailorcraft.domain.intake.errors import SavedBaseCvFileMissing
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
@@ -38,11 +42,13 @@ from tailorcraft.infrastructure.api.deps import (
     SettingsDep,
     StartGuestSessionDep,
     UploadBaseCvDep,
+    UserRepositoryDep,
     resolve_or_start_guest_session,
 )
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.api.routers._upload import (
     commit_or_503,
+    enforce_upload_limit,
     failure_message,
     read_validated_upload,
 )
@@ -52,10 +58,13 @@ from tailorcraft.infrastructure.api.schemas.intake import (
     CopySavedBaseCvRequest,
     ErrorResponse,
 )
-from tailorcraft.infrastructure.rate_limit import client_ip
 from tailorcraft.infrastructure.settings import Settings
 
 router = APIRouter(prefix="/api/base-cvs", tags=["intake"])
+log = structlog.get_logger(__name__)
+
+EVENT_USER_MISSING: Final = "identity.user_missing"
+EVENT_SAVED_BASE_CV_FILE_MISSING: Final = "intake.saved_base_cv_file_missing"
 
 # 1.1's name for `failure_message`, bound here as a module attribute (an import alias would not be
 # one under mypy's `implicit_reexport = False`): 1.1's API tests import `_failure_message` from this
@@ -101,6 +110,7 @@ def _to_response(cv: BaseCv, expires_at: datetime, settings: Settings) -> BaseCv
         ),
         uploaded_at=cv.uploaded_at,
         expires_at=expires_at,
+        origin=cv.origin,
     )
 
 
@@ -180,24 +190,7 @@ async def upload_base_cv(
     # file) — checked, and both counters incremented, before any of that work starts (F-24). Both
     # scopes are always checked, not short-circuited on the first: a client that is over its
     # per-session limit has still made an attempt from its IP, and that attempt should count.
-    session_decision = await rate_limiter.check(
-        "session", str(session.id.value), settings.upload_rate_limit_per_hour
-    )
-    ip_decision = await rate_limiter.check(
-        "ip",
-        client_ip(request, settings.trusted_proxy_hops),
-        settings.upload_rate_limit_per_ip_per_hour,
-    )
-    if not session_decision.allowed or not ip_decision.allowed:
-        retry_after = max(session_decision.retry_after_seconds, ip_decision.retry_after_seconds)
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "code": "rate_limited",
-                "message": f"Too many uploads. Try again in {retry_after} seconds.",
-            },
-            headers={"Retry-After": str(retry_after)},
-        )
+    await enforce_upload_limit(request, rate_limiter, "session", str(session.id.value), settings)
 
     # Filename → capped read → empty → sniff (in a worker thread), 1.1's order and codes. After the
     # limiter above, so the limit gates the expensive part. See `routers/_upload.py`.
@@ -285,6 +278,7 @@ async def copy_saved_base_cv(
     request: Request,
     response: Response,
     user_id: RequireUserDep,
+    users: UserRepositoryDep,
     settings: SettingsDep,
     clock: ClockDep,
     sessions: GuestSessionRepositoryDep,
@@ -306,8 +300,63 @@ async def copy_saved_base_cv(
     201 with the guest `BaseCvResponse`: `status: "extracted"`, `expires_at` the session's. The copy
     never re-runs the extractor (AC-9) and is deliberately not idempotent — two clicks, two copies
     (S-36).
+
+    **Order, and why each step sits where it does** (technical plan §0.3):
+
+    1. The bearer (`require_user`, a dependency) — before the body: a bad one mints nothing.
+    2. **The source is authorized here, before any guest session exists**: the account still exists
+       (a token outliving an erasure is 401 `not_signed_in`, AC-30) and the saved CV is the
+       bearer's (404 otherwise, byte-identical for "not yours" and "not there"). The application's
+       own two helpers, not a second copy of the rule — the use case repeats them inside its own
+       unit of work, which is cheap and keeps the use case whole for any other entry point.
+    3. `resolve_or_start_guest_session` — only now, so a 401 or a 404 never mints a session and
+       never sets a cookie (S-25, S-27).
+    4. The upload limiter's `session` and `ip` scopes (fail open): a copy creates a guest CV, as an
+       upload does, and the session scope needs the session from step 3.
+    5. The use case, then the persisted aggregate re-read for the response, then **the commit,
+       inside this handler** (FastAPI 0.141 runs `get_session`'s teardown after the response is
+       sent, so only an in-handler commit can still become S-35's 503).
     """
-    raise NotImplementedError
+    # (2) Authorize the source. Never the guest half yet — see the docstring.
+    source_id = BaseCvId(body.saved_base_cv_id)
+    try:
+        await resolve_existing_user(users, user_id)
+        await get_owned_saved_base_cv(cvs, source_id, user_id)
+    except UserNotFound as exc:
+        log.info(EVENT_USER_MISSING, user_id=str(user_id.value))
+        raise domain_error_to_http_exception(exc) from None
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from None
+
+    # (3) The transfer route's one direct read of `tc_guest` (ADR-0008 (f), AC-24's AST scan).
+    session = await resolve_or_start_guest_session(
+        request, response, sessions, clock, settings, start_guest_session
+    )
+
+    # (4) Both scopes are always checked, never short-circuited — `upload_base_cv`'s reason.
+    await enforce_upload_limit(request, rate_limiter, "session", str(session.id.value), settings)
+
+    # (5)
+    try:
+        result = await copy_use_case(source_id, user_id, session.id)
+    except SavedBaseCvFileMissing as exc:
+        # S-32: a row that points at nothing is a bug somewhere, so it is a warning — ids only.
+        log.warning(
+            EVENT_SAVED_BASE_CV_FILE_MISSING,
+            base_cv_id=str(source_id.value),
+            user_id=str(user_id.value),
+        )
+        raise domain_error_to_http_exception(exc) from None
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from None
+
+    saved_copy = await cvs.get(result.base_cv_id)
+    wire = _to_response(saved_copy, session.expires_at, settings)
+
+    await commit_or_503(db)
+
+    response.headers["Cache-Control"] = "no-store"
+    return wire
 
 
 @router.get(

@@ -13,9 +13,12 @@ What lives here is the part of the boundary that does not depend on *who* owns t
   response is sent, so only a commit made *inside* the handler can still turn into a 503).
 * `failure_message` — the server-owned sentence for each `ExtractionFailureReason`.
 
-What does **not** live here: resolving the owner and the rate limit. Those differ per route (a guest
-session and the `session` scope for one, a user and the `user` scope for the other) and are each
-route's own business. The leading underscore on the module name says the same thing as on a
+* `enforce_upload_limit` — the upload limiter's two scopes, checked together (T21): the owner's
+  scope (`session` for a guest upload and the copy, `user` for an account upload) **and** `ip`.
+
+What does **not** live here: resolving the owner. That differs per route (a guest session for one, a
+user for the other) and is each route's own business; the limiter helper takes the owner's scope and
+identifier as arguments for the same reason. The leading underscore on the module name says the same thing as on a
 function: this is `routers/`' own plumbing, not an API for anything else to import.
 
 A refactor only (R-6): every status, `code`, message and order below is 1.1's, byte for byte.
@@ -26,7 +29,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from fastapi import UploadFile, status
+from fastapi import Request, UploadFile, status
 from fastapi.exceptions import HTTPException
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +42,11 @@ from tailorcraft.domain.intake.value_objects import (
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.intake.sniffing import sniff_cv_content_type
+from tailorcraft.infrastructure.rate_limit import (
+    RateLimitScope,
+    RedisFixedWindowRateLimiter,
+    client_ip,
+)
 from tailorcraft.infrastructure.settings import Settings
 
 # Read the already-received upload in fixed-size chunks and count as we go, rather than joining it
@@ -56,6 +64,44 @@ class ValidatedUpload:
     original_filename: OriginalFilename
     content: bytes
     content_type: CvContentType
+
+
+async def enforce_upload_limit(
+    request: Request,
+    limiter: RedisFixedWindowRateLimiter,
+    owner_scope: RateLimitScope,
+    owner_identifier: str,
+    settings: Settings,
+) -> None:
+    """The upload limiter (namespace `intake:upload`, **fail open** — 1.1's rule: the cost is ours
+    and bounded): the owner's scope at `upload_rate_limit_per_hour` and the client IP at
+    `upload_rate_limit_per_ip_per_hour`, or 429 `rate_limited` + `Retry-After`.
+
+    **Both scopes are always checked, never short-circuited on the first**: a client over its
+    per-owner limit has still made an attempt from its IP, and that attempt should count (1.1's F-24).
+    Call it before the expensive part of the request — reading, sniffing, extracting, copying.
+
+    `owner_identifier` is an **id** (a guest session's or a user's), never an email: a Redis key must
+    not be a list of who uploaded.
+    """
+    owner_decision = await limiter.check(
+        owner_scope, owner_identifier, settings.upload_rate_limit_per_hour
+    )
+    ip_decision = await limiter.check(
+        "ip",
+        client_ip(request, settings.trusted_proxy_hops),
+        settings.upload_rate_limit_per_ip_per_hour,
+    )
+    if not owner_decision.allowed or not ip_decision.allowed:
+        retry_after = max(owner_decision.retry_after_seconds, ip_decision.retry_after_seconds)
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "code": "rate_limited",
+                "message": f"Too many uploads. Try again in {retry_after} seconds.",
+            },
+            headers={"Retry-After": str(retry_after)},
+        )
 
 
 async def read_validated_upload(file: UploadFile, settings: Settings) -> ValidatedUpload:

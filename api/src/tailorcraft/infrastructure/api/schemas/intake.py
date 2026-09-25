@@ -21,6 +21,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from tailorcraft.domain.intake.value_objects import (
+    BaseCvOrigin,
     BaseCvStatus,
     CvContentType,
     ExtractionFailureReason,
@@ -41,6 +42,10 @@ class BaseCvResponse(BaseModel):
     `expires_at` is the *guest session's* expiry, not a property of the CV row itself — carrying it
     here makes the 24-hour retention promise visible in the payload as well as in the UI copy
     (AC-16, ADR-0006 §5).
+
+    `origin` (slice 2.2, additive): `uploaded`, or `copied_from_saved` for a working copy made from a
+    registered user's saved CV — the client's cue for the *Working copy* badge (AC-41). Derived from
+    the aggregate (`BaseCv.origin`), never stored.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -55,6 +60,7 @@ class BaseCvResponse(BaseModel):
     failure_message: str | None
     uploaded_at: datetime
     expires_at: datetime
+    origin: BaseCvOrigin
 
 
 class BaseCvListResponse(BaseModel):
