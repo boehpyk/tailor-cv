@@ -65,6 +65,7 @@ from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import EmailAddress, LoginId, LoginNotFoundReason
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
+    DeleteOwnAccountDep,
     GetCurrentUserDep,
     LogInDep,
     LoginEmailRateLimiterDep,
@@ -76,6 +77,7 @@ from tailorcraft.infrastructure.api.deps import (
     RequireUserDep,
     SessionDep,
     SettingsDep,
+    UserRepositoryDep,
     login_email_rate_limit_identifier,
     require_trusted_origin,
 )
@@ -93,6 +95,7 @@ from tailorcraft.infrastructure.api.refresh_cookie import (
 from tailorcraft.infrastructure.api.schemas.auth import (
     AuthenticatedResponse,
     CredentialsRequest,
+    DeleteAccountRequest,
     UserResponse,
 )
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
@@ -540,3 +543,60 @@ async def me(
     await _commit(session)
     _no_store(response)
     return _user_response(user)
+
+
+@router.post(
+    "/delete-account",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(require_trusted_origin)],
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "model": ErrorResponse,
+            "description": (
+                "origin_not_allowed — missing or foreign `Origin` header, answered before the "
+                "limiter, the database and the hasher (AC-29) | password_incorrect — the bearer is "
+                "valid but the password is not; 403 and not 401, so the client's interceptor does "
+                "not refresh on it (AC-43). Nothing is deleted."
+            ),
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ErrorResponse,
+            "description": (
+                'invalid_access_token (+ WWW-Authenticate: Bearer error="invalid_token") | '
+                "not_signed_in — the account is already gone (a concurrent deletion won, S-46)."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "validation_error",
+        },
+        **_RATE_LIMITED,
+        **_SERVICE_UNAVAILABLE_LIMITED,
+    },
+)
+async def delete_account(
+    body: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    user_id: RequireUserDep,
+    users: UserRepositoryDep,
+    delete_own_account: DeleteOwnAccountDep,
+    ip_rate_limiter: LoginIpRateLimiterDep,
+    email_rate_limiter: LoginEmailRateLimiterDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> None:
+    """Delete the bearer's account, re-asking its password: 204 + a cleared `tc_refresh` (AC-29).
+
+    **A `POST` under `/api/auth`, not a `DELETE` under `/api/me`** (technical plan §4): it clears
+    `tc_refresh`, whose `Path` is `/api/auth`, so no route elsewhere could; and a body on a `DELETE`
+    is dropped by enough intermediaries to be a bug waiting.
+
+    The order is the contract's (technical plan §3): trusted `Origin` (the decorator's
+    `dependencies=`, first) → bearer → the login limiters, **fail closed**, the per-email key taken
+    from the user row and never from the body → `DeleteOwnAccount` → log from its report → commit →
+    clear the cookie. The account's rows go; the guest workspace in this browser is untouched — it is
+    guest data, purged on its own clock.
+    """
+    raise NotImplementedError

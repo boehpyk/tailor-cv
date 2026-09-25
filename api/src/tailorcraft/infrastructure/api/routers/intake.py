@@ -27,11 +27,13 @@ from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
     BaseCvRepositoryDep,
     ClockDep,
+    CopySavedBaseCvDep,
     GetBaseCvDep,
     GuestSessionRepositoryDep,
     ListBaseCvsDep,
     RateLimiterDep,
     RequireGuestSessionDep,
+    RequireUserDep,
     SessionDep,
     SettingsDep,
     StartGuestSessionDep,
@@ -47,6 +49,7 @@ from tailorcraft.infrastructure.api.routers._upload import (
 from tailorcraft.infrastructure.api.schemas.intake import (
     BaseCvListResponse,
     BaseCvResponse,
+    CopySavedBaseCvRequest,
     ErrorResponse,
 )
 from tailorcraft.infrastructure.rate_limit import client_ip
@@ -224,6 +227,87 @@ async def upload_base_cv(
     await commit_or_503(db)
 
     return wire
+
+
+@router.post(
+    "/copies",
+    response_model=BaseCvResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ErrorResponse,
+            "description": (
+                'invalid_access_token (+ WWW-Authenticate: Bearer error="invalid_token") | '
+                "not_signed_in — the bearer is required; on either, no guest session is minted "
+                "and no cookie is set."
+            ),
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": (
+                "base_cv_not_found — the source is not the bearer's (another user's, a guest's) or "
+                "does not exist; byte-identical either way."
+            ),
+        },
+        status.HTTP_409_CONFLICT: {
+            "model": ErrorResponse,
+            "description": (
+                "base_cv_not_extracted — the source's extraction did not succeed | "
+                "too_many_base_cvs — the guest session is at its cap."
+            ),
+        },
+        status.HTTP_410_GONE: {
+            "model": ErrorResponse,
+            "description": (
+                "saved_base_cv_file_gone — the saved CV's row exists but its file does not; delete "
+                "it and upload it again."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "validation_error — a malformed body; no guest session is minted.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "model": ErrorResponse,
+            "description": (
+                "rate_limited — the upload limiter's `session` and `ip` scopes; carries a "
+                "Retry-After header."
+            ),
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "model": ErrorResponse,
+            "description": "storage_unavailable | service_unavailable",
+        },
+    },
+)
+async def copy_saved_base_cv(
+    body: CopySavedBaseCvRequest,
+    request: Request,
+    response: Response,
+    user_id: RequireUserDep,
+    settings: SettingsDep,
+    clock: ClockDep,
+    sessions: GuestSessionRepositoryDep,
+    start_guest_session: StartGuestSessionDep,
+    rate_limiter: RateLimiterDep,
+    copy_use_case: CopySavedBaseCvDep,
+    cvs: BaseCvRepositoryDep,
+    db: SessionDep,
+) -> BaseCvResponse:
+    """Copy one of the bearer's saved CVs into this browser's workspace as a guest working copy.
+
+    **The transfer route** (ADR-0008 (f), AC-24): the one route that answers to the bearer **and**
+    reaches `tc_guest`. The bearer is a `Depends` — it runs before the body, so a bad one mints
+    nothing (S-25). The guest session is **not**: `resolve_or_start_guest_session` is called in this
+    handler's body, after the source is authorized, never as a sibling dependency — 1.1's T26 lesson,
+    siblings run even when the body fails validation (S-26, S-27). A missing or expired `tc_guest` is
+    forgiven by minting one (1.1's POST rule, S-29).
+
+    201 with the guest `BaseCvResponse`: `status: "extracted"`, `expires_at` the session's. The copy
+    never re-runs the extractor (AC-9) and is deliberately not idempotent — two clicks, two copies
+    (S-36).
+    """
+    raise NotImplementedError
 
 
 @router.get(

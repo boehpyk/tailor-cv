@@ -24,7 +24,10 @@ _SECONDS_PER_HOUR = 3600
 # `email` arrived with slice 2.1's per-account login limiter (AC-27). Its identifier is an HMAC of the
 # normalized address, never the address — `deps.login_email_rate_limit_identifier` says how — so a
 # Redis key is no more an email than an `ip`-scope log line is an IP.
-RateLimitScope = Literal["session", "ip", "email"]
+#
+# `user` arrived with slice 2.2's account upload (technical plan §4): keyed on the `UserId`'s text —
+# an opaque id, never the email — so a user's budget follows the account across devices and sessions.
+RateLimitScope = Literal["session", "ip", "email", "user"]
 
 
 @dataclass(frozen=True, slots=True)

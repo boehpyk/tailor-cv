@@ -47,7 +47,15 @@ from tailorcraft.domain.identity.errors import (
     WeakPassword,
 )
 from tailorcraft.domain.identity.value_objects import WeakPasswordReason
-from tailorcraft.domain.intake.errors import BaseCvNotFound, InvalidFilename, TooManyBaseCvs
+from tailorcraft.domain.intake.errors import (
+    BaseCvNotFound,
+    InvalidFilename,
+    InvalidLabel,
+    SavedBaseCvFileMissing,
+    SavedBaseCvNotCopyable,
+    TooManyBaseCvs,
+    TooManySavedBaseCvs,
+)
 from tailorcraft.domain.posting.errors import (
     EmptyJobPostingText,
     InvalidSourceUrl,
@@ -58,6 +66,7 @@ from tailorcraft.domain.posting.errors import (
     TooManyJobPostings,
 )
 from tailorcraft.domain.posting.value_objects import FetchFailureReason
+from tailorcraft.domain.retention.errors import AccountNotFound
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -106,6 +115,14 @@ nothing about which check caught them; the reason goes to the log line only."""
 
 WWW_AUTHENTICATE_INVALID_TOKEN = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 """RFC 6750 §3's challenge, on every `invalid_access_token` (AC-34)."""
+
+BASE_CV_NOT_EXTRACTED_DETAIL = {
+    "code": "base_cv_not_extracted",
+    "message": "We couldn't read that CV, so there's nothing to tailor. Upload a different file.",
+}
+"""409 for a CV whose text was never extracted: 1.3's `BaseCvNotReadyForTailoring` (G-8), and since
+slice 2.2 `SavedBaseCvNotCopyable` (S-28) — "1.3's code and copy", so one constant, not two strings
+that happen to agree today."""
 
 ORIGIN_NOT_ALLOWED_DETAIL = {
     "code": "origin_not_allowed",
@@ -184,6 +201,27 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
                 "message": "The uploaded file's name is not valid.",
             },
         )
+
+    # -- saved base CVs and account erasure (slice 2.2) -----------------------------------------
+    # The same function once more, for the module docstring's reason. Three things that are
+    # deliberately *not* here:
+    # - `BaseCvNotOwnedByUser` never reaches a route: the use cases raise `BaseCvNotFound` from it
+    #   (AC-8's `__cause__`), so "not yours" and "not there" are one 404, byte-identical (AC-22).
+    #   Reaching the floor with it is a bug, and a 500 is the honest answer.
+    # - `InvalidCredentials` on `POST /api/auth/delete-account` is **403 `password_incorrect`**,
+    #   translated in that handler, not here: login keeps its 401 `invalid_credentials`, and one
+    #   error type must not get two global meanings (technical plan §3 `errors.py`).
+    # - `UserNotFound` is already 2.1's 401 `not_signed_in`, above.
+    if isinstance(
+        exc, TooManySavedBaseCvs | SavedBaseCvNotCopyable | SavedBaseCvFileMissing | InvalidLabel
+    ):
+        return _saved_base_cv_error_to_http(exc)
+
+    if isinstance(exc, AccountNotFound):
+        # S-46: the second of two concurrent account deletions finds no account — the first already
+        # erased it. From the loser's side that is exactly "your account is gone", 2.1's answer to a
+        # valid token whose user row went (I-39), so it is the same 401 and not a 404.
+        return HTTPException(status.HTTP_401_UNAUTHORIZED, detail=NOT_SIGNED_IN_DETAIL)
 
     # -- posting (slice 1.2) -------------------------------------------------------------------
     # A branch in the SAME function rather than a second translation module, for the reason this
@@ -287,16 +325,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         # G-8. 409 rather than 422: the request was well-formed and named a CV the caller really
         # owns — it is the *state* of that CV that conflicts with what was asked for, and the fix is
         # to upload a different file rather than to correct the request.
-        return HTTPException(
-            status.HTTP_409_CONFLICT,
-            detail={
-                "code": "base_cv_not_extracted",
-                "message": (
-                    "We couldn't read that CV, so there's nothing to tailor. Upload a different "
-                    "file."
-                ),
-            },
-        )
+        return HTTPException(status.HTTP_409_CONFLICT, detail=BASE_CV_NOT_EXTRACTED_DETAIL)
 
     if isinstance(exc, TailoringAlreadyRunning):
         # G-9, and the one error in this module whose body carries a THIRD field beyond the
@@ -569,6 +598,55 @@ def _identity_error_to_http(exc: DomainError) -> HTTPException:
             detail={
                 "code": "service_unavailable",
                 "message": "The service is temporarily unavailable. Please try again.",
+            },
+        )
+
+    raise exc
+
+
+def _saved_base_cv_error_to_http(exc: DomainError) -> HTTPException:
+    """Map one slice-2.2 `intake` error to its status and `code` (technical plan §3 `errors.py`,
+    §4). **Every `message` is a fixed sentence and never `str(exc)`**: a label refusal is raised
+    about text the user typed, and the rule is about what a message *could* carry."""
+    if isinstance(exc, TooManySavedBaseCvs):
+        # S-4. Distinct from the guest cap's `too_many_base_cvs`: the fix differs (delete a saved CV
+        # versus wait out the session). The error carries no limit, so this sentence cannot name the
+        # cap; the account-upload handler, which holds `Settings`, answers S-4 with the number.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_saved_base_cvs",
+                "message": "You've reached the limit of saved CVs. Delete one to upload another.",
+            },
+        )
+
+    if isinstance(exc, SavedBaseCvNotCopyable):
+        # S-28. `exc.status` (`uploaded` or `extraction_failed`) is not read: the client's action is
+        # the same for both, and it already knows the status from the list.
+        return HTTPException(status.HTTP_409_CONFLICT, detail=BASE_CV_NOT_EXTRACTED_DETAIL)
+
+    if isinstance(exc, SavedBaseCvFileMissing):
+        # S-32. 410, not 404: the saved CV is right there in the user's list — it is its *file* that
+        # is gone, and the only action that helps is to delete it and upload it again.
+        return HTTPException(
+            status.HTTP_410_GONE,
+            detail={
+                "code": "saved_base_cv_file_gone",
+                "message": (
+                    "The file for this saved CV is missing. Delete it and upload it again."
+                ),
+            },
+        )
+
+    if isinstance(exc, InvalidLabel):
+        # S-15, AC-26. One code for every `BaseCvLabel` refusal; the sentence states the rule.
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_label",
+                "message": (
+                    "A label must be 1 to 80 characters, with no line breaks or control characters."
+                ),
             },
         )
 

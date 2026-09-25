@@ -261,6 +261,12 @@ class Settings(BaseSettings):
     # A cross-aggregate cap enforced in the use case, not on `BaseCv` itself — see technical-plan.md,
     # "Not an invariant of BaseCv, deliberately".
     max_base_cvs_per_session: int = 5
+    # The per-user cap on saved base CVs (slice 2.2, OQ-3), `TooManySavedBaseCvs` at the use case.
+    # A separate setting from the per-session cap because the two promise different things: a
+    # guest's CVs live 24 hours, a user's until they delete them. Bounded both ways: 0 would make
+    # the account upload unusable, and a large value is a storage promise nobody decided to make.
+    # Soft, like the guest cap — two concurrent uploads at cap - 1 both land (S-5).
+    max_saved_base_cvs_per_user: int = Field(default=5, ge=1, le=50)
     # How many reverse-proxy hops in front of this process are ours to trust when reading
     # `X-Forwarded-For` (`infrastructure/rate_limit.py::client_ip`). `1` is nginx. Raising this
     # without actually adding a trusted proxy in front of nginx turns the rate limiter's IP bucket
