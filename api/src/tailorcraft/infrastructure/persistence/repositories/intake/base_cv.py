@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Final, assert_never, cast
 from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import InstrumentedAttribute, defer
+from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.orm.util import identity_key
 
@@ -34,6 +34,7 @@ from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound
+from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId, ExtractedText
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.persistence.database import violated_constraint
@@ -163,27 +164,16 @@ class SqlAlchemyBaseCvRepository:
         )
         return result.scalar_one()
 
-    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
-        """Newest first, like `list_for_session`, and **without `extracted_text`** (AC-52).
+    async def list_for_user(self, uid: UserId) -> Sequence[SavedBaseCvSummary]:
+        """Newest first, like `list_for_session`, as `SavedBaseCvSummary` rows, and **without ever
+        selecting `extracted_text`** (AC-52, technical plan §3 amendment 2026-09-25).
 
-        A saved list is at most `max_saved_base_cvs_per_user` rows, each with up to tens of
-        kilobytes of someone's employment history that the list does not show. Not selecting it is
-        the cheaper query and the smaller blast radius: a result set is one `repr()` away from a log
-        line (1.6's "no `SELECT *`" rule, applied through the ORM).
-
-        `raiseload=True`, not a plain `defer`: under an `AsyncSession` a plain deferred attribute
-        read later is a lazy load, which surfaces as `MissingGreenlet` far from here. With
-        `raiseload` the same read raises at once, naming the attribute — a CV loaded by this method
-        is a list entry, not an aggregate to extract, copy or tailor, and anything that needs the
-        text must `get` it.
+        T13b SKELETON (domain-modeler): the signature only. `api-dev` implements it in T13b GREEN
+        as a Core `SELECT` over named columns with `char_length(extracted_text)` for
+        `character_count` (code points, equal to Python's `len`), `WHERE user_id = :uid ORDER BY
+        uploaded_at DESC`, mapping each row into a `SavedBaseCvSummary`.
         """
-        result = await self._session.execute(
-            select(BaseCv)
-            .options(defer(_BASE_CV_EXTRACTED_TEXT, raiseload=True))
-            .where(_BASE_CV_USER_ID == uid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
-            .order_by(_BASE_CV_UPLOADED_AT.desc())
-        )
-        return result.scalars().all()
+        raise NotImplementedError
 
     async def count_for_user(self, uid: UserId) -> int:
         """`SELECT count(*)` over `ix_intake_base_cv_user_id`, for the same reason

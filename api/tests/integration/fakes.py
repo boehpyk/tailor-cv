@@ -116,6 +116,7 @@ from tailorcraft.domain.identity.value_objects import (
 )
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound, CvExtractionFailed
+from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
 from tailorcraft.domain.posting.errors import JobPostingFetchFailed, JobPostingNotFound
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -176,9 +177,29 @@ class FakeBaseCvRepository:
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return len(await self.list_for_session(sid))
 
-    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
+    async def list_for_user(self, uid: UserId) -> Sequence[SavedBaseCvSummary]:
+        """Mirrors the real adapter's contract (T13b): a `SavedBaseCvSummary` per aggregate, never
+        the aggregate itself, newest first. `character_count` comes from `ExtractedText.
+        character_count` — the same code-point count the real adapter's `char_length` computes in
+        SQL — and is `None` whenever there is no extracted text to count."""
         matches = [cv for cv in self._by_id.values() if cv.owner == UserOwner(uid)]
-        return sorted(matches, key=lambda cv: cv.uploaded_at, reverse=True)
+        newest_first = sorted(matches, key=lambda cv: cv.uploaded_at, reverse=True)
+        return [
+            SavedBaseCvSummary(
+                id=cv.id,
+                label=cv.label,
+                original_filename=cv.original_filename,
+                content_type=cv.content_type,
+                size_bytes=cv.size_bytes,
+                status=cv.status,
+                character_count=(
+                    cv.extracted_text.character_count if cv.extracted_text is not None else None
+                ),
+                failure_reason=cv.failure_reason,
+                uploaded_at=cv.uploaded_at,
+            )
+            for cv in newest_first
+        ]
 
     async def count_for_user(self, uid: UserId) -> int:
         return len(await self.list_for_user(uid))

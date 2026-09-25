@@ -13,15 +13,15 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
-from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.ports import BaseCvRepository
+from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 
 
 class ListSavedBaseCvs:
-    """Every saved `BaseCv` `user_id` owns, newest first, or an empty sequence — never a 404.
+    """A summary of every saved base CV `user_id` owns, newest first, or an empty sequence — never
+    a 404. Summaries, not aggregates: see `SavedBaseCvSummary` for why the list is a read side.
 
     Flow (technical plan §2): ``resolve_existing_user`` (→ `UserNotFound`) → ``list_for_user``.
     """
@@ -30,6 +30,5 @@ class ListSavedBaseCvs:
         self._cvs = cvs
         self._users = users
 
-    async def __call__(self, user_id: UserId) -> Sequence[BaseCv]:
-        user = await resolve_existing_user(self._users, user_id)
-        return await self._cvs.list_for_user(user.id)
+    async def __call__(self, user_id: UserId) -> Sequence[SavedBaseCvSummary]:
+        raise NotImplementedError

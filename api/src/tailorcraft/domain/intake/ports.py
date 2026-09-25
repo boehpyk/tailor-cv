@@ -14,6 +14,7 @@ from typing import Protocol
 from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
+from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
 
 
@@ -53,10 +54,15 @@ class BaseCvRepository(Protocol):
         answer with `COUNT(*)` instead of materializing every row just to measure them."""
         ...
 
-    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
+    async def list_for_user(self, uid: UserId) -> Sequence[SavedBaseCvSummary]:
         """Every saved base CV `uid` owns, **newest first**, for `GET /api/me/base-cvs`. Empty when
         the user has none — an ordinary answer, as for `list_for_session`. Only `UserOwner` rows: a
-        guest-owned CV is never in this list, whoever's browser holds its session."""
+        guest-owned CV is never in this list, whoever's browser holds its session.
+
+        Returns **summaries, not aggregates** (technical plan §3, amendment 2026-09-25): the list
+        shows `character_count` but must never load the text it is counted from (AC-52), so the
+        count is the adapter's to compute without selecting the text. Anything that changes a saved
+        CV loads it with `get`."""
         ...
 
     async def count_for_user(self, uid: UserId) -> int:

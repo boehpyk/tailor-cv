@@ -23,6 +23,7 @@ from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.ports import BaseCvRepository
+from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId
 
 
@@ -64,7 +65,7 @@ class CommittingBaseCvRemoval:
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return await self._inner.count_for_session(sid)
 
-    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
+    async def list_for_user(self, uid: UserId) -> Sequence[SavedBaseCvSummary]:
         return await self._inner.list_for_user(uid)
 
     async def count_for_user(self, uid: UserId) -> int:
