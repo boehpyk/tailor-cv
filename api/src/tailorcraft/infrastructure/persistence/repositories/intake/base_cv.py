@@ -20,7 +20,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound
 from tailorcraft.domain.intake.value_objects import BaseCvId
@@ -95,6 +96,23 @@ class SqlAlchemyBaseCvRepository:
             select(func.count()).select_from(BaseCv).where(_BASE_CV_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
         )
         return result.scalar_one()
+
+    # SKELETON (T7): the four slice-2.2 methods of `BaseCvRepository`. The `user_id`, `label` and
+    # `copied_from_base_cv_id` columns do not exist until T11's migration, so there is nothing to
+    # query yet; these stubs exist only so the structural-conformance assertion below still holds.
+    # T13 implements them (Core `UPDATE`/`DELETE` with the owner in the `WHERE`, expunging first).
+
+    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
+        raise NotImplementedError
+
+    async def count_for_user(self, uid: UserId) -> int:
+        raise NotImplementedError
+
+    async def save_label(self, cv: BaseCv) -> None:
+        raise NotImplementedError
+
+    async def remove(self, cv_id: BaseCvId, owner: UserOwner) -> None:
+        raise NotImplementedError
 
 
 if TYPE_CHECKING:

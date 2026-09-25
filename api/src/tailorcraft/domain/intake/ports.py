@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
 
@@ -50,6 +51,35 @@ class BaseCvRepository(Protocol):
         """How many base CVs `sid` owns, for the `TooManyBaseCvs` check (F-23). A separate method
         from `list_for_session` rather than `len(await list_for_session(sid))` so the SQL adapter can
         answer with `COUNT(*)` instead of materializing every row just to measure them."""
+        ...
+
+    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
+        """Every saved base CV `uid` owns, **newest first**, for `GET /api/me/base-cvs`. Empty when
+        the user has none — an ordinary answer, as for `list_for_session`. Only `UserOwner` rows: a
+        guest-owned CV is never in this list, whoever's browser holds its session."""
+        ...
+
+    async def count_for_user(self, uid: UserId) -> int:
+        """How many saved base CVs `uid` owns, for the `TooManySavedBaseCvs` check (OQ-3). A
+        separate method from `list_for_user` for the same reason `count_for_session` is one."""
+        ...
+
+    async def save_label(self, cv: BaseCv) -> None:
+        """Persist `cv`'s label after `BaseCv.rename` — the label and nothing else, since it is the
+        one field a request may change on a saved CV. Raises `BaseCvNotFound` if the row is gone (a
+        concurrent delete won)."""
+        ...
+
+    async def remove(self, cv_id: BaseCvId, owner: UserOwner) -> None:
+        """Remove one saved base CV's row, **only if `owner` owns it** — the owner is part of what
+        is removed, not a check made beforehand, so a race cannot remove someone else's row.
+
+        Raises `BaseCvNotFound` when nothing was removed (no such row, or not `owner`'s). The
+        parameter is `UserOwner`, not `Owner`, on purpose: a guest-owned CV is removed by the purge's
+        cascade and never by a request (I-10), and the signature makes the other call unwritable.
+        Removes the row only; the file is the caller's to unlink **after** the removal is durable
+        (ADR-0006 §2: the survivor of a crash is an orphan file, never a row pointing at nothing).
+        """
         ...
 
 

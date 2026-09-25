@@ -86,7 +86,7 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
-from tailorcraft.domain.identity.ownership import GuestOwner
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
@@ -160,6 +160,24 @@ class FakeBaseCvRepository:
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return len(await self.list_for_session(sid))
+
+    async def list_for_user(self, uid: UserId) -> Sequence[BaseCv]:
+        matches = [cv for cv in self._by_id.values() if cv.owner == UserOwner(uid)]
+        return sorted(matches, key=lambda cv: cv.uploaded_at, reverse=True)
+
+    async def count_for_user(self, uid: UserId) -> int:
+        return len(await self.list_for_user(uid))
+
+    async def save_label(self, cv: BaseCv) -> None:
+        if cv.id not in self._by_id:
+            raise BaseCvNotFound(str(cv.id))
+        self._by_id[cv.id] = cv
+
+    async def remove(self, cv_id: BaseCvId, owner: UserOwner) -> None:
+        existing = self._by_id.get(cv_id)
+        if existing is None or existing.owner != owner:
+            raise BaseCvNotFound(str(cv_id))
+        del self._by_id[cv_id]
 
     def all(self) -> list[BaseCv]:
         """Test-only inspection, not part of `BaseCvRepository`."""
