@@ -86,7 +86,7 @@ class RequestExport:
     reason is worth restating because it is the whole argument for the shape:
 
         The read use case carries the authorization rule — *what authorizes access is the link*,
-        `run.guest_session_id == the resolved session id` (ADR-0008) — **and** the 404 collapse
+        `run.owner == GuestOwner(the resolved session id)` (ADR-0008) — **and** the 404 collapse
         that makes "not mine" indistinguishable from "does not exist" (X-13, AC-14). A use case
         that never sees a run repository cannot forget either of them.
 

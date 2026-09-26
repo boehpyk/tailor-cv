@@ -1,9 +1,9 @@
 """`SqlAlchemyTailoringRunRepository` — the `TailoringRunRepository` port (ADR-0007).
 
-Filters below query `TailoringRun._id` / `TailoringRun._guest_session_id` / `TailoringRun._status`,
+Filters below query `TailoringRun._id` / `TailoringRun._owner_guest_session_id` / `TailoringRun._status`,
 the **private** attributes the imperative mapping in
 `infrastructure/persistence/mapping/tailoring/tailoring_run.py` targets — never `TailoringRun.id` /
-`TailoringRun.guest_session_id` / `TailoringRun.status`. Those short names are plain read-only
+`TailoringRun.owner` / `TailoringRun.status`. Those short names are plain read-only
 `@property` objects on the domain class, not `InstrumentedAttribute`s:
 `select(TailoringRun).where(TailoringRun.id == x)` would call the property, get back a
 `TailoringRunId`, evaluate a bare Python `==` against `x`, and build `select(...).where(True)` or
@@ -54,8 +54,8 @@ log = structlog.get_logger(__name__)
 _TAILORING_RUN_ID: InstrumentedAttribute[TailoringRunId] = cast(
     "InstrumentedAttribute[TailoringRunId]", TailoringRun._id
 )
-_TAILORING_RUN_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId] = cast(
-    "InstrumentedAttribute[GuestSessionId]", TailoringRun._guest_session_id
+_TAILORING_RUN_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
+    "InstrumentedAttribute[GuestSessionId | None]", TailoringRun._owner_guest_session_id
 )
 _TAILORING_RUN_STATUS: InstrumentedAttribute[TailoringRunStatus] = cast(
     "InstrumentedAttribute[TailoringRunStatus]", TailoringRun._status

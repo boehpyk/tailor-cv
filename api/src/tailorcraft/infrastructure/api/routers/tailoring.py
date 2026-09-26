@@ -171,6 +171,11 @@ def _is_retryable(reason: TailoringFailureReason | None) -> bool:
             | TailoringFailureReason.ABANDONED
         ):
             return True
+        case TailoringFailureReason.BASE_CV_DELETED:
+            # SKELETON (T5b): an explicit arm so `assert_never` still type-checks with the tenth
+            # reason. `False` is the provisional answer — a second run against a deleted CV fails the
+            # same way — and T21's RED decides whether it is right.
+            return False
         case _:
             assert_never(reason)
 

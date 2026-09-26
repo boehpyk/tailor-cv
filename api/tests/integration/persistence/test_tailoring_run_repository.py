@@ -62,6 +62,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -139,7 +140,7 @@ def _queued(
 ) -> TailoringRun:
     return TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=clock.now(),
@@ -233,8 +234,8 @@ async def test_round_trip_of_a_queued_run_preserves_value_object_types_and_nulls
 
     assert isinstance(reloaded.id, TailoringRunId)
     assert reloaded.id == run.id
-    assert isinstance(reloaded.guest_session_id, GuestSessionId)
-    assert reloaded.guest_session_id == owner.id
+    assert isinstance(reloaded.owner, GuestOwner)
+    assert reloaded.owner == GuestOwner(owner.id)
     assert isinstance(reloaded.base_cv_id, BaseCvId)
     assert reloaded.base_cv_id == run.base_cv_id
     assert isinstance(reloaded.job_posting_id, JobPostingId)
@@ -709,7 +710,7 @@ def _running_at(
     """
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=requested_at,
@@ -803,7 +804,7 @@ async def test_list_stale_running_excludes_queued_and_terminal_runs_however_old(
     very_old = clock.now() - timedelta(days=1)
     queued = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner.id,
+        owner=GuestOwner(owner.id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=very_old,

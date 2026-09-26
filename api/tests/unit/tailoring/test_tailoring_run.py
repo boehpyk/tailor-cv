@@ -23,6 +23,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -65,7 +66,7 @@ def _requested(*, at: datetime = _REQUESTED_AT) -> TailoringRun:
     """The only constructor, so every other builder below starts here."""
     return TailoringRun.request(
         id=_RUN_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         base_cv_id=_BASE_CV_ID,
         job_posting_id=_JOB_POSTING_ID,
         requested_at=at,
@@ -128,7 +129,7 @@ def test_request_stores_the_owner_session_and_the_two_input_ids() -> None:
     run = _requested()
 
     assert run.id == _RUN_ID
-    assert run.guest_session_id == _SESSION_ID
+    assert run.owner == GuestOwner(_SESSION_ID)
     assert run.base_cv_id == _BASE_CV_ID
     assert run.job_posting_id == _JOB_POSTING_ID
     assert run.requested_at == _REQUESTED_AT
@@ -363,7 +364,7 @@ def test_mark_succeeded_requires_documents() -> None:
 
 @pytest.mark.parametrize(
     "attribute",
-    ["guest_session_id", "base_cv_id", "job_posting_id", "requested_at"],
+    ["owner", "base_cv_id", "job_posting_id", "requested_at"],
 )
 def test_tailoring_run_references_and_requested_at_are_read_only(attribute: str) -> None:
     run = _requested()
@@ -412,7 +413,7 @@ def test_tailoring_run_cannot_be_constructed_with_the_request_arguments() -> Non
     with pytest.raises(TypeError):
         TailoringRun(  # type: ignore[call-arg]
             id=_RUN_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             base_cv_id=_BASE_CV_ID,
             job_posting_id=_JOB_POSTING_ID,
             requested_at=_REQUESTED_AT,

@@ -305,7 +305,9 @@ mapper_registry.map_imperatively(
     tailoring_run_table,
     properties={
         "_id": tailoring_run_table.c.id,
-        "_guest_session_id": tailoring_run_table.c.guest_session_id,
+        # The guest half of the owner (ADR-0022). `_owner_user_id` is not mapped until T12's
+        # migration adds its column; `TailoringRun` gives it a class-level `None` meanwhile.
+        "_owner_guest_session_id": tailoring_run_table.c.guest_session_id,
         "_base_cv_id": tailoring_run_table.c.base_cv_id,
         "_job_posting_id": tailoring_run_table.c.job_posting_id,
         "_status": tailoring_run_table.c.status,

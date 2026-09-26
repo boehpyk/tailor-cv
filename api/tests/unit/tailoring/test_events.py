@@ -20,6 +20,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -55,7 +56,7 @@ _COMPLETED_AT = _STARTED_AT + timedelta(seconds=20)
 def _requested() -> TailoringRun:
     return TailoringRun.request(
         id=_RUN_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         base_cv_id=_BASE_CV_ID,
         job_posting_id=_JOB_POSTING_ID,
         requested_at=_REQUESTED_AT,
@@ -88,7 +89,7 @@ def test_request_records_exactly_one_tailoring_run_requested() -> None:
     event = events[0]
     assert isinstance(event, TailoringRunRequested)
     assert event.tailoring_run_id == _RUN_ID
-    assert event.guest_session_id == _SESSION_ID
+    assert event.owner == GuestOwner(_SESSION_ID)
     assert event.base_cv_id == _BASE_CV_ID
     assert event.job_posting_id == _JOB_POSTING_ID
     assert event.occurred_at == _REQUESTED_AT
@@ -238,7 +239,7 @@ def test_tailoring_run_requested_field_set_is_exactly_the_agreed_fields() -> Non
 
     assert field_names == {
         "tailoring_run_id",
-        "guest_session_id",
+        "owner",
         "base_cv_id",
         "job_posting_id",
         "occurred_at",

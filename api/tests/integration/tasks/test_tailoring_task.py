@@ -169,7 +169,7 @@ async def _ready_run(
     runs = SqlAlchemyTailoringRunRepository(session)
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=cv.id,
         job_posting_id=posting.id,
         requested_at=clock.now(),

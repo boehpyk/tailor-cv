@@ -3,7 +3,7 @@
 This is the slice's own version of the security test T12 wrote for `intake` and `posting`
 (G-29/AC-14, ADR-0008/ADR-0010): "owning a session id is not authority over an object that
 references it." `GetTailoringRunForSession` checks **the link** —
-`run.guest_session_id == the resolved session id` — on every read, and a caller must not be able to
+`run.owner == GuestOwner(the resolved session id)` — on every read, and a caller must not be able to
 tell "exists but belongs to someone else" from "does not exist at all" from outside the use case,
 because a distinguishable answer would confirm the id exists. This matters more here than for a CV
 or a posting: a run id is the polling handle, so it is the id an attacker is most likely to be
@@ -38,6 +38,7 @@ from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunF
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -62,7 +63,7 @@ async def _add_tailoring_run(
     run_id = runs.next_identity()
     run = TailoringRun.request(
         id=run_id,
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=clock.now(),
@@ -84,7 +85,7 @@ async def test_get_returns_the_run_for_the_session_that_owns_it(clock: FixedCloc
     result = await use_case(run.id, session.id)
 
     assert result.id == run.id
-    assert result.guest_session_id == session.id
+    assert result.owner == GuestOwner(session.id)
 
 
 async def test_get_for_a_run_owned_by_a_different_session_raises_tailoring_run_not_found(

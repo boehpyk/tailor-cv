@@ -54,6 +54,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -125,7 +126,7 @@ def _running_run(
 ) -> TailoringRun:
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=now - timedelta(seconds=requested_at_seconds_ago),

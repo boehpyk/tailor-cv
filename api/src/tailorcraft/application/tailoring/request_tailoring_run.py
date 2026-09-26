@@ -9,6 +9,7 @@ from datetime import datetime
 
 from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -188,7 +189,7 @@ class RequestTailoringRun:
         # same values, but these two are the ones ownership was actually checked on.
         run = TailoringRun.request(
             id=self._runs.next_identity(),
-            guest_session_id=cmd.guest_session_id,
+            owner=GuestOwner(cmd.guest_session_id),
             base_cv_id=cv.id,
             job_posting_id=posting.id,
             requested_at=self._clock.now(),

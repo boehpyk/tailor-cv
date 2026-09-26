@@ -313,7 +313,7 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
     await runs.add(
         TailoringRun.request(
             id=run_id,
-            guest_session_id=owner.id,
+            owner=GuestOwner(owner.id),
             base_cv_id=BaseCvId(value=uuid4()),
             job_posting_id=JobPostingId(value=uuid4()),
             requested_at=clock.now(),

@@ -26,6 +26,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -67,7 +68,7 @@ _EDITED_AT = _COMPLETED_AT + timedelta(seconds=30)
 def _requested(*, at: datetime = _REQUESTED_AT) -> TailoringRun:
     return TailoringRun.request(
         id=_RUN_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         base_cv_id=_BASE_CV_ID,
         job_posting_id=_JOB_POSTING_ID,
         requested_at=at,

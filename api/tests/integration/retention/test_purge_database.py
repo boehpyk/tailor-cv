@@ -287,7 +287,7 @@ class _Rig:
         runs = SqlAlchemyTailoringRunRepository(self.session)
         run = TailoringRun.request(
             id=runs.next_identity(),
-            guest_session_id=owner,
+            owner=GuestOwner(owner),
             base_cv_id=BaseCvId(value=uuid4()),
             job_posting_id=JobPostingId(value=uuid4()),
             requested_at=self.clock.now(),

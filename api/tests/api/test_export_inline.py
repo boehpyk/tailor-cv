@@ -64,6 +64,7 @@ from tailorcraft.domain.export.errors import (
     DocumentRenderTimedOut,
 )
 from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -245,7 +246,7 @@ async def _create_queued_run(
     repo = _repo(session)
     run = TailoringRun.request(
         id=repo.next_identity(),  # type: ignore[attr-defined]
-        guest_session_id=GuestSessionId(guest_session_id),
+        owner=GuestOwner(GuestSessionId(guest_session_id)),
         base_cv_id=BaseCvId(UUID(base_cv_id)),
         job_posting_id=JobPostingId(UUID(job_posting_id)),
         requested_at=_now_whole_second(),

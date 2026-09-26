@@ -42,6 +42,17 @@ class TailoringRunNotOwnedBySession(DomainError):
     """
 
 
+class TailoringRunNotOwnedByUser(DomainError):
+    """A `TailoringRun` exists, but its owner is not the signed-in user asking — a guest-owned run
+    or another user's (slice 2.3).
+
+    The user-path twin of `TailoringRunNotOwnedBySession`, with the same shape: the use case raises
+    `TailoringRunNotFound` **from** this, so the HTTP answer is the same 404 as a nonexistent id,
+    while the use case's tests can still tell "absent" from "not mine" on `__cause__`. 2.2's
+    `BaseCvNotOwnedByUser` is the precedent.
+    """
+
+
 class TooManyTailoringRuns(DomainError):
     """The session already owns the maximum number of tailoring runs (G-10).
 
@@ -427,3 +438,19 @@ class TailoringNotQueued(DomainError):
     `NOT_QUEUED` is a reason with no exception subclass: it is written by our orchestration, not
     raised by a port.
     """
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.3 — the history read model (`domain/tailoring/history.py`).
+# --------------------------------------------------------------------------------------------------
+
+
+class InvalidHistoryPageSize(DomainError):
+    """`HistoryPageSize` was given a value outside 1..50. The boundary answers 422; a page size is
+    a caller's choice, and one that could ask for every row at once is a cost a stranger chooses."""
+
+
+class InvalidHistoryCursor(DomainError):
+    """`HistoryCursor` was given a `requested_at` that is naive or not whole-second. A cursor is an
+    echo of a value the server handed out (ADR-0024, unsigned on purpose), so one that could never
+    have come from a stored `requested_at` is refused rather than silently matching nothing."""

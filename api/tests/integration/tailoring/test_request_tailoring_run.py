@@ -142,7 +142,7 @@ def _job_posting(session_id: GuestSessionId, *, at: object) -> JobPosting:
 def _queued_run(session_id: GuestSessionId, *, at: object) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=at,  # type: ignore[arg-type]
@@ -226,7 +226,7 @@ async def test_happy_path_returns_queued_result_saves_and_publishes_after_the_sa
     assert result.requested_at == clock.now()
 
     stored = await runs.get(result.tailoring_run_id)
-    assert stored.guest_session_id == session.id
+    assert stored.owner == GuestOwner(session.id)
     assert stored.base_cv_id == cv.id
     assert stored.job_posting_id == posting.id
     assert stored.status is TailoringRunStatus.QUEUED
@@ -235,7 +235,7 @@ async def test_happy_path_returns_queued_result_saves_and_publishes_after_the_sa
     event = events.published[0]
     assert isinstance(event, TailoringRunRequested)
     assert event.tailoring_run_id == result.tailoring_run_id
-    assert event.guest_session_id == session.id
+    assert event.owner == GuestOwner(session.id)
     assert event.base_cv_id == cv.id
     assert event.job_posting_id == posting.id
     # positive evidence of publish-after-save ordering, not just an end-state check

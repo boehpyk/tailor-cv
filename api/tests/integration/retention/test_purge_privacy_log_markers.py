@@ -301,7 +301,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     revision_marker = _marker("REVISIONTEXT")
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=requested_at,

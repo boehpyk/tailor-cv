@@ -70,7 +70,7 @@ class ReviseTailoredDocument:
 
     **It takes the read *use case*, `GetTailoringRunForSession`, not the repository — and that is
     the load-bearing choice.** The read use case carries the authorization rule: *what authorizes
-    access is the link*, `run.guest_session_id == the resolved session id`, checked on every read
+    access is the link*, `run.owner == GuestOwner(the resolved session id)`, checked on every read
     (ADR-0008, ADR-0010). It also carries the collapse that goes with it — "not mine" raises
     `TailoringRunNotFound`, the same type as "does not exist", so the API answers 404 and **never
     403** (G-29/AC-14): a run id is the polling handle, so it is the id someone is most likely to be

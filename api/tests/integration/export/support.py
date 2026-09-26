@@ -19,6 +19,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -68,7 +69,7 @@ def succeeded_run(
     """
     run = TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=requested_at,
@@ -91,7 +92,7 @@ def independently_loaded_succeeded_run_pair(
     def _copy() -> TailoringRun:
         run = TailoringRun.request(
             id=run_id,
-            guest_session_id=session_id,
+            owner=GuestOwner(session_id),
             base_cv_id=base_cv_id,
             job_posting_id=job_posting_id,
             requested_at=requested_at,
@@ -112,7 +113,7 @@ def independently_loaded_succeeded_run_pair(
 def queued_run(*, session_id: GuestSessionId) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=CLOCK_NOW - timedelta(minutes=5),

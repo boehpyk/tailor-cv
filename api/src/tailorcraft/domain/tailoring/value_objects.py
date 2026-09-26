@@ -423,6 +423,15 @@ class TailoringFailureReason(StrEnum):
     (`TailoringNotQueued` in `errors.py` is a different animal and is not this exception: it is what
     the queue adapter raises at the broker, before any reason is recorded, and it is a plain
     `DomainError` because nothing was spent.)
+
+    **`BASE_CV_DELETED` is the tenth value (slice 2.3, ADR-0014 amendment (a)), and the third with
+    no raise.** A registered user may delete a saved base CV that a queued run still references; the
+    worker then finds no CV to read. That is not the provider failing and not our plumbing losing the
+    run — it is the user's own decision, recorded as a fact through `mark_failed` from `running` by
+    the orchestration (`ExecuteTailoringRun`), never raised by an adapter, so it gets no
+    `TailoringFailed` subclass for the same reason `NOT_QUEUED` and `ABANDONED` have none. The class
+    summary above still says "nine": it describes the closure 1.3 shipped, and T6's RED amends the
+    closure test and this sentence together.
     """
 
     LLM_UNAVAILABLE = "llm_unavailable"
@@ -434,6 +443,7 @@ class TailoringFailureReason(StrEnum):
     LLM_ERROR = "llm_error"
     NOT_QUEUED = "not_queued"
     ABANDONED = "abandoned"
+    BASE_CV_DELETED = "base_cv_deleted"
 
 
 @dataclass(frozen=True, slots=True)

@@ -698,16 +698,16 @@ class FakeTailoringRunRepository:
         return self._by_id.get(run_id)
 
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[TailoringRun]:
-        runs = [run for run in self._by_id.values() if run.guest_session_id == sid]
+        runs = [run for run in self._by_id.values() if run.owner == GuestOwner(sid)]
         return sorted(runs, key=lambda run: run.requested_at, reverse=True)
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
-        return len([run for run in self._by_id.values() if run.guest_session_id == sid])
+        return len([run for run in self._by_id.values() if run.owner == GuestOwner(sid)])
 
     async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
         active_statuses = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
         for run in self._by_id.values():
-            if run.guest_session_id == sid and run.status in active_statuses:
+            if run.owner == GuestOwner(sid) and run.status in active_statuses:
                 return run
         return None
 

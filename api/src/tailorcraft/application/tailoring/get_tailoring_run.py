@@ -4,8 +4,8 @@ session.
 A use case rather than `runs.get(id)` called straight from a router, **because it carries the
 authorization rule** (ADR-0008, ADR-0010):
 
-    What authorizes access to a tailoring run is **the link** — `run.guest_session_id == the
-    resolved session id` — checked here, on every read. Owning a session id is not authority over an
+    What authorizes access to a tailoring run is **the link** — `run.owner == GuestOwner(the
+    resolved session id)` — checked here, on every read. Owning a session id is not authority over an
     object that references it: a guest session is not a login, and the id itself proves nothing
     about which rows it may see.
 
@@ -22,6 +22,7 @@ changes in one place.
 from __future__ import annotations
 
 from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.clock import Clock
@@ -73,7 +74,9 @@ class GetTailoringRunForSession:
 
         run = await self._runs.get(run_id)
 
-        if run.guest_session_id != session.id:
+        # Authorization is one value equality (ADR-0022): a user-owned id on this guest route is
+        # "not mine" exactly as another session's is.
+        if run.owner != GuestOwner(session.id):
             # "Not mine" must be indistinguishable from "does not exist" at this boundary
             # (G-29/AC-14, ADR-0008): the public exception is `TailoringRunNotFound`, the same type
             # `runs.get` raises for an id that was never issued, because a 403 here would confirm to

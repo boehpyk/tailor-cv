@@ -39,6 +39,7 @@ from tailorcraft.application.tailoring.revise_tailored_document import (
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -111,7 +112,7 @@ def _succeeded_run(*, session_id: GuestSessionId) -> TailoringRun:
     *now* always satisfies TR-4's `at >= completed_at`."""
     run = TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=_CLOCK_NOW - timedelta(minutes=15),
@@ -124,7 +125,7 @@ def _succeeded_run(*, session_id: GuestSessionId) -> TailoringRun:
 def _queued_run(*, session_id: GuestSessionId) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=_CLOCK_NOW - timedelta(minutes=5),

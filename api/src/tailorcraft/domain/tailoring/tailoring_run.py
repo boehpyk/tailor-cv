@@ -24,8 +24,10 @@ to get here.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import assert_never
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.errors import InvariantViolated
@@ -105,7 +107,8 @@ class TailoringRun(RecordsEvents):
 
     Invariants (technical-plan.md):
 
-    - **TR-1** — A run always has exactly one owner session, one base CV id and one job posting id.
+    - **TR-1** — A run always has exactly one owner (`GuestOwner` or `UserOwner`, since slice 2.3 —
+      ADR-0022; `_assign_owner` is the only writer), one base CV id and one job posting id.
       `request` requires all three; there is no other constructor and no setter. The three ids are
       typed rather than bare `UUID`s precisely because this aggregate holds three of them and
       transposing two would produce a run tailoring the wrong person's CV with no error anywhere.
@@ -196,7 +199,26 @@ class TailoringRun(RecordsEvents):
     # revision and version), and `_recorded_events` deliberately not among them (it is an in-memory
     # outbox, not a persisted fact).
     _id: TailoringRunId
-    _guest_session_id: GuestSessionId
+    # Two attributes, one fact: the owner (ADR-0022 and its amendment (a); slice 2.3 technical plan
+    # §1). This contradicts the model on purpose, and the contradiction lives here and nowhere else.
+    # The domain's `Owner` is a sum type — `GuestOwner | UserOwner`, exactly one — but a foreign key
+    # has exactly one target table, so the database stores a *product* of two nullable ids and
+    # restores "exactly one" with a CHECK. These two private fields are that product, mirrored so
+    # the imperative mapping can target them. `_assign_owner` is their only writer (a `match` with
+    # `assert_never`, so exactly one is set by construction) and `owner` their only reader.
+    #
+    # `BaseCv` and `JobPosting` carry the same two fields, writer and reader, and **they are written
+    # out again here on purpose rather than lifted into a shared base or mixin**: aggregates sharing a
+    # shape do not share a rule (CLAUDE.md). What a run's owner decides — the cap (20 per session,
+    # 500 per user), how long the row lives, whether its exports are purged — differs by variant
+    # and by aggregate, and a base class would have to guess which rules it carries.
+    _owner_guest_session_id: GuestSessionId | None
+    # SKELETON (T5b): `_owner_user_id` has no column until T12's migration, so the mapping cannot
+    # load it yet and a run read back from the database would have no such attribute at all. The
+    # class-level `None` is what such a run reads meanwhile — the truth for every row that exists
+    # today. T12 maps it (the mapper then replaces it with an instrumented attribute) and removes
+    # this default. 2.2's T4 made the same deviation on `BaseCv`, and T5a on `JobPosting`.
+    _owner_user_id: UserId | None = None
     _base_cv_id: BaseCvId
     _job_posting_id: JobPostingId
     _status: TailoringRunStatus
@@ -274,7 +296,7 @@ class TailoringRun(RecordsEvents):
         cls,
         *,
         id: TailoringRunId,
-        guest_session_id: GuestSessionId,
+        owner: Owner,
         base_cv_id: BaseCvId,
         job_posting_id: JobPostingId,
         requested_at: datetime,
@@ -303,7 +325,7 @@ class TailoringRun(RecordsEvents):
         """
         run = cls()
         run._id = id
-        run._guest_session_id = guest_session_id
+        run._assign_owner(owner)
         run._base_cv_id = base_cv_id
         run._job_posting_id = job_posting_id
         run._status = TailoringRunStatus.QUEUED
@@ -328,7 +350,7 @@ class TailoringRun(RecordsEvents):
         run.record(
             TailoringRunRequested(
                 tailoring_run_id=id,
-                guest_session_id=guest_session_id,
+                owner=owner,
                 base_cv_id=base_cv_id,
                 job_posting_id=job_posting_id,
                 occurred_at=requested_at,
@@ -650,9 +672,23 @@ class TailoringRun(RecordsEvents):
     def id(self) -> TailoringRunId:
         return self._id
 
+    def _assign_owner(self, owner: Owner) -> None:
+        """The only writer of the two owner attributes (TR-1): exactly one is set, by construction."""
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                self._owner_guest_session_id = guest_session_id
+                self._owner_user_id = None
+            case UserOwner():
+                raise NotImplementedError
+            case _:
+                assert_never(owner)
+
     @property
-    def guest_session_id(self) -> GuestSessionId:
-        return self._guest_session_id
+    def owner(self) -> Owner:
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3)."""
+        if self._owner_guest_session_id is not None:
+            return GuestOwner(self._owner_guest_session_id)
+        raise NotImplementedError
 
     @property
     def base_cv_id(self) -> BaseCvId:
