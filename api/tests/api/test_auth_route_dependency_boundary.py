@@ -21,6 +21,7 @@ from __future__ import annotations
 import ast
 import inspect
 import sys
+import textwrap
 from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
@@ -203,8 +204,15 @@ def _call_name(node: ast.expr) -> str | None:
 
 
 class _FunctionCallCollector(ast.NodeVisitor):
-    """Attributes every call in a module to its **nearest enclosing function**, so a call inside a
-    nested helper is never mistaken for one made directly by a route handler, and vice versa."""
+    """Attributes **every** call in a module to its nearest enclosing function — not only a direct
+    call to one of `_GUEST_TOUCHING_CALL_NAMES` — so a call inside a nested helper is never mistaken
+    for one made directly by a route handler, and vice versa.
+
+    **/verify round 1 MINOR.** Recording every call name (not only the two guest-touching ones) is
+    what makes `_transitive_guest_touchers` below possible: a route handler that reaches
+    `resolve_or_start_guest_session` only through a module-local helper — never in its own body —
+    used to be invisible to this scan entirely, because the old version of this class only ever
+    populated `calls_by_function[name]` when `name` was itself one of the two watched names."""
 
     def __init__(self) -> None:
         self.calls_by_function: dict[str, set[str]] = {}
@@ -225,9 +233,31 @@ class _FunctionCallCollector(ast.NodeVisitor):
 
     def visit_Call(self, node: ast.Call) -> None:
         name = _call_name(node.func)
-        if name in _GUEST_TOUCHING_CALL_NAMES and self._stack:
+        if name is not None and self._stack:
             self.calls_by_function[self._stack[-1]].add(name)
         self.generic_visit(node)
+
+
+def _transitive_guest_touchers(calls_by_function: dict[str, set[str]]) -> frozenset[str]:
+    """Every function name that touches the guest cookie, directly or **transitively through a call
+    to another module-local function that does** — a fixpoint over `calls_by_function`, so a route
+    handler that calls a helper, which calls a helper, which calls
+    `resolve_or_start_guest_session`, is still caught at any depth. A direct-call-only version of
+    this scan is exactly the gap `test_ac24_transfer_route_exception_set_is_exactly_the_copy_route`
+    must not have: today every 2.2 router happens to call the guest-touching function directly from
+    the route handler's own body, so that version would still pass — silently proving nothing about
+    the one shape it cannot see."""
+    touching = {
+        name for name, calls in calls_by_function.items() if calls & _GUEST_TOUCHING_CALL_NAMES
+    }
+    changed = True
+    while changed:
+        changed = False
+        for name, calls in calls_by_function.items():
+            if name not in touching and calls & touching:
+                touching.add(name)
+                changed = True
+    return frozenset(touching)
 
 
 class _NameReferenceCollector(ast.NodeVisitor):
@@ -259,7 +289,7 @@ def _parsed_router_module(module_name: str) -> ast.Module:
 def _guest_touching_functions(module_name: str) -> frozenset[str]:
     collector = _FunctionCallCollector()
     collector.visit(_parsed_router_module(module_name))
-    return frozenset(name for name, calls in collector.calls_by_function.items() if calls)
+    return _transitive_guest_touchers(collector.calls_by_function)
 
 
 def _route_touches_guest_cookie_by_direct_call(route: APIRoute) -> bool:
@@ -296,6 +326,45 @@ def test_ac24_the_ast_scan_actually_finds_the_copy_routes_direct_call() -> None:
         f"resolve_or_start_guest_session/read_guest_token directly, which AC-24's own contract "
         f"requires (§0.3's ordering: the guest session must be resolved from inside the body)."
     )
+
+
+def test_the_transitive_closure_catches_a_helper_indirected_guest_touching_call() -> None:
+    """The walker's own positive control (CLAUDE.md: a skeleton satisfies every absence assertion —
+    pair it with a discriminating positive), for the *fix* rather than for the AST scan itself.
+
+    A route handler that calls a module-local helper, which itself calls
+    `resolve_or_start_guest_session`, must still be flagged — even though the handler's own body
+    never mentions that name. A synthetic module (a plain string, parsed with `ast.parse`) isolates
+    the graph-walking logic from anything in `routers/`, and proves the closure catches this shape at
+    two levels of indirection, stops at an unrelated function, and only reports functions that are
+    genuinely reachable."""
+    source = textwrap.dedent(
+        """
+        def _innermost_helper():
+            resolve_or_start_guest_session()
+
+        def _helper():
+            _innermost_helper()
+
+        def route_handler():
+            _helper()
+
+        def unrelated():
+            pass
+        """
+    )
+    collector = _FunctionCallCollector()
+    collector.visit(ast.parse(source))
+
+    touching = _transitive_guest_touchers(collector.calls_by_function)
+
+    assert "route_handler" in touching, (
+        "a route handler two calls away from resolve_or_start_guest_session must be caught "
+        f"transitively — found: {sorted(touching)}"
+    )
+    assert "_helper" in touching
+    assert "_innermost_helper" in touching
+    assert "unrelated" not in touching
 
 
 def test_ac24_transfer_route_exception_set_is_exactly_the_copy_route(app: FastAPI) -> None:
