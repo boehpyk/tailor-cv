@@ -3810,15 +3810,71 @@ And the design's own thread: **when two things have different lifetimes, don't l
 saved CV and a guest workspace, a login and the tab that holds its token, a row and its file. Each
 got a copy, a broadcast or an order, never a shared reference.
 
+## `/verify`, or: the scaffolding nobody took down
+
+The review found no bug in the code. It found two tests that could pass without testing anything,
+and both got that way for the same honest reason.
+
+Think of a bridge under construction. While the deck is going in, it rests on temporary props, and
+the props are there because the real supports don't exist yet. Nobody calls that a mistake. The
+mistake is a finished bridge that still has its props in, because then a load test can't tell you
+whether the real supports hold. The props carry the weight.
+
+The AC-49 privacy test was built before the routes existed, and red-first says it had to fail on an
+assertion rather than crash. So each step was written as a prop: *run the copy only if the upload
+worked; check the prompt only if the LLM was ever called.* That was right for the RED commit. Then
+GREEN landed and nobody took the props out. Picture a future change that makes the copy answer 409.
+The copy, the tailoring run, both deletions and the one assertion that matters most (*the prompt
+never gains an email or an account id*) would all quietly skip, and the test would stay green on
+exactly the day it was needed. The fix was a one-line habit: **once GREEN lands, tighten every
+soft step into a hard assertion**, and assert how many times the fake was called before reading
+what it received. It was proved the usual way: force the copy to 409, watch the test go red,
+restore the file byte for byte.
+
+The second MAJOR was the older kind, the one 1.6 met four times: rows of the failure contract with
+no test at all. The most important was S-45. When an account is erased and some files refuse to
+unlink, the route still answers 204, and the one thing telling an operator that orphans were left
+behind is a pair of log lines. Nothing checked those lines were written. Now a test injects the
+fault **below** the file store's floor (a real `Path.unlink` failing for one exact path), and
+checks the counts, the per-file line and the translated error type, over HTTP and from the CLI.
+
+One more was smaller but worth remembering. "The row is committed before the file is unlinked" was
+checked by reading the row back through the request's **own** database session. Inside your own
+transaction an uncommitted `DELETE` is already invisible, so the check could never tell "committed"
+from "about to be". It's like asking the person who just shredded a document whether it's gone from
+the archive. They'll say yes whether or not the archive was told. The test now asks a separate
+connection, and it goes red the moment the commit is removed.
+
+Then the manual pass, on the real dev stack with real Gemini. It covered register, two saved CVs,
+a rename to `Backend <b>roles</b>` (shown as literal angle brackets, as it should be), the picker,
+a working copy, tailoring, a PDF export, deleting the saved source (the working copy still
+tailored), signing out in one tab while a second tab dropped its list with **zero** network calls,
+a wrong password (403, no refresh), and finally account deletion. Every row and file the account
+owned was gone. Everything the browser's workspace owned was untouched. A grep over all 344 log
+lines from the walk found no email, CV text, label, filename or password.
+
+The walk produced one scare, and it's a good one to know about. The tailoring page sat on "Waiting
+for a worker…" for a minute after the server had finished. The cause wasn't the worker but the
+browser: the automation window was hidden, and TanStack Query pauses polling in a hidden tab on
+purpose. **When a UI looks stuck, ask the server before you blame the UI**, and ask the UI whether
+it's even looking.
+
+The lesson that transfers: **temporary scaffolding in a test needs a removal date, and the date is
+the commit that makes it unnecessary.** Red-first creates the scaffolding on purpose; nothing in
+the cycle removes it unless someone does.
+
 ## What's next
 
-- **`/verify` (T33)**: reviewer PASS, every AC checked, the suite green twice, and a manual pass on
-  the dev stack, from register through two tabs to account deletion.
-- **The copy's latency**, diagnosed before it's fixed or the budget is amended.
-- **Carried into `/verify`:** S-23's wording (the store refuses a symlink at the key outright, which
-  is stronger than the spec's sentence); S-5 and S-44 without tests; S-12 sharing 2.1's
-  `identity.user_missing` log line; the plan's UUIDv7-age sentence.
+- **The PR and the release.** Every merge to `main` is one, behind the owner's approval.
+- **Carried, each small:**
+  - The saved list waits forever if `/me` fails (react-dev).
+  - The copy route has no per-user rate limit, so only the IP scope bounds its disk writes.
+  - `TEXT_TOO_LONG` is unreadable by the old code during the two-version deploy window.
+  - Three test precisions: the pinning claim in the construction-count test, the AST walk only
+    following helpers within one file, and the privacy test's saved file surviving the sweep by
+    age.
+  - ADR-0011 §4's age-from-the-key sentence.
+  - A register form that a boot-time remount can wipe (2.3's to look at).
 - **Re-armed, with a number:** production's retired-refresh-hash table held **0 rows** on
   2026-09-26. The sweep waits for 100 k rows or 2.3.
 - **Still owed by the owner:** Phase 1's gate (OQ-7).
-- **After merge:** the release. Every merge to `main` is one.

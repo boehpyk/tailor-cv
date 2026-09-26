@@ -21,8 +21,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > **Status: seven slices shipped; slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
-> fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` is implemented (T0–T32) on its
-> branch, not yet verified or merged — `/verify` (T33) is next.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` is verified (two review rounds
+> plus a manual `:8080` pass, 2026-09-26) and awaiting merge.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -100,7 +100,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   logout lands on `/login?next=/account`; a stale in-flight refresh can capture one made after a
 >   quick re-login; AC-25's Redis assertion is unobserved red under the limiter-first mutation.
 >
-> - **2.2 `intake-saved-base-cvs`** (branch, **implemented, not yet verified**) — the first data
+> - **2.2 `intake-saved-base-cvs`** (branch, **verified 2026-09-26, awaiting merge**) — the first data
 >   the product keeps **on purpose**: a registered user saves up to five base CVs
 >   (`MAX_SAVED_BASE_CVS_PER_USER`), labels, reuses and deletes them, and can delete the account.
 >   A row's owner is a **sum type**, `GuestOwner | UserOwner` in `domain/identity/ownership.py`,
@@ -120,7 +120,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   React: `/account` gains the list and account deletion, the workspace a picker above the
 >   dropzone, and sign-out now crosses tabs by `BroadcastChannel`. One expand-only migration
 >   (`1a2676aa3759`) whose **downgrade refuses** while any user-owned row exists.
->   **2085 backend and 749 frontend tests.** Measured (T30): list at the cap p95 **6.8 ms** (budget
+>   **2094 backend and 749 frontend tests** (2085 at implement; nine added at `/verify`). Measured (T30): list at the cap p95 **6.8 ms** (budget
 >   100); delete p95 **9.0 ms** (150); delete-account p95 **66 ms** (400); on the production image, a
 >   purge of 100 sessions beside 500 saved CVs **0.59 s** (10 s), then the sweep reclaiming **0 of
 >   500** saved files. **Copying a 10 MB CV first measured p95 1.57 s against 1.0 s — and the
@@ -137,10 +137,20 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   is not evidence about the disk until the disk is measured alone.** **AC-58 holds**: `git diff main --stat` over `domain/tailoring`,
 >   `application/tailoring` and `infrastructure/llm` is empty. T31: the release script needs no
 >   change; production's `identity_retired_refresh_token` holds **0** rows (OQ-7 re-armed: 100 k or
->   2.3). **Carried to `/verify`:** S-23's wording (the store refuses a symlink at the key outright —
->   stronger than the spec's "unlinks the link"); S-5 and S-44 untested; S-12 logs
->   `identity.user_missing`, not its own line; the plan says the sweep ages files by UUIDv7 — the
->   scanner reads `st_mtime`, and the tests follow the code.
+>   2.3).
+>   **2.2's `/verify` took two rounds, and both MAJORs were tests that could pass without their
+>   claim — no production code changed.** (1) AC-49/50's privacy test was still in its RED-era
+>   "soft" shape: every step ran only `if _ok(previous)` and the prompt assertion sat under
+>   `if fake_llm_request is not None`, so a copy that started answering 409 would have skipped the
+>   whole flow **green**. A test written soft so it can go red before GREEN must be **hardened in
+>   the commit after GREEN** — every step a hard status assertion, the fake's call count asserted
+>   before its arguments. (2) S-4/S-41/S-43/S-45, AC-29's data column and AC-30 had no assertion;
+>   S-45's log lines are the operator's only signal that an erasure left orphans. Also found:
+>   AC-27's "committed before unlink" read the row on the request's **own** session, where an
+>   uncommitted `DELETE` is already invisible — it now reads from `engine.connect()` and goes red
+>   without the commit. Spec rows S-5, S-12 (owner: keep `identity.user_missing`), S-23 and S-44
+>   were amended to what the code does on purpose. The manual pass found nothing; one observation
+>   for 2.3: typing into `/register` while the boot refresh is in flight can be wiped by a remount.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
