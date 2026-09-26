@@ -20,7 +20,15 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
-from tailorcraft.infrastructure.api.routers import auth, export, health, intake, posting, tailoring
+from tailorcraft.infrastructure.api.routers import (
+    auth,
+    export,
+    health,
+    intake,
+    posting,
+    saved_base_cvs,
+    tailoring,
+)
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
@@ -229,6 +237,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # `/api/auth/*` shares no prefix with any other router, so its position is free.
     app.include_router(auth.router)
     app.include_router(intake.router)
+    # `/api/me/base-cvs` (slice 2.2) shares no prefix with any other router, so its position is free.
+    app.include_router(saved_base_cvs.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

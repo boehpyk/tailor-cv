@@ -42,6 +42,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from tailorcraft.cli import main
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
@@ -505,7 +506,7 @@ async def _insert_expired_session_with_base_cv(
         await cvs.add(
             BaseCv.upload(
                 id=cv_id,
-                guest_session_id=session_id,
+                owner=GuestOwner(session_id),
                 original_filename=OriginalFilename("cv.pdf"),
                 content_type=CvContentType.PDF,
                 size_bytes=8,

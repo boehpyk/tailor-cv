@@ -9,7 +9,7 @@ for the status-code mapping).
 
 from __future__ import annotations
 
-from tailorcraft.domain.intake.value_objects import ExtractionFailureReason
+from tailorcraft.domain.intake.value_objects import BaseCvStatus, ExtractionFailureReason
 from tailorcraft.domain.shared.errors import DomainError
 
 
@@ -25,6 +25,17 @@ class BaseCvNotOwnedBySession(DomainError):
     instead of "not found" would leak that the id exists. The distinction stays two error types
     rather than one, though, because the use case's own tests need to tell "absent" from "not mine"
     apart even if the HTTP response cannot.
+    """
+
+
+class BaseCvNotOwnedByUser(DomainError):
+    """A `BaseCv` exists, but its owner is not the signed-in user asking — a guest-owned CV or
+    another user's (slice 2.2, AC-8).
+
+    The user-path twin of `BaseCvNotOwnedBySession`, with the same shape: the use case raises
+    `BaseCvNotFound` **from** this, so the HTTP answer is the same 404 as a nonexistent id and an
+    attacker learns nothing about which ids exist, while the use case's tests can still tell
+    "absent" from "not mine" on `__cause__`.
     """
 
 
@@ -118,6 +129,17 @@ class CvHasTooManyPages(CvExtractionFailed):
         super().__init__(ExtractionFailureReason.TOO_MANY_PAGES)
 
 
+class CvTextTooLong(CvExtractionFailed):
+    """The file parses, but its text runs past the extracted-character cap
+    (`Settings.max_extracted_characters`) — refused part-way through extraction, not after it, so a
+    small archive that inflates to tens of millions of characters is never built into one string
+    (slice 2.2, T30b-C). Carries no count: the reason is the contract, and a number measured from a
+    stranger's document is one more fact about it than the use case needs."""
+
+    def __init__(self) -> None:
+        super().__init__(ExtractionFailureReason.TEXT_TOO_LONG)
+
+
 class CvExtractionTimedOut(CvExtractionFailed):
     """Extraction ran past `extraction_timeout_seconds`. Reported under the general
     `EXTRACTOR_ERROR` reason — there is no separate "timed out" value in `ExtractionFailureReason`
@@ -125,3 +147,45 @@ class CvExtractionTimedOut(CvExtractionFailed):
 
     def __init__(self) -> None:
         super().__init__(ExtractionFailureReason.EXTRACTOR_ERROR)
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.2 — saved base CVs.
+# --------------------------------------------------------------------------------------------------
+
+
+class TooManySavedBaseCvs(DomainError):
+    """The user already keeps `max_saved_base_cvs_per_user` saved base CVs (OQ-3).
+
+    `TooManyBaseCvs`'s sibling for the other owner, and a use-case check for the same reason: the rule
+    spans every `BaseCv` a user owns, which no single `BaseCv` can see. Soft, like 1.1's F-23 cap —
+    a concurrent upload can overshoot it by one, and that is accepted rather than locked.
+    """
+
+
+class SavedBaseCvNotCopyable(DomainError):
+    """A saved base CV cannot be copied into the workspace because its extraction has not succeeded
+    (`uploaded` or `extraction_failed`) — a working copy is only ever `EXTRACTED`, since the copy
+    never re-runs the extractor (AC-9, I-8).
+
+    Carries the source's status: the one fact the caller needs to say *why*, and a closed enum, so
+    there is nowhere in it for text from the document to travel.
+    """
+
+    def __init__(self, status: BaseCvStatus) -> None:
+        super().__init__(status.value)
+        self.status = status
+
+
+class SavedBaseCvFileMissing(DomainError):
+    """The saved base CV's row exists but its stored file does not (S-32).
+
+    Distinct from `BaseCvNotFound` on purpose: after `StoredFileMissing` the use case re-reads the
+    row, and a row that is still there while its bytes are gone is a bug somewhere — worth its own
+    answer ("delete it and upload it again") rather than a 404 that says it never existed.
+    """
+
+
+class InvalidLabel(DomainError):
+    """`BaseCvLabel` was given something that cannot be a display name: empty after `strip()`,
+    longer than 80 code points, or carrying a control character or a NUL (AC-4)."""

@@ -325,3 +325,35 @@ class ScannedFile:
     ref: FileRef | None
     created_at: datetime
     is_partial: bool
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.2 — account erasure (ADR-0006 amendment).
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AccountErasureReport:
+    """What erasing one registered account did (AC-11): counts, and the exception **type names** of
+    the unlinks the store refused.
+
+    The purge's rules, reused rather than re-argued: no defaults, nothing that can carry a key, a
+    path, a filename or a message. `unlink_failures` is returned rather than logged — the use case
+    does not log, and the entry point turns each element into one line (1.6's R-3/R-4 fix). The rows
+    are already gone and committed by the time any unlink is tried, so a failure here is an orphan
+    for the operator's sweep, never a reason to fail the erasure.
+    """
+
+    base_cvs: int
+    files_unlinked: int
+    unlink_failures: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AccountCounts:
+    """What erasing one account *would* delete, for `erase-account --dry-run` (AC-31): the saved
+    base CVs, the stored files they name, and the logins. Counts only."""
+
+    base_cvs: int
+    files: int
+    logins: int

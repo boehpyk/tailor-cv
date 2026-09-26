@@ -40,6 +40,20 @@ class CredentialsRequest(BaseModel):
     password: SecretStr = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
 
 
+class DeleteAccountRequest(BaseModel):
+    """`POST /api/auth/delete-account` — `{"password": str}` (slice 2.2, technical plan §4).
+
+    The password is re-asked even though the bearer is valid: deleting an account is the one action
+    a borrowed, unlocked laptop must not be able to take. A `SecretStr` from the moment it is parsed,
+    for `CredentialsRequest`'s reason, with the same bounds. **No email field**: the account is the
+    bearer's, and the per-email limiter's key comes from the user row, never from the body.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    password: SecretStr = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+
+
 class UserResponse(BaseModel):
     """`{"id", "email", "created_at"}` — `GET /api/auth/me`, and `user` inside every
     `AuthenticatedResponse`. Nothing else about an account crosses the wire: no hash, no login id,

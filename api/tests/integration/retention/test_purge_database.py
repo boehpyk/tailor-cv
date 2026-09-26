@@ -90,6 +90,7 @@ from tailorcraft.application.retention.purge_expired_guest_sessions import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, OriginalFilename
@@ -229,7 +230,7 @@ class _Rig:
         await cvs.add(
             BaseCv.upload(
                 id=cv_id,
-                guest_session_id=owner,
+                owner=GuestOwner(owner),
                 original_filename=OriginalFilename("cv.pdf"),
                 content_type=CvContentType.PDF,
                 size_bytes=8,

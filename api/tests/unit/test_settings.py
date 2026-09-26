@@ -454,3 +454,30 @@ def test_register_rate_limit_per_ip_per_hour_of_one_boots() -> None:
     settings = Settings(app_env="test", register_rate_limit_per_ip_per_hour=1)
 
     assert settings.register_rate_limit_per_ip_per_hour == 1
+
+
+# --- T30b-C — `max_extracted_characters`'s floor (technical-plan.md's 2026-09-26 amendment) --------
+#
+# Both already pass today: `Field(default=250_000, ge=25_000)` was added in the same SKELETON commit
+# that stubbed the extractor's refusal (T30b-C), not deferred to this RED task. Recorded here anyway,
+# for the identical reason the TTL-bound tests above are recorded rather than skipped (I-47): a
+# red-first task that only ever asserts things which already pass would be an easy way to fail to
+# notice this floor quietly disappearing later. The floor's value is `llm_max_cv_characters`'s
+# default (25_000) — a cap below what tailoring itself accepts would refuse a CV the model could use.
+
+
+def test_max_extracted_characters_defaults_to_250_000() -> None:
+    settings = Settings(app_env="test")
+
+    assert settings.max_extracted_characters == 250_000
+
+
+def test_max_extracted_characters_below_the_floor_refuses_to_boot() -> None:
+    with pytest.raises(ValidationError, match="max_extracted_characters"):
+        Settings(app_env="test", max_extracted_characters=24_999)
+
+
+def test_max_extracted_characters_at_the_floor_boots() -> None:
+    settings = Settings(app_env="test", max_extracted_characters=25_000)
+
+    assert settings.max_extracted_characters == 25_000

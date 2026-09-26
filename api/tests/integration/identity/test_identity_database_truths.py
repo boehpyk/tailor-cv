@@ -40,6 +40,7 @@ from sqlalchemy import RowMapping, func, select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.domain.identity.login import Login
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     EmailAddress,
@@ -510,7 +511,7 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_session_and_its_c
         await cvs.add(
             BaseCv.upload(
                 id=cv_id,
-                guest_session_id=guest_session_id,
+                owner=GuestOwner(guest_session_id),
                 original_filename=OriginalFilename("cv.pdf"),
                 content_type=CvContentType.PDF,
                 size_bytes=8,

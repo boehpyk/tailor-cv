@@ -1,6 +1,6 @@
-import { authStore } from '../authStore';
+import { AUTH_CHANNEL_NAME, authStore } from '../authStore';
 
-import type { RefreshResult } from '../authStore';
+import type { AuthChannel, RefreshResult } from '../authStore';
 import type { AuthenticatedResponse } from '../types';
 import type { QueryClient } from '@tanstack/react-query';
 
@@ -58,4 +58,40 @@ export function seedFromRefresh(queryClient: QueryClient, result: RefreshResult)
     case 'superseded':
       return;
   }
+}
+
+/**
+ * Hear other tabs' sign-outs (slice 2.2, AC-42): connect the store to `channel` — by default a new
+ * `BroadcastChannel(AUTH_CHANNEL_NAME)` — so that another tab's logout or account deletion sets this
+ * tab `anonymous` **and** removes every `['auth', …]` query from `queryClient`, with no network
+ * call. The guest workspace's queries stay: that work belongs to this browser, not to the user.
+ *
+ * Called once, at module scope in `main.tsx`, with the app's one `queryClient`. Returns a
+ * disconnect. In a browser without `BroadcastChannel` there is nothing to hear, and this returns a
+ * no-op rather than throwing — a tab that cannot hear other tabs still converges on its next request.
+ *
+ * **Store first, cache second** (`authStore.connectChannel`): by the time the queries are removed
+ * the store is `anonymous`, so every `['auth', …]` query is already disabled and none refetches.
+ */
+export function connectCrossTabSignOut(
+  queryClient: QueryClient,
+  channel?: AuthChannel,
+): () => void {
+  let target = channel;
+  // A channel this function opened is this function's to close; one handed in belongs to the caller.
+  let owned: BroadcastChannel | null = null;
+  if (target === undefined) {
+    if (typeof BroadcastChannel === 'undefined') {
+      return () => undefined;
+    }
+    owned = new BroadcastChannel(AUTH_CHANNEL_NAME);
+    target = owned;
+  }
+  const disconnect = authStore.connectChannel(target, () => {
+    queryClient.removeQueries({ queryKey: authQueryKeyPrefix });
+  });
+  return () => {
+    disconnect();
+    owned?.close();
+  };
 }

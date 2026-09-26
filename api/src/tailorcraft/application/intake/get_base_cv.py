@@ -4,8 +4,8 @@ This is a use case rather than `cvs.get(base_cv_id)` called straight from a rout
 carries the authorization rule**, and that rule must not live in a router (technical-plan.md,
 "Use cases"; API contract "Auth"):
 
-    What authorizes access to a base CV is **the link** — `cv.guest_session_id == the resolved
-    session id` — checked here, on every read. Owning a session id is not authority over an object
+    What authorizes access to a base CV is **the link** — `cv.owner == GuestOwner(the resolved
+    session id)` — checked here, on every read. Owning a session id is not authority over an object
     that references it (ADR-0008): a guest session is not a login, and the id itself proves nothing
     about which rows it may see.
 
@@ -18,6 +18,7 @@ is a check every caller gets for free.
 from __future__ import annotations
 
 from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -63,7 +64,9 @@ class GetBaseCvForSession:
 
         cv = await self._cvs.get(base_cv_id)
 
-        if cv.guest_session_id != session.id:
+        # Authorization is one value equality (ADR-0022): a user-owned id on this guest route is
+        # "not mine" exactly as another session's is (AC-8).
+        if cv.owner != GuestOwner(session.id):
             # "Not mine" must look identical to "does not exist" at this boundary (F-20/AC-8,
             # ADR-0008): the public exception is `BaseCvNotFound`, same as a missing id, and the
             # distinction survives only on `__cause__` for this use case's own tests.

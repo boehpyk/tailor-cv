@@ -20,11 +20,12 @@ from __future__ import annotations
 import dataclasses
 import enum
 from datetime import datetime
-from typing import Any
+from typing import Any, assert_never
 from uuid import UUID
 
 import structlog
 
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.shared.events import DomainEvent
 
 log = structlog.get_logger(__name__)
@@ -51,6 +52,25 @@ def _to_loggable(value: object) -> object:
     return value
 
 
+def _owner_fields(owner: Owner) -> dict[str, str]:
+    """An `Owner` as two flat fields, `owner_kind=guest|user` and `owner_id=<uuid>` (technical plan
+    §1, slice 2.2) — rather than the generic walk's nested `{"guest_session_id": {"value": …}}`.
+
+    The one type this adapter knows by name, and why: the kind **is** the variant's type (ADR-0022:
+    no `kind` field on the domain side), so a generic walk over dataclass fields cannot print it — it
+    would print the field name of whichever variant it met, and a reader would have to know that
+    `guest_session_id` means "guest". The `match` + `assert_never` makes a third variant a `mypy`
+    error here as everywhere else. Ids only: an owner is never more than a UUID.
+    """
+    match owner:
+        case GuestOwner(guest_session_id=session_id):
+            return {"owner_kind": "guest", "owner_id": str(session_id.value)}
+        case UserOwner(user_id=user_id):
+            return {"owner_kind": "user", "owner_id": str(user_id.value)}
+        case _:
+            assert_never(owner)
+
+
 class LoggingEventPublisher:
     """`EventPublisherPort` that logs each event's class name and field set via structlog.
 
@@ -61,9 +81,13 @@ class LoggingEventPublisher:
 
     async def publish(self, *events: DomainEvent) -> None:
         for event in events:
-            fields: dict[str, Any] = {
-                f.name: _to_loggable(getattr(event, f.name)) for f in dataclasses.fields(event)
-            }
+            fields: dict[str, Any] = {}
+            for f in dataclasses.fields(event):
+                value = getattr(event, f.name)
+                if isinstance(value, GuestOwner | UserOwner):
+                    fields.update(_owner_fields(value))
+                else:
+                    fields[f.name] = _to_loggable(value)
             # `event_type`, not `event`: structlog's `BoundLogger.info(event, **kwargs)` already
             # treats its first positional argument as the log line's own `event` field (here,
             # the literal string "domain_event") — passing a *second* `event=` keyword on top of

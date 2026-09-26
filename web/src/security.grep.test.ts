@@ -214,3 +214,44 @@ describe('AC-35: the access token never flows into useState, setQueryData or use
     expect(findAccessTokenLeaks(lines)).toEqual([]);
   });
 });
+
+/**
+ * T29 (`qa`, test-after) — AC-47: `features/savedCvs/` scoped explicitly, the same way AC-35 scopes
+ * `features/auth/` and `api/` above, rather than resting on the fact that the broad, unscoped
+ * checks earlier in this file already sweep all of `web/src` (this directory included, since
+ * `SRC_ROOT` is `web/src` itself). A label or a filename is user-typed text a saved CV's owner
+ * chose; a saved CV's server response is never handed to `dangerouslySetInnerHTML`, and none of a
+ * saved CV's data — nor the access token this section's requests carry (`auth: 'required'`,
+ * `api/savedBaseCvs.ts`) — is ever written to `localStorage`, `sessionStorage` or `indexedDB`.
+ */
+const SAVED_CVS_DIRECTORY_PATTERN = /[\\/]features[\\/]savedCvs[\\/]/;
+
+function collectSavedCvsLines(): SourceLine[] {
+  return collectSourceLines(SRC_ROOT).filter((line) => SAVED_CVS_DIRECTORY_PATTERN.test(line.path));
+}
+
+describe('AC-47: features/savedCvs/ never renders raw HTML or reaches into browser storage', () => {
+  it('dangerouslySetInnerHTML never appears in features/savedCvs/ production code', () => {
+    const lines = collectSavedCvsLines().filter((line) => !isTestFile(line.path));
+
+    expect(findNonCommentOccurrences('dangerouslySetInnerHTML', lines)).toEqual([]);
+  });
+
+  it('localStorage never appears in features/savedCvs/ production code', () => {
+    const lines = collectSavedCvsLines().filter((line) => !isTestFile(line.path));
+
+    expect(findNonCommentOccurrences('localStorage', lines)).toEqual([]);
+  });
+
+  it('sessionStorage never appears in features/savedCvs/ production code', () => {
+    const lines = collectSavedCvsLines().filter((line) => !isTestFile(line.path));
+
+    expect(findNonCommentOccurrences('sessionStorage', lines)).toEqual([]);
+  });
+
+  it('indexedDB never appears in features/savedCvs/ production code', () => {
+    const lines = collectSavedCvsLines().filter((line) => !isTestFile(line.path));
+
+    expect(findNonCommentOccurrences('indexedDB', lines)).toEqual([]);
+  });
+});

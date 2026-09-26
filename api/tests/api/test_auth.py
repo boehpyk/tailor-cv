@@ -43,9 +43,12 @@ directly through its repository.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
@@ -53,6 +56,7 @@ from argon2 import PasswordHasher as Argon2Library
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from pydantic import SecretStr
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
@@ -93,6 +97,7 @@ from tailorcraft.infrastructure.api.refresh_cookie import (
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
+from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import JWT_SIGNING_KEY_MIN_BYTES, Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
@@ -1829,3 +1834,690 @@ async def test_refresh_succeeds_after_the_jwt_signing_key_changes_since_login(
     new_tokens = JwtAccessTokens(new_key, timedelta(minutes=modified.access_token_ttl_minutes))
     verified_user_id = new_tokens.verify(new_access_token, clock.now())
     assert verified_user_id == user.id
+
+
+# ---------------------------------------------------------------------------------------------
+# Slice 2.2 (intake-saved-base-cvs, T19) — AC-29 / AC-30: `POST /api/auth/delete-account`, and the
+# S-rows it can produce (S-39...S-46). `routers/auth.py::delete_account` currently does nothing but
+# `raise NotImplementedError` (T18's SKELETON) — every assertion below is written against
+# `docs/specs/intake-saved-base-cvs/feature-spec.md`, never against that body.
+#
+# Dedicated tests rather than widening the existing `@pytest.mark.parametrize("url", [REGISTER_URL,
+# LOGIN_URL, REFRESH_URL, LOGOUT_URL])` lists above: the task list does not name those parametrize
+# blocks as needing amendment for 2.2 (unlike the walker and the intake key sets, which it names
+# explicitly), and `require_trusted_origin` already covers `delete-account` identically — widening
+# an existing green parametrization is not what red-first asks for here.
+# ---------------------------------------------------------------------------------------------
+
+DELETE_ACCOUNT_URL = "/api/auth/delete-account"
+
+
+async def _register_2_2(
+    client: AsyncClient, settings: Settings, *, email: str | None = None
+) -> tuple[str, str]:
+    email = email or f"t19-delacct-{uuid4().hex}@example.com"
+    response = await client.post(
+        REGISTER_URL,
+        json=_credentials(email, A_STRONG_PASSWORD),
+        headers=_origin_headers(settings),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    return str(body["access_token"]), str(body["user"]["id"])
+
+
+def _delete_account_headers(settings: Settings, token: str) -> dict[str, str]:
+    return {**_origin_headers(settings), "Authorization": f"Bearer {token}"}
+
+
+def _assert_test_database(settings: Settings) -> None:
+    """CLAUDE.md's 1.4 guard, reproduced locally exactly as every other deleting test file in this
+    suite does (`test_identity_database_truths.py`'s own copy, T31): `get_settings()` under
+    `APP_ENV=test` still returns the **dev** `database_url` — only the `settings` fixture swaps in
+    `test_database_url`. Asserted before the first statement of any test below that writes for real."""
+    assert "_test" in settings.database_url, (
+        "refusing to run a deleting test against a URL that is not the test database: "
+        f"{settings.database_url!r}"
+    )
+
+
+@pytest.fixture
+def concurrent_app(
+    settings: Settings, engine: AsyncEngine, password_hasher: Argon2PasswordHasher
+) -> FastAPI:
+    """A second application wired for genuine per-request sessions — `test_identity_database_truths.py`'s
+    `concurrent_app` fixture (T31), reproduced here for the identical reason. `tests/conftest.py`'s
+    shared `app` fixture binds every request in a test to the **same** already-open `AsyncSession`
+    (`_committing_session_override`) — exactly right for isolation, and exactly wrong for two
+    coroutines racing a real DELETE against one row: they would corrupt that one session object
+    (`IllegalStateChangeError` -> an honest-looking 503 that actually proves nothing about S-46),
+    never reproduce two independent HTTP clients contending for one database row. This app instead
+    opens and commits its own session per request (`app.state.session_factory =
+    create_session_factory(engine)`), exactly as `main.py`'s lifespan wires production. Every write a
+    test drives through it is a real, committed row against `tailorcraft_test` — cleaned up by hand."""
+    app = create_app(settings)
+    app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
+    app.state.celery = celery_app
+    app.state.password_hasher = password_hasher
+    return app
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-29 — the happy path
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_the_correct_password_is_204_and_clears_the_refresh_cookie(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 204, response.text
+    cleared = _refresh_cookie_attrs(response)
+    assert cleared["max-age"] == "0"
+
+
+async def test_delete_account_removes_the_user_so_a_second_register_of_the_same_email_succeeds(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """The strongest proof the row is really gone: registration enumerates (2.1's ADR-0008
+    amendment (b)), so a *second* register of the same address answering 201 rather than 409
+    `email_already_registered` means the first account no longer exists."""
+    email = f"t19-delacct-reuse-{uuid4().hex}@example.com"
+    token, _ = await _register_2_2(client, settings, email=email)
+
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    second_register = await client.post(
+        REGISTER_URL, json=_credentials(email, A_STRONG_PASSWORD), headers=_origin_headers(settings)
+    )
+    assert second_register.status_code == 201, second_register.text
+
+
+async def test_delete_account_takes_every_row_and_file_it_owns_and_nothing_a_guest_owns(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """AC-29's `Data` column in full: the user, every login, every retired hash, every saved CV row
+    **and file** gone; the guest workspace (`tc_guest`, its session row, its rows, the working copy's
+    file) untouched — it is guest data, purged on its own clock, never by account deletion.
+
+    Two saved CVs (real files) plus one refresh rotation (so a retired hash genuinely exists to
+    prove the cascade reaches it, not only the login row itself) plus one working copy made through
+    the real copy route (so the guest side of the proof is the product's own transfer route, not a
+    row inserted by hand)."""
+    _assert_test_database(settings)
+    token, user_id = await _register_2_2(client, settings)
+
+    # A retired hash: one refresh rotation before the account is erased.
+    refreshed = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+    assert refreshed.status_code == 200, refreshed.text
+    token = refreshed.json()["access_token"]
+
+    first_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
+    second_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
+
+    copied = await client.post(
+        "/api/base-cvs/copies",
+        json={"saved_base_cv_id": first_cv_id},
+        headers=_bearer_delacct(token),
+    )
+    assert copied.status_code == 201, copied.text
+    working_copy_id = copied.json()["id"]
+
+    row = (
+        await session.execute(
+            text("SELECT guest_session_id, file_key FROM intake_base_cv WHERE id = :id"),
+            {"id": UUID(working_copy_id)},
+        )
+    ).one()
+    guest_session_id, working_copy_key = row.guest_session_id, row.file_key
+    working_copy_path = settings.upload_dir / working_copy_key
+    assert working_copy_path.exists(), "setup sanity: the working copy's file must exist"
+    working_copy_bytes = working_copy_path.read_bytes()
+
+    async def _login_count() -> int:
+        result = await session.execute(
+            text("SELECT count(*) FROM identity_login WHERE user_id = :id"), {"id": UUID(user_id)}
+        )
+        return int(result.scalar_one())
+
+    async def _retired_hash_count() -> int:
+        result = await session.execute(
+            text(
+                "SELECT count(*) FROM identity_retired_refresh_token rt "
+                "JOIN identity_login l ON l.id = rt.login_id WHERE l.user_id = :id"
+            ),
+            {"id": UUID(user_id)},
+        )
+        return int(result.scalar_one())
+
+    assert await _login_count() == 1, "setup sanity: the register+refresh must leave one login"
+    assert await _retired_hash_count() == 1, "setup sanity: the rotation must retire one hash"
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 204, response.text
+    assert _refresh_cookie_attrs(response)["max-age"] == "0"
+
+    # The user, every login, every retired hash: gone.
+    user_row = await session.execute(
+        text("SELECT count(*) FROM identity_user WHERE id = :id"), {"id": UUID(user_id)}
+    )
+    assert user_row.scalar_one() == 0
+    assert await _login_count() == 0
+    assert await _retired_hash_count() == 0
+
+    # Every saved CV row and file: gone.
+    saved_rows = await session.execute(
+        text("SELECT count(*) FROM intake_base_cv WHERE user_id = :id"), {"id": UUID(user_id)}
+    )
+    assert saved_rows.scalar_one() == 0
+    assert not (settings.upload_dir / _saved_cv_key_2_2(first_cv_id)).exists()
+    assert not (settings.upload_dir / _saved_cv_key_2_2(second_cv_id)).exists()
+
+    # The guest workspace: session row, working-copy row, and working-copy file, all untouched.
+    guest_row = await session.execute(
+        text("SELECT count(*) FROM identity_guest_session WHERE id = :id"),
+        {"id": guest_session_id},
+    )
+    assert guest_row.scalar_one() == 1, (
+        "the guest session must survive an unrelated account erasure"
+    )
+    copy_row = await session.execute(
+        text("SELECT count(*) FROM intake_base_cv WHERE id = :id"), {"id": UUID(working_copy_id)}
+    )
+    assert copy_row.scalar_one() == 1, "the working copy's row must survive"
+    assert working_copy_path.exists(), "the working copy's file must survive"
+    assert working_copy_path.read_bytes() == working_copy_bytes
+
+
+# ---------------------------------------------------------------------------------------------
+# S-39 — missing / foreign Origin: 403, before anything
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_no_origin_is_403_and_nothing_is_touched(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL, json={"password": A_STRONG_PASSWORD}, headers=_bearer_delacct(token)
+    )
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "origin_not_allowed"
+
+    still_signed_in = await client.get(ME_URL, headers=_bearer_delacct(token))
+    assert still_signed_in.status_code == 200, still_signed_in.text
+
+
+async def test_delete_account_with_a_foreign_origin_is_403(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers={**_bearer_delacct(token), "Origin": "https://evil.example"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "origin_not_allowed"
+
+
+def _bearer_delacct(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+# ---------------------------------------------------------------------------------------------
+# S-40 — the login limiters, fail closed
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_rate_limited_by_ip_is_429(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    _override_settings(app, settings, login_rate_limit_per_ip_per_hour=1)
+    token, _ = await _register_2_2(client, settings)
+
+    first = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": "definitely-the-wrong-password"},
+        headers=_delete_account_headers(settings, token),
+    )
+    second = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": "definitely-the-wrong-password"},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert first.status_code == 403, first.text  # the wrong password, not yet limited
+    assert second.status_code == 429, second.text
+    assert _error_code(second) == "rate_limited"
+
+
+async def test_delete_account_with_redis_unreachable_is_503_rate_limit_unavailable(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+    _override_settings(app, settings, redis_url="redis://127.0.0.1:1/0")
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 503, response.text
+    assert _error_code(response) == "rate_limit_unavailable"
+
+
+# ---------------------------------------------------------------------------------------------
+# S-41 — wrong password: 403 password_incorrect, nothing deleted
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_the_wrong_password_is_403_password_incorrect(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": "definitely-the-wrong-password"},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 403, response.text
+    assert _error_code(response) == "password_incorrect"
+
+    still_signed_in = await client.get(ME_URL, headers=_bearer_delacct(token))
+    assert still_signed_in.status_code == 200, still_signed_in.text
+
+
+async def test_delete_account_with_the_wrong_password_logs_the_refusal_with_reason_password(
+    client: AsyncClient, settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """S-41's `Logged` cell: `identity.account_deletion_refused`, `user_id`, `reason=password` —
+    never the password or its length.
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Replaced
+    `routers/auth.py::delete_account`'s `log.info(EVENT_ACCOUNT_DELETION_REFUSED, ...)` call (the
+    `except InvalidCredentials:` branch) with `pass`. Re-run:
+    ```
+    >       assert refusal_lines, f"expected an 'identity.account_deletion_refused' line, captured:
+    \\n{caplog.text}"
+    E       AssertionError: expected an 'identity.account_deletion_refused' line, captured:
+    E
+    E       assert []
+    FAILED tests/api/test_auth.py::test_delete_account_with_the_wrong_password_logs_the_refusal_with_reason_password
+    1 failed in 0.5s
+    ```
+    Source restored byte-exact (`git diff --stat api/src` empty); re-run green alone and the full
+    module green twice in a row afterward.
+    """
+    token, user_id = await _register_2_2(client, settings)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            DELETE_ACCOUNT_URL,
+            json={"password": "definitely-the-wrong-password"},
+            headers=_delete_account_headers(settings, token),
+        )
+    assert response.status_code == 403, response.text
+
+    refusal_lines = [
+        r for r in caplog.records if "identity.account_deletion_refused" in r.getMessage()
+    ]
+    assert refusal_lines, (
+        f"expected an 'identity.account_deletion_refused' line, captured:\n{caplog.text}"
+    )
+    message = refusal_lines[0].getMessage()
+    assert user_id in message
+    assert "password" in message
+    assert "definitely-the-wrong-password" not in caplog.text
+
+
+# ---------------------------------------------------------------------------------------------
+# S-42 — argon2 fails: 503 service_unavailable, nothing deleted
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_argon2_failure_is_503(
+    client: AsyncClient, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Injected below the adapter's own floor, exactly `test_argon2_hasher_failure_on_login_is_503`
+    above: the underlying `argon2.PasswordHasher.verify` explodes, not the adapter's own method."""
+    token, _ = await _register_2_2(client, settings)
+
+    def boom(self: Argon2Library, stored: str, secret: bytes) -> None:
+        raise RuntimeError("argon2-cffi exploded (S-42)")
+
+    monkeypatch.setattr(Argon2Library, "verify", boom)
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 503, response.text
+    assert _error_code(response) == "service_unavailable"
+
+
+# ---------------------------------------------------------------------------------------------
+# S-43 — the commit fails: 503, cookie not cleared, nothing deleted
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_commit_failure_is_503_and_does_not_clear_the_cookie(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """S-43. Two saved CVs seeded first, so "nothing deleted" is a claim about real rows and real
+    files, not merely about the user row `CommittingAccountData.delete_account`'s failing commit
+    touches directly: the erasure is one transaction (`CommittingAccountData`'s own `session.commit()`
+    is the commit this test's monkeypatch intercepts — it fires **before** `EraseAccount` unlinks a
+    single file), so a failure there must leave the account, its saved CVs and their files exactly as
+    they were."""
+    token, _ = await _register_2_2(client, settings)
+    first_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
+    second_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
+    first_path = settings.upload_dir / _saved_cv_key_2_2(first_cv_id)
+    second_path = settings.upload_dir / _saved_cv_key_2_2(second_cv_id)
+    assert first_path.exists(), "setup sanity: both files must exist"
+    assert second_path.exists(), "setup sanity: both files must exist"
+
+    async def _raise_sqlalchemy_error() -> None:
+        raise SQLAlchemyError("simulated commit failure (S-43)")
+
+    # Scoped to only the one request: `session` is the fixture's own connection, shared by every
+    # later call this test makes too, and `main.py`'s error handler leaves it able to serve more
+    # requests — but only once this failing `commit` is no longer patched onto it.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(session, "commit", _raise_sqlalchemy_error)
+        response = await client.post(
+            DELETE_ACCOUNT_URL,
+            json={"password": A_STRONG_PASSWORD},
+            headers=_delete_account_headers(settings, token),
+        )
+
+    assert response.status_code == 503, response.text
+    assert _cookie_header_named(response, REFRESH_COOKIE_NAME) is None, (
+        "a failed commit must never clear tc_refresh — the server still honours it (I-31's rule)"
+    )
+
+    # Nothing was deleted: the user row, both saved CV rows and both files all survive.
+    still_signed_in = await client.get(ME_URL, headers=_bearer_delacct(token))
+    assert still_signed_in.status_code == 200, still_signed_in.text
+    listing = await client.get("/api/me/base-cvs", headers=_bearer_delacct(token))
+    assert {item["id"] for item in listing.json()["items"]} == {first_cv_id, second_cv_id}
+    assert first_path.exists(), "the commit failure must never have reached a file unlink"
+    assert second_path.exists(), "the commit failure must never have reached a file unlink"
+
+
+async def _upload_saved_cv_2_2(client: AsyncClient, token: str, *, filename: str = "a.txt") -> str:
+    """A minimal saved CV, uploaded through the real route — `test_saved_base_cvs.py`'s own
+    `_upload_extracted_saved_cv`, reproduced locally rather than imported across test modules."""
+    text = ("word " * 200).encode()
+    response = await client.post(
+        "/api/me/base-cvs",
+        files={"file": (filename, text, "text/plain")},
+        headers=_bearer_delacct(token),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "extracted", body
+    return str(body["id"])
+
+
+def _saved_cv_key_2_2(cv_id: str) -> str:
+    """The storage key `FileRef.for_base_cv` derives from an id — via the real function, so this
+    cannot drift from ADR-0011's own sharding rule."""
+    from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType
+    from tailorcraft.domain.shared.files import FileRef
+
+    return FileRef.for_base_cv(BaseCvId(UUID(cv_id)), CvContentType.TXT).key
+
+
+# ---------------------------------------------------------------------------------------------
+# S-45 — some unlinks fail: 204, one retention.account_erased line, one
+# retention.account_file_unlink_failed line per failure
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_a_failing_unlink_is_still_204_and_logs_both_lines(
+    client: AsyncClient,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S-45. Two saved CVs; one file's unlink fails — injected **below** `LocalFileStore.delete`'s
+    own floor (`Path.unlink`, the library call it wraps, matched by the exact path so no unrelated
+    `Path.unlink` call anywhere else in the request can be caught by accident), never the adapter's
+    own public method (CLAUDE.md's I-45 correction: patching `LocalFileStore.delete` itself would
+    bypass its own `except OSError` floor, which is the very thing this row exists to prove still
+    stands). The account is still erased (204 — nothing left to retry against): one
+    `retention.account_erased` line with the right counts, and one
+    `retention.account_file_unlink_failed` line naming the failure's exception type — both from
+    `routers/auth.py::_log_erasure`.
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Replaced `_log_erasure`'s body
+    with `pass; return` before its two `log.info`/`log.warning` calls. Re-run:
+    ```
+    erased_lines = [r for r in caplog.records if "retention.account_erased" in r.getMessage()]
+    >       assert erased_lines, f"expected a 'retention.account_erased' line, captured:\\n{caplog.text}"
+    E       AssertionError: expected a 'retention.account_erased' line, captured:
+    E         ERROR    tailorcraft.infrastructure.files.local_file_store:local_file_store.py:121
+    {"errno": 5, ..., "event": "file_store.delete_failed", "level": "error", ...}
+    E
+    E       assert []
+    FAILED tests/api/test_auth.py::test_delete_account_with_a_failing_unlink_is_still_204_and_logs_both_lines
+    1 failed in 0.6s
+    ```
+    (The adapter's own `file_store.delete_failed` line still fires — it lives inside
+    `LocalFileStore`, not `_log_erasure` — which is exactly why this test needs the *positive*
+    assertions on `retention.account_erased`/`retention.account_file_unlink_failed` rather than a
+    bare "something was logged".) Source restored byte-exact (`git diff --stat api/src` empty);
+    re-run green alone and the full module green twice in a row afterward.
+    """
+    token, user_id = await _register_2_2(client, settings)
+    ok_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
+    failing_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
+
+    failing_path = settings.upload_dir / _saved_cv_key_2_2(failing_cv_id)
+    ok_path = settings.upload_dir / _saved_cv_key_2_2(ok_cv_id)
+    original_unlink = Path.unlink
+
+    def _selective_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == failing_path:
+            raise OSError(5, "Input/output error")
+        return original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _selective_unlink)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            DELETE_ACCOUNT_URL,
+            json={"password": A_STRONG_PASSWORD},
+            headers=_delete_account_headers(settings, token),
+        )
+
+    assert response.status_code == 204, response.text
+    assert not ok_path.exists(), "the successfully-unlinked file must be gone"
+    assert failing_path.exists(), "the failing unlink must have left its bytes behind"
+
+    erased_lines = [r for r in caplog.records if "retention.account_erased" in r.getMessage()]
+    assert erased_lines, f"expected a 'retention.account_erased' line, captured:\n{caplog.text}"
+    erased_message = erased_lines[0].getMessage()
+    assert user_id in erased_message
+    assert '"base_cvs": 2' in erased_message, erased_message
+    assert '"files_unlinked": 1' in erased_message, erased_message
+    assert '"files_failed": 1' in erased_message, erased_message
+
+    failure_lines = [
+        r for r in caplog.records if "retention.account_file_unlink_failed" in r.getMessage()
+    ]
+    assert len(failure_lines) == 1, f"expected exactly one failure line, captured:\n{caplog.text}"
+    failure_message = failure_lines[0].getMessage()
+    assert user_id in failure_message
+    assert "FileStoreUnavailable" in failure_message, (
+        "the OSError must have been translated by LocalFileStore's own floor before EraseAccount "
+        f"ever sees it — got: {failure_message}"
+    )
+
+
+# ---------------------------------------------------------------------------------------------
+# S-46 — two concurrent deletions of one account: one 204, one 401 not_signed_in
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_two_concurrent_correct_deletions_exactly_one_204_one_401(
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
+) -> None:
+    """S-46, on `concurrent_app` (see its docstring above) rather than the shared `app`/`client`
+    fixtures: the shared fixture binds both in-flight requests to one `AsyncSession`, which is not
+    safe for concurrent use and answers `IllegalStateChangeError` -> 503 for a reason that has
+    nothing to do with S-46's race. Real, committed rows; cleaned up by hand — a `finally` that
+    tolerates the row already being gone (whichever request won the race deleted it for real)."""
+    _assert_test_database(settings)
+    async with _new_client(concurrent_app) as setup_client:
+        token, user_id = await _register_2_2(setup_client, settings)
+
+    try:
+        async with (
+            _new_client(concurrent_app) as client_a,
+            _new_client(concurrent_app) as client_b,
+        ):
+            results = await asyncio.gather(
+                client_a.post(
+                    DELETE_ACCOUNT_URL,
+                    json={"password": A_STRONG_PASSWORD},
+                    headers=_delete_account_headers(settings, token),
+                ),
+                client_b.post(
+                    DELETE_ACCOUNT_URL,
+                    json={"password": A_STRONG_PASSWORD},
+                    headers=_delete_account_headers(settings, token),
+                ),
+            )
+
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [204, 401], [r.text for r in results]
+        the_401 = next(r for r in results if r.status_code == 401)
+        assert _error_code(the_401) == "not_signed_in"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM identity_user WHERE id = :id"), {"id": UUID(user_id)}
+            )
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-30 — after the 204, the still-unexpired access token is dead everywhere
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_after_deletion_the_still_valid_access_token_is_401_not_signed_in_on_me(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    response = await client.get(ME_URL, headers=_bearer_delacct(token))
+
+    assert response.status_code == 401, response.text
+    assert _error_code(response) == "not_signed_in"
+
+
+async def test_after_deletion_every_me_base_cvs_route_is_401_not_signed_in(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """AC-30's own wording: "every `/api/me/base-cvs*` route", not only `GET`. `UploadBaseCv`/
+    `ListSavedBaseCvs`/`RenameSavedBaseCv`/`DeleteSavedBaseCv` all resolve the user first (AC-8), so
+    a fresh, never-issued CV id is enough for `PATCH`/`DELETE` — the 401 fires before either route
+    would even look for a row."""
+    token, _ = await _register_2_2(client, settings)
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    some_cv_id = str(uuid4())
+    checks: list[tuple[str, Response]] = [
+        (
+            "GET /api/me/base-cvs",
+            await client.get("/api/me/base-cvs", headers=_bearer_delacct(token)),
+        ),
+        (
+            "POST /api/me/base-cvs",
+            await client.post(
+                "/api/me/base-cvs",
+                files={"file": ("a.txt", ("word " * 200).encode(), "text/plain")},
+                headers=_bearer_delacct(token),
+            ),
+        ),
+        (
+            "PATCH /api/me/base-cvs/{id}",
+            await client.patch(
+                f"/api/me/base-cvs/{some_cv_id}",
+                json={"label": "x"},
+                headers=_bearer_delacct(token),
+            ),
+        ),
+        (
+            "DELETE /api/me/base-cvs/{id}",
+            await client.delete(f"/api/me/base-cvs/{some_cv_id}", headers=_bearer_delacct(token)),
+        ),
+    ]
+
+    for name, response in checks:
+        assert response.status_code == 401, f"{name}: {response.text}"
+        assert _error_code(response) == "not_signed_in", f"{name}: {response.text}"
+
+
+async def test_after_deletion_a_copy_with_the_old_token_is_401_and_mints_no_guest_session(
+    client: AsyncClient, settings: Settings
+) -> None:
+    token, _ = await _register_2_2(client, settings)
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    response = await client.post(
+        "/api/base-cvs/copies",
+        json={"saved_base_cv_id": str(uuid4())},
+        headers=_bearer_delacct(token),
+    )
+
+    assert response.status_code == 401, response.text
+    assert _error_code(response) == "not_signed_in"
+    assert _cookie_header_named(response, GUEST_COOKIE_NAME) is None

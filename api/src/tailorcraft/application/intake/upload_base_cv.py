@@ -8,12 +8,18 @@ a frozen input dataclass as the contract, every dependency arriving through the 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.errors import GuestSessionExpired
-from tailorcraft.domain.identity.ports import GuestSessionRepository
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
 from tailorcraft.domain.intake.base_cv import BaseCv
-from tailorcraft.domain.intake.errors import CvExtractionFailed, TooManyBaseCvs
+from tailorcraft.domain.intake.errors import (
+    CvExtractionFailed,
+    TooManyBaseCvs,
+    TooManySavedBaseCvs,
+)
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
@@ -31,9 +37,13 @@ from tailorcraft.domain.shared.files import FileRef, FileStorePort
 class UploadBaseCvCommand:
     """What the caller supplies. `content_type` has already been sniffed at the boundary
     (`sniff_cv_content_type`) — this use case never inspects `content` to decide its type, and
-    never trusts a client-supplied `Content-Type` header or filename extension."""
+    never trusts a client-supplied `Content-Type` header or filename extension.
 
-    guest_session_id: GuestSessionId
+    `owner` replaced 1.1's `guest_session_id` in slice 2.2 (AC-7): the same use case stores a guest's
+    workspace CV and a user's saved CV, and the only difference between the two is who owns the row
+    and which cap applies — a decision the `match` in `__call__` makes once."""
+
+    owner: Owner
     original_filename: OriginalFilename
     content_type: CvContentType
     content: bytes
@@ -52,13 +62,18 @@ class UploadBaseCvResult:
 
 
 class UploadBaseCv:
-    """Accept an uploaded base CV for a guest session: store the bytes, create the aggregate, and
-    attempt extraction — recording success or failure as a state rather than letting either escape
-    as an exception (ADR-0004).
+    """Accept an uploaded base CV for its owner — a guest session or, since slice 2.2, a user:
+    store the bytes, create the aggregate, and attempt extraction — recording success or failure as
+    a state rather than letting either escape as an exception (ADR-0004).
 
-    Flow (technical-plan.md "Application layer"):
+    The `GuestOwner` arm is 1.1's body, unchanged. The `UserOwner` arm (slice 2.2, technical plan
+    §2, AC-7): ``resolve_existing_user`` (→ `UserNotFound`), then ``count_for_user >= max_per_user``
+    → `TooManySavedBaseCvs`, then steps 4 to 10 below exactly as for a guest — file first, in both
+    arms.
 
-    1. ``session = await sessions.get(cmd.guest_session_id)`` — raises `GuestSessionNotFound` if the
+    Guest-arm flow (technical-plan.md "Application layer"):
+
+    1. ``session = await sessions.get(owner.guest_session_id)`` — raises `GuestSessionNotFound` if the
        session row is gone.
     2. ``if session.is_expired(clock.now()): raise GuestSessionExpired``.
     3. ``if await cvs.count_for_session(session.id) >= max_per_session: raise TooManyBaseCvs`` —
@@ -89,7 +104,9 @@ class UploadBaseCv:
         extractor: CvTextExtractorPort,
         events: EventPublisherPort,
         clock: Clock,
+        users: UserRepository,
         max_per_session: int = 5,
+        max_per_user: int = 5,
     ) -> None:
         self._cvs = cvs
         self._sessions = sessions
@@ -98,16 +115,33 @@ class UploadBaseCv:
         self._events = events
         self._clock = clock
         self._max_per_session = max_per_session
+        self._users = users
+        self._max_per_user = max_per_user
 
     async def __call__(self, cmd: UploadBaseCvCommand) -> UploadBaseCvResult:
-        session = await self._sessions.get(cmd.guest_session_id)
-        if session.is_expired(self._clock.now()):
-            raise GuestSessionExpired(str(session.id))
+        owner: Owner
+        match cmd.owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                session = await self._sessions.get(guest_session_id)
+                if session.is_expired(self._clock.now()):
+                    raise GuestSessionExpired(str(session.id))
 
-        # Cross-aggregate policy, deliberately not an invariant of `BaseCv`: the rule spans every
-        # `BaseCv` a session owns, a fact no single `BaseCv` instance has access to (F-23, OQ-10).
-        if await self._cvs.count_for_session(session.id) >= self._max_per_session:
-            raise TooManyBaseCvs(str(session.id))
+                # Cross-aggregate policy, deliberately not an invariant of `BaseCv`: the rule spans
+                # every `BaseCv` a session owns, a fact no single `BaseCv` instance has access to
+                # (F-23, OQ-10).
+                if await self._cvs.count_for_session(session.id) >= self._max_per_session:
+                    raise TooManyBaseCvs(str(session.id))
+                owner = GuestOwner(session.id)
+            case UserOwner(user_id=user_id):
+                user = await resolve_existing_user(self._users, user_id)
+
+                # The same cross-aggregate policy on the other owner, with its own cap and its own
+                # error: a saved CV outlives the 24 hours, so the two caps are separate settings.
+                if await self._cvs.count_for_user(user.id) >= self._max_per_user:
+                    raise TooManySavedBaseCvs(str(user.id))
+                owner = UserOwner(user.id)
+            case _:
+                assert_never(cmd.owner)
 
         cv_id = self._cvs.next_identity()
         ref = FileRef.for_base_cv(cv_id, cmd.content_type)
@@ -122,7 +156,7 @@ class UploadBaseCv:
 
         cv = BaseCv.upload(
             id=cv_id,
-            guest_session_id=session.id,
+            owner=owner,
             original_filename=cmd.original_filename,
             content_type=cmd.content_type,
             size_bytes=len(cmd.content),

@@ -59,6 +59,19 @@ Used by:
   publish-after-save snapshot. `CountingClock` wraps a `FixedClock` and counts `.now()` calls, which
   `FixedClock` itself does not track — what T13's "one `clock.now()` per use-case call" assertion
   needs.
+- `tests/integration/intake/{test_upload_base_cv,test_list_saved_base_cvs,test_rename_saved_base_cv,
+  test_delete_saved_base_cv,test_copy_saved_base_cv}.py`, `tests/integration/retention/
+  test_erase_account.py`, `tests/integration/identity/{test_resolve_existing_user,
+  test_delete_own_account}.py` (T9, slice 2.2 — AC-7…AC-12). `FakeBaseCvRepository.list_for_user`/
+  `count_for_user`/`save_label`/`remove` and `FakeUserRepository` already existed (T7/T13); this
+  commit's additions are `InMemoryFileStore.get` raising `StoredFileMissing` instead of a bare
+  `KeyError` on a missing key, `delete_calls`/`repo_size_at_delete`/`fail_delete`/`fail_delete_keys`
+  on the same class (AC-10's order and failure assertions, and `EraseAccount`'s per-key unlink
+  failures), `RecordingPasswordHasher.verify_raises` (`DeleteOwnAccount`'s AC-12 "a
+  `PasswordHashingFailed` propagates exactly" test) and `FakeAccountDataPort` (`EraseAccount`'s
+  `AccountDataPort`, `domain/retention/ports.py`'s three methods reproduced rather than stubbed —
+  see its own docstring for `race_delete_account_result`, the one behaviour `files_by_user` alone
+  cannot model).
 """
 
 from __future__ import annotations
@@ -86,6 +99,7 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
@@ -102,6 +116,7 @@ from tailorcraft.domain.identity.value_objects import (
 )
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import BaseCvNotFound, CvExtractionFailed
+from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
 from tailorcraft.domain.posting.errors import JobPostingFetchFailed, JobPostingNotFound
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -111,6 +126,8 @@ from tailorcraft.domain.posting.value_objects import (
     JobPostingText,
     SourceUrl,
 )
+from tailorcraft.domain.retention.errors import AccountNotFound
+from tailorcraft.domain.retention.value_objects import AccountCounts
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -155,10 +172,48 @@ class FakeBaseCvRepository:
             raise BaseCvNotFound(str(cv_id)) from None
 
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[BaseCv]:
-        return [cv for cv in self._by_id.values() if cv.guest_session_id == sid]
+        return [cv for cv in self._by_id.values() if cv.owner == GuestOwner(sid)]
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return len(await self.list_for_session(sid))
+
+    async def list_for_user(self, uid: UserId) -> Sequence[SavedBaseCvSummary]:
+        """Mirrors the real adapter's contract (T13b): a `SavedBaseCvSummary` per aggregate, never
+        the aggregate itself, newest first. `character_count` comes from `ExtractedText.
+        character_count` — the same code-point count the real adapter's `char_length` computes in
+        SQL — and is `None` whenever there is no extracted text to count."""
+        matches = [cv for cv in self._by_id.values() if cv.owner == UserOwner(uid)]
+        newest_first = sorted(matches, key=lambda cv: cv.uploaded_at, reverse=True)
+        return [
+            SavedBaseCvSummary(
+                id=cv.id,
+                label=cv.label,
+                original_filename=cv.original_filename,
+                content_type=cv.content_type,
+                size_bytes=cv.size_bytes,
+                status=cv.status,
+                character_count=(
+                    cv.extracted_text.character_count if cv.extracted_text is not None else None
+                ),
+                failure_reason=cv.failure_reason,
+                uploaded_at=cv.uploaded_at,
+            )
+            for cv in newest_first
+        ]
+
+    async def count_for_user(self, uid: UserId) -> int:
+        return len(await self.list_for_user(uid))
+
+    async def save_label(self, cv: BaseCv) -> None:
+        if cv.id not in self._by_id:
+            raise BaseCvNotFound(str(cv.id))
+        self._by_id[cv.id] = cv
+
+    async def remove(self, cv_id: BaseCvId, owner: UserOwner) -> None:
+        existing = self._by_id.get(cv_id)
+        if existing is None or existing.owner != owner:
+            raise BaseCvNotFound(str(cv_id))
+        del self._by_id[cv_id]
 
     def all(self) -> list[BaseCv]:
         """Test-only inspection, not part of `BaseCvRepository`."""
@@ -310,6 +365,11 @@ class RecordingPasswordHasher:
     shape, one instance and one configured outcome. `hash_calls` and `verify_calls` are full argument
     logs, not counts: AC-9 needs to assert `against is None` on the unknown-email path and that the
     wrong-password path was verified against the real stored hash, which a count cannot distinguish.
+
+    `verify_raises` (T9, slice 2.2): when set, `verify` raises it instead of returning
+    `verify_result` — `PasswordHasherPort`'s own floor (`PasswordHashingFailed`), for
+    `DeleteOwnAccount`'s AC-12 "propagates exactly, nothing deleted" test. The call is still
+    recorded first, so a test can tell "the hasher was asked and then failed" from "never asked".
     """
 
     def __init__(
@@ -317,11 +377,13 @@ class RecordingPasswordHasher:
         *,
         verify_result: PasswordVerdict = PasswordVerdict.MATCH,
         hash_result: PasswordHash | None = None,
+        verify_raises: Exception | None = None,
     ) -> None:
         self._verify_result = verify_result
         self._hash_result = hash_result or PasswordHash(
             value="$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$ZmFrZWhhc2g"
         )
+        self._verify_raises = verify_raises
         self.hash_calls: list[Password] = []
         self.verify_calls: list[tuple[Password, PasswordHash | None]] = []
 
@@ -331,6 +393,8 @@ class RecordingPasswordHasher:
 
     async def verify(self, password: Password, against: PasswordHash | None) -> PasswordVerdict:
         self.verify_calls.append((password, against))
+        if self._verify_raises is not None:
+            raise self._verify_raises
         return self._verify_result
 
 
@@ -438,12 +502,40 @@ class InMemoryFileStore:
     file is written while the repository is still empty. `repo_size_at_put` snapshots
     `len(repo.all())` at the moment `put` runs, so the assertion is positive ("the repo held zero
     rows when the file landed") rather than only checking the end state.
+
+    **T9 additions (slice 2.2), backward-compatible with every existing caller:**
+
+    - `get` on a missing key now raises `StoredFileMissing` rather than a bare `KeyError` —
+      `CopySavedBaseCvToWorkspace`'s S-32/S-33 re-read branch (AC-9) needs the real port's documented
+      exception, and no existing test relies on the old `KeyError` (every prior caller always `put`s
+      before it `get`s the same key).
+    - `delete_calls` records every `FileRef` handed to `delete`, in order — `DeleteSavedBaseCv`'s
+      AC-10 needs to prove `delete` is the *last* thing that happens, never `delete_partial`.
+    - `repo_size_at_delete` mirrors `repo_size_at_put`, aimed at `delete` instead of `put`: with
+      `repo=cvs`, it snapshots `len(repo.all())` at the moment `delete` is first called, so a test can
+      assert the row was already gone from the repository (the count dropped) before the file was
+      touched — the same technique, aimed at the other end of AC-10's order.
+    - `fail_delete`, optionally scoped to `fail_delete_keys`: `delete` raises this exception instead
+      of removing the key, for AC-10's "a failing unlink returns the type name" and AC-11's "some
+      unlinks fail" (`EraseAccount`, S-45) — `fail_delete_keys=None` fails every `delete` call;
+      naming a subset fails only those keys, leaving the rest to succeed.
     """
 
-    def __init__(self, repo: FakeBaseCvRepository | None = None) -> None:
+    def __init__(
+        self,
+        repo: FakeBaseCvRepository | None = None,
+        *,
+        fail_delete: Exception | None = None,
+        fail_delete_keys: set[str] | None = None,
+    ) -> None:
         self._repo = repo
         self.data: dict[str, bytes] = {}
         self.repo_size_at_put: int | None = None
+        self.repo_size_at_delete: int | None = None
+        self.delete_calls: list[FileRef] = []
+        self.delete_partial_calls: list[FileRef] = []
+        self._fail_delete = fail_delete
+        self._fail_delete_keys = fail_delete_keys
 
     async def put(self, ref: FileRef, data: bytes) -> None:
         if self._repo is not None:
@@ -451,17 +543,29 @@ class InMemoryFileStore:
         self.data[ref.key] = data
 
     async def get(self, ref: FileRef) -> bytes:
-        return self.data[ref.key]
+        try:
+            return self.data[ref.key]
+        except KeyError:
+            raise StoredFileMissing(ref.key) from None
 
     async def delete(self, ref: FileRef) -> None:
+        self.delete_calls.append(ref)
+        if self._repo is not None and self.repo_size_at_delete is None:
+            self.repo_size_at_delete = len(self._repo.all())
+        if self._fail_delete is not None and (
+            self._fail_delete_keys is None or ref.key in self._fail_delete_keys
+        ):
+            raise self._fail_delete
         self.data.pop(ref.key, None)
 
     async def delete_partial(self, ref: FileRef) -> None:
         """No test using this fake exercises the orphan sweep's partial branch (that is
         `_RecordingFileStorePort`'s job, below) — this fake has no `.part` concept at all, so the
         method is a no-op rather than a guard-rail `AssertionError`: nothing here claims to cover a
-        reached-but-unexpected call, only "this fake cannot express a `.part` file"."""
-        return None
+        reached-but-unexpected call, only "this fake cannot express a `.part` file". Recorded in
+        `delete_partial_calls` regardless, so `DeleteSavedBaseCv`'s AC-10 ("never `delete_partial` —
+        a row's key is always a final key") has something positive to assert `== []` against."""
+        self.delete_partial_calls.append(ref)
 
 
 class AlwaysFailingFileStore:
@@ -884,6 +988,74 @@ class MissingFileStore:
 
     async def delete_partial(self, ref: FileRef) -> None:
         raise AssertionError("delete_partial() should not be reached in this scenario")
+
+
+class FakeAccountDataPort:
+    """In-memory `AccountDataPort` (slice 2.2, T9) — `EraseAccount`'s two reads and one write,
+    `domain/retention/ports.py`'s shape reproduced honestly rather than reduced to a stub.
+
+    Seeded with `files_by_user`: every account this fake knows about, and the `FileRef`s
+    `files_of_account` returns for it. An id **not** in that mapping, or one already erased, raises
+    `AccountNotFound` from `files_of_account` — the ordinary "unknown or already-gone account" case,
+    and what makes **a second `EraseAccount(user_id)` call for the same user** raise `AccountNotFound`
+    (AC-11): the first call's `delete_account` marks the id erased, and the second call's
+    `files_of_account` sees that and refuses before anything else runs.
+
+    `files_of_account_calls` / `delete_account_calls` are ordered call logs (not just counts) — what
+    AC-11's "`files_of_account` before `delete_account`, and every unlink after `delete_account`
+    returns" ordering assertion needs.
+
+    `race_delete_account_result`, set once, makes the **next** `delete_account` call return that
+    value regardless of the mapping — the narrower race `EraseAccount`'s own docstring names
+    separately from "called twice": `files_of_account` already succeeded (a stale-but-true read) and
+    then a concurrent erasure's `delete_account` wins first, so this account's own `delete_account`
+    must return `False` without this fake's ordinary "already erased" bookkeeping ever having reason
+    to fire. Consumed on use, so it affects exactly one call.
+    """
+
+    def __init__(
+        self,
+        files_by_user: dict[UserId, Sequence[FileRef]] | None = None,
+        *,
+        logins_by_user: dict[UserId, int] | None = None,
+    ) -> None:
+        self._files_by_user = dict(files_by_user or {})
+        self._logins_by_user = dict(logins_by_user or {})
+        self._erased: set[UserId] = set()
+        self._race_delete_account_result: bool | None = None
+        self.files_of_account_calls: list[UserId] = []
+        self.delete_account_calls: list[UserId] = []
+
+    def force_next_delete_account_result(self, result: bool) -> None:
+        """Arms the one-shot race override `delete_account` consumes on its next call."""
+        self._race_delete_account_result = result
+
+    async def files_of_account(self, user_id: UserId) -> Sequence[FileRef]:
+        self.files_of_account_calls.append(user_id)
+        if user_id not in self._files_by_user or user_id in self._erased:
+            raise AccountNotFound(str(user_id))
+        return self._files_by_user[user_id]
+
+    async def delete_account(self, user_id: UserId) -> bool:
+        self.delete_account_calls.append(user_id)
+        if self._race_delete_account_result is not None:
+            result = self._race_delete_account_result
+            self._race_delete_account_result = None
+            return result
+        if user_id not in self._files_by_user or user_id in self._erased:
+            return False
+        self._erased.add(user_id)
+        return True
+
+    async def count_account(self, user_id: UserId) -> AccountCounts | None:
+        if user_id not in self._files_by_user or user_id in self._erased:
+            return None
+        files = self._files_by_user[user_id]
+        return AccountCounts(
+            base_cvs=len(files),
+            files=len(files),
+            logins=self._logins_by_user.get(user_id, 0),
+        )
 
 
 class _HasAll(Protocol):

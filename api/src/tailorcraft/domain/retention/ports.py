@@ -25,8 +25,12 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
-from tailorcraft.domain.retention.value_objects import ExpiringGuestSession, ScannedFile
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.retention.value_objects import (
+    AccountCounts,
+    ExpiringGuestSession,
+    ScannedFile,
+)
 from tailorcraft.domain.shared.files import FileRef
 
 
@@ -127,4 +131,47 @@ class OrphanFileScannerPort(Protocol):
         this adapter's, is what keeps the window-plus-grace floor a single decision in the use case
         rather than a constant hidden in a directory walk.
         """
+        ...
+
+
+class AccountDataPort(Protocol):
+    """Everything retention needs to erase one registered account: the purge's sibling, on request
+    rather than on a timer (technical-plan §0.5, ADR-0006 amendment).
+
+    **Not methods on `UserRepository`**, for the reason `ExpiredGuestDataPort` is not on
+    `GuestSessionRepository`: identity's port speaks the language of authentication, one user at a
+    time, and "which files does everything this account owns name?" is retention's question.
+
+    The order is the purge's and it is the caller's to keep: `files_of_account` **before**
+    `delete_account` (once the rows are gone the keys cannot be recovered), and every unlink **after**
+    `delete_account` has returned (the survivor of a crash is an orphan file for the sweep, never a
+    row pointing at nothing — ADR-0006 §2). No aggregate appears in any signature: the account's rows
+    go by the database cascade and come back here only as `FileRef` keys and counts.
+    """
+
+    async def files_of_account(self, user_id: UserId) -> Sequence[FileRef]:
+        """The storage keys of every file the account's rows name, for the unlinks that follow.
+
+        Raises `AccountNotFound` if there is no such user. The answer must be **complete for a
+        `delete_account` of the same user in the same unit of work**: a row inserted between this
+        read and that delete would be cascaded away with its file never collected. How the adapter
+        keeps that promise (it locks the user row) is adapter business, not this port's — a
+        transaction is not a word in retention's language.
+        """
+        ...
+
+    async def delete_account(self, user_id: UserId) -> bool:
+        """Delete the user and everything the cascade takes with it (logins, retired refresh
+        tokens, saved base CVs). Rows only — never a file.
+
+        Returns `False` if nothing was deleted (a concurrent erasure won), `True` otherwise. The
+        deletion is durable when this returns: the caller unlinks files next, and "rows first" is a
+        statement about durability that only a committed delete makes true.
+        """
+        ...
+
+    async def count_account(self, user_id: UserId) -> AccountCounts | None:
+        """What `delete_account` *would* take, for `erase-account --dry-run` (AC-31). Deletes
+        nothing. `None` if there is no such user — the dry run's answer to "not found" is not an
+        exception, because reporting on an absent account is an ordinary outcome of looking."""
         ...

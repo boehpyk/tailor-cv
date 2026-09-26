@@ -25,7 +25,7 @@ import asyncio
 import time
 import zipfile
 from io import BytesIO
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, NoReturn
 
 import structlog
 from docx import Document
@@ -39,6 +39,7 @@ from tailorcraft.domain.intake.errors import (
     CvExtractionTimedOut,
     CvHasNoTextLayer,
     CvHasTooManyPages,
+    CvTextTooLong,
     CvTextTooShort,
     EncryptedCvFile,
 )
@@ -53,18 +54,49 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+# The constructor's fallback for `max_characters`, equal to `Settings.max_extracted_characters`'
+# default. The composition root (`api/deps.py`) always passes the setting; this exists so a caller
+# that predates the cap (1.1's adapter tests) still builds the adapter it meant to.
+DEFAULT_MAX_EXTRACTED_CHARACTERS: Final = 250_000
+
 
 class PypdfDocxTextExtractor:
     """Pulls text out of a PDF, DOCX or TXT file's bytes, entirely off the event loop.
 
-    `max_pages` and `timeout_seconds` come from `Settings.max_cv_pages` /
-    `Settings.extraction_timeout_seconds` — this adapter never reads the environment itself
-    (Constitution §8: `os.environ` is read in exactly one place).
+    `max_pages`, `timeout_seconds` and `max_characters` come from `Settings.max_cv_pages` /
+    `Settings.extraction_timeout_seconds` / `Settings.max_extracted_characters` — this adapter never
+    reads the environment itself (Constitution §8: `os.environ` is read in exactly one place).
+
+    **The character cap is checked while extracting, not after** (slice 2.2, T30b-C) — the page cap's
+    idea one step later, and guarded egress's "enforce the byte cap while streaming" applied to text:
+    a running count over the pieces already extracted, refused the moment it passes the cap, so an
+    archive that inflates 171 KB into 39.5 M characters never becomes one string, one normalizing
+    pass, one database value and one loop-side `ExtractedText` per load.
+
+    What the count MEANS: **raw extracted characters** — exactly `len()` of the string this adapter
+    would have handed to `ExtractedText`, separators included, before whitespace is collapsed. Not
+    `ExtractedText.character_count` (normalized), on purpose: normalization only shrinks a string, so
+    raw ≤ cap guarantees stored ≤ cap, and a running count needs no normalizing pass of its own.
+    The price is that a file padded with whitespace can be refused at a normalized length under the
+    cap; at 10 times what tailoring accepts, that file is not a CV we could have used.
+
+    Granularity, stated rather than implied: one PDF page's text and one DOCX paragraph's text are
+    each built whole before they are counted — the library hands them back as strings — so the
+    bound is "the cap plus one piece", not the cap exactly. `python-docx` has also already parsed the
+    whole `document.xml` into a tree by then; the cap bounds the text built from it and every copy
+    downstream, not the parse. The 10 s timeout remains the backstop for that.
     """
 
-    def __init__(self, timeout_seconds: int, max_pages: int) -> None:
+    def __init__(
+        self,
+        timeout_seconds: int,
+        max_pages: int,
+        *,
+        max_characters: int = DEFAULT_MAX_EXTRACTED_CHARACTERS,
+    ) -> None:
         self._timeout_seconds = timeout_seconds
         self._max_pages = max_pages
+        self._max_characters = max_characters
 
     async def extract(self, content_type: CvContentType, data: bytes) -> ExtractedText:
         started_at = time.monotonic()
@@ -219,7 +251,17 @@ class PypdfDocxTextExtractor:
             # file this branch is about to reject.
             if len(reader.pages) > self._max_pages:
                 raise CvHasTooManyPages()
-            return "\n".join(page.extract_text() for page in reader.pages)
+            pages: list[str] = []
+            # Running `len("\n".join(pages))`, kept without joining: each page's length plus one
+            # for the separator before every page but the first.
+            character_count = 0
+            for page in reader.pages:
+                page_text = page.extract_text()
+                character_count += len(page_text) + (1 if pages else 0)
+                if character_count > self._max_characters:
+                    self._refuse_text_too_long()
+                pages.append(page_text)
+            return "\n".join(pages)
         except (FileNotDecryptedError, DependencyError) as exc:
             # `DependencyError` belongs on this line, not in the catch-all, and the reason is not
             # obvious from its name: `PdfReader.__init__` auto-attempts an empty-password decrypt
@@ -246,11 +288,28 @@ class PypdfDocxTextExtractor:
     def _extract_docx(self, data: bytes) -> str:
         try:
             document = Document(BytesIO(data))
-            return "\n".join(paragraph.text for paragraph in document.paragraphs)
+            paragraphs: list[str] = []
+            # Same running count as `_extract_pdf`'s, per paragraph.
+            character_count = 0
+            for paragraph in document.paragraphs:
+                paragraph_text = paragraph.text
+                character_count += len(paragraph_text) + (1 if paragraphs else 0)
+                if character_count > self._max_characters:
+                    self._refuse_text_too_long()
+                paragraphs.append(paragraph_text)
+            return "\n".join(paragraphs)
         except (zipfile.BadZipFile, PackageNotFoundError) as exc:
             raise CorruptCvFile() from exc
 
     def _decode_txt(self, data: bytes) -> str:
+        text = self._decode_txt_bytes(data)
+        # On the decoded text, in one piece: a TXT file has no pages or paragraphs to stop between,
+        # and the decode is already bounded by the 10 MB upload cap (≤ 10 M characters either way).
+        if len(text) > self._max_characters:
+            self._refuse_text_too_long()
+        return text
+
+    def _decode_txt_bytes(self, data: bytes) -> str:
         try:
             return data.decode("utf-8")
         except UnicodeDecodeError:
@@ -262,6 +321,17 @@ class PypdfDocxTextExtractor:
             # sniffing.py); a failure here means bytes further into the file do not decode, which
             # is exactly the "not actually what it claims to be" situation `CorruptCvFile` names.
             raise CorruptCvFile() from exc
+
+    def _refuse_text_too_long(self) -> NoReturn:
+        """Refuse extracted text that has passed `max_characters` — called only once a running
+        count is already over the cap, never on the ordinary path.
+
+        One method rather than three inline `raise`s so the three formats cannot drift apart on what
+        an over-cap file becomes. `CvTextTooLong` is a `CvExtractionFailed`, so it passes through
+        `extract`'s specific clause (logged as `text_too_long`) and never reaches the floor. It
+        carries no count: the reason is the contract.
+        """
+        raise CvTextTooLong()
 
 
 if TYPE_CHECKING:

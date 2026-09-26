@@ -63,6 +63,7 @@ from sqlalchemy.ext.asyncio import (
 
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRunOutcome
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import CvContentType, ExtractedText, OriginalFilename
@@ -146,7 +147,7 @@ async def _ready_run(
     cv_id = cvs.next_identity()
     cv = BaseCv.upload(
         id=cv_id,
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         original_filename=OriginalFilename("cv.txt"),
         content_type=CvContentType.TXT,
         size_bytes=1234,

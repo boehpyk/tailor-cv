@@ -63,7 +63,8 @@ Amendment below: `SameSite=Strict`, `Path=/api/auth`, host-only.)*
   *(Corrected in the Amendment below: it does not, and the break-glass is `revoke-logins --all`.)*
 - Phase 2.4's guest→registered claim flow crosses this boundary: a request that arrives with **both**
   a guest cookie and an access token is the moment work is re-keyed to the user. Exactly one endpoint
-  may do that, and it must be idempotent.
+  may do that, and it must be idempotent. *(Refined in amendment (f) below: a route reading both
+  credentials is a named **transfer route**; the claim is the second one, after slice 2.2's copy.)*
 
 ## Amendment: 2026-09-23, from the plan of slice 2.1 (`identity-register-and-login`)
 
@@ -110,3 +111,40 @@ else's*, and an unlimited password guesser spends somebody else's account. So a 
 *new* logins. It never logs anybody *out*: refresh, logout and `/me` do not touch Redis. That narrows
 the "Redis down = nobody can authenticate" objection in *Alternatives* to "nobody can start a login",
 which is the half worth accepting.
+
+## Amendment: 2026-09-25, from the plan of slice 2.2 (`intake-saved-base-cvs`)
+
+Slice 2.1 turned *"no route depends on both `require_user` and `require_guest_session`"* into a tested
+rule — a walker over the live application's dependency graph — and named one future exception, the
+2.4 claim. Slice 2.2 needs a second exception in the other direction: a saved CV (user-owned) must
+reach the workspace (guest-owned) as a working copy (ADR-0022). The rule is refined rather than
+abandoned.
+
+**(f) A route answers to one credential, except a named transfer route.** A *transfer route* carries
+data between the two principals. It reads both credentials, and **each credential authorizes only
+its own half**: the bearer authorizes reading the source, the guest cookie owns the destination. No
+code ever asks "is there a user *or* a guest?" — a transfer route needs both and uses each for one
+thing, so the conflation this ADR forbids (a guest session as a point on the same scale as a login)
+does not arise. Four mechanics keep it honest:
+
+- **Order.** `require_user` is a dependency, because it never mutates anything. The source is loaded
+  and authorized **first**; only then is `resolve_or_start_guest_session` called, **inside the
+  handler body**. A sibling `Depends` would run even when body validation fails, so a dependency form
+  would mint a guest session on a 422. A 401, a 422 or a 404 on a transfer route therefore mints no
+  session and sets no cookie.
+- **Enforcement.** The dependency walker cannot see a call inside a handler body — which is exactly
+  why a quiet exception would pass 2.1's walker while breaking its rule. The walker is extended with
+  an **AST scan of the router modules** for calls to `resolve_or_start_guest_session` and
+  `read_guest_token`, and it pins the set of routes that both depend on `require_user` and touch the
+  guest cookie to an explicit list. A route added with both, anywhere, turns it red. The scan also
+  asserts the guest cookie's name is referenced only where it is already read, so a new reader must
+  pass through one of the two scanned helpers.
+- **CSRF.** The bearer is a header that only our page's JavaScript holds; a cross-site form cannot
+  send it, so a transfer route cannot be driven by another site even though the guest cookie is
+  `SameSite=Lax`. No `Origin` check is needed on bearer routes, and none is added. The trusted-`Origin`
+  check (ADR-0021) stays where it belongs: on the endpoints that act on the refresh cookie.
+- **The named exceptions.** Today the set is exactly **`POST /api/base-cvs/copies`** — copy a saved
+  CV into this browser's workspace (slice 2.2). The **claim** (slice 2.4), which re-keys a guest's
+  work to the user, will be the second, and it joins the list in the slice that builds it, under the
+  same order and the same scan. Any other route that wants both credentials is a design question for
+  an ADR, not an edit to the list.

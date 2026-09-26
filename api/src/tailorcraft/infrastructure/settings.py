@@ -251,6 +251,20 @@ class Settings(BaseSettings):
     # PDFs over this many pages are refused before `pypdf` ever opens them — bounded work, not a
     # timeout discovered the hard way on a 400-page file (ADR-0009 §2).
     max_cv_pages: int = 50
+    # The ceiling on extracted text, in RAW characters — the length of the string the parser hands
+    # back, before `ExtractedText` collapses its whitespace (slice 2.2, T30b-C). Enforced by the
+    # extractor WHILE it extracts (per PDF page, per DOCX paragraph, on the decoded TXT), so the
+    # 171 KB DOCX that inflated to 39.5 M characters is refused without the whole string existing.
+    # Raw rather than normalized because normalization only ever shrinks a string: raw ≤ cap
+    # implies stored ≤ cap, and the running count needs no normalizing pass of its own.
+    #
+    # Default 10 times `llm_max_cv_characters` (owner decision, amendment 2026-09-26): room for a long
+    # CV's whitespace and layout noise, while bounding every later copy of the text — the loop-side
+    # `ExtractedText` construction on each load above all. The floor `ge=25_000` is that setting's
+    # default, and it is a floor on purpose: a cap below what tailoring accepts would refuse at
+    # upload a CV the model could have used. (A static bound, not a cross-field validator: raising
+    # `LLM_MAX_CV_CHARACTERS` past this cap makes the larger CVs unreachable, not unsafe.)
+    max_extracted_characters: int = Field(default=250_000, ge=25_000)
 
     # -- Upload rate limiting & caps (F-16, F-23, F-24) -----------------------
     # Fixed-window limits enforced by `RedisFixedWindowRateLimiter`
@@ -261,6 +275,12 @@ class Settings(BaseSettings):
     # A cross-aggregate cap enforced in the use case, not on `BaseCv` itself — see technical-plan.md,
     # "Not an invariant of BaseCv, deliberately".
     max_base_cvs_per_session: int = 5
+    # The per-user cap on saved base CVs (slice 2.2, OQ-3), `TooManySavedBaseCvs` at the use case.
+    # A separate setting from the per-session cap because the two promise different things: a
+    # guest's CVs live 24 hours, a user's until they delete them. Bounded both ways: 0 would make
+    # the account upload unusable, and a large value is a storage promise nobody decided to make.
+    # Soft, like the guest cap — two concurrent uploads at cap - 1 both land (S-5).
+    max_saved_base_cvs_per_user: int = Field(default=5, ge=1, le=50)
     # How many reverse-proxy hops in front of this process are ours to trust when reading
     # `X-Forwarded-For` (`infrastructure/rate_limit.py::client_ip`). `1` is nginx. Raising this
     # without actually adding a trusted proxy in front of nginx turns the rate limiter's IP bucket

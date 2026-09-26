@@ -33,18 +33,24 @@ from tailorcraft.application.export.get_export_job import GetExportJobForSession
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
+from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
 from tailorcraft.application.identity.get_current_user import GetCurrentUser
 from tailorcraft.application.identity.log_in import LogIn
 from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
 from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
+from tailorcraft.application.intake.copy_saved_base_cv import CopySavedBaseCvToWorkspace
+from tailorcraft.application.intake.delete_saved_base_cv import DeleteSavedBaseCv
 from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
+from tailorcraft.application.intake.list_saved_base_cvs import ListSavedBaseCvs
+from tailorcraft.application.intake.rename_saved_base_cv import RenameSavedBaseCv
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCv
 from tailorcraft.application.posting.capture_job_posting import CaptureJobPosting
 from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
+from tailorcraft.application.retention.erase_account import EraseAccount
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
@@ -72,6 +78,7 @@ from tailorcraft.domain.identity.value_objects import (
 )
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
+from tailorcraft.domain.retention.ports import AccountDataPort
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
@@ -99,12 +106,14 @@ from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
 from tailorcraft.infrastructure.identity.reuse_alert import ReuseAlertingEventPublisher
+from tailorcraft.infrastructure.intake.committing import CommittingBaseCvRemoval
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
+from tailorcraft.infrastructure.retention.data_access import CommittingAccountData
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 
@@ -191,7 +200,11 @@ FileStoreDep = Annotated[FileStorePort, Depends(get_file_store)]
 
 def get_cv_text_extractor(settings: SettingsDep) -> CvTextExtractorPort:
     """Binds `CvTextExtractorPort` -> `PypdfDocxTextExtractor` (ADR-0009)."""
-    return PypdfDocxTextExtractor(settings.extraction_timeout_seconds, settings.max_cv_pages)
+    return PypdfDocxTextExtractor(
+        settings.extraction_timeout_seconds,
+        settings.max_cv_pages,
+        max_characters=settings.max_extracted_characters,
+    )
 
 
 CvTextExtractorDep = Annotated[CvTextExtractorPort, Depends(get_cv_text_extractor)]
@@ -268,6 +281,7 @@ def get_upload_base_cv(
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
+    users: UserRepositoryDep,
 ) -> UploadBaseCv:
     return UploadBaseCv(
         cvs,
@@ -276,7 +290,9 @@ def get_upload_base_cv(
         extractor,
         events,
         clock,
+        users,
         max_per_session=settings.max_base_cvs_per_session,
+        max_per_user=settings.max_saved_base_cvs_per_user,
     )
 
 
@@ -1200,3 +1216,103 @@ def get_get_current_user(users: UserRepositoryDep) -> GetCurrentUser:
 
 
 GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]
+
+
+# ---------------------------------------------------------------------------------------------
+# Saved base CVs and account erasure — slice 2.2 (T18). Every route below answers to
+# `require_user`; the one transfer route (`POST /api/base-cvs/copies`, ADR-0008 (f)) also reaches
+# the guest session, **in its handler body**, never through a `Depends` here — so no provider in
+# this block depends on `require_guest_session` or `resolve_or_start_guest_session` (AC-24).
+# ---------------------------------------------------------------------------------------------
+
+
+def get_list_saved_base_cvs(cvs: BaseCvRepositoryDep, users: UserRepositoryDep) -> ListSavedBaseCvs:
+    return ListSavedBaseCvs(cvs, users)
+
+
+ListSavedBaseCvsDep = Annotated[ListSavedBaseCvs, Depends(get_list_saved_base_cvs)]
+
+
+def get_rename_saved_base_cv(
+    cvs: BaseCvRepositoryDep, users: UserRepositoryDep, clock: ClockDep
+) -> RenameSavedBaseCv:
+    return RenameSavedBaseCv(cvs, users, clock)
+
+
+RenameSavedBaseCvDep = Annotated[RenameSavedBaseCv, Depends(get_rename_saved_base_cv)]
+
+
+def get_delete_saved_base_cv(
+    cvs: BaseCvRepositoryDep,
+    session: SessionDep,
+    users: UserRepositoryDep,
+    files: FileStoreDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> DeleteSavedBaseCv:
+    """Binds the delete's `BaseCvRepository` -> `CommittingBaseCvRemoval` over the request's own
+    repository (technical plan §0.4, §3 "Wiring"): `remove` commits **before** the use case unlinks
+    the file, so the row is durably gone when the file goes. Every other method passes through, on
+    the same `AsyncSession` — one unit of work, with one extra commit at the one point that needs it.
+    """
+    return DeleteSavedBaseCv(CommittingBaseCvRemoval(cvs, session), users, files, events, clock)
+
+
+DeleteSavedBaseCvDep = Annotated[DeleteSavedBaseCv, Depends(get_delete_saved_base_cv)]
+
+
+def get_copy_saved_base_cv(
+    cvs: BaseCvRepositoryDep,
+    users: UserRepositoryDep,
+    sessions: GuestSessionRepositoryDep,
+    files: FileStoreDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> CopySavedBaseCvToWorkspace:
+    """**No extractor** — the use case's constructor does not take one (AC-9: a copy never
+    re-extracts). The cap is the *guest* cap: a working copy is guest data."""
+    return CopySavedBaseCvToWorkspace(
+        cvs,
+        users,
+        sessions,
+        files,
+        events,
+        clock,
+        max_per_session=settings.max_base_cvs_per_session,
+    )
+
+
+CopySavedBaseCvDep = Annotated[CopySavedBaseCvToWorkspace, Depends(get_copy_saved_base_cv)]
+
+
+def get_account_data(session: SessionDep) -> AccountDataPort:
+    """Binds `AccountDataPort` -> `CommittingAccountData(SqlAlchemyAccountData)` (technical plan §3
+    "Wiring"): `delete_account` commits before `EraseAccount` unlinks a single file.
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.retention.account_data import (
+        SqlAlchemyAccountData,
+    )
+
+    return CommittingAccountData(SqlAlchemyAccountData(session), session)
+
+
+AccountDataDep = Annotated[AccountDataPort, Depends(get_account_data)]
+
+
+def get_erase_account(accounts: AccountDataDep, files: FileStoreDep) -> EraseAccount:
+    return EraseAccount(accounts, files)
+
+
+EraseAccountDep = Annotated[EraseAccount, Depends(get_erase_account)]
+
+
+def get_delete_own_account(
+    users: UserRepositoryDep, hasher: PasswordHasherDep, erase_account: EraseAccountDep
+) -> DeleteOwnAccount:
+    return DeleteOwnAccount(users, hasher, erase_account)
+
+
+DeleteOwnAccountDep = Annotated[DeleteOwnAccount, Depends(get_delete_own_account)]

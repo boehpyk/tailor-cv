@@ -12,54 +12,64 @@ job is to make it true.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 from uuid import UUID
 
+import structlog
 from fastapi import APIRouter, File, Request, Response, UploadFile, status
-from fastapi.exceptions import HTTPException
-from sqlalchemy.exc import SQLAlchemyError
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
+from tailorcraft.application.intake.owned_saved_base_cv import get_owned_saved_base_cv
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCvCommand
+from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.base_cv import BaseCv
-from tailorcraft.domain.intake.value_objects import (
-    BaseCvId,
-    ExtractionFailureReason,
-    OriginalFilename,
-)
+from tailorcraft.domain.intake.errors import SavedBaseCvFileMissing
+from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
     BaseCvRepositoryDep,
     ClockDep,
+    CopySavedBaseCvDep,
     GetBaseCvDep,
     GuestSessionRepositoryDep,
     ListBaseCvsDep,
     RateLimiterDep,
     RequireGuestSessionDep,
+    RequireUserDep,
     SessionDep,
     SettingsDep,
     StartGuestSessionDep,
     UploadBaseCvDep,
+    UserRepositoryDep,
     resolve_or_start_guest_session,
 )
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
+from tailorcraft.infrastructure.api.routers._upload import (
+    commit_or_503,
+    enforce_upload_limit,
+    failure_message,
+    read_validated_upload,
+)
 from tailorcraft.infrastructure.api.schemas.intake import (
     BaseCvListResponse,
     BaseCvResponse,
+    CopySavedBaseCvRequest,
     ErrorResponse,
 )
-from tailorcraft.infrastructure.intake.sniffing import sniff_cv_content_type
-from tailorcraft.infrastructure.rate_limit import client_ip
 from tailorcraft.infrastructure.settings import Settings
 
 router = APIRouter(prefix="/api/base-cvs", tags=["intake"])
+log = structlog.get_logger(__name__)
 
-# Read the already-received upload in fixed-size chunks and count as we go, rather than joining it
-# into one second copy first and measuring that — a memory bound within this handler, not a network
-# one. `MaxBodySizeMiddleware` (infrastructure/api/middleware.py) is what aborts a streaming request
-# before it lands; see `_read_capped`'s own docstring for why the two are not the same guarantee.
-_UPLOAD_CHUNK_BYTES = 64 * 1024
+EVENT_USER_MISSING: Final = "identity.user_missing"
+EVENT_SAVED_BASE_CV_FILE_MISSING: Final = "intake.saved_base_cv_file_missing"
+
+# 1.1's name for `failure_message`, bound here as a module attribute (an import alias would not be
+# one under mypy's `implicit_reexport = False`): 1.1's API tests import `_failure_message` from this
+# module, and T17 moved the function without editing them (R-6).
+_failure_message = failure_message
 
 # Shared `responses=` fragments, so the same failure mode is documented with the same shape at every
 # handler that can produce it, rather than four independently-typed copies of `{"model":
@@ -76,8 +86,9 @@ _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
 
 
 # ---------------------------------------------------------------------------------------------
-# Boundary helpers — response shaping and failure messages. Pure functions, no I/O, so they need no
-# fixture of their own to reason about.
+# Response shaping. A pure function, no I/O. The upload boundary itself — the capped read, the
+# threaded sniff, the in-handler commit, the failure messages — lives in `routers/_upload.py`, shared
+# with `routers/saved_base_cvs.py` (T17).
 # ---------------------------------------------------------------------------------------------
 
 
@@ -95,107 +106,12 @@ def _to_response(cv: BaseCv, expires_at: datetime, settings: Settings) -> BaseCv
         else None,
         failure_reason=cv.failure_reason,
         failure_message=(
-            _failure_message(cv.failure_reason, settings) if cv.failure_reason is not None else None
+            failure_message(cv.failure_reason, settings) if cv.failure_reason is not None else None
         ),
         uploaded_at=cv.uploaded_at,
         expires_at=expires_at,
+        origin=cv.origin,
     )
-
-
-def _failure_message(reason: ExtractionFailureReason, settings: Settings) -> str:
-    """One user-facing sentence per `ExtractionFailureReason` — server-owned, so the client never
-    re-implements this mapping (technical-plan.md's API contract).
-
-    `NO_TEXT_LAYER`'s message names OCR as **absent, not as coming** (F-9): feature-spec.md's
-    non-goals are explicit that OCR is "not a feature request answered here", so a message that reads
-    as a promise would be a claim this product does not intend to keep.
-    """
-    if reason is ExtractionFailureReason.ENCRYPTED:
-        return (
-            "This PDF is password-protected, so we could not read it. "
-            "Remove the password and upload it again."
-        )
-    if reason is ExtractionFailureReason.CORRUPT:
-        return (
-            "This file looks damaged or incomplete and could not be read. "
-            "Try re-exporting it and uploading it again."
-        )
-    if reason is ExtractionFailureReason.NO_TEXT_LAYER:
-        return (
-            "We saved your file, but couldn't find any text in it — it looks like a scan. "
-            "We don't support OCR, so try a text-based PDF, or paste your CV as a .txt file instead."
-        )
-    if reason is ExtractionFailureReason.TOO_SHORT:
-        return (
-            "We could only read a small amount of text from this file — not enough to work with. "
-            "Make sure the file contains your full CV."
-        )
-    if reason is ExtractionFailureReason.TOO_MANY_PAGES:
-        return (
-            f"This PDF has more than {settings.max_cv_pages} pages, which is more than we can "
-            "process. Try a shorter version of your CV."
-        )
-    # ExtractionFailureReason.EXTRACTOR_ERROR — the catch-all, reached two ways: the 10 s timeout
-    # (F-12) and, since `PypdfDocxTextExtractor` grew its catch-all, any library failure we have no
-    # better name for (a `KeyError` out of `pypdf` on a mangled cross-reference table, say). The
-    # earlier wording here — "we couldn't read this file in time" — described only the first of
-    # those, and would have been a confidently wrong diagnosis for the second, which is now the
-    # commoner one. It names both causes rather than retreating into "something went wrong":
-    # "too long" and "gave up part-way" are different things a user can act on differently, and
-    # "part-way" is also what distinguishes this sentence from CORRUPT's "looks damaged" — that one
-    # is a verdict on the file, this one is an admission about us.
-    return (
-        "We couldn't read this file — it either took too long or our reader gave up part-way "
-        "through. Try again, or use a different PDF, DOCX or TXT file."
-    )
-
-
-async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
-    """Read `file` back from FastAPI's already-parsed `UploadFile` in `_UPLOAD_CHUNK_BYTES` chunks,
-    aborting as soon as the running total exceeds `max_bytes`, rather than joining the whole thing
-    into one `bytes` object first and measuring it afterward.
-
-    **This does not bound what crosses the network** — despite what an earlier version of this
-    docstring claimed. Declaring `file: Annotated[UploadFile, File(...)]` on the handler above hands
-    multipart parsing to the framework *before this function, or even the handler body, starts
-    running*: FastAPI resolves that parameter by awaiting `request.form()` during dependency
-    resolution, and Starlette's `MultiPartParser` drains the entire request body into a
-    `SpooledTemporaryFile` while doing it. By the time this loop's first `file.read()` returns, the
-    whole upload has already been received and spooled — this function is reading bytes back off
-    disk/memory, not bytes still arriving on the wire. Verified empirically: an 11 MB upload against
-    a 10 MB cap transferred all 11,000,202 bytes before this loop's 413 fired.
-
-    So what actually guarantees what:
-
-    * `MaxBodySizeMiddleware` (`infrastructure/api/middleware.py`), reading `Content-Length` before
-      FastAPI ever calls `receive()`, is what rejects an honest client's request while it is still
-      streaming — the guarantee this docstring used to (wrongly) claim for this function.
-    * nginx's `client_max_body_size` bounds a client that lies about `Content-Length` or omits it
-      outright, upstream of this process entirely.
-    * **This function's actual job** is narrower: bound how much of an *already-received* body this
-      handler holds in memory at once, rather than materializing a second full copy via
-      `await file.read()` with no size argument. It also remains the only line of defense against a
-      chunked-transfer-encoding request, which carries no `Content-Length` for the middleware to see
-      coming (F-3/AC-2's "aborted while streaming" is achieved by the middleware for the common case;
-      this loop is the fallback for the case the middleware structurally cannot catch).
-    """
-    chunks: list[bytes] = []
-    total = 0
-    while True:
-        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
-        if not chunk:
-            break
-        total += len(chunk)
-        if total > max_bytes:
-            raise HTTPException(
-                status.HTTP_413_CONTENT_TOO_LARGE,
-                detail={
-                    "code": "file_too_large",
-                    "message": f"The file exceeds the {max_bytes}-byte limit.",
-                },
-            )
-        chunks.append(chunk)
-    return b"".join(chunks)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -216,7 +132,7 @@ async def _read_capped(file: UploadFile, max_bytes: int) -> bytes:
             "model": ErrorResponse,
             "description": "file_too_large — at 10,485,760 bytes. Answered by "
             "`MaxBodySizeMiddleware` before the body is read for a client that declares "
-            "`Content-Length`; by `_read_capped` in-handler otherwise (chunked transfer-encoding).",
+            "`Content-Length`; by `read_capped` in-handler otherwise (chunked transfer-encoding).",
         },
         status.HTTP_415_UNSUPPORTED_MEDIA_TYPE: {
             "model": ErrorResponse,
@@ -274,73 +190,17 @@ async def upload_base_cv(
     # file) — checked, and both counters incremented, before any of that work starts (F-24). Both
     # scopes are always checked, not short-circuited on the first: a client that is over its
     # per-session limit has still made an attempt from its IP, and that attempt should count.
-    session_decision = await rate_limiter.check(
-        "session", str(session.id.value), settings.upload_rate_limit_per_hour
-    )
-    ip_decision = await rate_limiter.check(
-        "ip",
-        client_ip(request, settings.trusted_proxy_hops),
-        settings.upload_rate_limit_per_ip_per_hour,
-    )
-    if not session_decision.allowed or not ip_decision.allowed:
-        retry_after = max(session_decision.retry_after_seconds, ip_decision.retry_after_seconds)
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            detail={
-                "code": "rate_limited",
-                "message": f"Too many uploads. Try again in {retry_after} seconds.",
-            },
-            headers={"Retry-After": str(retry_after)},
-        )
+    await enforce_upload_limit(request, rate_limiter, "session", str(session.id.value), settings)
 
-    # Filename sanitization (AC-7): `OriginalFilename.__post_init__` reduces to a basename and
-    # rejects anything that cannot be a display label — never joined to a path anywhere.
-    try:
-        original_filename = OriginalFilename(file.filename or "")
-    except DomainError as exc:
-        raise domain_error_to_http_exception(exc) from exc
-
-    # The streaming abort (F-3/AC-2) already happened, if it was going to: `MaxBodySizeMiddleware`
-    # ran ahead of routing and would have answered 413 before this handler was even invoked. This is
-    # the in-memory-bound read over a body FastAPI has already received — see `_read_capped`'s own
-    # docstring for exactly what it does and does not guarantee.
-    data = await _read_capped(file, settings.max_upload_bytes)
-
-    if not data:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail={"code": "empty_file", "message": "The uploaded file is empty."},
-        )
-
-    # Sniffing decides the type — never the client's Content-Type header, never the filename
-    # extension (F-4/F-5/F-6/AC-3/AC-4).
-    #
-    # In a worker thread, for the same reason `LocalFileStore` and `PypdfDocxTextExtractor` use one
-    # (Constitution §1, ADR-0009): `sniff_cv_content_type` is synchronous and CPU-bound, and its cost
-    # is chosen by the *uploader*. Opening a zip reads its whole central directory, so an archive of
-    # 100,000 tiny entries — 8.6 MB, comfortably inside the 10 MB cap — measured 340 ms in the
-    # container, and 120,000 entries 410 ms. On the event loop that is a stall for every concurrent
-    # user of every endpoint, and it presents as "the app is slow" rather than as an error, which is
-    # why §1 grades it CRITICAL rather than as a style note.
-    #
-    # The 30/hour/IP limiter above already ran, so the damage is bounded rather than unbounded. That
-    # is a cost ceiling, not a licence: a rate limit bounds how *often* the loop is stalled, never
-    # whether it is stalled, and thirty 400 ms stalls per IP per hour are still thirty stalls.
-    content_type = await asyncio.to_thread(sniff_cv_content_type, data)
-    if content_type is None:
-        raise HTTPException(
-            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail={
-                "code": "unsupported_format",
-                "message": "Unsupported file format. Please upload a PDF, DOCX or TXT file.",
-            },
-        )
+    # Filename → capped read → empty → sniff (in a worker thread), 1.1's order and codes. After the
+    # limiter above, so the limit gates the expensive part. See `routers/_upload.py`.
+    upload = await read_validated_upload(file, settings)
 
     command = UploadBaseCvCommand(
-        guest_session_id=session.id,
-        original_filename=original_filename,
-        content_type=content_type,
-        content=data,
+        owner=GuestOwner(session.id),
+        original_filename=upload.original_filename,
+        content_type=upload.content_type,
+        content=upload.content,
     )
     try:
         result = await upload_use_case(command)
@@ -355,33 +215,147 @@ async def upload_base_cv(
     saved_cv = await cvs.get(result.base_cv_id)
     wire = _to_response(saved_cv, session.expires_at, settings)
 
-    # Commit HERE rather than leaving it to `get_session`'s teardown, and this is not belt-and-braces
-    # -- it is the only place a failed commit can still change the answer.
-    #
-    # FastAPI runs the exit half of a yield-dependency AFTER the response has been sent (documented
-    # behaviour since 0.106). So `get_session`'s post-yield `commit()` fires with the 201 already on
-    # the wire: if it raises, Starlette finds `response_started == True` and the client keeps the
-    # 201 it was already given. F-15 -- "the commit fails after the file was written, the API answers
-    # 503" -- is unreachable from there, no matter what exception handler is installed.
-    #
-    # Committing inside the handler's own error boundary puts the failure back where it can be
-    # translated. The teardown commit still runs and is then a no-op on an already-committed session,
-    # so nothing about the unit-of-work boundary changes for any other route.
-    try:
-        await db.commit()
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        # The row is gone; the file that step 5 of the use case already wrote is not. That orphan is
-        # the deliberate survivor of this crash window (ADR-0006 §2) -- a directory sweep can reclaim
-        # it, whereas the alternative ordering leaves a row pointing at bytes that never arrived.
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "service_unavailable",
-                "message": "Could not save your CV just now. Please try again.",
-            },
-        ) from exc
+    # Commit HERE, not in `get_session`'s teardown — which FastAPI 0.141 runs after the response is
+    # sent, so only an in-handler commit can still become F-15's 503. See `commit_or_503`.
+    await commit_or_503(db)
 
+    return wire
+
+
+@router.post(
+    "/copies",
+    response_model=BaseCvResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ErrorResponse,
+            "description": (
+                'invalid_access_token (+ WWW-Authenticate: Bearer error="invalid_token") | '
+                "not_signed_in — the bearer is required; on either, no guest session is minted "
+                "and no cookie is set."
+            ),
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": (
+                "base_cv_not_found — the source is not the bearer's (another user's, a guest's) or "
+                "does not exist; byte-identical either way."
+            ),
+        },
+        status.HTTP_409_CONFLICT: {
+            "model": ErrorResponse,
+            "description": (
+                "base_cv_not_extracted — the source's extraction did not succeed | "
+                "too_many_base_cvs — the guest session is at its cap."
+            ),
+        },
+        status.HTTP_410_GONE: {
+            "model": ErrorResponse,
+            "description": (
+                "saved_base_cv_file_gone — the saved CV's row exists but its file does not; delete "
+                "it and upload it again."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "validation_error — a malformed body; no guest session is minted.",
+        },
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "model": ErrorResponse,
+            "description": (
+                "rate_limited — the upload limiter's `session` and `ip` scopes; carries a "
+                "Retry-After header."
+            ),
+        },
+        status.HTTP_503_SERVICE_UNAVAILABLE: {
+            "model": ErrorResponse,
+            "description": "storage_unavailable | service_unavailable",
+        },
+    },
+)
+async def copy_saved_base_cv(
+    body: CopySavedBaseCvRequest,
+    request: Request,
+    response: Response,
+    user_id: RequireUserDep,
+    users: UserRepositoryDep,
+    settings: SettingsDep,
+    clock: ClockDep,
+    sessions: GuestSessionRepositoryDep,
+    start_guest_session: StartGuestSessionDep,
+    rate_limiter: RateLimiterDep,
+    copy_use_case: CopySavedBaseCvDep,
+    cvs: BaseCvRepositoryDep,
+    db: SessionDep,
+) -> BaseCvResponse:
+    """Copy one of the bearer's saved CVs into this browser's workspace as a guest working copy.
+
+    **The transfer route** (ADR-0008 (f), AC-24): the one route that answers to the bearer **and**
+    reaches `tc_guest`. The bearer is a `Depends` — it runs before the body, so a bad one mints
+    nothing (S-25). The guest session is **not**: `resolve_or_start_guest_session` is called in this
+    handler's body, after the source is authorized, never as a sibling dependency — 1.1's T26 lesson,
+    siblings run even when the body fails validation (S-26, S-27). A missing or expired `tc_guest` is
+    forgiven by minting one (1.1's POST rule, S-29).
+
+    201 with the guest `BaseCvResponse`: `status: "extracted"`, `expires_at` the session's. The copy
+    never re-runs the extractor (AC-9) and is deliberately not idempotent — two clicks, two copies
+    (S-36).
+
+    **Order, and why each step sits where it does** (technical plan §0.3):
+
+    1. The bearer (`require_user`, a dependency) — before the body: a bad one mints nothing.
+    2. **The source is authorized here, before any guest session exists**: the account still exists
+       (a token outliving an erasure is 401 `not_signed_in`, AC-30) and the saved CV is the
+       bearer's (404 otherwise, byte-identical for "not yours" and "not there"). The application's
+       own two helpers, not a second copy of the rule — the use case repeats them inside its own
+       unit of work, which is cheap and keeps the use case whole for any other entry point.
+    3. `resolve_or_start_guest_session` — only now, so a 401 or a 404 never mints a session and
+       never sets a cookie (S-25, S-27).
+    4. The upload limiter's `session` and `ip` scopes (fail open): a copy creates a guest CV, as an
+       upload does, and the session scope needs the session from step 3.
+    5. The use case, then the persisted aggregate re-read for the response, then **the commit,
+       inside this handler** (FastAPI 0.141 runs `get_session`'s teardown after the response is
+       sent, so only an in-handler commit can still become S-35's 503).
+    """
+    # (2) Authorize the source. Never the guest half yet — see the docstring.
+    source_id = BaseCvId(body.saved_base_cv_id)
+    try:
+        await resolve_existing_user(users, user_id)
+        await get_owned_saved_base_cv(cvs, source_id, user_id)
+    except UserNotFound as exc:
+        log.info(EVENT_USER_MISSING, user_id=str(user_id.value))
+        raise domain_error_to_http_exception(exc) from None
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from None
+
+    # (3) The transfer route's one direct read of `tc_guest` (ADR-0008 (f), AC-24's AST scan).
+    session = await resolve_or_start_guest_session(
+        request, response, sessions, clock, settings, start_guest_session
+    )
+
+    # (4) Both scopes are always checked, never short-circuited — `upload_base_cv`'s reason.
+    await enforce_upload_limit(request, rate_limiter, "session", str(session.id.value), settings)
+
+    # (5)
+    try:
+        result = await copy_use_case(source_id, user_id, session.id)
+    except SavedBaseCvFileMissing as exc:
+        # S-32: a row that points at nothing is a bug somewhere, so it is a warning — ids only.
+        log.warning(
+            EVENT_SAVED_BASE_CV_FILE_MISSING,
+            base_cv_id=str(source_id.value),
+            user_id=str(user_id.value),
+        )
+        raise domain_error_to_http_exception(exc) from None
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from None
+
+    saved_copy = await cvs.get(result.base_cv_id)
+    wire = _to_response(saved_copy, session.expires_at, settings)
+
+    await commit_or_503(db)
+
+    response.headers["Cache-Control"] = "no-store"
     return wire
 
 

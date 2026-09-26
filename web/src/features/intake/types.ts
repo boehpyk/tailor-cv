@@ -22,13 +22,27 @@ export type BaseCvStatus = 'uploaded' | 'extracted' | 'extraction_failed';
  * whichever of these applies — the client never re-implements that mapping.
  */
 export type ExtractionFailureReason =
-  'encrypted' | 'corrupt' | 'no_text_layer' | 'too_short' | 'too_many_pages' | 'extractor_error';
+  | 'encrypted'
+  | 'corrupt'
+  | 'no_text_layer'
+  | 'too_short'
+  | 'too_many_pages'
+  | 'text_too_long'
+  | 'extractor_error';
 
 /** The three formats intake accepts, decided server-side from the file's bytes. */
 export type CvContentType =
   | 'application/pdf'
   | 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
   | 'text/plain';
+
+/**
+ * How a guest `BaseCv` came to be in this workspace (slice 2.2, additive on the wire): uploaded
+ * here, or a **working copy** of one of the signed-in user's saved CVs (`POST
+ * /api/base-cvs/copies`). Derived by the server from the row, never stored as a column — the client
+ * only reads it, to decide whether the base-CV card shows the Working copy badge (AC-41).
+ */
+export type BaseCvOrigin = 'uploaded' | 'copied_from_saved';
 
 /**
  * One `BaseCv`, as the client sees it.
@@ -49,6 +63,12 @@ export interface BaseCv {
   readonly failure_message: string | null;
   readonly uploaded_at: string;
   readonly expires_at: string;
+  /**
+   * Required: the 2.2 API always sends it. During the deploy's brief two-version window a 2.1 API
+   * could omit it; the one reader (`BaseCvCard`) compares it to `'copied_from_saved'`, so an absent
+   * value shows no badge — which is the true answer for any CV a 2.1 API could have made.
+   */
+  readonly origin: BaseCvOrigin;
 }
 
 /** Every `BaseCv` a guest session owns. `items` is `[]` for a session with none. */

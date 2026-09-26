@@ -31,7 +31,8 @@ survivor is recoverable.
 
 **3. Registered users' data is never touched by the guest purge.** The predicate selects guest
 sessions; a base CV owned by a user has no guest session. The test that proves a registered CV
-survives a purge run is written in the same slice as the purge, not later.
+survives a purge run is written in the same slice as the purge, not later. *(Amended below: the
+proof became testable in slice 2.2, when a base CV first had a user as its owner.)*
 
 **4. Files live on a local named volume shared by `api` and `worker`, behind a `FileStorePort`.** The
 port speaks in `FileRef`s, never in filesystem paths, and never hands out a path that reaches the
@@ -67,4 +68,52 @@ also the registration prompt the PRD asks for.
   work to the user before the session expires, and that path needs its own test. Design it when
   Phase 2.4 is planned, not when a user complains.
 - GDPR erasure for registered users is a *different* mechanism and is not built here. Named so nobody
-  assumes the purge covers it.
+  assumes the purge covers it. *(Discharged by the amendment below: account erasure, slice 2.2.)*
+
+## Amendment: 2026-09-25, from the plan of slice 2.2 (`intake-saved-base-cvs`)
+
+This ADR was written for a product in which every stored byte belonged to a guest. Slice 2.2 adds
+the first data the product keeps **on purpose** — a registered user's saved base CVs — and with it
+the first user-initiated deletion and the first account erasure. The five decisions above stand; this
+amendment adds three, and records how §3's obligation was met.
+
+**(a) Two retention promises now coexist, and the UI states both.**
+
+- **Workspace data: at most 24 hours, enforced by a schedule** — everything above, unchanged. A
+  **working copy** (ADR-0022: a saved CV copied into the guest workspace so it can be tailored) is
+  workspace data. It is owned by the browser's guest session, it dies with that session under the
+  24-hour rule, and so does everything tailored from it. Deleting the saved CV does not delete its
+  working copies, and neither does deleting the account; the guest purge does.
+- **Saved data: kept until the user deletes it, enforced by a button.** A saved CV has a user as its
+  owner and no guest session, so the purge's predicate and its cascade cannot select it. This is a
+  **change to the product's privacy promise** — a CV kept indefinitely, by the user's choice — and §5's
+  rule applies to it: it is stated where the user saves and where they reuse, not buried.
+
+§3's obligation is now proven rather than asserted: a registered user's CV survives a purge run and an
+orphan sweep **with rows and files that exist**, and a working copy's purge leaves its saved source
+untouched — each test observed failing under a named mutation. The purge spares saved data **by
+schema** (`guest_session_id IS NULL` on a saved CV); the orphan sweep spares it by its database
+cross-check, which must therefore read every row's file key regardless of owner.
+
+**(b) Deleting a saved CV is §2's order, applied to a request.** The row is deleted and the
+transaction **committed**, then the file is unlinked. The survivor of a crash between the two is an
+orphaned file, which `purge-guests --orphans` reclaims because its cross-check finds no row. An unlink
+that fails after the commit is **not** an error to the user — the row, the only thing they can see or
+reach, is gone, and a retry could only answer 404 — so the request succeeds, a warning names the id
+and the exception type, and the bytes remain until an operator runs the orphan sweep.
+
+**(c) Account erasure: rows committed, then files, under a row lock on the user.** One transaction
+takes `SELECT … FOR UPDATE` on the user's row, collects the file keys of every CV the user owns,
+deletes the user row — which cascades to logins, retired refresh hashes and saved CVs — and
+**commits**; only then is each file unlinked. The lock closes the one race that "rows first" does not:
+an upload inserting a CV *after* the keys were collected and *before* the delete would otherwise be
+cascaded away with its file never collected. With the lock, that upload's foreign-key check waits and
+then fails, the request answers "not signed in", and its already-written file is an orphan for the
+sweep. Unlinks that fail are **returned** in the erasure's report, not logged from the application
+layer (ADR-0018's pattern), and are reclaimed by the operator's orphan sweep. Erasure lives in the
+`retention` context beside the purge — the same shape, *delete everything an owner has, rows then
+files, reporting what could not be unlinked* — on request for a user rather than on a timer for a
+guest. It is reached two ways: the user's own **Delete account**, which re-confirms the password, and
+an operator command, `erase-account`, with a dry run. This discharges the Consequence above that named
+GDPR erasure as a different mechanism not built here, and it makes "delete the user row by hand"
+**wrong** as an operator procedure: the cascade would remove the rows and orphan every file.

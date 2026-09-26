@@ -37,3 +37,32 @@ export function uploadBaseCv(file: File, signal?: AbortSignal): Promise<BaseCv> 
     ...(signal ? { signal } : {}),
   });
 }
+
+/**
+ * Copy one of the signed-in user's **saved** CVs into this browser's workspace (slice 2.2): **201**
+ * with the new guest `BaseCv`, `origin: 'copied_from_saved'`, extraction already done.
+ *
+ * **The one call that carries both credentials** — the transfer route (ADR-0008 amendment (f)).
+ * `auth: 'required'` sends the bearer, which authorizes the *source* (it must be this account's
+ * saved CV); `credentials: 'include'`, which every request already sends, carries the `tc_guest`
+ * cookie that names the *destination* workspace. A missing or expired cookie is forgiven by the
+ * server minting a new session, as 1.1's upload does. Every other guest route stays bearer-free
+ * (AC-43).
+ *
+ * The result is a **copy**, not a link: it is guest data, deleted with the workspace after 24 hours,
+ * while the saved CV stays in the account (AC-45). Not idempotent — two calls, two copies (S-36), so
+ * the caller guards a double click.
+ *
+ * Refusals: 401 `invalid_access_token` / `not_signed_in`; 404 `base_cv_not_found` (not this
+ * account's, or deleted); 409 `base_cv_not_extracted` / `too_many_base_cvs`; 410
+ * `saved_base_cv_file_gone`; 422 `validation_error`; 429 `rate_limited`; 503 `storage_unavailable` /
+ * `service_unavailable`.
+ */
+export function copySavedBaseCv(savedBaseCvId: string, signal?: AbortSignal): Promise<BaseCv> {
+  return request<BaseCv>('/api/base-cvs/copies', {
+    method: 'POST',
+    body: { saved_base_cv_id: savedBaseCvId },
+    auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}

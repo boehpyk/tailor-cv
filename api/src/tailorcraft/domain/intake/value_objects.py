@@ -12,6 +12,7 @@ business rules that have nothing to do with the HTTP boundary.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
@@ -97,7 +98,12 @@ class ExtractedText:
         # whitespace (spaces, tabs, newlines) as one separator and drops leading/trailing
         # whitespace, so re-joining with a single space collapses everything in one pass.
         normalized = " ".join(self.value.split())
-        non_whitespace_count = sum(1 for char in normalized if not char.isspace())
+        # Exact, not an approximation: no-argument `str.split()` splits on precisely the characters
+        # `str.isspace()` accepts, so after the join the only whitespace left in `normalized` is the
+        # single ASCII spaces we inserted. Counting them is a C-level scan; the generator it replaces
+        # (`sum(1 for c in normalized if not c.isspace())`) cost ~0.4 s per 10 M characters, on the
+        # event loop, every time a `BaseCv` is loaded (T30b-B).
+        non_whitespace_count = len(normalized) - normalized.count(" ")
 
         if not normalized:
             raise EmptyExtraction("extracted text must not be blank")
@@ -185,4 +191,62 @@ class ExtractionFailureReason(StrEnum):
     NO_TEXT_LAYER = "no_text_layer"
     TOO_SHORT = "too_short"
     TOO_MANY_PAGES = "too_many_pages"
+    # Slice 2.2, T30b-C (technical plan, amendment 2026-09-26, option C): the file parses, but its
+    # text runs past `MAX_EXTRACTED_CHARACTERS`. Refused while extracting, so the whole string is
+    # never built. Rows recorded before this member existed are unaffected (grandfathered).
+    TEXT_TOO_LONG = "text_too_long"
     EXTRACTOR_ERROR = "extractor_error"
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.2 — saved base CVs.
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class BaseCvLabel:
+    """The name a registered user gives one of their saved base CVs, so five files all called
+    `CV.pdf` can be told apart in a picker (OQ-5).
+
+    Stripped; 1 to 80 code points; no control characters and no NUL — refused with `InvalidLabel`. A
+    label is a **display string**, never a path and never markup: there is no HTML escaping here,
+    because escaping is a rendering concern and React renders it as a text node. It is also user
+    text, so no domain event ever carries one (AC-4, AC-6).
+
+    A label exists only on a `UserOwner` CV (I-7) — that rule belongs to `BaseCv.rename`, not here:
+    a value object cannot know who owns the aggregate holding it.
+    """
+
+    value: str
+
+    def __post_init__(self) -> None:
+        """Strip, then refuse empty, over 80 code points, and any control character or NUL."""
+        # Deferred import for the same module-cycle reason `OriginalFilename.__post_init__` gives.
+        from tailorcraft.domain.intake.errors import InvalidLabel
+
+        label = self.value.strip()
+
+        if not label:
+            raise InvalidLabel("label must not be empty")
+        if len(label) > 80:
+            raise InvalidLabel("label must be at most 80 characters")
+        # Unicode category `Cc` is every control character: C0 (NUL and the rest below 0x20), DEL
+        # and the C1 block (0x80-0x9F). `OriginalFilename` checks only C0 and DEL; a label is newer
+        # and purely a display string, so it takes the whole category rather than repeat a subset.
+        if any(unicodedata.category(char) == "Cc" for char in label):
+            raise InvalidLabel("label must not contain control characters or NUL")
+
+        object.__setattr__(self, "value", label)
+
+
+class BaseCvOrigin(StrEnum):
+    """How a `BaseCv` came to exist: uploaded directly, or copied from a saved one into the
+    workspace (ADR-0022 §4).
+
+    **Derived, never stored.** `BaseCv.origin` is `COPIED_FROM_SAVED` iff `copied_from is not None`;
+    a stored copy of that fact would be a second representation that can disagree with the first.
+    The wire's `origin` field reads this.
+    """
+
+    UPLOADED = "uploaded"
+    COPIED_FROM_SAVED = "copied_from_saved"

@@ -53,6 +53,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tailorcraft.application.identity.results import Authenticated
 from tailorcraft.domain.identity.errors import (
     EmailAlreadyRegistered,
+    InvalidCredentials,
     InvalidEmailAddress,
     LoginNotFound,
     RefreshInProgress,
@@ -62,9 +63,18 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.user import User
-from tailorcraft.domain.identity.value_objects import EmailAddress, LoginId, LoginNotFoundReason
+from tailorcraft.domain.identity.value_objects import (
+    EmailAddress,
+    LoginId,
+    LoginNotFoundReason,
+    Password,
+    UserId,
+)
+from tailorcraft.domain.retention.errors import AccountNotFound
+from tailorcraft.domain.retention.value_objects import AccountErasureReport
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
+    DeleteOwnAccountDep,
     GetCurrentUserDep,
     LogInDep,
     LoginEmailRateLimiterDep,
@@ -76,6 +86,7 @@ from tailorcraft.infrastructure.api.deps import (
     RequireUserDep,
     SessionDep,
     SettingsDep,
+    UserRepositoryDep,
     login_email_rate_limit_identifier,
     require_trusted_origin,
 )
@@ -93,6 +104,7 @@ from tailorcraft.infrastructure.api.refresh_cookie import (
 from tailorcraft.infrastructure.api.schemas.auth import (
     AuthenticatedResponse,
     CredentialsRequest,
+    DeleteAccountRequest,
     UserResponse,
 )
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
@@ -144,6 +156,17 @@ EVENT_REGISTER_REFUSED: Final = "identity.register_refused"
 EVENT_REFRESH_REFUSED: Final = "identity.refresh_refused"
 EVENT_REFRESH_RACED: Final = "identity.refresh_raced"
 EVENT_USER_MISSING: Final = "identity.user_missing"
+EVENT_ACCOUNT_DELETION_REFUSED: Final = "identity.account_deletion_refused"
+EVENT_ACCOUNT_ERASED: Final = "retention.account_erased"
+EVENT_ACCOUNT_FILE_UNLINK_FAILED: Final = "retention.account_file_unlink_failed"
+
+PASSWORD_INCORRECT_DETAIL: Final = {
+    "code": "password_incorrect",
+    "message": "That password is not right, so your account was not deleted.",
+}
+"""S-41: 403, **not** 401 — the requester *is* signed in, the fix is not "sign in", and the client's
+interceptor refreshes on a 401 (AC-43). `InvalidCredentials` keeps its global 401
+`invalid_credentials` for login; only this handler reads it this way (technical plan §3)."""
 
 
 def _login_id(login_id: LoginId | None) -> str | None:
@@ -540,3 +563,129 @@ async def me(
     await _commit(session)
     _no_store(response)
     return _user_response(user)
+
+
+@router.post(
+    "/delete-account",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(require_trusted_origin)],
+    responses={
+        status.HTTP_403_FORBIDDEN: {
+            "model": ErrorResponse,
+            "description": (
+                "origin_not_allowed — missing or foreign `Origin` header, answered before the "
+                "limiter, the database and the hasher (AC-29) | password_incorrect — the bearer is "
+                "valid but the password is not; 403 and not 401, so the client's interceptor does "
+                "not refresh on it (AC-43). Nothing is deleted."
+            ),
+        },
+        status.HTTP_401_UNAUTHORIZED: {
+            "model": ErrorResponse,
+            "description": (
+                'invalid_access_token (+ WWW-Authenticate: Bearer error="invalid_token") | '
+                "not_signed_in — the account is already gone (a concurrent deletion won, S-46)."
+            ),
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "validation_error",
+        },
+        **_RATE_LIMITED,
+        **_SERVICE_UNAVAILABLE_LIMITED,
+    },
+)
+async def delete_account(
+    body: DeleteAccountRequest,
+    request: Request,
+    response: Response,
+    user_id: RequireUserDep,
+    users: UserRepositoryDep,
+    delete_own_account: DeleteOwnAccountDep,
+    ip_rate_limiter: LoginIpRateLimiterDep,
+    email_rate_limiter: LoginEmailRateLimiterDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> None:
+    """Delete the bearer's account, re-asking its password: 204 + a cleared `tc_refresh` (AC-29).
+
+    **A `POST` under `/api/auth`, not a `DELETE` under `/api/me`** (technical plan §4): it clears
+    `tc_refresh`, whose `Path` is `/api/auth`, so no route elsewhere could; and a body on a `DELETE`
+    is dropped by enough intermediaries to be a bug waiting.
+
+    The order is the contract's (technical plan §3): trusted `Origin` (the decorator's
+    `dependencies=`, first) → bearer → the login limiters, **fail closed**, the per-email key taken
+    from the user row and never from the body → `DeleteOwnAccount` → log from its report → commit →
+    clear the cookie. The account's rows go; the guest workspace in this browser is untouched — it is
+    guest data, purged on its own clock.
+
+    **Nothing is caught that would leave a write uncommitted.** Every refusal (wrong password, a
+    limiter, a hasher failure, the account already gone) happens before `EraseAccount` deletes a row,
+    so raising is safe. The erasure itself commits inside the bound `CommittingAccountData` before a
+    single file is unlinked (rows first, committed, then files); a failure there is a
+    `SQLAlchemyError`, `main.py`'s 503, and no line below it runs — so no cookie is cleared for an
+    account that still exists (S-43).
+    """
+    # The IP budget first: it needs nothing but the request, so a 429 or a 503 reads no row and
+    # computes no hash (2.1's order, AC-29).
+    await _enforce(
+        ip_rate_limiter,
+        "ip",
+        client_ip(request, settings.trusted_proxy_hops),
+        settings.login_rate_limit_per_ip_per_hour,
+    )
+
+    # The per-email budget is keyed by the **account's** address, read from the user row — never from
+    # the body, which carries only the password. A token outliving its account ends here (S-46's
+    # loser, AC-30).
+    try:
+        user = await users.get(user_id)
+    except UserNotFound as exc:
+        log.info(EVENT_USER_MISSING, user_id=str(user_id.value))
+        raise domain_error_to_http_exception(exc) from None
+    await _enforce(
+        email_rate_limiter,
+        "email",
+        login_email_rate_limit_identifier(user.email, settings),
+        settings.login_rate_limit_per_email_per_hour,
+    )
+
+    try:
+        password = Password.from_input(body.password.get_secret_value())
+        report = await delete_own_account(user_id, password)
+    except InvalidCredentials:
+        # S-41. The id and the reason — never the password, never its length.
+        log.info(EVENT_ACCOUNT_DELETION_REFUSED, user_id=str(user_id.value), reason="password")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail=PASSWORD_INCORRECT_DETAIL) from None
+    except (UserNotFound, AccountNotFound) as exc:
+        # S-46: a concurrent deletion won between the read above and the erasure.
+        log.info(EVENT_USER_MISSING, user_id=str(user_id.value))
+        raise domain_error_to_http_exception(exc) from None
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from None
+
+    _log_erasure(user_id, report)
+
+    await _commit(session)
+    clear_refresh_cookie(response, settings)
+    _no_store(response)
+
+
+def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
+    """S-45: one `retention.account_erased` line with the counts, and one
+    `retention.account_file_unlink_failed` per failed unlink — ids, counts and class names only.
+
+    `EraseAccount` returns its failures rather than logging them (the application layer does not
+    log); this is the entry point writing them down, exactly as the purge's task does with its
+    `PurgeReport`. Each failure is an orphan file for the operator's sweep (R-5)."""
+    log.info(
+        EVENT_ACCOUNT_ERASED,
+        user_id=str(user_id.value),
+        base_cvs=report.base_cvs,
+        files_unlinked=report.files_unlinked,
+        files_failed=len(report.unlink_failures),
+    )
+    for error_type in report.unlink_failures:
+        log.warning(
+            EVENT_ACCOUNT_FILE_UNLINK_FAILED, user_id=str(user_id.value), error_type=error_type
+        )

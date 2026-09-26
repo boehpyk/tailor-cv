@@ -9,16 +9,22 @@ shared shape is not shared behaviour and a base class ends up guessing at rules 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import assert_never
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.errors import ExtractionAlreadyDecided
 from tailorcraft.domain.intake.events import (
+    BaseCvCopied,
+    BaseCvDeleted,
     BaseCvExtractionFailed,
     BaseCvTextExtracted,
     BaseCvUploaded,
 )
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
+    BaseCvLabel,
+    BaseCvOrigin,
     BaseCvStatus,
     CvContentType,
     ExtractedText,
@@ -45,7 +51,7 @@ class BaseCv(RecordsEvents):
 
     Invariants (technical-plan.md):
 
-    - **I-1** — A `BaseCv` always has exactly one owner session, one `FileRef` and a
+    - **I-1** — A `BaseCv` always has exactly one owner (I-6, since 2.2), one `FileRef` and a
       `size_bytes > 0`. Enforced by `upload()`, which raises `InvariantViolated`; there is no other
       way to construct one.
     - **I-2** — `status == EXTRACTED` iff `extracted_text is not None`; `status ==
@@ -58,6 +64,12 @@ class BaseCv(RecordsEvents):
     - **I-5** — `extracted_text`, if present, is a valid `ExtractedText` (≥ 200 non-whitespace
       characters). Enforced by the value object's own `__post_init__`, not here — the aggregate
       cannot hold an invalid one because the type that would carry it cannot exist.
+    - **I-6** — Exactly one owner, `GuestOwner` or `UserOwner`: `_assign_owner` is the only writer.
+    - **I-7** — Only a `UserOwner` CV has a label (`rename`).
+    - **I-8** — `copy_from` takes an `EXTRACTED`, `UserOwner`-owned source and gives the copy its
+      own id and file; the copy is `EXTRACTED` with an equal `ExtractedText`.
+    - **I-9** — A copy never mutates its source.
+    - **I-10** — Only a `UserOwner` CV is deleted by a request (`delete`).
 
     **Deliberately not invariants of `BaseCv`:** the 10 MB upload size cap is a boundary/config rule
     (`settings.max_upload_bytes`) — the domain must not read settings, so this aggregate has no
@@ -70,7 +82,21 @@ class BaseCv(RecordsEvents):
     # how mypy --strict learns the attribute types that `upload` sets directly on `self` and the
     # properties below read back. SQLAlchemy's imperative mapping targets these exact names.
     _id: BaseCvId
-    _guest_session_id: GuestSessionId
+    # Two attributes, one fact: the owner (ADR-0022, technical-plan §0.1). This contradicts the
+    # model on purpose, and the contradiction lives here and nowhere else. The domain's `Owner` is a
+    # sum type — `GuestOwner | UserOwner`, exactly one — but a foreign key has exactly one target
+    # table, so the database stores a *product* of two nullable ids (`guest_session_id`, `user_id`)
+    # and restores "exactly one" with `ck_intake_base_cv_exactly_one_owner`. These two private
+    # fields are that product, mirrored so the imperative mapping can target them. Do not "tidy"
+    # them into one `_owner` attribute: SQLAlchemy would need a composite over a sum type, which
+    # puts its protocol inside `domain/` (rejected in §0.1). Instead `_assign_owner` is their only
+    # writer (a `match` with `assert_never`, so exactly one is set by construction — I-6) and
+    # `owner` their only reader, which refuses the two states the product allows and the sum does
+    # not (both set, neither set).
+    _owner_guest_session_id: GuestSessionId | None
+    _owner_user_id: UserId | None
+    _label: BaseCvLabel | None
+    _copied_from: BaseCvId | None
     _original_filename: OriginalFilename
     _content_type: CvContentType
     _size_bytes: int
@@ -114,7 +140,7 @@ class BaseCv(RecordsEvents):
     def upload(
         cls,
         id: BaseCvId,
-        guest_session_id: GuestSessionId,
+        owner: Owner,
         original_filename: OriginalFilename,
         content_type: CvContentType,
         size_bytes: int,
@@ -122,7 +148,8 @@ class BaseCv(RecordsEvents):
         uploaded_at: datetime,
     ) -> BaseCv:
         """The only constructor. Sets `status = UPLOADED`, `extracted_text = None`,
-        `failure_reason = None`, `extracted_at = None`, and records `BaseCvUploaded`.
+        `failure_reason = None`, `extracted_at = None`, `label = None`, `copied_from = None`, and
+        records `BaseCvUploaded`. `owner` is either variant (AC-2).
 
         Raises `InvariantViolated` if `size_bytes <= 0` (I-1) — the 10 MB *upper* bound is a
         boundary/config concern checked before this is ever called, not by this method.
@@ -132,7 +159,7 @@ class BaseCv(RecordsEvents):
 
         cv = cls()
         cv._id = id
-        cv._guest_session_id = guest_session_id
+        cv._assign_owner(owner)
         cv._original_filename = original_filename
         cv._content_type = content_type
         cv._size_bytes = size_bytes
@@ -142,17 +169,116 @@ class BaseCv(RecordsEvents):
         cv._failure_reason = None
         cv._uploaded_at = uploaded_at
         cv._extracted_at = None
+        cv._label = None
+        cv._copied_from = None
 
         cv.record(
             BaseCvUploaded(
                 base_cv_id=id,
-                guest_session_id=guest_session_id,
+                owner=owner,
                 content_type=content_type,
                 size_bytes=size_bytes,
                 occurred_at=uploaded_at,
             )
         )
         return cv
+
+    @classmethod
+    def copy_from(
+        cls,
+        source: BaseCv,
+        id: BaseCvId,
+        into: GuestOwner,
+        file: FileRef,
+        at: datetime,
+    ) -> BaseCv:
+        """Build a working copy of a saved base CV in a guest workspace (ADR-0022 §4, I-8, I-9).
+
+        The copy is `EXTRACTED` with an equal `ExtractedText` (no re-extraction), the source's
+        filename, content type and size, its own `id` and `file`, `copied_from = source.id`,
+        `uploaded_at = extracted_at = at` and no label; records `BaseCvCopied`. The source is never
+        mutated.
+
+        Raises `InvariantViolated` if the source is not `UserOwner`-owned or not `EXTRACTED`, if
+        `id == source.id`, or if `file == source.file`. `into` is typed `GuestOwner`, not `Owner`:
+        the only copy 2.2 has is the working copy, and the narrow type says so.
+        """
+        if not isinstance(source.owner, UserOwner):
+            raise InvariantViolated("only a saved (user-owned) base CV can be copied (I-8)")
+        # Read once into a local so the `None` check narrows the type the copy is built from; the
+        # status check alone would leave mypy (and a reader) trusting I-2 without seeing it hold.
+        text = source.extracted_text
+        if source.status is not BaseCvStatus.EXTRACTED or text is None:
+            raise InvariantViolated("only an extracted base CV can be copied (I-8)")
+        if id == source.id:
+            raise InvariantViolated("a copy needs its own id, not the source's (I-8)")
+        if file == source.file:
+            # Sharing the source's key would let the purge of the copy's guest session unlink the
+            # saved CV's bytes (ADR-0022 §2) — the copy owns its own file or it is not a copy.
+            raise InvariantViolated("a copy needs its own file, not the source's (I-8)")
+
+        # Every write below goes to `cv`; `source` is only read (I-9).
+        cv = cls()
+        cv._id = id
+        cv._assign_owner(into)
+        cv._original_filename = source.original_filename
+        cv._content_type = source.content_type
+        cv._size_bytes = source.size_bytes
+        cv._file = file
+        cv._status = BaseCvStatus.EXTRACTED
+        cv._extracted_text = text
+        cv._failure_reason = None
+        cv._uploaded_at = at
+        cv._extracted_at = at
+        cv._label = None
+        cv._copied_from = source.id
+
+        cv.record(
+            BaseCvCopied(
+                base_cv_id=id,
+                source_base_cv_id=source.id,
+                owner=into,
+                occurred_at=at,
+            )
+        )
+        return cv
+
+    def _assign_owner(self, owner: Owner) -> None:
+        """The only writer of the two owner attributes (I-6): exactly one is set, by construction."""
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                self._owner_guest_session_id = guest_session_id
+                self._owner_user_id = None
+            case UserOwner(user_id=user_id):
+                self._owner_guest_session_id = None
+                self._owner_user_id = user_id
+            case _:
+                assert_never(owner)
+
+    def rename(self, label: BaseCvLabel | None, at: datetime) -> None:
+        """Set or clear (`None`) the label. Only a `UserOwner` CV has one (I-7): raises
+        `InvariantViolated` on a `GuestOwner` CV. Records no event — a label is user text.
+
+        `at` is accepted and unused: every mutation on this aggregate takes the instant it happened,
+        so a caller never has to know which ones currently read it.
+        """
+        if not isinstance(self.owner, UserOwner):
+            raise InvariantViolated("only a saved (user-owned) base CV has a label (I-7)")
+        self._label = label
+
+    def delete(self, at: datetime) -> None:
+        """Record that a registered user deleted this saved CV: records `BaseCvDeleted`.
+
+        Only a `UserOwner` CV (I-10) — a guest CV is deleted by the purge, never by a request —
+        raises `InvariantViolated` otherwise. Mutates no state: the repository removes the row.
+        """
+        match self.owner:
+            case UserOwner() as owner:
+                self.record(BaseCvDeleted(base_cv_id=self._id, owner=owner, occurred_at=at))
+            case GuestOwner():
+                raise InvariantViolated("a guest base CV is deleted by the purge only (I-10)")
+            case _:
+                assert_never(self.owner)
 
     def _guard_extraction_not_yet_decided(self, at: datetime) -> None:
         """The I-3/I-4 guard shared by both `mark_*` methods, written once rather than copy-pasted:
@@ -216,8 +342,35 @@ class BaseCv(RecordsEvents):
         return self._id
 
     @property
-    def guest_session_id(self) -> GuestSessionId:
-        return self._guest_session_id
+    def owner(self) -> Owner:
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3).
+
+        The product type has four states and the sum type two; the other two (both set, neither
+        set) cannot come from `_assign_owner` and are refused by the database's CHECK, so reaching
+        the last arm means a row was written around both locks — loud, never a guess at a variant.
+        """
+        match (self._owner_guest_session_id, self._owner_user_id):
+            case (GuestSessionId() as guest_session_id, None):
+                return GuestOwner(guest_session_id)
+            case (None, UserId() as user_id):
+                return UserOwner(user_id)
+            case _:
+                raise InvariantViolated(f"{self._id!r} must have exactly one owner (I-6)")
+
+    @property
+    def label(self) -> BaseCvLabel | None:
+        return self._label
+
+    @property
+    def copied_from(self) -> BaseCvId | None:
+        return self._copied_from
+
+    @property
+    def origin(self) -> BaseCvOrigin:
+        """`COPIED_FROM_SAVED` iff `copied_from is not None` — derived, never stored."""
+        if self._copied_from is None:
+            return BaseCvOrigin.UPLOADED
+        return BaseCvOrigin.COPIED_FROM_SAVED
 
     @property
     def original_filename(self) -> OriginalFilename:

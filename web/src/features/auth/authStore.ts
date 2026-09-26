@@ -120,6 +120,12 @@ interface ModuleState {
   bootPromise: Promise<RefreshResult> | null;
   inFlightRefresh: Promise<RefreshResult> | null;
   readonly listeners: Set<() => void>;
+  /**
+   * The cross-tab channel (AC-42) and how to stop listening on it, or `null` when none is connected.
+   * Held here, beside the state it changes, so `__resetForTests` can disconnect it with everything
+   * else — a listener left on a channel from a previous test would sign the next test's store out.
+   */
+  channel: { readonly target: AuthChannel; readonly disconnect: () => void } | null;
 }
 
 function freshModuleState(generation: number): ModuleState {
@@ -131,6 +137,7 @@ function freshModuleState(generation: number): ModuleState {
     bootPromise: null,
     inFlightRefresh: null,
     listeners: new Set(),
+    channel: null,
   };
 }
 
@@ -450,6 +457,121 @@ function getSnapshot(): AuthSnapshot {
   return current.snapshot;
 }
 
+// --- The cross-tab channel (slice 2.2, AC-42) ----------------------------------------------------
+
+/** The one `BroadcastChannel` name every tab of this origin shares for auth news. */
+export const AUTH_CHANNEL_NAME = 'tailorcraft-auth';
+
+/**
+ * The only message the channel carries. **Signing out is broadcast; signing in is not** (AC-42):
+ * a broadcast login would make N tabs refresh at once and race the server's grace window, whereas
+ * a tab that missed a login simply converges on its next request.
+ */
+export interface SignedOutMessage {
+  readonly type: 'signed-out';
+}
+
+/**
+ * The part of a `BroadcastChannel` the store touches — typed as a subset so a test can hand in a
+ * real channel (Node and jsdom-in-Node both have one) or a small fake, and so the store cannot
+ * grow a dependency on anything else the class offers.
+ */
+export type AuthChannel = Pick<
+  BroadcastChannel,
+  'postMessage' | 'addEventListener' | 'removeEventListener'
+>;
+
+/** The one message this tab ever posts. Frozen: it is shared by every broadcast. */
+const SIGNED_OUT_MESSAGE: SignedOutMessage = Object.freeze({ type: 'signed-out' });
+
+/**
+ * Is `data` another tab's `SignedOutMessage`? A shape check, not a trust decision: a
+ * `BroadcastChannel` only carries messages from this origin, but "this origin" includes every
+ * version of this bundle a user has open, and an older or newer one may say things this one does
+ * not understand. Anything that is not exactly our shape is ignored (AC-42).
+ */
+function isSignedOutMessage(data: unknown): data is SignedOutMessage {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'type' in data &&
+    (data as { readonly type: unknown }).type === 'signed-out'
+  );
+}
+
+/**
+ * Tell every other tab of this origin that the user signed out (a logout, or an account deletion)
+ * by posting a `SignedOutMessage` on the connected channel. A `BroadcastChannel` never delivers a
+ * message to the object that posted it, so this tab does not hear its own news. No channel
+ * connected (a browser without `BroadcastChannel`, or a test that never connected one) → nothing.
+ *
+ * **Best effort, and never a reason to fail the sign-out.** This tab has already signed out when it
+ * is called; a channel that has been closed throws `InvalidStateError` on `postMessage`, and that is
+ * swallowed — the other tabs then converge on their next request, exactly as they would in a
+ * browser with no channel at all.
+ */
+function broadcastSignOut(): void {
+  const connection = current.channel;
+  if (connection === null) {
+    return;
+  }
+  try {
+    connection.target.postMessage(SIGNED_OUT_MESSAGE);
+  } catch {
+    // A closed channel. See the docstring: the local sign-out has already happened.
+  }
+}
+
+/**
+ * Listen on `channel` for another tab's sign-out. On a `SignedOutMessage` — and on nothing else;
+ * a message of any other shape is ignored (AC-42) — this tab dispatches `SIGNED_OUT` with reason
+ * `signed_out_elsewhere` **without** calling `/refresh` or `/logout`, then calls
+ * `onSignedOutElsewhere` so the caller can drop every `['auth', …]` query (the store knows nothing
+ * of TanStack; `authCache.connectCrossTabSignOut` is that caller). The same channel is the one
+ * `broadcastSignOut` posts on. Returns a disconnect.
+ *
+ * **Store first, cache second** — the order `useLogout` uses: the dispatch disables every
+ * `['auth', …]` query before its entry disappears, so none of them refetches what was just removed.
+ *
+ * **A tab that is already `anonymous` ignores the news.** It has nothing to sign out of, and
+ * replacing its reason would put "signed out in another tab" on a page whose user never signed in.
+ * In `booting` or `unavailable` the message is honoured: the question the boot is asking has just
+ * been answered, and the store's `signOuts` counter drops the boot's answer when it lands.
+ *
+ * Connected **once, at module scope** beside the boot refresh (`main.tsx`), never from a
+ * component's `useEffect`, so `<StrictMode>` cannot double-subscribe it (technical plan §7). One
+ * channel per store: connecting another disconnects the first.
+ */
+function connectChannel(channel: AuthChannel, onSignedOutElsewhere: () => void): () => void {
+  const store = current;
+  store.channel?.disconnect();
+
+  function onMessage(event: MessageEvent<unknown>): void {
+    if (!isCurrent(store) || !isSignedOutMessage(event.data)) {
+      return;
+    }
+    if (store.state.status === 'anonymous') {
+      return;
+    }
+    if (dispatch(store, { type: 'SIGNED_OUT', reason: 'signed_out_elsewhere' })) {
+      onSignedOutElsewhere();
+    }
+  }
+
+  channel.addEventListener('message', onMessage);
+  const connection = {
+    target: channel,
+    disconnect: () => {
+      channel.removeEventListener('message', onMessage);
+      if (store.channel === connection) {
+        store.channel = null;
+      }
+    },
+  };
+  store.channel = connection;
+  return connection.disconnect;
+}
+
 /**
  * The store. Methods are plain functions over module state, so they can be passed as callbacks
  * (`useSyncExternalStore(authStore.subscribe, authStore.getSnapshot)`) without binding.
@@ -464,13 +586,16 @@ export const authStore = {
   signOutIfHolding,
   subscribe,
   getSnapshot,
+  broadcastSignOut,
+  connectChannel,
 } as const;
 
 /**
  * **Test seam — never call from production code.** Back to a fresh `booting` store: no boot
- * promise, no in-flight refresh, no listeners, and a new generation so that anything still pending
+ * promise, no in-flight refresh, no listeners, no cross-tab channel, and a new generation so that anything still pending
  * from before the reset lands on nothing. See the module docstring.
  */
 export function __resetForTests(): void {
+  current.channel?.disconnect();
   current = freshModuleState(current.generation + 1);
 }

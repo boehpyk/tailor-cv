@@ -18,6 +18,7 @@ from sqlalchemy.types import TypeDecorator
 
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
+    BaseCvLabel,
     BaseCvStatus,
     CvContentType,
     ExtractedText,
@@ -63,6 +64,34 @@ class OriginalFilenameType(TypeDecorator[OriginalFilename]):
         if value is None:
             return None
         return OriginalFilename(value)
+
+
+class BaseCvLabelType(TypeDecorator[BaseCvLabel]):
+    """`intake_base_cv.label` — `VARCHAR(80)`, `NULL` unless a registered user named the CV (I-7,
+    `ck_intake_base_cv_label_only_when_user_owned`).
+
+    The width is `BaseCvLabel`'s own bound (80 code points after the strip). Postgres counts
+    `VARCHAR(n)` in characters, not bytes, so the column and the value object agree on what "80"
+    means, and a label the domain accepts can never be truncated or refused by the column. The wire
+    schema's looser 200 is the parse bound, not this one (technical plan §4).
+
+    **The value is re-validated on the way out**, as every decorator here does: `BaseCvLabel(value)`
+    runs `__post_init__` on a loaded row. A label written around the domain (a `psql` session) that
+    breaks the rules then fails loudly at load rather than reaching a picker.
+    """
+
+    impl = String(80)
+    cache_ok = True
+
+    def process_bind_param(self, value: BaseCvLabel | None, dialect: Dialect) -> str | None:
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(self, value: Any | None, dialect: Dialect) -> BaseCvLabel | None:
+        if value is None:
+            return None
+        return BaseCvLabel(value)
 
 
 class ExtractedTextType(TypeDecorator[ExtractedText]):

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
     CvContentType,
@@ -33,12 +33,15 @@ from tailorcraft.domain.shared.events import DomainEvent
 class BaseCvUploaded(DomainEvent):
     """A base CV's bytes were accepted and stored, before extraction is attempted.
 
-    Payload: `base_cv_id`, `guest_session_id`, `content_type`, `size_bytes` (+ inherited
-    `occurred_at`). Deliberately absent: the original filename (PII) and the bytes themselves.
+    Payload: `base_cv_id`, `owner`, `content_type`, `size_bytes` (+ inherited `occurred_at`).
+    Deliberately absent: the original filename (PII) and the bytes themselves.
+
+    `owner` replaced 1.1's `guest_session_id` in slice 2.2 (AC-6): an upload now belongs to a guest
+    session or a user (ADR-0022), and the owner is an id wrapped in its variant — still ids only.
     """
 
     base_cv_id: BaseCvId
-    guest_session_id: GuestSessionId
+    owner: Owner
     content_type: CvContentType
     size_bytes: int
 
@@ -66,3 +69,31 @@ class BaseCvExtractionFailed(DomainEvent):
 
     base_cv_id: BaseCvId
     reason: ExtractionFailureReason
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BaseCvCopied(DomainEvent):
+    """A saved base CV was copied into a guest workspace as a working copy (ADR-0022 §4).
+
+    Payload: `base_cv_id` (the copy), `source_base_cv_id` (the saved CV), `owner` (the copy's —
+    always a guest session, which the type says) (+ inherited `occurred_at`). Deliberately absent:
+    the filename, the label and the extracted text the copy shares with its source.
+    """
+
+    base_cv_id: BaseCvId
+    source_base_cv_id: BaseCvId
+    owner: GuestOwner
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BaseCvDeleted(DomainEvent):
+    """A registered user deleted one of their saved base CVs (AC-5).
+
+    Payload: `base_cv_id`, `owner` (+ inherited `occurred_at`). `owner` is typed `UserOwner`, the
+    same narrowing `BaseCvCopied` makes: a guest CV is deleted by the purge and never by a request
+    (I-10), so an event saying otherwise is unconstructable. Deliberately absent: the filename, the
+    label and the storage key.
+    """
+
+    base_cv_id: BaseCvId
+    owner: UserOwner

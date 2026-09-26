@@ -27,6 +27,7 @@ const READY_CV: BaseCv = {
   failure_message: null,
   uploaded_at: '2026-09-11T10:00:00Z',
   expires_at: '2026-09-12T10:00:00Z',
+  origin: 'uploaded',
 };
 
 const READY_POSTING: JobPostingSummary = {

@@ -63,6 +63,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import (
@@ -267,7 +268,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     cv_bytes_marker = _marker("CVBYTES")
     cv = BaseCv.upload(
         id=cv_id,
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         original_filename=OriginalFilename(f"{filename_marker}.pdf"),
         content_type=CvContentType.PDF,
         size_bytes=64,

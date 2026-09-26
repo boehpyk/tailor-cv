@@ -3,7 +3,7 @@
 A use case rather than a bare `cvs.list_for_session(sid)` call for the same reason
 `GetBaseCvForSession` is one: it carries the authorization rule, and that rule must not live in a
 router (technical-plan.md, "Use cases"). Here the rule is enforced by construction rather than by a
-per-row comparison — **the link** (`cv.guest_session_id == the resolved session id`) is exactly what
+per-row comparison — **the link** (`cv.owner == GuestOwner(the resolved session id)`) is exactly what
 `list_for_session` queries by, so there is no row in the result a caller does not own. Owning a
 session id is not authority over an object that references it (ADR-0008); the corollary for a list
 endpoint is that the query itself must never be parameterized by anything the caller supplies other

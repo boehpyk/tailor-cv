@@ -21,6 +21,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from tailorcraft.domain.intake.value_objects import (
+    BaseCvOrigin,
     BaseCvStatus,
     CvContentType,
     ExtractionFailureReason,
@@ -41,6 +42,10 @@ class BaseCvResponse(BaseModel):
     `expires_at` is the *guest session's* expiry, not a property of the CV row itself — carrying it
     here makes the 24-hour retention promise visible in the payload as well as in the UI copy
     (AC-16, ADR-0006 §5).
+
+    `origin` (slice 2.2, additive): `uploaded`, or `copied_from_saved` for a working copy made from a
+    registered user's saved CV — the client's cue for the *Working copy* badge (AC-41). Derived from
+    the aggregate (`BaseCv.origin`), never stored.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -55,6 +60,7 @@ class BaseCvResponse(BaseModel):
     failure_message: str | None
     uploaded_at: datetime
     expires_at: datetime
+    origin: BaseCvOrigin
 
 
 class BaseCvListResponse(BaseModel):
@@ -64,6 +70,70 @@ class BaseCvListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     items: list[BaseCvResponse] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------------------------
+# Saved base CVs — slice 2.2 (technical plan §4). `/api/me/base-cvs*` and the copy request.
+# ---------------------------------------------------------------------------------------------
+
+LABEL_WIRE_MAX_LENGTH = 200
+"""What `RenameSavedBaseCvRequest` will *parse*: looser than `BaseCvLabel`'s 80 on purpose (technical
+plan §4). The schema bounds what we are willing to read; the value object says what is valid, with a
+message the user can act on — 2.1's `password ≤ 1024` pattern. A 120-character label is therefore
+422 `invalid_label` from the domain, not a generic `validation_error` from here."""
+
+
+class SavedBaseCvResponse(BaseModel):
+    """One saved base CV, as its owner sees it — `GET`/`POST /api/me/base-cvs`, `PATCH …/{id}`.
+
+    `BaseCvResponse`'s fields minus `expires_at`, plus `label`. **No `expires_at`**: a saved CV
+    never expires, and a field that could only ever be `null` would read as "unknown" rather than
+    "never". **No text and no bytes** — `character_count` is computed from the text (for the list,
+    by Postgres, without selecting it: `SavedBaseCvSummary`), never the text itself. No `origin`: a
+    saved CV is only ever uploaded; copies live in the guest workspace.
+
+    Built from a `SavedBaseCvSummary` on the list, and from the `BaseCv` aggregate after an upload
+    or a rename — two sources, one key set, which is exactly what AC-20 pins.
+    """
+
+    id: UUID
+    label: str | None
+    original_filename: str
+    content_type: CvContentType
+    size_bytes: int
+    status: BaseCvStatus
+    character_count: int | None
+    failure_reason: ExtractionFailureReason | None
+    failure_message: str | None
+    uploaded_at: datetime
+
+
+class SavedBaseCvListResponse(BaseModel):
+    """`GET /api/me/base-cvs` — newest first. `items` is `[]` for a user with none (S-13), never a
+    404."""
+
+    items: list[SavedBaseCvResponse] = Field(default_factory=list)
+
+
+class RenameSavedBaseCvRequest(BaseModel):
+    """`PATCH /api/me/base-cvs/{id}` — `{"label": str | null}`; `null` clears the label.
+
+    The key is **required**: a body of `{}` is a 422 `validation_error`, not a silent "clear". A
+    rename that means "clear" says so with an explicit `null`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str | None = Field(max_length=LABEL_WIRE_MAX_LENGTH)
+
+
+class CopySavedBaseCvRequest(BaseModel):
+    """`POST /api/base-cvs/copies` — `{"saved_base_cv_id": uuid}`. A malformed id is FastAPI's 422
+    `validation_error`, raised before the handler body runs — so before any guest session is
+    resolved or minted (S-26)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    saved_base_cv_id: UUID
 
 
 class ErrorDetail(BaseModel):
