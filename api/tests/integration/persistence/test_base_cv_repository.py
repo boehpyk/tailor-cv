@@ -248,6 +248,71 @@ async def test_get_raises_not_found_for_an_unknown_id(session: AsyncSession) -> 
         await cvs.get(cvs.next_identity())
 
 
+async def test_a_second_get_of_the_same_id_is_an_identity_map_hit_not_a_second_decode(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """T30b-A / `/verify` round 1 MINOR (`repositories/intake/base_cv.py:101-165`). The copy route's
+    own shape is two `get()` calls for the same id inside one request — the router's authorization
+    read, then the use case's own internal authorization read, on the same session — and `get`'s
+    module docstring says the second must be an identity-map hit, never a second run of
+    `ExtractedTextType`'s decode (the whole point of `_pinned`: the session's identity map holds only
+    a *weak* reference, so without a strong one the router's own dropped local would let the
+    instance be collected between the two calls).
+
+    Counted by wrapping `ExtractedText.__post_init__` — dataclass machinery a fake object cannot
+    stand in for, so a fresh call is the one thing that can only mean "a row was just decoded".
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Replaced the whole method body
+    with a plain `select(BaseCv).where(BaseCv._id == cv_id)` — the exact shape the docstring says
+    `get` was changed *away from* ("Why not `select(BaseCv)`"). Note that swapping only the
+    identity-map branch for an unconditional `session.get(BaseCv, cv_id)` does **not** reproduce the
+    bug: `session.get` itself special-cases an identity-map hit and returns the cached instance
+    without executing SQL at all, so no `TypeDecorator` runs and this test stays green — the bug is
+    specifically that a `select()` statement decodes every column as a side effect of processing the
+    row, discarding the freshly-decoded object in favour of the identity map's cached one only
+    *after* the decode has already happened. Re-run:
+    ```
+    >       assert constructions == 1, (
+                f"ExtractedText was constructed {constructions} time(s) for two get() calls of the "
+                "same id in one repository's lifetime — the second call must be an identity-map hit"
+            )
+    E       AssertionError: ExtractedText was constructed 2 time(s) for two get() calls of the same
+    id in one repository's lifetime — the second call must be an identity-map hit
+    E       assert 2 == 1
+    FAILED tests/integration/persistence/test_base_cv_repository.py::test_a_second_get_of_the_same_id_is_an_identity_map_hit_not_a_second_decode
+    1 failed, 24 deselected in 1.14s
+    ```
+    Source restored byte-exact (`git diff --stat api/src` empty); re-run green alone and the full
+    module green twice in a row afterward.
+    """
+    owner = await _persist_owner(session, clock, token_hash="30b-a" * 8)
+    cvs = SqlAlchemyBaseCvRepository(session)
+    cv = _upload(cvs, owner.id, clock)
+    cv.mark_extracted(ExtractedText("word " * 200), clock.now())
+    await cvs.add(cv)
+    session.expunge_all()  # forces the first get() below to genuinely reload
+
+    constructions = 0
+    original_post_init = ExtractedText.__post_init__
+
+    def _counting_post_init(self: ExtractedText) -> None:
+        nonlocal constructions
+        constructions += 1
+        original_post_init(self)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(ExtractedText, "__post_init__", _counting_post_init)
+
+        first = await cvs.get(cv.id)
+        second = await cvs.get(cv.id)
+
+    assert first is second, "the second get() must hand back the exact pinned instance"
+    assert constructions == 1, (
+        f"ExtractedText was constructed {constructions} time(s) for two get() calls of the same id "
+        "in one repository's lifetime — the second call must be an identity-map hit"
+    )
+
+
 async def test_count_for_session_counts_only_that_sessions_rows(
     session: AsyncSession, clock: FixedClock
 ) -> None:
