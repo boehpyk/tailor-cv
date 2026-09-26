@@ -124,3 +124,50 @@ for the wire's `origin` field and for slice 2.4's claim.
 - **The copy is not idempotent.** Two clicks make two working copies. The client guards the click; a
   server-side idempotency key would be machinery for a double click on a free, 24-hour, guest-capped
   operation.
+
+## Amendment: 2026-09-26, from the plan of slice 2.3 (`tailoring-application-history`)
+
+Slice 2.3 makes tailoring runs, job postings and export jobs ownable by a user, so that a registered
+user can keep a history (ADR-0023). This ADR's Consequences named that as the per-table extension of
+the shape decided here, and named two questions for 2.3 to answer. The six decisions above stand;
+this amendment records how the extension was executed, restates what §4 actually requires, and
+settles the status of the copy route. The question of deleting a saved CV that a surviving run
+references is answered in ADR-0023 decision 4 and ADR-0014's amendment: allowed, with a dangling
+reference and a derived *"CV deleted"*.
+
+**(a) The shape is extended per table, unchanged.** `posting_job_posting`, `tailoring_run` and
+`export_job` each gain what `intake_base_cv` got in 2.2: a nullable `user_id` (`ON DELETE CASCADE`
+from `identity_user`), a now-nullable `guest_session_id`, an index leading on `user_id`, and
+`ck_<table>_exactly_one_owner: num_nonnulls(guest_session_id, user_id) = 1`. In the migration the
+CHECK is validated **before** `guest_session_id` loses `NOT NULL`, so there is no instant at which an
+ownerless row is permitted. `JobPosting`, `TailoringRun` and `ExportJob` each carry the same two
+private mapped attributes, the same `_assign_owner` with `assert_never`, and the same `owner`
+property — written three more times, on purpose, with **no shared base class** (§ Alternatives:
+shared shape is not shared behaviour), and each class comments the sum-versus-product contradiction
+at its own point of contradiction.
+
+The orphan sweep's owner-blind cross-check now matters for a second column: it reads
+`export_job.file_key` for every row regardless of owner, and that is what spares a user's ready
+export file older than any window. The Consequence above about keeping the cross-check owner-blind
+applies to both tables, and is proven for both by a mutation-observed test.
+
+**(b) The rule is *"an ownership graph never crosses owners"*; the copy was the means.** §4's title
+reads as though reuse always copies. What it requires is that every row a run, an export or the purge
+can reach has the **same owner as the run**. In 2.2 a saved CV could only reach a *guest* run, so a
+copy was the only way to satisfy the rule. From 2.3 a *user-owned* run references a saved CV
+directly, because both are the user's and nothing crosses. The rule holds because every input to a
+run is authorized against the **same resolved requester**, every created row takes that requester as
+its owner, and an export job takes **its run's** owner. That last invariant spans aggregates, so it
+lives in `RequestExport` with a comment saying so, and a database-level test checks it across every
+2.3 flow. The alternative this ADR rejected — *"make the workspace user-owned when signed in"* — was
+rejected for 2.2 because it pre-empted 2.3. ADR-0023 is that slice, and it takes the option up with
+the rejection's second objection answered: guest work is **named** and linked from the account
+workspace, not hidden.
+
+**(c) The copy route stays, with no first-party caller from 2.3.** The account workspace no longer
+calls `POST /api/base-cvs/copies`. The route, `CopySavedBaseCvToWorkspace`, `copied_from_base_cv_id`,
+the *Working copy* badge and ADR-0008 (f)'s exception are **unchanged**: an open 2.2 tab may still
+call it while the deploy runs two versions, existing working copies live out their 24 hours, and
+slice 2.4 decides what a working copy *is* once a guest's work can become the user's — which the
+Consequence above already hands it. Removing the route in 2.3 would make that decision early and
+half. **Trigger, carried by 2.4:** remove the copy route, or give it a caller.

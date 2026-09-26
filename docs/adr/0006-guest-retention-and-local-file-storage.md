@@ -117,3 +117,43 @@ guest. It is reached two ways: the user's own **Delete account**, which re-confi
 an operator command, `erase-account`, with a dry run. This discharges the Consequence above that named
 GDPR erasure as a different mechanism not built here, and it makes "delete the user row by hand"
 **wrong** as an operator procedure: the cascade would remove the rows and orphan every file.
+
+## Amendment: 2026-09-26, from the plan of slice 2.3 (`tailoring-application-history`)
+
+Slice 2.3 gives a registered user a history of their tailored documents (ADR-0023). Amendment (a)'s
+two promises — workspace data for at most 24 hours, saved data until the user deletes it — stand. This
+amendment adds a third kind of saved data and says how each deletion reaches it.
+
+**(d) A registered user's tailoring is kept until they delete it, one entry or the whole account.**
+
+- **What is kept.** A signed-in user's tailoring runs (the tailored CV and cover letter of record),
+  the job postings they were made from, and their rendered PDF and DOCX export files. All are
+  user-owned from creation, with no guest session, so the purge's predicate and cascade cannot
+  select them — spared **by schema**, exactly as a saved CV is. The orphan sweep spares a kept export
+  file by its database cross-check, which reads `export_job.file_key` for every row regardless of
+  owner. Both are proven with rows and files that exist, each test observed failing under a named
+  mutation. Like (a)'s saved CVs, this is a **change to the product's privacy promise**, and §5's rule
+  applies: the account workspace and every account response state it (`expires_at: null` means *kept
+  until you delete it*), not buried.
+- **Deleting a history entry is §2's order, applied to a request.** One transaction deletes the run,
+  its export jobs, and its posting **if no other entry uses it**, and commits; then each export file
+  is unlinked. The keys are **derived** from the export rows the `DELETE` returned, so a `rendering`
+  or `failed` job's already-written bytes are not missed, and nothing is read before it is deleted.
+  An unlink that fails after the commit is not an error to the user, as in (b): the request succeeds,
+  the failures are returned in the report, a warning names each, and the bytes remain until the
+  operator's orphan sweep. A crash between the commit and the unlinks leaves orphans for the same
+  sweep. A run that is still `queued` or `running` is refused, since nothing in this product cancels a
+  paid call.
+- **Deleting a saved CV does not reach history.** The entries made from it keep their documents and
+  show *"CV deleted"*, derived at read time (ADR-0023 decision 4). They are separately owned
+  documents the user may still be sending, and the saved-CV deletion dialog says so. Working copies
+  are still reached by nothing but the guest purge, as (a) says.
+- **Unused account postings** — captured, never tailored — are kept with the account, capped, and
+  erased with it. There is no per-posting delete in 2.3. **Trigger:** any user above 100 unused
+  postings.
+- **Account erasure, (c), widens without changing shape.** The user row's cascade now also removes
+  runs, postings and export jobs; the collected file keys are the saved CVs' **and** the derived keys
+  of the user's PDF and DOCX export jobs; the report counts all of them. The `SELECT … FOR UPDATE` on
+  the user row now also serializes run, posting and export `INSERT`s, since each foreign-key check
+  takes `FOR KEY SHARE` on that row — so a racing request waits, then answers "not signed in", and
+  any file it already wrote is an orphan for the sweep.
