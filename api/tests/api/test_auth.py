@@ -1947,6 +1947,107 @@ async def test_delete_account_removes_the_user_so_a_second_register_of_the_same_
     assert second_register.status_code == 201, second_register.text
 
 
+async def test_delete_account_takes_every_row_and_file_it_owns_and_nothing_a_guest_owns(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """AC-29's `Data` column in full: the user, every login, every retired hash, every saved CV row
+    **and file** gone; the guest workspace (`tc_guest`, its session row, its rows, the working copy's
+    file) untouched — it is guest data, purged on its own clock, never by account deletion.
+
+    Two saved CVs (real files) plus one refresh rotation (so a retired hash genuinely exists to
+    prove the cascade reaches it, not only the login row itself) plus one working copy made through
+    the real copy route (so the guest side of the proof is the product's own transfer route, not a
+    row inserted by hand)."""
+    _assert_test_database(settings)
+    token, user_id = await _register_2_2(client, settings)
+
+    # A retired hash: one refresh rotation before the account is erased.
+    refreshed = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+    assert refreshed.status_code == 200, refreshed.text
+    token = refreshed.json()["access_token"]
+
+    first_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
+    second_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
+
+    copied = await client.post(
+        "/api/base-cvs/copies",
+        json={"saved_base_cv_id": first_cv_id},
+        headers=_bearer_delacct(token),
+    )
+    assert copied.status_code == 201, copied.text
+    working_copy_id = copied.json()["id"]
+
+    row = (
+        await session.execute(
+            text("SELECT guest_session_id, file_key FROM intake_base_cv WHERE id = :id"),
+            {"id": UUID(working_copy_id)},
+        )
+    ).one()
+    guest_session_id, working_copy_key = row.guest_session_id, row.file_key
+    working_copy_path = settings.upload_dir / working_copy_key
+    assert working_copy_path.exists(), "setup sanity: the working copy's file must exist"
+    working_copy_bytes = working_copy_path.read_bytes()
+
+    async def _login_count() -> int:
+        result = await session.execute(
+            text("SELECT count(*) FROM identity_login WHERE user_id = :id"), {"id": UUID(user_id)}
+        )
+        return int(result.scalar_one())
+
+    async def _retired_hash_count() -> int:
+        result = await session.execute(
+            text(
+                "SELECT count(*) FROM identity_retired_refresh_token rt "
+                "JOIN identity_login l ON l.id = rt.login_id WHERE l.user_id = :id"
+            ),
+            {"id": UUID(user_id)},
+        )
+        return int(result.scalar_one())
+
+    assert await _login_count() == 1, "setup sanity: the register+refresh must leave one login"
+    assert await _retired_hash_count() == 1, "setup sanity: the rotation must retire one hash"
+
+    response = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+
+    assert response.status_code == 204, response.text
+    assert _refresh_cookie_attrs(response)["max-age"] == "0"
+
+    # The user, every login, every retired hash: gone.
+    user_row = await session.execute(
+        text("SELECT count(*) FROM identity_user WHERE id = :id"), {"id": UUID(user_id)}
+    )
+    assert user_row.scalar_one() == 0
+    assert await _login_count() == 0
+    assert await _retired_hash_count() == 0
+
+    # Every saved CV row and file: gone.
+    saved_rows = await session.execute(
+        text("SELECT count(*) FROM intake_base_cv WHERE user_id = :id"), {"id": UUID(user_id)}
+    )
+    assert saved_rows.scalar_one() == 0
+    assert not (settings.upload_dir / _saved_cv_key_2_2(first_cv_id)).exists()
+    assert not (settings.upload_dir / _saved_cv_key_2_2(second_cv_id)).exists()
+
+    # The guest workspace: session row, working-copy row, and working-copy file, all untouched.
+    guest_row = await session.execute(
+        text("SELECT count(*) FROM identity_guest_session WHERE id = :id"),
+        {"id": guest_session_id},
+    )
+    assert guest_row.scalar_one() == 1, (
+        "the guest session must survive an unrelated account erasure"
+    )
+    copy_row = await session.execute(
+        text("SELECT count(*) FROM intake_base_cv WHERE id = :id"), {"id": UUID(working_copy_id)}
+    )
+    assert copy_row.scalar_one() == 1, "the working copy's row must survive"
+    assert working_copy_path.exists(), "the working copy's file must survive"
+    assert working_copy_path.read_bytes() == working_copy_bytes
+
+
 # ---------------------------------------------------------------------------------------------
 # S-39 — missing / foreign Origin: 403, before anything
 # ---------------------------------------------------------------------------------------------
@@ -2350,6 +2451,54 @@ async def test_after_deletion_the_still_valid_access_token_is_401_not_signed_in_
 
     assert response.status_code == 401, response.text
     assert _error_code(response) == "not_signed_in"
+
+
+async def test_after_deletion_every_me_base_cvs_route_is_401_not_signed_in(
+    client: AsyncClient, settings: Settings
+) -> None:
+    """AC-30's own wording: "every `/api/me/base-cvs*` route", not only `GET`. `UploadBaseCv`/
+    `ListSavedBaseCvs`/`RenameSavedBaseCv`/`DeleteSavedBaseCv` all resolve the user first (AC-8), so
+    a fresh, never-issued CV id is enough for `PATCH`/`DELETE` — the 401 fires before either route
+    would even look for a row."""
+    token, _ = await _register_2_2(client, settings)
+    deleted = await client.post(
+        DELETE_ACCOUNT_URL,
+        json={"password": A_STRONG_PASSWORD},
+        headers=_delete_account_headers(settings, token),
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    some_cv_id = str(uuid4())
+    checks: list[tuple[str, Response]] = [
+        (
+            "GET /api/me/base-cvs",
+            await client.get("/api/me/base-cvs", headers=_bearer_delacct(token)),
+        ),
+        (
+            "POST /api/me/base-cvs",
+            await client.post(
+                "/api/me/base-cvs",
+                files={"file": ("a.txt", ("word " * 200).encode(), "text/plain")},
+                headers=_bearer_delacct(token),
+            ),
+        ),
+        (
+            "PATCH /api/me/base-cvs/{id}",
+            await client.patch(
+                f"/api/me/base-cvs/{some_cv_id}",
+                json={"label": "x"},
+                headers=_bearer_delacct(token),
+            ),
+        ),
+        (
+            "DELETE /api/me/base-cvs/{id}",
+            await client.delete(f"/api/me/base-cvs/{some_cv_id}", headers=_bearer_delacct(token)),
+        ),
+    ]
+
+    for name, response in checks:
+        assert response.status_code == 401, f"{name}: {response.text}"
+        assert _error_code(response) == "not_signed_in", f"{name}: {response.text}"
 
 
 async def test_after_deletion_a_copy_with_the_old_token_is_401_and_mints_no_guest_session(
