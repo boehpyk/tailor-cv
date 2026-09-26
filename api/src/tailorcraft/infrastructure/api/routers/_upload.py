@@ -274,6 +274,11 @@ def failure_message(reason: ExtractionFailureReason, settings: Settings) -> str:
             f"This PDF has more than {settings.max_cv_pages} pages, which is more than we can "
             "process. Try a shorter version of your CV."
         )
+    if reason is ExtractionFailureReason.TEXT_TOO_LONG:
+        # SKELETON (T30b-C): a placeholder, replaced by the real sentence in GREEN. Its own branch
+        # now so the new reason never falls through to EXTRACTOR_ERROR's "try again", which a user
+        # with an over-long file cannot act on.
+        return "TODO(T30b-C): text_too_long copy."
     # ExtractionFailureReason.EXTRACTOR_ERROR — the catch-all, reached two ways: the 10 s timeout
     # (F-12) and, since `PypdfDocxTextExtractor` grew its catch-all, any library failure we have no
     # better name for (a `KeyError` out of `pypdf` on a mangled cross-reference table, say). The

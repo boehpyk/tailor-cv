@@ -200,7 +200,11 @@ FileStoreDep = Annotated[FileStorePort, Depends(get_file_store)]
 
 def get_cv_text_extractor(settings: SettingsDep) -> CvTextExtractorPort:
     """Binds `CvTextExtractorPort` -> `PypdfDocxTextExtractor` (ADR-0009)."""
-    return PypdfDocxTextExtractor(settings.extraction_timeout_seconds, settings.max_cv_pages)
+    return PypdfDocxTextExtractor(
+        settings.extraction_timeout_seconds,
+        settings.max_cv_pages,
+        max_characters=settings.max_extracted_characters,
+    )
 
 
 CvTextExtractorDep = Annotated[CvTextExtractorPort, Depends(get_cv_text_extractor)]

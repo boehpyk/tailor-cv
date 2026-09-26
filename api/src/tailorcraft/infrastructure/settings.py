@@ -251,6 +251,20 @@ class Settings(BaseSettings):
     # PDFs over this many pages are refused before `pypdf` ever opens them — bounded work, not a
     # timeout discovered the hard way on a 400-page file (ADR-0009 §2).
     max_cv_pages: int = 50
+    # The ceiling on extracted text, in RAW characters — the length of the string the parser hands
+    # back, before `ExtractedText` collapses its whitespace (slice 2.2, T30b-C). Enforced by the
+    # extractor WHILE it extracts (per PDF page, per DOCX paragraph, on the decoded TXT), so the
+    # 171 KB DOCX that inflated to 39.5 M characters is refused without the whole string existing.
+    # Raw rather than normalized because normalization only ever shrinks a string: raw ≤ cap
+    # implies stored ≤ cap, and the running count needs no normalizing pass of its own.
+    #
+    # Default 10 times `llm_max_cv_characters` (owner decision, amendment 2026-09-26): room for a long
+    # CV's whitespace and layout noise, while bounding every later copy of the text — the loop-side
+    # `ExtractedText` construction on each load above all. The floor `ge=25_000` is that setting's
+    # default, and it is a floor on purpose: a cap below what tailoring accepts would refuse at
+    # upload a CV the model could have used. (A static bound, not a cross-field validator: raising
+    # `LLM_MAX_CV_CHARACTERS` past this cap makes the larger CVs unreachable, not unsafe.)
+    max_extracted_characters: int = Field(default=250_000, ge=25_000)
 
     # -- Upload rate limiting & caps (F-16, F-23, F-24) -----------------------
     # Fixed-window limits enforced by `RedisFixedWindowRateLimiter`

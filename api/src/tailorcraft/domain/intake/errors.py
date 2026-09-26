@@ -129,6 +129,17 @@ class CvHasTooManyPages(CvExtractionFailed):
         super().__init__(ExtractionFailureReason.TOO_MANY_PAGES)
 
 
+class CvTextTooLong(CvExtractionFailed):
+    """The file parses, but its text runs past the extracted-character cap
+    (`Settings.max_extracted_characters`) — refused part-way through extraction, not after it, so a
+    small archive that inflates to tens of millions of characters is never built into one string
+    (slice 2.2, T30b-C). Carries no count: the reason is the contract, and a number measured from a
+    stranger's document is one more fact about it than the use case needs."""
+
+    def __init__(self) -> None:
+        super().__init__(ExtractionFailureReason.TEXT_TOO_LONG)
+
+
 class CvExtractionTimedOut(CvExtractionFailed):
     """Extraction ran past `extraction_timeout_seconds`. Reported under the general
     `EXTRACTOR_ERROR` reason — there is no separate "timed out" value in `ExtractionFailureReason`

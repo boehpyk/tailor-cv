@@ -191,6 +191,10 @@ class ExtractionFailureReason(StrEnum):
     NO_TEXT_LAYER = "no_text_layer"
     TOO_SHORT = "too_short"
     TOO_MANY_PAGES = "too_many_pages"
+    # Slice 2.2, T30b-C (technical plan, amendment 2026-09-26, option C): the file parses, but its
+    # text runs past `MAX_EXTRACTED_CHARACTERS`. Refused while extracting, so the whole string is
+    # never built. Rows recorded before this member existed are unaffected (grandfathered).
+    TEXT_TOO_LONG = "text_too_long"
     EXTRACTOR_ERROR = "extractor_error"
 
 
