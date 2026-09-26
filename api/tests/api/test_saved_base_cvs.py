@@ -291,10 +291,13 @@ async def test_delete_has_no_body(client: AsyncClient, settings: Settings) -> No
 async def test_cache_control_no_store_on_every_me_response(
     client: AsyncClient, settings: Settings
 ) -> None:
+    """AC-51. `POST /api/me/base-cvs` (201) joins `GET`/`PATCH` here — the copy route's own 201
+    (`POST /api/base-cvs/copies`) is a different router and is checked in `test_intake.py`."""
     token, _ = await _register(client, settings)
     cv_id = await _upload_extracted_saved_cv(client, token)
 
     responses = [
+        await _upload_saved(client, token, filename="second.txt", data=_read_fixture("sample.txt")),
         await client.get(ME_BASE_CVS_URL, headers=_bearer(token)),
         await client.patch(
             f"{ME_BASE_CVS_URL}/{cv_id}", json={"label": None}, headers=_bearer(token)
@@ -871,39 +874,74 @@ async def test_delete_removes_the_row_and_the_file(client: AsyncClient, settings
 
 
 async def test_the_row_is_committed_before_the_file_is_unlinked(
-    client: AsyncClient,
-    settings: Settings,
-    session: AsyncSession,
-    monkeypatch: pytest.MonkeyPatch,
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
     """AC-27, S-18. A `LocalFileStore.delete` wrapper checks, at the exact moment it is called,
-    whether the row is already gone **on the request's own connection** — the fixture's SAVEPOINT
-    design (`conftest.py`) means every commit issued by the handler is visible on that same
-    connection immediately, so this is the same proof AC-27 describes ("a separate connection"),
-    adapted to a fixture where a genuinely separate connection could never see an uncommitted outer
-    transaction at all (`test_tailoring.py`'s `_run_worker` docstring records the identical
-    constraint for the worker's own composition root)."""
-    token, _ = await _register(client, settings)
-    cv_id = await _upload_extracted_saved_cv(client, token)
+    whether the row is already gone from a **genuinely separate connection** — `engine.connect()`,
+    never the request's own session — which is the proof AC-27 actually asks for: under READ
+    COMMITTED a second connection can see a DELETE only once it is truly committed, never merely
+    issued on its own connection. `concurrent_app` (this module's own fixture, above) is what makes
+    that distinction observable at all: the shared `client`/`session` fixtures bind every request to
+    one already-open `AsyncSession`, and on that SAVEPOINT-per-test connection *any* statement the
+    handler issues is immediately visible to a read on the very same connection whether or not a
+    commit ever ran — which is exactly the gap this test exists to close (an earlier version of this
+    test read the row on the request's own session and could not tell "committed" from
+    "merely issued").
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Removed
+    `CommittingBaseCvRemoval.remove`'s `await self._session.commit()` call
+    (`infrastructure/persistence/repositories/intake/base_cv.py`'s bound wrapper — the actual commit
+    site, not the router). Re-run:
+    ```
+    >       assert row_present_at_unlink_time == [False], (
+                "the row must already be committed-gone, on a separate connection, at the moment "
+                "the file is unlinked"
+            )
+    E       AssertionError: the row must already be committed-gone, on a separate connection, at
+    the moment the file is unlinked
+    E       assert [True] == [False]
+    FAILED tests/api/test_saved_base_cvs.py::test_the_row_is_committed_before_the_file_is_unlinked
+    1 failed in ...s
+    ```
+    Source restored byte-exact (`git diff --stat api/src` empty); re-run green alone and the full
+    module green twice in a row afterward. (The test this replaced could not go red under this same
+    mutation: on the shared `session` fixture, the `DELETE` the handler issued was already visible
+    to that one connection with or without the commit, so the row read as gone regardless.)
+    """
+    _assert_test_database(settings)
+    async with _new_client(concurrent_app) as setup_client:
+        token, user_id = await _register(setup_client, settings)
+        cv_id = await _upload_extracted_saved_cv(setup_client, token)
 
     row_present_at_unlink_time: list[bool] = []
     original_delete = LocalFileStore.delete
 
     async def _checking_delete(self: LocalFileStore, ref: FileRef) -> None:
-        result = await session.execute(
-            text("SELECT count(*) FROM intake_base_cv WHERE id = :id"), {"id": UUID(cv_id)}
-        )
-        row_present_at_unlink_time.append(result.scalar_one() > 0)
+        async with engine.connect() as separate_connection:
+            result = await separate_connection.execute(
+                text("SELECT count(*) FROM intake_base_cv WHERE id = :id"), {"id": UUID(cv_id)}
+            )
+            row_present_at_unlink_time.append(result.scalar_one() > 0)
         await original_delete(self, ref)
 
-    monkeypatch.setattr(LocalFileStore, "delete", _checking_delete)
+    try:
+        async with _new_client(concurrent_app) as client_2:
+            with pytest.MonkeyPatch.context() as mp:
+                mp.setattr(LocalFileStore, "delete", _checking_delete)
+                response = await client_2.delete(
+                    f"{ME_BASE_CVS_URL}/{cv_id}", headers=_bearer(token)
+                )
 
-    response = await client.delete(f"{ME_BASE_CVS_URL}/{cv_id}", headers=_bearer(token))
-
-    assert response.status_code == 204, response.text
-    assert row_present_at_unlink_time == [False], (
-        "the row must already be committed-gone at the moment the file is unlinked"
-    )
+            assert response.status_code == 204, response.text
+            assert row_present_at_unlink_time == [False], (
+                "the row must already be committed-gone, on a separate connection, at the moment "
+                "the file is unlinked"
+            )
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM identity_user WHERE id = :id"), {"id": UUID(user_id)}
+            )
 
 
 async def test_a_second_delete_is_404(client: AsyncClient, settings: Settings) -> None:

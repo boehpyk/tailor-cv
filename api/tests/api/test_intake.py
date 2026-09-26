@@ -1734,6 +1734,10 @@ async def test_copy_succeeds_with_the_guest_shape_and_copied_from_saved_origin(
     assert body["failure_reason"] is None
     assert body["expires_at"] is not None
     assert _guest_cookie_header(response) is not None
+    assert response.headers.get("cache-control") == "no-store", (
+        "AC-51: the copy's 201 is a `/api/me`-adjacent response about a saved CV and must carry "
+        "the same no-store guarantee as every other route this slice touches"
+    )
 
 
 # ---------------------------------------------------------------------------------------------
