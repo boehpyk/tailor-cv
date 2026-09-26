@@ -58,12 +58,11 @@ export interface BaseCv {
   readonly uploaded_at: string;
   readonly expires_at: string;
   /**
-   * Optional on purpose, although the 2.2 API always sends it. The deploy runs two versions briefly
-   * (CLAUDE.md, expand → migrate → contract): for a moment the new bundle can talk to a 2.1 API
-   * that has never heard of `origin`. **Absent means `'uploaded'`** — the only kind of guest CV a
-   * 2.1 API could have made — so the badge is simply not shown, which is the true answer.
+   * Required: the 2.2 API always sends it. During the deploy's brief two-version window a 2.1 API
+   * could omit it; the one reader (`BaseCvCard`) compares it to `'copied_from_saved'`, so an absent
+   * value shows no badge — which is the true answer for any CV a 2.1 API could have made.
    */
-  readonly origin?: BaseCvOrigin;
+  readonly origin: BaseCvOrigin;
 }
 
 /** Every `BaseCv` a guest session owns. `items` is `[]` for a session with none. */

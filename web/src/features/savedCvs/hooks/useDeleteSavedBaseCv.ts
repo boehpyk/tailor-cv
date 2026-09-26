@@ -1,7 +1,11 @@
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { deleteSavedBaseCvMutationKey } from './savedCvsKeys';
+import { ApiError } from '@/api/client';
+import { deleteSavedBaseCv } from '@/api/savedBaseCvs';
 
+import { deleteSavedBaseCvMutationKey, savedBaseCvsQueryKeyPrefix } from './savedCvsKeys';
+
+import type { SavedBaseCvList } from '../types';
 import type { UseMutationResult } from '@tanstack/react-query';
 
 /**
@@ -11,18 +15,48 @@ import type { UseMutationResult } from '@tanstack/react-query';
  */
 export type DeleteSavedBaseCvOutcome = 'deleted' | 'already_gone';
 
+/** A 404 on a delete means the thing is not there — which is what the delete was for. */
+function isAlreadyGone(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === 'base_cv_not_found';
+}
+
+async function deleteOrConfirmGone(id: string): Promise<DeleteSavedBaseCvOutcome> {
+  try {
+    await deleteSavedBaseCv(id);
+    return 'deleted';
+  } catch (error) {
+    if (isAlreadyGone(error)) {
+      return 'already_gone';
+    }
+    throw error;
+  }
+}
+
 /**
- * Delete a saved CV by id (`DELETE /api/me/base-cvs/{id}`), then invalidate the saved-CV lists.
+ * Delete a saved CV by id (`DELETE /api/me/base-cvs/{id}`), then drop that row from every cached
+ * list and invalidate them.
  *
  * **No optimistic removal** (AC-36, technical plan §7). The row stays, reading "Deleting…", until
  * the server has answered; a removal shown early and then undone by a 503 would have told the user
  * their CV was gone when it was not. A rejection (503, no answer) means it was **not** deleted.
  *
- * SKELETON (T25): the real key; the mutation rejects without a request. GREEN is T27.
+ * The row is removed from the cache **after** the server said so — that is not optimism, it is the
+ * answer — so the list does not depend on the refetch succeeding to stop showing a deleted CV. The
+ * invalidation is returned, so pending lasts until the list has been re-read.
  */
 export function useDeleteSavedBaseCv(): UseMutationResult<DeleteSavedBaseCvOutcome, Error, string> {
+  const queryClient = useQueryClient();
+
   return useMutation<DeleteSavedBaseCvOutcome, Error, string>({
     mutationKey: deleteSavedBaseCvMutationKey,
-    mutationFn: () => Promise.reject(new Error('useDeleteSavedBaseCv: not implemented (T27)')),
+    mutationFn: deleteOrConfirmGone,
+    onSuccess: (_outcome, id) => {
+      queryClient.setQueriesData<SavedBaseCvList>(
+        { queryKey: savedBaseCvsQueryKeyPrefix },
+        (list) =>
+          list === undefined ? undefined : { items: list.items.filter((cv) => cv.id !== id) },
+      );
+      return queryClient.invalidateQueries({ queryKey: savedBaseCvsQueryKeyPrefix });
+    },
   });
 }

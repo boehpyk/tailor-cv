@@ -1,4 +1,4 @@
-import { authStore } from '../authStore';
+import { AUTH_CHANNEL_NAME, authStore } from '../authStore';
 
 import type { AuthChannel, RefreshResult } from '../authStore';
 import type { AuthenticatedResponse } from '../types';
@@ -70,12 +70,28 @@ export function seedFromRefresh(queryClient: QueryClient, result: RefreshResult)
  * disconnect. In a browser without `BroadcastChannel` there is nothing to hear, and this returns a
  * no-op rather than throwing — a tab that cannot hear other tabs still converges on its next request.
  *
- * SKELETON (T25): connects nothing and returns a no-op. GREEN is T27.
+ * **Store first, cache second** (`authStore.connectChannel`): by the time the queries are removed
+ * the store is `anonymous`, so every `['auth', …]` query is already disabled and none refetches.
  */
-// Typed as a function value only while it is a stub, so the parameters are real without being unused.
-export const connectCrossTabSignOut: (
+export function connectCrossTabSignOut(
   queryClient: QueryClient,
   channel?: AuthChannel,
-) => () => void = () => () => {
-  // Nothing was connected — until T27.
-};
+): () => void {
+  let target = channel;
+  // A channel this function opened is this function's to close; one handed in belongs to the caller.
+  let owned: BroadcastChannel | null = null;
+  if (target === undefined) {
+    if (typeof BroadcastChannel === 'undefined') {
+      return () => undefined;
+    }
+    owned = new BroadcastChannel(AUTH_CHANNEL_NAME);
+    target = owned;
+  }
+  const disconnect = authStore.connectChannel(target, () => {
+    queryClient.removeQueries({ queryKey: authQueryKeyPrefix });
+  });
+  return () => {
+    disconnect();
+    owned?.close();
+  };
+}

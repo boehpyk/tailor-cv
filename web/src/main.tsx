@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { RouterProvider } from 'react-router';
 
 import { authStore } from './features/auth/authStore';
-import { seedFromRefresh } from './features/auth/hooks/authCache';
+import { connectCrossTabSignOut, seedFromRefresh } from './features/auth/hooks/authCache';
 import { router } from './router';
 import './index.css';
 
@@ -45,6 +45,14 @@ const queryClient = new QueryClient({
 void authStore.bootstrap().then((result) => {
   seedFromRefresh(queryClient, result);
 });
+
+/**
+ * Hear other tabs' sign-outs (slice 2.2, AC-42) — also once, at module scope, beside the boot and
+ * for the same reason: an effect would subscribe twice under `<StrictMode>`. Another tab's logout or
+ * account deletion sets this tab `anonymous` and removes every `['auth', …]` query from **this**
+ * `queryClient`, with no network call. Never disconnected: it lives as long as the page.
+ */
+connectCrossTabSignOut(queryClient);
 
 const container = document.getElementById('root');
 if (!container) {
