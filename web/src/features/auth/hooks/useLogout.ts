@@ -20,6 +20,7 @@ export const logoutMutationKey = ['auth', 'logout'] as const;
  * **On success, only `['auth', …]` is removed** (AC-44). The guest workspace's queries stay: that
  * work belongs to this browser's guest session, not to the user who just left. `signOut` goes
  * first, so `useCurrentUser` is disabled before its cache entry disappears and does not refetch it.
+ * Then the other tabs are told (AC-42) — only on success, since a failed logout ended nothing.
  */
 export function useLogout(): UseMutationResult<void, Error, void> {
   const queryClient = useQueryClient();
@@ -30,6 +31,8 @@ export function useLogout(): UseMutationResult<void, Error, void> {
     onSuccess: () => {
       authStore.signOut('logged_out');
       queryClient.removeQueries({ queryKey: authQueryKeyPrefix });
+      // Slice 2.2, AC-42: every other tab of this origin signs out too, with no request of its own.
+      authStore.broadcastSignOut();
     },
   });
 }

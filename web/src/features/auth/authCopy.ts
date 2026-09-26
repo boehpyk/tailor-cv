@@ -75,7 +75,7 @@ export const ACCOUNT_ERROR_NOTE = "Couldn't load your account";
  * what is coming so the page does not read as broken.
  */
 export const ACCOUNT_NEXT_RELEASE_NOTE =
-  'Saving your CVs and tailored documents to your account arrives in the next release.';
+  'Saving your tailored documents to your account arrives in a later release.';
 
 // --- Refusals -------------------------------------------------------------------------------------
 

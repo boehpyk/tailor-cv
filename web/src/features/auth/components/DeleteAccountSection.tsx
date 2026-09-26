@@ -33,9 +33,10 @@ import { homeNoticeState } from '../homeNotice';
 export function DeleteAccountSection(): React.JSX.Element {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const deletion = useDeleteAccount(() => {
-    void navigate('/', { state: homeNoticeState(ACCOUNT_DELETED_NOTICE) });
-  });
+  // Returned, not voided: `useDeleteAccount` waits for the navigation before it signs out.
+  const deletion = useDeleteAccount(() =>
+    navigate('/', { state: homeNoticeState(ACCOUNT_DELETED_NOTICE) }),
+  );
   const [password, setPassword] = useState('');
   const [understood, setUnderstood] = useState(false);
   const headingId = useId();

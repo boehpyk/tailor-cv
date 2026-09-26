@@ -6,10 +6,13 @@ import {
   LOGOUT_LABEL,
   LOGOUT_PENDING_LABEL,
 } from '../authCopy';
+import { SavedBaseCvsSection } from '@/features/savedCvs/components/SavedBaseCvsSection';
+
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useLogout } from '../hooks/useLogout';
 
 import { AuthErrorNotice } from './AuthErrorNotice';
+import { DeleteAccountSection } from './DeleteAccountSection';
 
 /**
  * "5 January 2026". The instant is whole-second UTC from the server; formatting it in UTC keeps
@@ -26,11 +29,13 @@ const memberSinceFormat = new Intl.DateTimeFormat(undefined, {
  * Two independent requests, two independent sets of states:
  *
  * - **The profile** is `useCurrentUser`'s query: loading, error + **Retry** (`refetch`), success.
- *   There is no empty state, and that is stated rather than implied: an account in 2.1 owns nothing
- *   that could be empty (`ACCOUNT_NEXT_RELEASE_NOTE` says what is coming).
+ *   There is no empty state for the profile itself (`ACCOUNT_NEXT_RELEASE_NOTE` says what is still
+ *   coming); the saved CVs' empty state is `SavedBaseCvsSection`'s.
  * - **Log out** is `useLogout`: pending ("Logging out…", disabled) and error. On error the user
  *   **stays logged in** (I-31) — the hook does nothing locally, and this page keeps showing the
  *   account, because that is what is true.
+ * - **Saved CVs** (slice 2.2) and **Delete account** are their own sections with their own
+ *   requests and states (`SavedBaseCvsSection`, `DeleteAccountSection`); the page only places them.
  */
 export function AccountPage() {
   const currentUser = useCurrentUser();
@@ -57,6 +62,9 @@ export function AccountPage() {
           {logout.isPending ? LOGOUT_PENDING_LABEL : LOGOUT_LABEL}
         </button>
       </div>
+
+      <SavedBaseCvsSection />
+      <DeleteAccountSection />
     </section>
   );
 }
