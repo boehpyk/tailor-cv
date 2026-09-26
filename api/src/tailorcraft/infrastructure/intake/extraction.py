@@ -39,6 +39,7 @@ from tailorcraft.domain.intake.errors import (
     CvExtractionTimedOut,
     CvHasNoTextLayer,
     CvHasTooManyPages,
+    CvTextTooLong,
     CvTextTooShort,
     EncryptedCvFile,
 )
@@ -325,11 +326,12 @@ class PypdfDocxTextExtractor:
         """Refuse extracted text that has passed `max_characters` — called only once a running
         count is already over the cap, never on the ordinary path.
 
-        SKELETON (T30b-C): raises `NotImplementedError`, which the `except Exception` floor in
-        `extract` records as `EXTRACTOR_ERROR` — so an over-cap file fails with the wrong reason
-        until GREEN, while every under-cap file extracts exactly as before.
+        One method rather than three inline `raise`s so the three formats cannot drift apart on what
+        an over-cap file becomes. `CvTextTooLong` is a `CvExtractionFailed`, so it passes through
+        `extract`'s specific clause (logged as `text_too_long`) and never reaches the floor. It
+        carries no count: the reason is the contract.
         """
-        raise NotImplementedError
+        raise CvTextTooLong()
 
 
 if TYPE_CHECKING:

@@ -22,7 +22,13 @@ export type BaseCvStatus = 'uploaded' | 'extracted' | 'extraction_failed';
  * whichever of these applies — the client never re-implements that mapping.
  */
 export type ExtractionFailureReason =
-  'encrypted' | 'corrupt' | 'no_text_layer' | 'too_short' | 'too_many_pages' | 'extractor_error';
+  | 'encrypted'
+  | 'corrupt'
+  | 'no_text_layer'
+  | 'too_short'
+  | 'too_many_pages'
+  | 'text_too_long'
+  | 'extractor_error';
 
 /** The three formats intake accepts, decided server-side from the file's bytes. */
 export type CvContentType =
