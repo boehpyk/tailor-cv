@@ -233,3 +233,46 @@ that **leave the request** — `pdf` and `docx`. The inline pair leaves no row; 
 - **Phase 2.2 stays additive:** `user_id UUID NULL` and a nullable `guest_session_id`; a job with no
   guest session is untouchable by the purge (ADR-0006 §3). Phase 2.3 lists this table per run.
   Phase 3.2 adds a `template` column when there is a second template, not before.
+
+## Amendment: 2026-09-26, from the plan of slice 2.3 (`tailoring-application-history`)
+
+Slice 2.3 lets a registered user keep tailoring runs as history and re-export them (ADR-0023). This
+ADR's Consequences said 2.2 would stay additive and that 2.3 would list this table per run; both
+hold. The six decisions and the ADR-0011 amendment stand. This amendment records who owns a job, how
+a user's jobs are capped, how long their files live, and when that cost must be revisited.
+
+**(a) A job's owner is its run's owner, always.** `export_job` gains ADR-0022's shape (the per-table
+extension in ADR-0022's amendment (a)): a nullable `user_id`, a nullable `guest_session_id`, and the
+exactly-one-owner CHECK. `ExportJob.request` takes an `owner`, and `RequestExport` passes
+**`run.owner`** — never the requester, even though the requester was just authorized as that owner.
+*"A job's owner is its run's owner"* spans two aggregates, so it lives in the use case with a comment
+saying so, and a database-level test checks that no ownership graph crosses owners after every flow.
+The worker still reads the run by id and re-checks no owner (1.3's reasoning, unchanged).
+
+**(b) A user's jobs are capped per run, not per user.** Guests keep the per-session cap of 40. A
+user-owned run has its own cap, **20 export jobs per run** (`MAX_EXPORT_JOBS_PER_USER_RUN`), soft
+and in the use case like the first. A per-user cap would stop a long history from exporting at all,
+where a per-run cap bounds exactly the thing §2's soft idempotency can multiply. For a user's jobs,
+§2's sentence *"bounded by the per-session cap (40) and the 24-hour purge"* reads *"bounded by the
+per-run cap (20)"*: no purge reaches them.
+
+**(c) A user's export files live as long as their history entry.** A kept export is deleted by the
+user's deletion of its entry, or by account erasure (ADR-0006 amendment (d)), and by nothing else.
+Both find the files the way 1.6's purge does, from the row's id and format
+(`row.file_key == FileRef.for_export(row.id, row.format).key` — the retention contract above), so a
+`rendering` or `failed` job's already-written bytes are reached as well. The orphan sweep's
+cross-check reads `export_job.file_key` for every row regardless of owner, which is what spares a
+user's ready file older than any window. There is still no foreign key from `export_job` to
+`tailoring_run`, and ADR-0023 records the one residual that leaves: a job inserted just after its
+entry's deletion committed, with no run and no file, erased with the account.
+
+**Re-export is idempotent, not archival.** A re-export of an unchanged run returns the job that
+already exists (§2); one after an edit renders the current version. The file of an older version is
+**not pruned** when a newer one is rendered, and it is not a feature either: nothing lists it.
+
+**(d) The cost, and the trigger for pruning (OQ-15).** A rendered PDF measured about 8 KB in 2.2's
+manual pass; allow up to 200 KB with fonts. A user at 500 runs with four exports each is at most
+about 400 MB in the worst case, and about 16 MB typically. Pruning superseded files would be a
+deletion inside a render path — machinery for a cost nobody has yet. **Trigger:** the uploads volume
+above **5 GB**, or any one user above **200 MB**. Today's volume size is recorded before 2.3's
+release, so the trigger is a comparison, not a guess.
