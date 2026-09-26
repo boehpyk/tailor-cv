@@ -120,12 +120,21 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   React: `/account` gains the list and account deletion, the workspace a picker above the
 >   dropzone, and sign-out now crosses tabs by `BroadcastChannel`. One expand-only migration
 >   (`1a2676aa3759`) whose **downgrade refuses** while any user-owned row exists.
->   **2068 backend and 749 frontend tests.** Measured (T30): list at the cap p95 **6.8 ms** (budget
+>   **2085 backend and 749 frontend tests.** Measured (T30): list at the cap p95 **6.8 ms** (budget
 >   100); delete p95 **9.0 ms** (150); delete-account p95 **66 ms** (400); on the production image, a
 >   purge of 100 sessions beside 500 saved CVs **0.59 s** (10 s), then the sweep reclaiming **0 of
->   500** saved files. **Copying a 10 MB CV is p95 1.57 s against 1.0 s — over budget**, 20 samples
->   clustered at 1.50–1.58 s (systematic, not noise), both file calls already off the loop; **cause
->   under diagnosis, not guessed.** **AC-58 holds**: `git diff main --stat` over `domain/tailoring`,
+>   500** saved files. **Copying a 10 MB CV first measured p95 1.57 s against 1.0 s — and the
+>   cause was not the disk** (10 MB write+fsync+read ≈ 20 ms): the fixture held 10 M characters, and
+>   `ExtractedText.__post_init__` re-counted them in a Python generator (~0.4 s) on **every load, on
+>   the event loop**, three loads per copy because `select()` runs the `TypeDecorator` even on an
+>   identity-map hit. Nothing capped extracted text (a 171 KB DOCX expanded to 39.5 M chars). Fixed
+>   (T30b, owner decision): the count in C (`len - count(" ")`, exact over all 1,114,112 code
+>   points; 406 → 3.7 ms), `get` via the identity map with an id-only existence check (a bare
+>   `session.get` hit broke S-33) and the repository pinning what it hands out (the map is weakly
+>   referenced), and **`TEXT_TOO_LONG` at `MAX_EXTRACTED_CHARACTERS=250000`**, enforced per page /
+>   paragraph while extracting. Re-measured: a realistic 10 MB PDF copy p95 **47 ms**; the worst the
+>   cap allows (250 k chars) **21 ms**; a guest list of 5 × 250 k **28 ms**. **A slow file operation
+>   is not evidence about the disk until the disk is measured alone.** **AC-58 holds**: `git diff main --stat` over `domain/tailoring`,
 >   `application/tailoring` and `infrastructure/llm` is empty. T31: the release script needs no
 >   change; production's `identity_retired_refresh_token` holds **0** rows (OQ-7 re-armed: 100 k or
 >   2.3). **Carried to `/verify`:** S-23's wording (the store refuses a symlink at the key outright —

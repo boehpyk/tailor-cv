@@ -3754,13 +3754,40 @@ orphan sweep that followed reclaimed **0 of the 500 saved files**, which is the 
 matters.
 
 One wasn't. **Copying a 10 MB saved CV into the workspace: p95 1.57 s against a 1.0 s budget.**
-All twenty samples sat between 1.50 and 1.58 s, so this is systematic, not noise. The copy reads
-the whole file and writes the whole copy. Both calls are already in threads, off the event loop, so
-this isn't the blocked-loop kind of slow that 1.6 and 2.1 hunted. **What it actually is has not
-been established.** It's recorded as found and under diagnosis. The next step is a measurement that
-separates "this machine's disk" from "this mechanism". Until that exists, any explanation would be
-a story, and `/verify` will decide between fixing the mechanism and amending the budget with
-evidence.
+All twenty samples sat between 1.50 and 1.58 s, so this was systematic, not noise. The first
+explanation offered was the disk: the copy reads the whole file and fsyncs the whole copy. It was a
+reasonable story, and it was wrong. Measured alone, writing, fsyncing and reading 10 MB on that
+volume took about **20 ms**. The other 1.5 seconds were somewhere else.
+
+A stage-by-stage profile found them. The test file was 10 MB of *text*, so its extracted text was
+10 million characters, and `ExtractedText` re-validates itself every time a row is loaded. Part of
+that validation counted non-whitespace characters with a Python generator, one character at a time:
+about 0.4 s for 10 M characters. Worse, it ran **three times per copy**, because the repository
+loaded rows with `select()`, and SQLAlchemy runs every column's `TypeDecorator` while building the
+result row, *before* it notices the object is already in the identity map and throws the fresh value
+away. And all of it ran **on the event loop**, so every copy froze every other user for over a
+second. It wasn't only the copy either: every route that loads a full CV paid it, including 1.1's.
+Nothing capped extracted text, and a 171 KB DOCX happily expanded to 39.5 million characters.
+
+Three fixes, the last one the owner's call:
+- **Count in C.** After `" ".join(text.split())` the only whitespace left is single spaces, so the
+  count is `len(normalized) - normalized.count(" ")`. "Exact" was checked, not assumed: all
+  1,114,112 Unicode code points agree that `isspace()` and `split()` mean the same whitespace.
+  406 ms became 3.7 ms.
+- **Load through the identity map.** `session.get` returns the object the session already holds.
+  Two surprises came with it. A bare cache hit never asks the database whether the row still
+  exists, which broke the concurrent-delete test S-33 (it answered 410 "file gone" instead of 404
+  "CV gone"), so a cheap id-only `SELECT` confirms existence. And the identity map holds only *weak*
+  references, so the router's authorizing load was garbage-collected before the use case asked for
+  the same row. The repository now keeps what it hands out for the length of one request.
+- **Cap the text.** Extraction refuses anything over **250,000 characters** (ten times what
+  tailoring accepts) with a new `text_too_long` reason. It stops counting page by page or paragraph
+  by paragraph, so the 39-million-character DOCX is refused early instead of being built first.
+
+Re-measured on a realistic 10 MB file (a PDF whose bulk is an embedded image): **47 ms**. The worst
+case the cap now allows copies in 21 ms, and a guest list of five maximal CVs loads in 28 ms. The
+lesson is older than this project: **a slow file operation is not evidence about the disk until
+you've timed the disk on its own.** The first explanation fit every symptom, and it was still wrong.
 
 The measuring had its own lesson. Every request from the host reached the containers from the
 **same** address, because Docker's port proxy rewrites the source. Binding different loopback
