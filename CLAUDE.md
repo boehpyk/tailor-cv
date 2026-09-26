@@ -18,10 +18,11 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: seven slices shipped; slice 2.1 was verified (two rounds, 2026-09-25) and merged as
-> PR #13** — its release to `cv.samolit.com` waits on the owner's deploy approval **and on the box's
-> `.env` reading `TRUSTED_PROXY_HOPS=2`** (it read 1 on 2026-09-25; see the footgun below). Next:
-> 2.2 `intake-saved-base-cvs`, spec approved 2026-09-25. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> **Status: seven slices shipped; slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
+> `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
+> fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` is implemented (T0–T32) on its
+> branch, not yet verified or merged — `/verify` (T33) is next.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -60,7 +61,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
 >   `overdue` probe **2.1 ms p95** against 20 ms.
 >
-> - **2.1 `identity-register-and-login`** (PR #13, **verified and merged**) — the first
+> - **2.1 `identity-register-and-login`** (PR #13, **verified, merged, released**) — the first
 >   registered principal and the first password. `User` and `Login` aggregates beside an untouched
 >   `GuestSession` (its file is pinned by digest; no route depends on both resolvers). A `Login`
 >   **is** a refresh-token family: generations, a **10 s race grace** answered 409
@@ -86,8 +87,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   box is tight, the executor drops to 1 before the parameters drop.
 >   **Rotating `JWT_SIGNING_KEY` logs nobody out** — refresh tokens are rows, not signatures, so a
 >   new key only retires 15-minute access tokens and the next silent refresh mints new ones. The
->   break-glass is `revoke-logins --all` (Commands). Account deletion until 2.2 is an operator
->   deleting the `identity_user` row (OQ-8, `docs/infrastructure.md`). The footguns it hit are
+>   break-glass is `revoke-logins --all` (Commands). 2.1's account deletion (an operator deleting
+>   the `identity_user` row, OQ-8) is **wrong from 2.2 on** — it orphans every saved file; use
+>   `erase-account`. The footguns it hit are
 >   filed under Conventions and Infrastructure footguns below, not here.
 >   **2.1's `/verify` took two rounds.** Round 1's CRITICAL was not in 2.1's code at all: the box's
 >   `TRUSTED_PROXY_HOPS=1` had keyed every IP limiter on Traefik since Phase 1, and 2.1's fail-closed
@@ -97,6 +99,39 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   deleted user's endless Retry. **Carried, filed in the PR:** `SignOutReason` is never rendered;
 >   logout lands on `/login?next=/account`; a stale in-flight refresh can capture one made after a
 >   quick re-login; AC-25's Redis assertion is unobserved red under the limiter-first mutation.
+>
+> - **2.2 `intake-saved-base-cvs`** (branch, **implemented, not yet verified**) — the first data
+>   the product keeps **on purpose**: a registered user saves up to five base CVs
+>   (`MAX_SAVED_BASE_CVS_PER_USER`), labels, reuses and deletes them, and can delete the account.
+>   A row's owner is a **sum type**, `GuestOwner | UserOwner` in `domain/identity/ownership.py`,
+>   with no methods — authorization is `cv.owner == UserOwner(requester)`, an equality — stored as
+>   two nullable FKs plus `ck_intake_base_cv_exactly_one_owner`, translated in the mapping alone
+>   (**ADR-0022**). **Reuse is a working copy** (`BaseCv.copy_from`: new id, new file, the source's
+>   extraction, no re-extract), so no ownership graph crosses owners and the purge can never unlink
+>   a saved CV's bytes; `copied_from_base_cv_id` is provenance with **no FK** (2.4's claim will read
+>   it). The copy route is the first **transfer route** (ADR-0008 (f), Architecture). Deleting a CV
+>   and erasing an account both go **rows committed, then files** (ADR-0006 amendment); erasure
+>   holds `FOR UPDATE` on the user row so a racing upload cannot be cascaded away with its file
+>   uncollected — AC-32 proves it with two real connections, the loser blocked and then refused
+>   `UserNotFound`. Erasure lives in `retention` (`EraseAccount`, `AccountDataPort`, a report that
+>   *returns* unlink failures); identity's `DeleteOwnAccount` verifies the password before any read;
+>   the operator path is `erase-account` (Commands). The saved list is a **read model**
+>   (`SavedBaseCvSummary`, `char_length(extracted_text)` in SQL — the column is never selected).
+>   React: `/account` gains the list and account deletion, the workspace a picker above the
+>   dropzone, and sign-out now crosses tabs by `BroadcastChannel`. One expand-only migration
+>   (`1a2676aa3759`) whose **downgrade refuses** while any user-owned row exists.
+>   **2068 backend and 749 frontend tests.** Measured (T30): list at the cap p95 **6.8 ms** (budget
+>   100); delete p95 **9.0 ms** (150); delete-account p95 **66 ms** (400); on the production image, a
+>   purge of 100 sessions beside 500 saved CVs **0.59 s** (10 s), then the sweep reclaiming **0 of
+>   500** saved files. **Copying a 10 MB CV is p95 1.57 s against 1.0 s — over budget**, 20 samples
+>   clustered at 1.50–1.58 s (systematic, not noise), both file calls already off the loop; **cause
+>   under diagnosis, not guessed.** **AC-58 holds**: `git diff main --stat` over `domain/tailoring`,
+>   `application/tailoring` and `infrastructure/llm` is empty. T31: the release script needs no
+>   change; production's `identity_retired_refresh_token` holds **0** rows (OQ-7 re-armed: 100 k or
+>   2.3). **Carried to `/verify`:** S-23's wording (the store refuses a symlink at the key outright —
+>   stronger than the spec's "unlinks the link"); S-5 and S-44 untested; S-12 logs
+>   `identity.user_missing`, not its own line; the plan says the sweep ages files by UUIDv7 — the
+>   scanner reads `st_mtime`, and the tests follow the code.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -416,6 +451,16 @@ a *raising* one breaks the named constructors, because a mapped class must be bu
 JSON with the fields we need" are different claims, and the gap between them is where the 2 a.m. bug
 lives.
 
+**One credential per route — except a named transfer route**
+([ADR-0008](./docs/adr/0008-auth-jwt-access-plus-refresh-cookie.md) amendment (f)). A route answers
+to the bearer **or** the guest cookie. A transfer route carries data between the two principals: it
+reads both, and **each authorizes only its own half** (the bearer the source, the cookie the
+destination) — nothing ever asks "a user *or* a guest?". The source is authorized **first**, and
+`resolve_or_start_guest_session` is called **in the handler body** after it, never as a `Depends`
+(a sibling dependency runs even on a 422), so a 401/404/422 mints nothing. The dependency walker
+cannot see a call inside a body, so an **AST scan** of `routers/*.py` pins the exception set to
+exactly `{POST /api/base-cvs/copies}`; 2.4's claim will be the second, added to that set on purpose.
+
 **Background work** ([ADR-0005](./docs/adr/0005-celery-redis-for-exports-and-purges.md)): TXT and
 Markdown render inline (they are string manipulation); **PDF and DOCX go to a Celery worker**. The
 rule is the cost of the work, not the tidiness of treating all four alike. A Celery task is a **thin
@@ -476,6 +521,15 @@ python -m tailorcraft.cli revoke-logins --all             # 0 ok (incl. zero) ·
 python -m tailorcraft.cli check-settings                  # every startup refusal, once; exit 1 + the
                                                           # sentence (never a value), or `settings ok`
 
+# Account erasure (slice 2.2) — the operator path; no password (a user who forgot theirs has no
+# reset). Rows committed, then files. NEVER `DELETE FROM identity_user` by hand: the cascade takes
+# the rows and orphans every saved file. Dry run first. No make target, like revoke-logins.
+python -m tailorcraft.cli erase-account --user-id <uuid> --dry-run   # counts; deletes nothing
+python -m tailorcraft.cli erase-account --user-id <uuid>
+# Exit: 0 erased (incl. with unlink failures — stderr names the orphan sweep) · 1 no such account,
+# a database failure, or SELECT current_database() ≠ the database DATABASE_URL names (refused
+# before any read) · 2 usage. Logs ids, counts and class names only.
+
 # Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
 # deliberately NO setting that weakens the SSRF address policy.
@@ -518,6 +572,12 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   `queryClient.isMutating({ mutationKey }) > 0`, which `mutate()` updates synchronously.
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
+  **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
+  transition, and `RouterProvider` from `react-router` **ignores `navigate(…, { flushSync: true })`**
+  (only `react-router/dom`'s honours it), so the synchronous sign-out re-rendered the still-mounted
+  guard and account deletion landed on `/login`. Fixed in the guard: anonymous with reason
+  `account_deleted` goes to `/` with the notice. And TanStack skips a mutate-level `onSuccess` on
+  an unmounted observer — so work that must survive the unmount runs **before** the sign-out.
 - **Tests are tiered red-first** (docs/sdlc.md §2). Domain, application, **every row of the failure
   contract**, the HTTP contract and the React loading/error/empty/success states are written
   **before** their implementation, against a skeleton of real signatures with `NotImplementedError`
@@ -585,6 +645,19 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   replaces the adapter — including its own `except Exception` floor, which is the thing an
   "unexpected failure → 503" row exists to prove. Patch the library call the adapter wraps, so the
   floor still stands between the fault and the route (I-45's correction, `1ef5afb`).
+- **A skeleton that changes a signature breaks existing tests** — the mechanical rename it forces
+  (2.2: `guest_session_id=` → `owner=GuestOwner(…)` across 15 files) lands in the **skeleton's**
+  commit, by `qa`, with no assertion changed in meaning — never in a RED or GREEN commit.
+- **A pinned field that needs data an AC forbids loading is a design contradiction, not a test
+  bug** — take it to the owner. 2.2's `character_count` vs AC-52 became a read model.
+- **Tests that tested the harness (2.2, three more):** `gcTime: 0` collecting an unobserved seed
+  (again); two concurrent requests through the shared-`AsyncSession` `app` fixture give
+  `IllegalStateChangeError` → 503 — races use `concurrent_app`, a real session per request; a
+  helper returning `BaseCv.upload(…)` without `release_events()` leaked a pending event into the
+  publisher — a stand-in for a loaded aggregate must hold none. A sweep that walks its whole root
+  needs a per-test `tmp_path`, not the shared `upload_dir`, or aged files leak between tests.
+- **When the implementer finds a RED test wrong, the correction is its own commit** (`8880439`,
+  `15e1f5b`), verified against the spec, so the GREEN commit still edits no test.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
@@ -610,6 +683,8 @@ a hurry. Constitution §8 applies to every slice:
   never touched by that job, and the test proving it is written in the same slice as the job.
 - **A guest session is not a weak login.** Owning a session id is not authority over an object that
   references it — check the link, in the use case, every time.
+- **Reuse across owners is a copy, never a shared reference** (ADR-0022): a guest-owned row that
+  pointed at a saved CV's file would let the 24-hour purge unlink a registered user's bytes.
 
 ## Infrastructure footguns (baked-in guards)
 
@@ -836,7 +911,8 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   on the box is **two** — Traefik, then nginx — not one. It read `1` from Phase 1 through 2.1's
   `/verify`, which would have keyed every visitor, on every IP-scoped rate limiter, on Traefik's own
   address; with 2.1's login/register limiters failing closed that is a site-wide lockout, not a
-  slow-degrade. The dev override pins it to `1`, since dev has only nginx in front.
+  slow-degrade. The box reads `2` as of 2026-09-26 (read over SSH, T31). The dev override pins it
+  to `1`, since dev has only nginx in front.
 - **On FastAPI 0.141, a dependency's teardown runs *after* the response is sent.** `get_session`'s
   commit therefore cannot change the answer: a failed commit ships a 200, or a 401 claiming a
   deletion that never landed. Any response that must reflect a committed write **commits inside the

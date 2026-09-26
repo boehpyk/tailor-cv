@@ -3414,3 +3414,384 @@ the real system and asking what it does.
 - **Carried:** retired hashes of logins nobody returns to pile up with no sweep until 100 k rows or
   2.3 (2.2's spec re-armed it); AC-20's bound needs watching on CI; and round 2's four MINORs (in PR
   #13).
+
+---
+
+# Slice 2.2 — saved CVs, or: the first thing kept on purpose
+
+A postscript to 2.1's "what's next" first: the release happened. PR #13 was merged and deployed on
+2026-09-25, and a read-only look at the box the next day found `TRUSTED_PROXY_HOPS=2`, the digit
+that round 1 of `/verify` had been so worried about. The fact changed; the lesson in the footguns
+list stays.
+
+Every slice until now has been, at heart, about **forgetting**. A guest uploads a CV, the product
+uses it, and 24 hours later a scheduled job deletes it. Slice 1.6 built that job and wrote pages
+about how scary the first `DELETE` was. Slice 2.2 flips the default. A registered user can now
+**save** up to five base CVs, give them names, reuse one in the workspace with a click, delete one,
+or delete the whole account. For the first time the product keeps a stranger's CV *on purpose*,
+with no timer.
+
+That sounds like a small feature: a list, a rename box, a delete button. It is actually the slice
+where the question "whose is this?" stops having one answer. Everything interesting in it follows
+from that.
+
+It ships as `feature/intake-saved-base-cvs`: **2068 backend and 749 frontend tests**, one new ADR
+(0022), two amended ones (0008 and 0006), one migration, and a React surface on `/account` and in
+the workspace. It is **implemented, not verified**. `/verify` is next.
+
+## A row with two possible owners, and a type that says so
+
+Before 2.2, every base CV belonged to a guest session. One column, `guest_session_id`, one meaning.
+Now a CV belongs to a guest session **or** to a user, and never both and never neither.
+
+There are two ways to write "one of two things" down. The domain uses a **sum type**:
+
+```python
+Owner = GuestOwner | UserOwner      # two tiny frozen dataclasses
+```
+
+A value of that type is *either* a guest owner *or* a user owner. A row with two owners, or none,
+cannot even be constructed. `match owner:` with `assert_never` in the fallthrough makes `mypy
+--strict` complain if a third kind of owner ever appears and some function forgot to handle it.
+The type system is doing the checking a comment could only hope for.
+
+The database can't store that. A foreign key points at exactly **one** table, and we want real
+foreign keys, because they're what make the purge's cascade and the account's cascade work. So in
+Postgres the owner is a **product**: two nullable columns, `guest_session_id` and `user_id`, which
+by themselves allow four combinations. Two of those are nonsense. A `CHECK
+(num_nonnulls(guest_session_id, user_id) = 1)` rules them out.
+
+The mismatch is translated in exactly **one** place, the aggregate's `_assign_owner` and its
+`owner` property. The comment there says why two attributes hold one fact: *because a foreign key
+has one target*. The CHECK isn't the model; it's the **second lock**. The model is the type. The
+CHECK makes a hand-written `INSERT`, a botched migration or a future adapter bug fail loudly
+instead of quietly producing a row nobody can authorize.
+
+An analogy: a coat check. The ticket says "coat #41" or "umbrella #7", never both, never blank.
+That's the sum type. The rack behind the counter has a coat hook *and* an umbrella stand on every
+slot, because that's how racks are built. That's the product. The attendant's rule, "exactly one
+thing per slot", is the CHECK.
+
+The rejected alternatives are worth a line each. **A separate `saved_base_cv` table** would split
+one aggregate across two tables, and every query that must see *all* CVs, above all the orphan
+sweep's "is this file still referenced?", would become a `UNION` somebody eventually forgets. When
+they do, the sweep deletes a registered user's file. **An `owner_kind` + `owner_id` pair** has no
+foreign key at all, so integrity moves into application code, the one place it can't hold under
+concurrency.
+
+## Authorization is an equality
+
+Here's the whole authorization rule for renaming, deleting or copying a saved CV:
+
+```python
+cv.owner == UserOwner(requester)
+```
+
+That's it. No roles, no `is_guest()`, no `can_edit(user)`. `Owner` deliberately has **no methods**,
+because the one operation anyone needs is `==`. A method like `is_guest()` invites the conflation
+2.1 spent a whole section refusing: "if it's a guest *or* the user…". An equality can't be written
+that way. Either this row's owner *is* the requester, or the answer is 404, byte-identical to "no such
+CV". It's 404 and not 403 because "that exists but isn't yours" is itself information about somebody
+else.
+
+The repository backs this up without trusting the loaded aggregate. The `UPDATE` and `DELETE`
+statements carry the owner in their `WHERE` clause, and zero rows affected means "not found". The
+check happens twice, once in Python and once in SQL, and the SQL one is the one a race can't slip
+past.
+
+## Reuse is a copy, because lifetimes differ
+
+The interesting design question: a signed-in user picks a saved CV in the workspace and clicks
+**Use this CV**. What happens?
+
+The workspace is still a *guest* workspace in 2.2. Tailoring runs, postings and exports all stay
+guest-owned until 2.3. So a saved CV (kept forever) somehow has to feed a guest run (dies in 24
+hours). Four options were weighed, and the one chosen is a **working copy**. `BaseCv.copy_from`
+builds a brand-new guest-owned CV with its own id, **its own file** and the source's extracted
+text. No re-extraction, so no three-second wait.
+
+Why not just point the guest run at the saved CV? Think of a library book versus a photocopy. If
+the guest workspace *borrows* the saved CV, then the 24-hour purge, which faithfully destroys
+everything a guest session touched, will one day destroy the borrowed book. File keys are derived
+from the object's id (ADR-0011), so a shared reference means the purge would unlink
+`FileRef.for_base_cv(source_id)`, which is **the saved CV's bytes**. A photocopy can be shredded with
+the workspace and the original doesn't notice. The rule, written into ADR-0022: **an ownership graph
+never crosses owners.**
+
+There are two independent locks on this. `copy_from` refuses a copy whose file equals the source's
+file, and the database has `UNIQUE` on the file key. The retention proof (AC-17) had a twist. Its
+named mutation, "make the copy reuse the source's file key", turned out to be **unreachable**,
+because the domain guard refuses it before any row exists. So instead of a red-then-revert cycle,
+the test is a permanent **counterfactual**. It removes *both* locks for the width of one test (the
+guard, by building the "copy" through plain `upload`; the unique constraint, dropped inside that
+test's own rolled-back transaction) and shows that the purge's real, unedited code then destroys
+the saved CV's bytes. It's always green, and what it proves is that both locks are load-bearing.
+
+`copied_from_base_cv_id` records where a copy came from, and it has **no foreign key**, on purpose.
+It's provenance, not ownership: deleting the saved CV must not cascade into, or be blocked by, a
+stranger-lifetime copy. Slice 2.4's "claim" (a guest who registers keeps their work) will read it.
+
+## The first route that reads two credentials
+
+2.1 made a rule and a test for it: *no route depends on both the bearer token and the guest
+cookie.* The copy route breaks that rule, necessarily. It reads a saved CV (needs the user) and
+writes into a guest workspace (needs the guest session).
+
+The rule was **refined, not abandoned** (ADR-0008 amendment (f)). A *transfer route* reads both,
+and **each credential authorizes only its own half**: the bearer authorizes reading the source, the
+guest cookie owns the destination. Nothing ever asks "is there a user *or* a guest?".
+
+Order matters. The source is loaded and authorized **first**. Only then does the handler body call
+`resolve_or_start_guest_session`. It isn't a FastAPI `Depends`, because (slice 1.1's lesson) a
+sibling dependency runs even when body validation fails. As a dependency, a malformed request would
+have minted a guest session and set a cookie on its way to a 422. In the body, a 401, 404 or 422
+mints nothing.
+
+That creates a testing problem. 2.1's guard was a **walker** over FastAPI's dependency graph, and a
+call made inside a handler body doesn't appear in that graph. A future route could quietly read
+both credentials, the walker would stay green, and the rule would be broken. So the test was
+extended with an **AST scan**: it parses every `routers/*.py` file and finds any direct call to
+`resolve_or_start_guest_session` or `read_guest_token`. The set of routes that read both
+credentials is then pinned to exactly `{POST /api/base-cvs/copies}`. When 2.4 adds the claim, the
+set grows by one, on purpose, in a diff someone reviews. Security rules are like guest lists: the
+exception should have a name on it, not a gap in the fence.
+
+## Deleting, twice, with 1.6's order and one new lock
+
+Two new deletes: one saved CV, and a whole account. Both follow the order 1.6 chose for the purge:
+**rows committed, then files.** The reason is the same. If the process dies between the two, the
+survivor is an orphan *file*, which the orphan sweep can find and reclaim. The alternative would be
+a *row* pointing at a missing file, which breaks the user's screen and which nothing sweeps.
+
+"Committed" is doing real work there. The use case can't name a transaction (the hexagon forbids
+it), so infrastructure wraps the repository in a `CommittingBaseCvRemoval` whose `remove` commits.
+Only a commit makes "the row is gone" durable before the unlink starts.
+
+If the unlink fails afterwards, the delete still answers **204**, with a warning line. A 500 would
+be a lie in the other direction: the CV *is* gone from everything the user can reach, and a retry
+would just 404.
+
+Account erasure adds a race that "rows first" doesn't cover. Picture the sequence: erasure collects
+the user's file keys → **an upload inserts a new CV** → erasure deletes the user, and the cascade
+takes the new row too. That new CV's file was never collected, so it's orphaned. Worse, it's
+orphaned *silently*. The fix is a row lock. Erasure starts with `SELECT … FROM identity_user … FOR
+UPDATE`. A concurrent upload's `INSERT` needs a `FOR KEY SHARE` lock on that same user row to check
+its foreign key, so it **waits**. When the erasure commits, the waiting insert fails its foreign key
+and becomes a clean "not signed in".
+
+That claim was proven with **two real database connections**, never a mock. Connection A takes the
+lock and holds it. A concurrent task on connection B tries the upload. The test asserts B is *still
+blocked* after 200 ms, which is what stops the test from silently becoming uncontended if someone
+removes the lock. Then A deletes and commits, B fails with `UserNotFound`, and a third connection
+confirms zero rows. It's the same "mutation habit" as ever, applied in advance: the test checks
+that its own precondition, contention, actually happened.
+
+Erasure lives in the `retention` context, beside the purge: *delete everything an owner has, rows
+then files, and return what couldn't be unlinked*. The user-facing version (`DeleteOwnAccount`,
+in identity) checks the password first. The operator version, `erase-account`, skips the password,
+because a user who has forgotten theirs has no reset yet and that's the only way out for them. It
+also has a guard no earlier CLI needed: `SELECT current_database()` must match the database the
+settings name, or it refuses before reading a thing. An erasure tool pointed at the wrong database
+is the one mistake worth a special check.
+
+And 2.1's runbook line, "to delete an account, delete the `identity_user` row", became **wrong** the
+moment an account owned files. The cascade would take every row and leave every file on disk,
+holding the CV of someone who asked to be forgotten. The runbook now says so in bold.
+
+## A read model, because two promises disagreed
+
+Midway through, the spec contradicted itself. The saved-CV list response pinned a
+`character_count` field ("12,403 characters"), which is the length of the extracted text. AC-52
+said the list query must **never load the extracted text**: five CVs of ~15,000 characters each is a
+lot of PII to drag across the wire just to count it. A list of full `BaseCv` aggregates can't
+satisfy both.
+
+This was taken to the owner rather than resolved by whoever hit it, because either "fix" would have
+quietly dropped a promise. The owner's answer was a **read model**. The list returns
+`SavedBaseCvSummary`, a small frozen dataclass with exactly the fields the screen needs, and the
+database does the counting: `char_length(extracted_text)`. That's code points, the same as Python's
+`len`, which a test proves with "café" × 60: 299 code points against 359 UTF-8 bytes, so a byte
+count would fail it. A statement-capture test proves the column appears only inside
+`char_length(…)`. The summary type itself has no `text` field, so AC-52 holds at the type as well as
+the query. Rename, delete and copy still load the real aggregate; only the list is a "read side".
+
+This is a small taste of an idea called CQRS. You don't need to adopt it wholesale. Sometimes a
+screen just wants a different shape than the thing that enforces the rules.
+
+## Signing out every tab at once
+
+2.1 left a gap: sign out in one tab, and another open tab stays signed in until its token expires.
+With saved CVs on screen that matters. A shared computer, a closed laptop lid, and someone else's
+CVs are still listed in the second tab.
+
+The fix is a `BroadcastChannel`, a browser API that lets tabs of the same site pass messages. After
+a successful logout (or account deletion), the tab posts `{type: 'signed-out'}` on
+`tailorcraft-auth`. Every other tab's store hears it, signs itself out with reason
+`signed_out_elsewhere`, clears every `['auth', …]` query, and makes **no network call**, because
+the server already knows. Signing *in* is never broadcast. Anything that isn't exactly that message
+is ignored.
+
+The subscription happens at **module scope** in the store, not in a component's `useEffect`. That's
+this codebase's rule about effects taken seriously: this is synchronization with something outside
+React, but it belongs to the store's lifetime, not to whichever component happens to be mounted.
+The tests use two real `BroadcastChannel` instances standing in for two tabs.
+
+The saved list is also keyed on the user id, `['auth', 'savedBaseCvs', userId]`. User A signs out
+and user B signs in *in the same tab*, and B can never see A's list, not even for a frame, because
+it's a different cache entry. Deletes are deliberately **not optimistic**: the row stays, showing
+"Deleting…", until the server answers. Optimism is for things you can undo.
+
+## War stories
+
+### The redirect that lost a race it couldn't see
+
+After you delete your account, the app should take you to `/` with a notice, "Your account and
+saved CVs were deleted." In practice it landed on `/login?next=/account`, the screen for "your
+session expired".
+
+The page is wrapped in `RequireAuth`, which redirects to `/login` the moment the store goes
+anonymous. So the code navigated to `/` *first*, then signed out. It still lost. React Router's data
+router commits a navigation inside a **transition**, so even an awaited `navigate('/')` hadn't
+rendered when the synchronous sign-out re-rendered the still-mounted guard. The obvious escape
+hatch, `navigate('/', { flushSync: true })`, did nothing. It turns out `RouterProvider` imported
+from `react-router` **ignores** that option; only the one from `react-router/dom` honours it.
+
+A second trap sat underneath. TanStack Query skips a mutation's per-call `onSuccess` when the
+component that called it has unmounted, and the guard unmounts it. So "navigate in `onSuccess`,
+after the sign-out" would simply never run.
+
+The fix went where the knowledge lives: **the guard itself**. `RequireAuth` now reads *why* the
+store is anonymous, and for `account_deleted` it goes to `/` with the notice instead of `/login`.
+It's like a doorman who used to turn away everyone without a badge, now told the one case where
+"no badge" means "they just handed it back on purpose". The behaviour was pinned by a test that
+mounts the app's real route table under `StrictMode`, deletes an account through the real form, and
+was proven by mutation: remove the `account_deleted` branch and the test lands on `/login`.
+
+### Three tests that were testing the harness
+
+- **The cache that collected the evidence, again.** 2.1 documented that `gcTime: 0` makes TanStack
+  garbage-collect an unobserved cache entry on the next tick. A picker test seeded
+  `['intake', 'baseCvs']` with `setQueryData`, nothing observed it, and the assertion "the copy
+  invalidated it" was really asking whether the garbage collector had run. Fixed to
+  `gcTime: Infinity`, in **its own commit**, so no test was edited in the commit that made it pass.
+  A trap you've written down once still catches you. Writing it down just makes it quicker to
+  recognise.
+- **Two requests, one database session.** Tests for "two concurrent deletes: exactly one 204, one
+  404" ran through the normal test app, which hands **every request the same `AsyncSession`**. A
+  session isn't safe for concurrent use, so the race produced `IllegalStateChangeError` and a 503.
+  That's a failure of the harness, not of the code under test. The fix reused 2.1's
+  `concurrent_app`, which gives each request its own real session against real committed rows.
+- **The fake with a leftover event.** A test helper built a CV with `BaseCv.upload(...)` and handed
+  it straight to the use case. But `upload` records a `BaseCvUploaded` event, and a CV loaded from
+  the real repository never carries pending events (the repository releases them). So the leftover
+  event leaked into the publisher, and assertions like "exactly one `BaseCvDeleted` was published"
+  failed for a reason that had nothing to do with deletion. A stand-in has to behave like what it
+  stands in for, including in what it *doesn't* carry.
+
+A fourth, in the same family. Retention tests shared the session-wide upload directory, and the
+orphan sweep walks its **whole** root. Files one test had aged to 60 hours were still on disk when
+a later test's sweep ran, so it reclaimed four files instead of one. Each test now gets its own
+`tmp_path`, and the module docstring says why, so nobody "tidies" it back.
+
+### The spec was wrong six times, and the fix had its own commit
+
+When the implementer went GREEN on the API, 58 of 64 red tests passed and 6 wouldn't. The
+implementer didn't edit them. It stopped and reported: two tests read fixture files that didn't
+exist; one set a rate limit so low that its own *setup* tripped it; two raced through the shared
+session above; and one privacy test forbade the uploaded filename in any response body, while the
+API contract itself pins `original_filename` as a response field.
+
+Each was checked against the spec. Each was the test's fault. They were corrected in **their own
+commit**, and then the implementation landed in a commit whose `git diff -- api/tests` is empty.
+That's the whole TDD discipline in one move. A test edited in the commit that makes it pass has no
+independent authority, so if a test is wrong, fixing it must be a visible, separate decision. It
+happened again at the application tier (three tests, commit `8880439`). One of those asserted that a
+failed copy left the file store *empty*, which would only be true if the copy deleted the saved
+source's bytes. "Making it pass" would have built the exact bug ADR-0022 exists to prevent.
+
+### A skeleton that broke fifteen files
+
+Replacing `guest_session_id=` with `owner=GuestOwner(…)` on `BaseCv.upload` is a signature change,
+and fifteen existing test files called the old signature. Those renames couldn't wait for the RED
+commit (it would mix "mechanical" with "new claim") or the GREEN one (a test edited by the commit
+that makes it pass). So they went into **the skeleton's commit**, by `qa`, with no assertion changed
+in meaning. That's worth knowing before the next aggregate changes shape.
+
+### The positive control that passed for the wrong reason
+
+The privacy test plants marker strings in every field (email, label, filename, CV text), runs the
+whole flow, and asserts no marker reaches a log. A test like that passes trivially if nothing is
+logged at all, so it needs a **positive control**: at least one log line must name the ids you'd
+expect. The first draft checked "any collected id appears in the logs", and it passed
+**immediately**, against a skeleton where nothing worked. The reason: 2.1's registration already
+logs `user_id`. The control was scoped down to `base_cv_id`, which only exists once the new upload
+actually succeeds, and the test went properly red. An alarm you've never heard ring isn't an alarm.
+
+### Smaller ones
+
+- **A mutation that crashed instead of lying.** To prove the purge spares saved CVs, the test
+  widened the purge's query to include rows with no guest session. It didn't delete the wrong thing;
+  it crashed with `KeyError: None` before any `DELETE`, because a saved CV has no session to be
+  grouped under. Red either way. A crash is the kind of failure you want if the rule is ever broken.
+- **A missed criterion, caught while writing the summary.** AC-19 (a saved CV's id is refused by
+  the tailoring route) had no test in the RED commit. It was added as a separate addendum rather
+  than by amending a RED commit once made.
+- **The plan said one thing and the code another.** The plan said the orphan sweep judges a file's
+  age from the UUIDv7 in its name. The real scanner reads `st_mtime`, deliberately and documented.
+  The tests follow the code, and the plan's sentence is flagged for correction, not silently
+  tested around.
+- **The downgrade refuses.** The migration's downgrade would have to make `guest_session_id` `NOT
+  NULL` again, which is impossible while a user-owned row exists without deleting someone's saved
+  CV. So it raises a sentence and does nothing. A rollback that destroys user data isn't a rollback.
+
+## The number that came back over budget
+
+The measurement task timed everything against the spec's budgets on the dev stack. Most results
+were comfortable: the list at the cap p95 **6.8 ms** (budget 100), a delete **9.0 ms** (150),
+account deletion **66 ms** (400, mostly argon2). A purge of 100 guest sessions *beside* 100 users
+with 500 saved CVs, on the production image in an isolated stack, took **0.59 s** (10 s), and the
+orphan sweep that followed reclaimed **0 of the 500 saved files**, which is the number that
+matters.
+
+One wasn't. **Copying a 10 MB saved CV into the workspace: p95 1.57 s against a 1.0 s budget.**
+All twenty samples sat between 1.50 and 1.58 s, so this is systematic, not noise. The copy reads
+the whole file and writes the whole copy. Both calls are already in threads, off the event loop, so
+this isn't the blocked-loop kind of slow that 1.6 and 2.1 hunted. **What it actually is has not
+been established.** It's recorded as found and under diagnosis. The next step is a measurement that
+separates "this machine's disk" from "this mechanism". Until that exists, any explanation would be
+a story, and `/verify` will decide between fixing the mechanism and amending the budget with
+evidence.
+
+The measuring had its own lesson. Every request from the host reached the containers from the
+**same** address, because Docker's port proxy rewrites the source. Binding different loopback
+addresses changed nothing, so the IP-keyed rate limiters on register and login capped the setup
+after a handful of accounts. Setup went through a separate, rate-limit-relaxed container sharing
+the same database, while the *timed* calls always went through the real stack. Measuring a system
+honestly sometimes means building scaffolding around its own defences without taking them down.
+
+## The common thread, an eleventh time
+
+Look at this slice's traps together: a guard that couldn't see a call in a body, a session shared
+by two "concurrent" requests, a fake carrying an event the real thing never would, a cache
+collected before the assertion looked, a positive control satisfied by someone else's log line.
+**Each time, the thing checked was a stand-in, and the stand-in differed from the real thing in
+exactly the way that mattered.** The AST scan, `concurrent_app`, `release_events()`,
+`gcTime: Infinity` and the scoped control all fix the same thing: they make the stand-in more like
+the real system at the one point the test depends on.
+
+And the design's own thread: **when two things have different lifetimes, don't let them share.** A
+saved CV and a guest workspace, a login and the tab that holds its token, a row and its file. Each
+got a copy, a broadcast or an order, never a shared reference.
+
+## What's next
+
+- **`/verify` (T33)**: reviewer PASS, every AC checked, the suite green twice, and a manual pass on
+  the dev stack, from register through two tabs to account deletion.
+- **The copy's latency**, diagnosed before it's fixed or the budget is amended.
+- **Carried into `/verify`:** S-23's wording (the store refuses a symlink at the key outright, which
+  is stronger than the spec's sentence); S-5 and S-44 without tests; S-12 sharing 2.1's
+  `identity.user_missing` log line; the plan's UUIDv7-age sentence.
+- **Re-armed, with a number:** production's retired-refresh-hash table held **0 rows** on
+  2026-09-26. The sweep waits for 100 k rows or 2.3.
+- **Still owed by the owner:** Phase 1's gate (OQ-7).
+- **After merge:** the release. Every merge to `main` is one.
