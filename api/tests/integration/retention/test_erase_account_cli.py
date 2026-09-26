@@ -375,6 +375,83 @@ async def test_a_real_run_erases_the_user_logins_retired_tokens_and_saved_cvs_an
         assert not (settings.upload_dir / ref.key).exists()
 
 
+async def test_a_real_run_with_a_failing_unlink_still_exits_0_and_logs_both_s45_lines(
+    settings: Settings,
+    account_rig: _AccountRig,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S-45, the CLI's own code path — `erase_account_command.erase_account` logs
+    `retention.account_erased`/`retention.account_file_unlink_failed` itself (module docstring: "one
+    log line per run, plus S-45's one line per failed unlink"), a separate call site from
+    `routers/auth.py::_log_erasure`, so the HTTP route's own test of the same rows does not cover it.
+
+    Fault injected **below** `LocalFileStore.delete`'s own floor (`Path.unlink`, the library call it
+    wraps, matched by the exact path), never the adapter's public method (CLAUDE.md's I-45
+    correction) — the real `except OSError` floor in `LocalFileStore.delete` still runs and
+    translates it to `FileStoreUnavailable`, which is the type this test asserts on.
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** In
+    `erase_account_command.erase_account`, replaced the final
+    `log.info(EVENT_ACCOUNT_ERASED, ...)` call with `pass`. Re-run:
+    ```
+    erased_lines = [r for r in caplog.records if "retention.account_erased" in r.getMessage()]
+    >       assert erased_lines, f"expected a 'retention.account_erased' line, captured:\\n{caplog.text}"
+    E       AssertionError: expected a 'retention.account_erased' line, captured: ...
+    E       assert []
+    FAILED tests/integration/retention/test_erase_account_cli.py::test_a_real_run_with_a_failing_unlink_still_exits_0_and_logs_both_s45_lines
+    1 failed in ...s
+    ```
+    Source restored byte-exact (`git diff --stat api/src` empty); re-run green alone and the full
+    module green twice in a row afterward.
+    """
+    _assert_test_database(settings)
+    seeded = await account_rig.seed_account(
+        email=f"unlink-fails-{uuid4().hex}@example.com",
+        saved_cv_specs=[("a.txt", None, None), ("b.txt", None, None)],
+    )
+    ok_ref, failing_ref = (ref for _cv_id, ref in seeded.saved_cvs)
+    failing_path = settings.upload_dir / failing_ref.key
+    original_unlink = Path.unlink
+
+    def _selective_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == failing_path:
+            raise OSError(5, "Input/output error")
+        return original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _selective_unlink)
+
+    with caplog.at_level(logging.INFO):
+        exit_code = await erase_account_command.erase_account(
+            settings, user_id=seeded.user_id, dry_run=False
+        )
+
+    assert exit_code == erase_account_command.EXIT_OK
+    out = capsys.readouterr().out
+    assert (
+        f"erased account {seeded.user_id.value}: 2 saved CV(s), 1 file(s) unlinked, 1 failed" in out
+    )
+    assert not (settings.upload_dir / ok_ref.key).exists()
+    assert failing_path.exists(), "the failing unlink must have left its bytes behind"
+
+    erased_lines = [r for r in caplog.records if "retention.account_erased" in r.getMessage()]
+    assert erased_lines, f"expected a 'retention.account_erased' line, captured:\n{caplog.text}"
+    erased_message = erased_lines[0].getMessage()
+    assert str(seeded.user_id.value) in erased_message
+    assert '"base_cvs": 2' in erased_message, erased_message
+    assert '"files_unlinked": 1' in erased_message, erased_message
+    assert '"files_failed": 1' in erased_message, erased_message
+
+    failure_lines = [
+        r for r in caplog.records if "retention.account_file_unlink_failed" in r.getMessage()
+    ]
+    assert len(failure_lines) == 1, f"expected exactly one failure line, captured:\n{caplog.text}"
+    failure_message = failure_lines[0].getMessage()
+    assert str(seeded.user_id.value) in failure_message
+    assert "FileStoreUnavailable" in failure_message
+
+
 async def test_a_real_run_leaves_a_guest_owned_decoy_and_another_users_cv_untouched(
     settings: Settings,
     engine: AsyncEngine,

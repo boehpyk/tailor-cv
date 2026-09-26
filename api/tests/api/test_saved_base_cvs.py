@@ -506,6 +506,53 @@ async def test_at_the_cap_the_next_upload_is_409_and_writes_no_file(
     assert len(listing.json()["items"]) == 2, "the refused upload must not have written a row"
 
 
+async def test_at_the_cap_the_refusal_is_logged_with_reason_cap_and_the_user_id(
+    client: AsyncClient,
+    app: FastAPI,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """S-4's `Logged` cell: `intake.upload_refused`, `reason=cap`, `user_id` — never the filename
+    the refused upload was trying to add.
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Replaced the
+    `log.info(EVENT_UPLOAD_REFUSED, ...)` call in `routers/saved_base_cvs.py::upload_saved_base_cv`'s
+    `except TooManySavedBaseCvs:` branch with `pass`. Re-run:
+    ```
+    >       assert cap_lines, f"expected an 'intake.upload_refused' line, captured:\\n{caplog.text}"
+    E       AssertionError: expected an 'intake.upload_refused' line, captured:
+    E
+    E       assert []
+    FAILED tests/api/test_saved_base_cvs.py::test_at_the_cap_the_refusal_is_logged_with_reason_cap_and_the_user_id
+    1 failed, 41 deselected in 0.77s
+    ```
+    Source restored byte-exact (`git checkout -- api/src/.../routers/saved_base_cvs.py`, confirmed
+    with `git diff --stat api/src` showing nothing); re-run green alone and the full module green
+    twice in a row afterward.
+    """
+    _override_settings(app, settings, max_saved_base_cvs_per_user=1)
+    token, user_id = await _register(client, settings)
+    first = await _upload_saved(client, token, filename="a.txt", data=_read_fixture("sample.txt"))
+    assert first.status_code == 201, first.text
+
+    with caplog.at_level(logging.INFO):
+        second = await _upload_saved(
+            client,
+            token,
+            filename="marker-filename-must-not-be-logged.txt",
+            data=_read_fixture("sample.txt"),
+        )
+    assert second.status_code == 409, second.text
+
+    cap_lines = [r for r in caplog.records if "intake.upload_refused" in r.getMessage()]
+    assert cap_lines, f"expected an 'intake.upload_refused' line, captured:\n{caplog.text}"
+    message = cap_lines[0].getMessage()
+    assert "cap" in message, message
+    assert "reason" in message, message
+    assert user_id in message
+    assert "marker-filename-must-not-be-logged.txt" not in caplog.text
+
+
 async def test_more_than_the_per_user_hourly_limit_returns_429(
     client: AsyncClient, app: FastAPI, settings: Settings
 ) -> None:

@@ -47,6 +47,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -2052,6 +2053,49 @@ async def test_delete_account_with_the_wrong_password_is_403_password_incorrect(
     assert still_signed_in.status_code == 200, still_signed_in.text
 
 
+async def test_delete_account_with_the_wrong_password_logs_the_refusal_with_reason_password(
+    client: AsyncClient, settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """S-41's `Logged` cell: `identity.account_deletion_refused`, `user_id`, `reason=password` —
+    never the password or its length.
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Replaced
+    `routers/auth.py::delete_account`'s `log.info(EVENT_ACCOUNT_DELETION_REFUSED, ...)` call (the
+    `except InvalidCredentials:` branch) with `pass`. Re-run:
+    ```
+    >       assert refusal_lines, f"expected an 'identity.account_deletion_refused' line, captured:
+    \\n{caplog.text}"
+    E       AssertionError: expected an 'identity.account_deletion_refused' line, captured:
+    E
+    E       assert []
+    FAILED tests/api/test_auth.py::test_delete_account_with_the_wrong_password_logs_the_refusal_with_reason_password
+    1 failed in 0.5s
+    ```
+    Source restored byte-exact (`git diff --stat api/src` empty); re-run green alone and the full
+    module green twice in a row afterward.
+    """
+    token, user_id = await _register_2_2(client, settings)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            DELETE_ACCOUNT_URL,
+            json={"password": "definitely-the-wrong-password"},
+            headers=_delete_account_headers(settings, token),
+        )
+    assert response.status_code == 403, response.text
+
+    refusal_lines = [
+        r for r in caplog.records if "identity.account_deletion_refused" in r.getMessage()
+    ]
+    assert refusal_lines, (
+        f"expected an 'identity.account_deletion_refused' line, captured:\n{caplog.text}"
+    )
+    message = refusal_lines[0].getMessage()
+    assert user_id in message
+    assert "password" in message
+    assert "definitely-the-wrong-password" not in caplog.text
+
+
 # ---------------------------------------------------------------------------------------------
 # S-42 — argon2 fails: 503 service_unavailable, nothing deleted
 # ---------------------------------------------------------------------------------------------
@@ -2085,24 +2129,158 @@ async def test_delete_account_argon2_failure_is_503(
 
 
 async def test_delete_account_commit_failure_is_503_and_does_not_clear_the_cookie(
-    client: AsyncClient, settings: Settings, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, settings: Settings, session: AsyncSession
 ) -> None:
+    """S-43. Two saved CVs seeded first, so "nothing deleted" is a claim about real rows and real
+    files, not merely about the user row `CommittingAccountData.delete_account`'s failing commit
+    touches directly: the erasure is one transaction (`CommittingAccountData`'s own `session.commit()`
+    is the commit this test's monkeypatch intercepts — it fires **before** `EraseAccount` unlinks a
+    single file), so a failure there must leave the account, its saved CVs and their files exactly as
+    they were."""
     token, _ = await _register_2_2(client, settings)
+    first_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
+    second_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
+    first_path = settings.upload_dir / _saved_cv_key_2_2(first_cv_id)
+    second_path = settings.upload_dir / _saved_cv_key_2_2(second_cv_id)
+    assert first_path.exists(), "setup sanity: both files must exist"
+    assert second_path.exists(), "setup sanity: both files must exist"
 
     async def _raise_sqlalchemy_error() -> None:
         raise SQLAlchemyError("simulated commit failure (S-43)")
 
-    monkeypatch.setattr(session, "commit", _raise_sqlalchemy_error)
-
-    response = await client.post(
-        DELETE_ACCOUNT_URL,
-        json={"password": A_STRONG_PASSWORD},
-        headers=_delete_account_headers(settings, token),
-    )
+    # Scoped to only the one request: `session` is the fixture's own connection, shared by every
+    # later call this test makes too, and `main.py`'s error handler leaves it able to serve more
+    # requests — but only once this failing `commit` is no longer patched onto it.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(session, "commit", _raise_sqlalchemy_error)
+        response = await client.post(
+            DELETE_ACCOUNT_URL,
+            json={"password": A_STRONG_PASSWORD},
+            headers=_delete_account_headers(settings, token),
+        )
 
     assert response.status_code == 503, response.text
     assert _cookie_header_named(response, REFRESH_COOKIE_NAME) is None, (
         "a failed commit must never clear tc_refresh — the server still honours it (I-31's rule)"
+    )
+
+    # Nothing was deleted: the user row, both saved CV rows and both files all survive.
+    still_signed_in = await client.get(ME_URL, headers=_bearer_delacct(token))
+    assert still_signed_in.status_code == 200, still_signed_in.text
+    listing = await client.get("/api/me/base-cvs", headers=_bearer_delacct(token))
+    assert {item["id"] for item in listing.json()["items"]} == {first_cv_id, second_cv_id}
+    assert first_path.exists(), "the commit failure must never have reached a file unlink"
+    assert second_path.exists(), "the commit failure must never have reached a file unlink"
+
+
+async def _upload_saved_cv_2_2(client: AsyncClient, token: str, *, filename: str = "a.txt") -> str:
+    """A minimal saved CV, uploaded through the real route — `test_saved_base_cvs.py`'s own
+    `_upload_extracted_saved_cv`, reproduced locally rather than imported across test modules."""
+    text = ("word " * 200).encode()
+    response = await client.post(
+        "/api/me/base-cvs",
+        files={"file": (filename, text, "text/plain")},
+        headers=_bearer_delacct(token),
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "extracted", body
+    return str(body["id"])
+
+
+def _saved_cv_key_2_2(cv_id: str) -> str:
+    """The storage key `FileRef.for_base_cv` derives from an id — via the real function, so this
+    cannot drift from ADR-0011's own sharding rule."""
+    from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType
+    from tailorcraft.domain.shared.files import FileRef
+
+    return FileRef.for_base_cv(BaseCvId(UUID(cv_id)), CvContentType.TXT).key
+
+
+# ---------------------------------------------------------------------------------------------
+# S-45 — some unlinks fail: 204, one retention.account_erased line, one
+# retention.account_file_unlink_failed line per failure
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_delete_account_with_a_failing_unlink_is_still_204_and_logs_both_lines(
+    client: AsyncClient,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S-45. Two saved CVs; one file's unlink fails — injected **below** `LocalFileStore.delete`'s
+    own floor (`Path.unlink`, the library call it wraps, matched by the exact path so no unrelated
+    `Path.unlink` call anywhere else in the request can be caught by accident), never the adapter's
+    own public method (CLAUDE.md's I-45 correction: patching `LocalFileStore.delete` itself would
+    bypass its own `except OSError` floor, which is the very thing this row exists to prove still
+    stands). The account is still erased (204 — nothing left to retry against): one
+    `retention.account_erased` line with the right counts, and one
+    `retention.account_file_unlink_failed` line naming the failure's exception type — both from
+    `routers/auth.py::_log_erasure`.
+
+    **Mutation, observed red 2026-09-26 and reverted byte-exact.** Replaced `_log_erasure`'s body
+    with `pass; return` before its two `log.info`/`log.warning` calls. Re-run:
+    ```
+    erased_lines = [r for r in caplog.records if "retention.account_erased" in r.getMessage()]
+    >       assert erased_lines, f"expected a 'retention.account_erased' line, captured:\\n{caplog.text}"
+    E       AssertionError: expected a 'retention.account_erased' line, captured:
+    E         ERROR    tailorcraft.infrastructure.files.local_file_store:local_file_store.py:121
+    {"errno": 5, ..., "event": "file_store.delete_failed", "level": "error", ...}
+    E
+    E       assert []
+    FAILED tests/api/test_auth.py::test_delete_account_with_a_failing_unlink_is_still_204_and_logs_both_lines
+    1 failed in 0.6s
+    ```
+    (The adapter's own `file_store.delete_failed` line still fires — it lives inside
+    `LocalFileStore`, not `_log_erasure` — which is exactly why this test needs the *positive*
+    assertions on `retention.account_erased`/`retention.account_file_unlink_failed` rather than a
+    bare "something was logged".) Source restored byte-exact (`git diff --stat api/src` empty);
+    re-run green alone and the full module green twice in a row afterward.
+    """
+    token, user_id = await _register_2_2(client, settings)
+    ok_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
+    failing_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
+
+    failing_path = settings.upload_dir / _saved_cv_key_2_2(failing_cv_id)
+    ok_path = settings.upload_dir / _saved_cv_key_2_2(ok_cv_id)
+    original_unlink = Path.unlink
+
+    def _selective_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self == failing_path:
+            raise OSError(5, "Input/output error")
+        return original_unlink(self, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", _selective_unlink)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            DELETE_ACCOUNT_URL,
+            json={"password": A_STRONG_PASSWORD},
+            headers=_delete_account_headers(settings, token),
+        )
+
+    assert response.status_code == 204, response.text
+    assert not ok_path.exists(), "the successfully-unlinked file must be gone"
+    assert failing_path.exists(), "the failing unlink must have left its bytes behind"
+
+    erased_lines = [r for r in caplog.records if "retention.account_erased" in r.getMessage()]
+    assert erased_lines, f"expected a 'retention.account_erased' line, captured:\n{caplog.text}"
+    erased_message = erased_lines[0].getMessage()
+    assert user_id in erased_message
+    assert '"base_cvs": 2' in erased_message, erased_message
+    assert '"files_unlinked": 1' in erased_message, erased_message
+    assert '"files_failed": 1' in erased_message, erased_message
+
+    failure_lines = [
+        r for r in caplog.records if "retention.account_file_unlink_failed" in r.getMessage()
+    ]
+    assert len(failure_lines) == 1, f"expected exactly one failure line, captured:\n{caplog.text}"
+    failure_message = failure_lines[0].getMessage()
+    assert user_id in failure_message
+    assert "FileStoreUnavailable" in failure_message, (
+        "the OSError must have been translated by LocalFileStore's own floor before EraseAccount "
+        f"ever sees it — got: {failure_message}"
     )
 
 
