@@ -51,7 +51,7 @@ const AUTHENTICATED_RESPONSE = {
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
+    defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } },
   });
 }
 
