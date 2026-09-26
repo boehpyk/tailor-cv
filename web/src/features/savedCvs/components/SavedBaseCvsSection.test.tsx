@@ -321,6 +321,24 @@ describe('SavedBaseCvsSection — AC-35 upload to the account', () => {
 
     expect(await screen.findByText(/try again in 37 seconds/i)).toBeInTheDocument();
   });
+
+  it('AC-48: the upload refusal is role="alert" and linked to the file input by aria-describedby', async () => {
+    const user = userEvent.setup();
+    makeFetchMock({
+      'GET /api/auth/me': () => jsonResponse(200, USER),
+      'GET /api/me/base-cvs': () => jsonResponse(200, { items: [] }),
+      'POST /api/me/base-cvs': () =>
+        jsonResponse(422, { error: { code: 'empty_file', message: 'server said so' } }),
+    });
+
+    renderSection();
+    const input = await screen.findByLabelText(/upload a cv to your account/i);
+    await user.upload(input, new File(['x'], 'resume.pdf', { type: 'application/pdf' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('That file is empty. Choose the file with your CV in it.');
+    expect(input.getAttribute('aria-describedby')).toBe(alert.id);
+  });
 });
 
 describe('SavedBaseCvsSection — AC-36 delete', () => {
@@ -342,6 +360,27 @@ describe('SavedBaseCvsSection — AC-36 delete', () => {
 
     const dialog = await screen.findByRole('alertdialog');
     expect(within(dialog).getByText(confirmDeleteMessage('to-delete.pdf'))).toBeInTheDocument();
+  });
+
+  // AC-48: opening the dialog moves focus into it (onto Cancel, the safe choice), and closing it —
+  // by Escape, here — gives focus back to the row's own Delete button that opened it, not to the
+  // document body or some other element.
+  it("AC-48: opening moves focus to Cancel; Escape closes it and returns focus to the row's Delete button", async () => {
+    stubList(() => Promise.reject(new Error('DELETE must not be called after Escape cancels')));
+    renderSection();
+    const deleteButton = await screen.findByRole('button', { name: 'Delete' });
+    deleteButton.focus();
+
+    fireEvent.click(deleteButton);
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+
+    fireEvent.keyDown(dialog, { key: 'Escape', code: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Delete' })).toHaveFocus();
   });
 
   it('Escape cancels the dialog without deleting anything', async () => {

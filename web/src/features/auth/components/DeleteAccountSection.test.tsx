@@ -188,6 +188,28 @@ describe('DeleteAccountSection — AC-40, AC-46', () => {
     expect(await screen.findByText(expected)).toBeInTheDocument();
   });
 
+  it('AC-48: a refusal is role="alert" and linked to the password input by aria-describedby', async () => {
+    makeFetchMock({
+      'POST /api/auth/delete-account': () =>
+        jsonResponse(403, { error: { code: 'password_incorrect', message: 'nope' } }),
+    });
+    render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <MemoryRouter>
+          <DeleteAccountSection />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await fillAndSubmit();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent(/password isn't right/i);
+    const passwordInput = screen.getByLabelText(/your password/i);
+    expect(passwordInput.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(passwordInput).toHaveAttribute('aria-invalid', 'true');
+  });
+
   it('every refusal leaves the user signed in — the store never moves off authenticated', async () => {
     makeFetchMock({
       'POST /api/auth/delete-account': () =>

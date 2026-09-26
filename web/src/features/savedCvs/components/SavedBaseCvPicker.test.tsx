@@ -329,6 +329,23 @@ describe('SavedBaseCvPicker — AC-39 Use this CV', () => {
     expect(await screen.findByText(expectedText)).toBeInTheDocument();
   });
 
+  it('AC-48: a refusal is role="alert" and linked to "Use this CV" by aria-describedby', async () => {
+    makeFetchMock(
+      baseHandlers(() =>
+        jsonResponse(409, { error: { code: 'too_many_base_cvs', message: 'server said so' } }),
+      ),
+    );
+    authStore.setAuthenticated(AUTHENTICATED_RESPONSE);
+    renderPicker();
+    await screen.findByRole('radiogroup', { name: PICKER_LEGEND });
+
+    selectAndClickUse();
+
+    const alert = await screen.findByRole('alert');
+    const button = screen.getByRole('button', { name: USE_THIS_CV_LABEL });
+    expect(button.getAttribute('aria-describedby')).toBe(alert.id);
+  });
+
   it('a 404 refetches the saved list and says the CV was deleted', async () => {
     const handlers = baseHandlers(() =>
       jsonResponse(404, { error: { code: 'base_cv_not_found', message: 'gone' } }),

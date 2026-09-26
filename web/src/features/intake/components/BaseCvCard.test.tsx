@@ -59,4 +59,30 @@ describe('BaseCvCard', () => {
 
     expect(onReplace).toHaveBeenCalledTimes(1);
   });
+
+  // AC-41: a working copy (origin: 'copied_from_saved') says so — the saved CV it came from stays
+  // in the account; this copy goes with the workspace.
+  it('shows the "Working copy" badge and its note when origin is copied_from_saved', () => {
+    render(
+      <BaseCvCard cv={makeExtractedCv({ origin: 'copied_from_saved' })} onReplace={vi.fn()} />,
+    );
+
+    expect(screen.getByText('Working copy')).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'Copy of your saved CV — deleted with this workspace in 24 hours; your saved CV stays in your account',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('shows neither the badge nor the note for an ordinary upload (origin: uploaded)', () => {
+    render(<BaseCvCard cv={makeExtractedCv({ origin: 'uploaded' })} onReplace={vi.fn()} />);
+
+    expect(screen.queryByText('Working copy')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'Copy of your saved CV — deleted with this workspace in 24 hours; your saved CV stays in your account',
+      ),
+    ).not.toBeInTheDocument();
+  });
 });
