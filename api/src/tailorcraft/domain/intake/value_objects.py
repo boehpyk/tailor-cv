@@ -98,7 +98,12 @@ class ExtractedText:
         # whitespace (spaces, tabs, newlines) as one separator and drops leading/trailing
         # whitespace, so re-joining with a single space collapses everything in one pass.
         normalized = " ".join(self.value.split())
-        non_whitespace_count = sum(1 for char in normalized if not char.isspace())
+        # Exact, not an approximation: no-argument `str.split()` splits on precisely the characters
+        # `str.isspace()` accepts, so after the join the only whitespace left in `normalized` is the
+        # single ASCII spaces we inserted. Counting them is a C-level scan; the generator it replaces
+        # (`sum(1 for c in normalized if not c.isspace())`) cost ~0.4 s per 10 M characters, on the
+        # event loop, every time a `BaseCv` is loaded (T30b-B).
+        non_whitespace_count = len(normalized) - normalized.count(" ")
 
         if not normalized:
             raise EmptyExtraction("extracted text must not be blank")
