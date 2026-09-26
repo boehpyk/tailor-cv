@@ -26,7 +26,7 @@ from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
-from sqlalchemy.orm.attributes import set_committed_value
+from sqlalchemy.orm.attributes import instance_state, set_committed_value
 from sqlalchemy.orm.util import identity_key
 
 from tailorcraft.domain.identity.errors import UserNotFound
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
 # which is exactly the runtime trap the module docstring describes, just caught by mypy instead of a
 # silently-empty query. These `cast`s tell mypy what is actually there at runtime without touching
 # behaviour; each is a `cast`, not an `Any`, so CLAUDE.md's ban on unjustified `Any` does not apply.
-_BASE_CV_ID: InstrumentedAttribute[BaseCvId] = cast("InstrumentedAttribute[BaseCvId]", BaseCv._id)
 _BASE_CV_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
     "InstrumentedAttribute[GuestSessionId | None]", BaseCv._owner_guest_session_id
 )
@@ -91,6 +90,15 @@ class SqlAlchemyBaseCvRepository:
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        # Strong references to every aggregate `add` or `get` handed out, for this repository's
+        # lifetime — one request (`deps.py`) or one task (`tasks/container.py`), never longer. The
+        # session's identity map holds only **weak** references, so an aggregate its caller dropped
+        # is collected at once and the next `get` of that id is a miss that decodes the whole
+        # extracted text again, on the loop (T30b-A). The copy route does exactly that twice: the
+        # router authorizes the source and discards it, and the use case returns only the copy's id,
+        # which the router then re-reads. Pinning makes both an identity-map hit. It changes no
+        # answer: `get` still asks the database whether the row exists.
+        self._pinned: list[BaseCv] = []
 
     def next_identity(self) -> BaseCvId:
         """Synchronous: application-assigned UUIDv7 needs no I/O (ADR-0007)."""
@@ -124,6 +132,7 @@ class SqlAlchemyBaseCvRepository:
             async with self._session.begin_nested():
                 self._session.add(cv)
                 await self._session.flush()
+            self._pinned.append(cv)
         except IntegrityError as exc:
             if violated_constraint(exc) == _USER_FK:
                 # `from None`: the listener already reduced the chain to identifiers, and the frame
@@ -132,15 +141,38 @@ class SqlAlchemyBaseCvRepository:
             raise
 
     async def get(self, cv_id: BaseCvId) -> BaseCv:
-        # The column stays on the left of `==` below (silencing ruff's SIM300 "Yoda condition"):
-        # see the module-level cast comment above for why swapping it to satisfy that check would
-        # silently re-break mypy.
-        result = await self._session.execute(
-            select(BaseCv).where(_BASE_CV_ID == cv_id)  # noqa: SIM300
-        )
-        found = result.scalar_one_or_none()
+        """The aggregate, through the identity map; `BaseCvNotFound` if the **row** is gone.
+
+        **Why not `select(BaseCv)`** (T30b-A): its result processing runs every column's
+        `TypeDecorator` — `ExtractedText`'s validation over up to millions of characters, on the
+        event loop — even when the identity is already loaded and the fresh value is discarded (a
+        plain `select` does not overwrite a loaded instance). A copy loaded its source twice.
+
+        **Why not `session.get` alone:** on an identity-map hit it asks the database nothing, so a
+        row deleted since the load — by a concurrent request, or a Core `DELETE` in this very
+        session — would still be "found". Callers rely on `get` knowing: the copy's re-read after
+        `StoredFileMissing` is how a concurrent delete (S-33, 404) is told apart from a lost file
+        (S-32, 410). So a hit is confirmed by an id-only probe, which never selects the text: the
+        same answer about existence `select(BaseCv)` gave, without re-decoding the rest.
+
+        A miss, and an **expired** instance (after a failed flush or a rolled-back SAVEPOINT), go
+        through `session.get`, which loads fresh — and answers `None` for an expired instance whose
+        row is gone. An expunged instance (`save_label`, `remove`) is not in the map, so it is a
+        miss and loads fresh too.
+        """
+        # The identity map is untyped (`Any`); the key names the class, so the value is a `BaseCv`.
+        cached = cast("BaseCv | None", self._session.identity_map.get(identity_key(BaseCv, cv_id)))
+        if cached is not None and not instance_state(cached).expired:
+            probe = await self._session.execute(
+                select(base_cv_table.c.id).where(base_cv_table.c.id == cv_id)
+            )
+            if probe.first() is None:
+                raise BaseCvNotFound(f"no BaseCv with id {cv_id!r}")
+            return cached
+        found = await self._session.get(BaseCv, cv_id)
         if found is None:
             raise BaseCvNotFound(f"no BaseCv with id {cv_id!r}")
+        self._pinned.append(found)
         return found
 
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[BaseCv]:
