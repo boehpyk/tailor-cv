@@ -1,7 +1,7 @@
 """`SqlAlchemyJobPostingRepository` — the `JobPostingRepository` port (ADR-0007).
 
-Filters below query `JobPosting._id` / `JobPosting._guest_session_id`, the **private** attributes the
-imperative mapping targets — never `JobPosting.id` / `JobPosting.guest_session_id`. Those short names
+Filters below query `JobPosting._id` / `JobPosting._owner_guest_session_id`, the **private**
+attributes the imperative mapping targets — never `JobPosting.id` / `JobPosting.owner`. Those short names
 are plain read-only `@property` objects on the domain class, not `InstrumentedAttribute`s:
 `select(JobPosting).where(JobPosting.id == x)` would call the property, get back a `JobPostingId`,
 evaluate a bare Python `==` against `x`, and build `select(...).where(True)` or `.where(False)` — a
@@ -39,8 +39,8 @@ if TYPE_CHECKING:
 _JOB_POSTING_ID: InstrumentedAttribute[JobPostingId] = cast(
     "InstrumentedAttribute[JobPostingId]", JobPosting._id
 )
-_JOB_POSTING_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId] = cast(
-    "InstrumentedAttribute[GuestSessionId]", JobPosting._guest_session_id
+_JOB_POSTING_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
+    "InstrumentedAttribute[GuestSessionId | None]", JobPosting._owner_guest_session_id
 )
 _JOB_POSTING_CREATED_AT: InstrumentedAttribute[datetime] = cast(
     "InstrumentedAttribute[datetime]", JobPosting._created_at

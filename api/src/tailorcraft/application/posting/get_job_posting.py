@@ -4,8 +4,8 @@ session.
 A use case rather than `postings.get(id)` called straight from a router, **because it carries the
 authorization rule** (ADR-0008, ADR-0010):
 
-    What authorizes access to a job posting is **the link** — `posting.guest_session_id == the
-    resolved session id` — checked here, on every read. Owning a session id is not authority over an
+    What authorizes access to a job posting is **the link** — `posting.owner == GuestOwner(the
+    resolved session id)` — checked here, on every read. Owning a session id is not authority over an
     object that references it: a guest session is not a login, and the id itself proves nothing
     about which rows it may see.
 
@@ -18,6 +18,7 @@ caller eventually forgets.
 from __future__ import annotations
 
 from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.errors import JobPostingNotFound, JobPostingNotOwnedBySession
@@ -63,7 +64,9 @@ class GetJobPostingForSession:
 
         posting = await self._postings.get(job_posting_id)
 
-        if posting.guest_session_id != session.id:
+        # Authorization is one value equality (ADR-0022): a user-owned id on this guest route is
+        # "not mine" exactly as another session's is.
+        if posting.owner != GuestOwner(session.id):
             # "Not mine" must be indistinguishable from "does not exist" at this boundary
             # (P-30/AC-14, ADR-0008): the public exception is `JobPostingNotFound`, the same type a
             # missing id raises, because a 403 here would confirm to an attacker that the id exists.

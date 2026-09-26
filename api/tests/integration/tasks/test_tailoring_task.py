@@ -160,7 +160,7 @@ async def _ready_run(
     postings = SqlAlchemyJobPostingRepository(session)
     posting = JobPosting.from_pasted_text(
         id=postings.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         text=JobPostingText("x" * 150),
         created_at=clock.now(),
     )

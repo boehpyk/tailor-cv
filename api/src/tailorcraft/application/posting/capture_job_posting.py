@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from tailorcraft.domain.identity.errors import GuestSessionExpired
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.errors import TooManyJobPostings
@@ -142,7 +143,7 @@ class CaptureJobPosting:
             case PasteJobPostingCommand():
                 posting = JobPosting.from_pasted_text(
                     id=posting_id,
-                    guest_session_id=session.id,
+                    owner=GuestOwner(session.id),
                     text=cmd.text,
                     created_at=created_at,
                 )
@@ -165,7 +166,7 @@ class CaptureJobPosting:
                 fetched = await self._fetcher.fetch(cmd.url)
                 posting = JobPosting.from_fetched_url(
                     id=posting_id,
-                    guest_session_id=session.id,
+                    owner=GuestOwner(session.id),
                     url=cmd.url,
                     fetched=fetched,
                     created_at=created_at,

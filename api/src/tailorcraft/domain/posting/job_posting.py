@@ -2,7 +2,7 @@
 
 Composes `RecordsEvents` (`domain/shared/events.py`) rather than inheriting a shared aggregate base
 class, and shares **no** base class with `BaseCv` — CLAUDE.md is explicit that two aggregates with
-the same shape do not get one. The shape really is similar (an id, an owner session, a created-at, a
+the same shape do not get one. The shape really is similar (an id, an owner, a created-at, a
 chunk of validated text), and that similarity is exactly the trap: the *rules* differ, and a base
 class would have to guess which set it enforces. `BaseCv` records a failure as a state of itself;
 `JobPosting` cannot exist at all unless it succeeded (ADR-0013). No supertype could hold both.
@@ -17,8 +17,10 @@ assertion, and a skeleton exists so that a test fails on its *assertion* rather 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import assert_never
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.events import JobPostingCaptured
 from tailorcraft.domain.posting.value_objects import (
     FetchedPosting,
@@ -43,12 +45,13 @@ from tailorcraft.domain.shared.events import RecordsEvents
 # `infrastructure/persistence/mapping/posting/job_posting.py` will target, so renaming one here is a
 # breaking change to that module too (ADR-0007).
 class JobPosting(RecordsEvents):
-    """A job description a visitor captured: its text, its owner session, and — when it was fetched
+    """A job description a visitor captured: its text, its owner, and — when it was fetched
     rather than pasted — the URL it came from and the title read off the page.
 
     Invariants (technical-plan.md):
 
-    - **J-1** — A `JobPosting` always has exactly one owner session and one valid `JobPostingText`
+    - **J-1** — A `JobPosting` always has exactly one owner — `GuestOwner` or `UserOwner`, since
+      slice 2.3 (ADR-0022); `_assign_owner` is the only writer — and one valid `JobPostingText`
       (≥ 100 non-whitespace characters, ≤ 30,000 characters of normalized length). Both
       constructors require both, and the length rules live in the value object rather than here, so
       an invalid text cannot exist to be held. This is the invariant that makes 1.3 simple: the
@@ -92,7 +95,27 @@ class JobPosting(RecordsEvents):
     # instance and the properties below read back. SQLAlchemy's imperative mapping targets these
     # exact names.
     _id: JobPostingId
-    _guest_session_id: GuestSessionId
+    # Two attributes, one fact: the owner (ADR-0022 and its amendment (a); slice 2.3 technical plan
+    # §1). This contradicts the model on purpose, and the contradiction lives here and nowhere else.
+    # The domain's `Owner` is a sum type — `GuestOwner | UserOwner`, exactly one — but a foreign key
+    # has exactly one target table, so the database stores a *product* of two nullable ids and
+    # restores "exactly one" with a CHECK. These two private fields are that product, mirrored so
+    # the imperative mapping can target them. `_assign_owner` is their only writer (a `match` with
+    # `assert_never`, so exactly one is set by construction) and `owner` their only reader.
+    #
+    # `BaseCv` carries the same two fields, the same writer and the same reader, and **they are
+    # written out again here on purpose rather than lifted into a shared base or mixin**: three
+    # aggregates sharing a shape do not share a rule (CLAUDE.md). What each aggregate's owner
+    # *permits* differs — a guest `BaseCv` cannot be labelled, a `JobPosting` has no such rule — and
+    # a base class would have to guess which rules it carries. Eight duplicated lines are cheaper
+    # than that guess.
+    _owner_guest_session_id: GuestSessionId | None
+    # SKELETON (T5a): `_owner_user_id` has no column until T12's migration, so the mapping cannot
+    # load it yet and a posting read back from the database would have no such attribute at all. The
+    # class-level `None` is what such a posting reads meanwhile — which is the truth for every row
+    # that exists today. T12 maps it (the mapper then replaces it with an instrumented attribute) and
+    # removes this default. 2.2's T4 made the same deviation on `BaseCv`.
+    _owner_user_id: UserId | None = None
     _source: PostingSource
     _source_url: SourceUrl | None
     _title: PostingTitle | None
@@ -153,13 +176,13 @@ class JobPosting(RecordsEvents):
         cls,
         *,
         id: JobPostingId,
-        guest_session_id: GuestSessionId,
+        owner: Owner,
         text: JobPostingText,
         created_at: datetime,
     ) -> JobPosting:
         """Build a posting from text the visitor pasted in. Sets `source = PASTED`,
         `source_url = None`, `title = None`, and records exactly one `JobPostingCaptured` (with
-        `source=PASTED` and `character_count` taken from `text`).
+        `source=PASTED` and `character_count` taken from `text`). `owner` is either variant (2.3).
 
         Keyword-only, like its sibling: the two constructors share four of five parameter meanings
         and differ in the fifth, which is precisely the shape where a positional call site reads
@@ -189,7 +212,7 @@ class JobPosting(RecordsEvents):
         """
         posting = cls()
         posting._id = id
-        posting._guest_session_id = guest_session_id
+        posting._assign_owner(owner)
         posting._source = PostingSource.PASTED
         posting._source_url = None
         posting._title = None
@@ -199,7 +222,7 @@ class JobPosting(RecordsEvents):
         posting.record(
             JobPostingCaptured(
                 job_posting_id=id,
-                guest_session_id=guest_session_id,
+                owner=owner,
                 source=PostingSource.PASTED,
                 # The normalized length, not the floor's non-whitespace count — the same number the
                 # API returns and the UI counter divides by 30,000. A third quantity in circulation
@@ -215,7 +238,7 @@ class JobPosting(RecordsEvents):
         cls,
         *,
         id: JobPostingId,
-        guest_session_id: GuestSessionId,
+        owner: Owner,
         url: SourceUrl,
         fetched: FetchedPosting,
         created_at: datetime,
@@ -237,7 +260,7 @@ class JobPosting(RecordsEvents):
         """
         posting = cls()
         posting._id = id
-        posting._guest_session_id = guest_session_id
+        posting._assign_owner(owner)
         posting._source = PostingSource.FETCHED
         posting._source_url = url
         posting._title = fetched.title
@@ -247,7 +270,7 @@ class JobPosting(RecordsEvents):
         posting.record(
             JobPostingCaptured(
                 job_posting_id=id,
-                guest_session_id=guest_session_id,
+                owner=owner,
                 source=PostingSource.FETCHED,
                 # Same number as the pasted path, for the same reason — see the sibling. Note what
                 # is NOT here: the URL and the title. Both are on this instance and neither reaches
@@ -263,9 +286,23 @@ class JobPosting(RecordsEvents):
     def id(self) -> JobPostingId:
         return self._id
 
+    def _assign_owner(self, owner: Owner) -> None:
+        """The only writer of the two owner attributes (J-1): exactly one is set, by construction."""
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                self._owner_guest_session_id = guest_session_id
+                self._owner_user_id = None
+            case UserOwner():
+                raise NotImplementedError
+            case _:
+                assert_never(owner)
+
     @property
-    def guest_session_id(self) -> GuestSessionId:
-        return self._guest_session_id
+    def owner(self) -> Owner:
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3)."""
+        if self._owner_guest_session_id is not None:
+            return GuestOwner(self._owner_guest_session_id)
+        raise NotImplementedError
 
     @property
     def source(self) -> PostingSource:

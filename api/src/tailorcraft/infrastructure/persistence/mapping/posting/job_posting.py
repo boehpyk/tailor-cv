@@ -86,7 +86,9 @@ mapper_registry.map_imperatively(
     job_posting_table,
     properties={
         "_id": job_posting_table.c.id,
-        "_guest_session_id": job_posting_table.c.guest_session_id,
+        # The guest half of the owner (ADR-0022). `_owner_user_id` is not mapped until T12's
+        # migration adds its column; `JobPosting` gives it a class-level `None` meanwhile.
+        "_owner_guest_session_id": job_posting_table.c.guest_session_id,
         "_source": job_posting_table.c.source,
         "_source_url": job_posting_table.c.source_url,
         "_title": job_posting_table.c.title,

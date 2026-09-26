@@ -45,6 +45,7 @@ from tailorcraft.application.posting.capture_job_posting import (
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.errors import (
     JobPostingFetchFailed,
@@ -122,7 +123,7 @@ async def test_pasting_returns_pasted_result_saves_and_publishes_after_the_save(
 
     # the posting is actually saved, and carries the right owner
     stored = await postings.get(result.job_posting_id)
-    assert stored.guest_session_id == session.id
+    assert stored.owner == GuestOwner(session.id)
     assert stored.source is PostingSource.PASTED
     assert stored.source_url is None
     assert stored.title is None
@@ -133,7 +134,7 @@ async def test_pasting_returns_pasted_result_saves_and_publishes_after_the_save(
     event = events.published[0]
     assert isinstance(event, JobPostingCaptured)
     assert event.job_posting_id == result.job_posting_id
-    assert event.guest_session_id == session.id
+    assert event.owner == GuestOwner(session.id)
     assert event.source is PostingSource.PASTED
     assert event.character_count == text.character_count
     # positive evidence of ordering: the row already existed when publish() first ran
@@ -166,7 +167,7 @@ async def test_fetching_returns_fetched_result_saves_and_publishes_after_the_sav
     assert fetcher.calls == 1
 
     stored = await postings.get(result.job_posting_id)
-    assert stored.guest_session_id == session.id
+    assert stored.owner == GuestOwner(session.id)
     assert stored.source is PostingSource.FETCHED
     assert stored.source_url == url
     assert stored.title == fetched_title
@@ -176,7 +177,7 @@ async def test_fetching_returns_fetched_result_saves_and_publishes_after_the_sav
     event = events.published[0]
     assert isinstance(event, JobPostingCaptured)
     assert event.job_posting_id == result.job_posting_id
-    assert event.guest_session_id == session.id
+    assert event.owner == GuestOwner(session.id)
     assert event.source is PostingSource.FETCHED
     assert event.character_count == fetched_text.character_count
     assert events.repo_size_at_first_publish == 1
@@ -239,7 +240,7 @@ async def test_tenth_job_posting_succeeds_and_eleventh_raises_too_many_job_posti
         existing_id = postings.next_identity()
         existing = JobPosting.from_pasted_text(
             id=existing_id,
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             text=_long_enough_text("e"),
             created_at=clock.now(),
         )

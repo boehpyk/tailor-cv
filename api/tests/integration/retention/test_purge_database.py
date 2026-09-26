@@ -300,7 +300,7 @@ class _Rig:
         postings = SqlAlchemyJobPostingRepository(self.session)
         posting = JobPosting.from_pasted_text(
             id=postings.next_identity(),
-            guest_session_id=owner,
+            owner=GuestOwner(owner),
             text=JobPostingText("x" * 150),
             created_at=self.clock.now(),
         )

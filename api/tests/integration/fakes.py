@@ -484,7 +484,7 @@ class FakeJobPostingRepository:
             raise JobPostingNotFound(str(posting_id)) from None
 
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[JobPosting]:
-        return [posting for posting in self._by_id.values() if posting.guest_session_id == sid]
+        return [posting for posting in self._by_id.values() if posting.owner == GuestOwner(sid)]
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return len(await self.list_for_session(sid))

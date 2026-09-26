@@ -287,7 +287,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     posting_text_marker = _marker("POSTINGTEXT")
     posting = JobPosting.from_pasted_text(
         id=postings.next_identity(),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=JobPostingText(_padded_document(posting_text_marker, filler_repeats=5)),
         created_at=posting_created_at,
     )

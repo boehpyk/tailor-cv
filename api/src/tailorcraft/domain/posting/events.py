@@ -26,17 +26,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.posting.value_objects import JobPostingId, PostingSource
 from tailorcraft.domain.shared.events import DomainEvent
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class JobPostingCaptured(DomainEvent):
-    """A job posting now exists for this session — however it got here.
+    """A job posting now exists for its owner — however it got here.
 
-    Payload: `job_posting_id`, `guest_session_id`, `source`, `character_count` (+ inherited
-    `occurred_at`). **Deliberately absent: the text, the URL and the title.** `character_count`
+    Payload: `job_posting_id`, `owner`, `source`, `character_count` (+ inherited `occurred_at`).
+    `owner` replaced 1.2's `guest_session_id` in slice 2.3: a posting now belongs to a guest session
+    or a user (ADR-0022), and the owner is an id wrapped in its variant — still ids only, rendered
+    by `LoggingEventPublisher` as `owner_kind` + `owner_id`. **Deliberately absent: the text, the URL and the title.** `character_count`
     exists on `JobPostingText` for precisely this reason — so that a subscriber reporting on how
     much text there is never needs to hold the text.
 
@@ -56,6 +58,6 @@ class JobPostingCaptured(DomainEvent):
     """
 
     job_posting_id: JobPostingId
-    guest_session_id: GuestSessionId
+    owner: Owner
     source: PostingSource
     character_count: int

@@ -302,7 +302,7 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
     await postings.add(
         JobPosting.from_pasted_text(
             id=posting_id,
-            guest_session_id=owner.id,
+            owner=GuestOwner(owner.id),
             text=JobPostingText("x" * 150),
             created_at=clock.now(),
         )

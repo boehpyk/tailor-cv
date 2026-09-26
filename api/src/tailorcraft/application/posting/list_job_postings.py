@@ -2,8 +2,8 @@
 
 A use case rather than a bare `postings.list_for_session(sid)` for the same reason
 `GetJobPostingForSession` is one: it carries the authorization rule. Here the rule is enforced **by
-construction** rather than by a per-row comparison — the link (`posting.guest_session_id == the
-resolved session id`) is exactly what `list_for_session` queries by, so there is no row in the
+construction** rather than by a per-row comparison — the link (`posting.owner == GuestOwner(the
+resolved session id)`) is exactly what `list_for_session` queries by, so there is no row in the
 result the caller does not own.
 
 The corollary for a list endpoint is worth stating on its own, because it is the mistake this shape

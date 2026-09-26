@@ -24,6 +24,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import (
@@ -60,7 +61,7 @@ def _pasted() -> JobPosting:
     """The pasted happy path, so each test below names only the thing it is varying."""
     return JobPosting.from_pasted_text(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         text=_posting_text(),
         created_at=_CREATED_AT,
     )
@@ -71,7 +72,7 @@ def _fetched(*, title: PostingTitle | None = _TITLE) -> JobPosting:
     ordinary outcome, not a failure — plenty of job boards render theirs client-side."""
     return JobPosting.from_fetched_url(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         url=_URL,
         fetched=FetchedPosting(text=_posting_text(), title=title),
         created_at=_CREATED_AT,
@@ -99,9 +100,9 @@ def test_from_pasted_text_leaves_source_url_and_title_none() -> None:
 
 
 def test_from_pasted_text_stores_the_identity_owner_text_and_timestamp() -> None:
-    """J-1: a `JobPosting` always has exactly one owner session and one valid `JobPostingText`.
+    """J-1: a `JobPosting` always has exactly one owner and one valid `JobPostingText`.
 
-    The owner assertion is the one that carries weight beyond this file — `guest_session_id` is the
+    The owner assertion is the one that carries weight beyond this file — `owner` is the
     entire authorization rule for the two `GET`s in this slice, so a constructor that dropped it or
     stored the wrong one would hand one guest another guest's posting.
     """
@@ -109,13 +110,13 @@ def test_from_pasted_text_stores_the_identity_owner_text_and_timestamp() -> None
 
     posting = JobPosting.from_pasted_text(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         text=text,
         created_at=_CREATED_AT,
     )
 
     assert posting.id == _POSTING_ID
-    assert posting.guest_session_id == _SESSION_ID
+    assert posting.owner == GuestOwner(_SESSION_ID)
     assert posting.text == text
     assert posting.created_at == _CREATED_AT
 
@@ -139,7 +140,7 @@ def test_from_fetched_url_takes_its_text_and_title_from_the_fetched_posting() ->
 
     posting = JobPosting.from_fetched_url(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         url=_URL,
         fetched=fetched,
         created_at=_CREATED_AT,
@@ -169,7 +170,7 @@ def test_from_fetched_url_accepts_a_fetched_posting_with_no_title() -> None:
     "attribute",
     [
         "id",
-        "guest_session_id",
+        "owner",
         "source",
         "source_url",
         "title",
@@ -217,7 +218,7 @@ def test_from_pasted_text_rejects_a_url_argument() -> None:
     with pytest.raises(TypeError):
         JobPosting.from_pasted_text(
             id=_POSTING_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             text=_posting_text(),
             created_at=_CREATED_AT,
             url=_URL,  # type: ignore[call-arg]
@@ -232,7 +233,7 @@ def test_from_pasted_text_rejects_a_title_argument() -> None:
     with pytest.raises(TypeError):
         JobPosting.from_pasted_text(
             id=_POSTING_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             text=_posting_text(),
             created_at=_CREATED_AT,
             title=_TITLE,  # type: ignore[call-arg]
@@ -246,7 +247,7 @@ def test_from_fetched_url_requires_a_url() -> None:
     with pytest.raises(TypeError):
         JobPosting.from_fetched_url(  # type: ignore[call-arg]
             id=_POSTING_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             fetched=FetchedPosting(text=_posting_text(), title=None),
             created_at=_CREATED_AT,
         )
@@ -267,7 +268,7 @@ def test_job_posting_cannot_be_constructed_directly() -> None:
     with pytest.raises(TypeError):
         JobPosting(  # type: ignore[call-arg]
             id=_POSTING_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             text=_posting_text(),
             created_at=_CREATED_AT,
         )

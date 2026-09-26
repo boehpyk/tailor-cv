@@ -173,7 +173,7 @@ def _extracted_base_cv(session_id: GuestSessionId) -> BaseCv:
 def _job_posting(session_id: GuestSessionId) -> JobPosting:
     return JobPosting.from_pasted_text(
         id=JobPostingId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=_posting_text(),
         created_at=_A_CLOCK_INSTANT,
     )

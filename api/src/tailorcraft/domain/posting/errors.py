@@ -30,6 +30,17 @@ class JobPostingNotOwnedBySession(DomainError):
     """
 
 
+class JobPostingNotOwnedByUser(DomainError):
+    """A `JobPosting` exists, but its owner is not the signed-in user asking — a guest-owned posting
+    or another user's (slice 2.3).
+
+    The user-path twin of `JobPostingNotOwnedBySession`, with the same shape: the use case raises
+    `JobPostingNotFound` **from** this, so the HTTP answer is the same 404 as a nonexistent id, while
+    the use case's tests can still tell "absent" from "not mine" on `__cause__`. 2.2's
+    `BaseCvNotOwnedByUser` is the precedent.
+    """
+
+
 class InvalidSourceUrl(DomainError):
     """`SourceUrl` was given something that is not a fetchable job-posting URL: a scheme outside
     `{http, https}`, no hostname, userinfo, more than 2,048 characters, or a control character,

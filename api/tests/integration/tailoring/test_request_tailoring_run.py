@@ -133,7 +133,7 @@ def _extracted_base_cv(session_id: GuestSessionId, *, at: object) -> BaseCv:
 def _job_posting(session_id: GuestSessionId, *, at: object) -> JobPosting:
     return JobPosting.from_pasted_text(
         id=JobPostingId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=_posting_text(),
         created_at=at,  # type: ignore[arg-type]
     )

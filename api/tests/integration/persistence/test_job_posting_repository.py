@@ -25,6 +25,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import (
@@ -81,7 +82,7 @@ def _pasted(
 ) -> JobPosting:
     return JobPosting.from_pasted_text(
         id=postings.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         text=_long_enough_text("p"),
         created_at=clock.now(),
     )
@@ -97,7 +98,7 @@ def _fetched(
 ) -> JobPosting:
     return JobPosting.from_fetched_url(
         id=postings.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         url=SourceUrl(url),
         fetched=FetchedPosting(
             text=_long_enough_text("f"),
@@ -123,8 +124,8 @@ async def test_round_trip_of_a_pasted_posting_preserves_value_object_types(
 
     assert isinstance(reloaded.id, JobPostingId)
     assert reloaded.id == posting.id
-    assert isinstance(reloaded.guest_session_id, GuestSessionId)
-    assert reloaded.guest_session_id == owner.id
+    assert isinstance(reloaded.owner, GuestOwner)
+    assert reloaded.owner == GuestOwner(owner.id)
     assert reloaded.source is PostingSource.PASTED
     assert reloaded.source_url is None
     assert reloaded.title is None
@@ -151,8 +152,8 @@ async def test_round_trip_of_a_fetched_posting_preserves_value_object_types(
 
     assert isinstance(reloaded.id, JobPostingId)
     assert reloaded.id == posting.id
-    assert isinstance(reloaded.guest_session_id, GuestSessionId)
-    assert reloaded.guest_session_id == owner.id
+    assert isinstance(reloaded.owner, GuestOwner)
+    assert reloaded.owner == GuestOwner(owner.id)
     assert reloaded.source is PostingSource.FETCHED
     assert isinstance(reloaded.source_url, SourceUrl)
     assert reloaded.source_url == posting.source_url

@@ -2,7 +2,7 @@
 
 This is the slice's security test (P-30/AC-14, ADR-0008/ADR-0010): "owning a session id is not
 authority over an object that references it." Both use cases check **the link** —
-`posting.guest_session_id == the resolved session id` — on every read, and a caller must not be able
+`posting.owner == GuestOwner(the resolved session id)` — on every read, and a caller must not be able
 to tell "exists but belongs to someone else" from "does not exist at all", because a distinguishable
 answer would confirm the id exists. See `application/posting/get_job_posting.py`'s docstring for the
 exact contract this file tests against: `JobPostingNotFound` for both cases, chained from
@@ -33,6 +33,7 @@ from tailorcraft.application.posting.get_job_posting import GetJobPostingForSess
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.errors import JobPostingNotFound, JobPostingNotOwnedBySession
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -57,7 +58,7 @@ async def _add_job_posting(
     posting_id = postings.next_identity()
     posting = JobPosting.from_pasted_text(
         id=posting_id,
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=JobPostingText(marker * 150),
         created_at=clock.now(),
     )
@@ -78,7 +79,7 @@ async def test_get_returns_the_posting_for_the_session_that_owns_it(clock: Fixed
     result = await use_case(posting.id, session.id)
 
     assert result.id == posting.id
-    assert result.guest_session_id == session.id
+    assert result.owner == GuestOwner(session.id)
 
 
 async def test_get_for_a_posting_owned_by_a_different_session_raises_job_posting_not_found(

@@ -66,8 +66,8 @@ def _has_control_or_whitespace(value: str) -> bool:
 class JobPostingId:
     """A `JobPosting`'s identity, typed so a signature cannot silently accept the wrong UUID.
 
-    The authorization rule this slice depends on is `posting.guest_session_id == the resolved
-    session id`; with bare `UUID`s on both sides, transposing the two arguments is a runtime bug
+    The authorization rule this slice depends on is `posting.owner == GuestOwner(the resolved
+    session id)`; with bare `UUID`s on both sides, transposing the two arguments is a runtime bug
     whose only symptom is one guest reading another guest's posting. With `JobPostingId` and
     `GuestSessionId` it is a `mypy --strict` error. Same reasoning as `BaseCvId`.
     """
