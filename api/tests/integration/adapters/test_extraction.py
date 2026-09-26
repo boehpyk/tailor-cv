@@ -30,16 +30,21 @@ import random
 import time
 import zipfile
 from pathlib import Path
+from typing import cast
 
 import pytest
+from docx import Document
+from docx.text.paragraph import Paragraph
 from pypdf import PdfWriter
 from pypdf.errors import DependencyError
+from pypdf.generic import ContentStream, DictionaryObject, NameObject
 
 from tailorcraft.domain.intake.errors import (
     CorruptCvFile,
     CvExtractionFailed,
     CvHasNoTextLayer,
     CvHasTooManyPages,
+    CvTextTooLong,
     CvTextTooShort,
     EncryptedCvFile,
 )
@@ -389,3 +394,202 @@ async def test_finished_log_field_set_is_unchanged_by_the_unexpected_error_path(
 
     payload_fields = set(finished_events[0]) - _STRUCTLOG_METADATA_FIELDS
     assert payload_fields == _FINISHED_LOG_FIELDS
+
+
+# ==================================================================================================
+# T30b-C (slice 2.2, technical-plan.md's 2026-09-26 amendment, option C) — the extracted-character
+# cap. RED half of a red-first cycle: `_refuse_text_too_long()` (extraction.py) is a SKELETON that
+# raises `NotImplementedError`, which the `except Exception` floor in `extract()` converts to
+# `CvExtractionFailed(EXTRACTOR_ERROR)` — so every test below that asserts `CvTextTooLong` /
+# `TEXT_TOO_LONG` is written against the spec (the amendment's "C" bullet), not against that
+# placeholder body, and is expected to fail on the reason mismatch
+# (`ExtractionFailureReason.EXTRACTOR_ERROR != ExtractionFailureReason.TEXT_TOO_LONG`) — never on an
+# ImportError or a missing fixture.
+#
+# What the count means (extraction.py's own docstring): raw extracted characters, i.e. `len()` of
+# the string this adapter would hand to `ExtractedText` — separators included, whitespace not yet
+# collapsed — checked per PDF page, per DOCX paragraph, and on the decoded TXT. Every fixture below
+# is built from literal ASCII letters (never whitespace), so raw length and non-whitespace length
+# coincide and the 200-character floor (`ExtractedText`) is cleared by a wide margin whenever the
+# cap under test is (as here) three orders of magnitude above it.
+# ==================================================================================================
+
+_CAP = 1_000  # small and explicit, per CLAUDE.md's "small-cap override" convention
+
+
+def _extractor_with_cap(max_characters: int) -> PypdfDocxTextExtractor:
+    return PypdfDocxTextExtractor(timeout_seconds=10, max_pages=50, max_characters=max_characters)
+
+
+def _txt_bytes(character_count: int) -> bytes:
+    return ("A" * character_count).encode("utf-8")
+
+
+def _docx_bytes_with_paragraphs(paragraph_lengths: list[int]) -> bytes:
+    """A DOCX whose paragraphs, read back through `python-docx`, have exactly the given lengths —
+    each paragraph a single run of `A`s, so `Paragraph.text` returns it unchanged (verified
+    empirically: a fresh `Document()` with only `add_paragraph` calls has no extra paragraphs, and
+    round-tripping through bytes preserves each paragraph's text exactly)."""
+    document = Document()
+    for length in paragraph_lengths:
+        document.add_paragraph("A" * length)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+def _pdf_bytes_with_page_texts(page_texts: list[str]) -> bytes:
+    """A PDF with one page per string in `page_texts`, each page's `extract_text()` returning that
+    string character-for-character — built from a raw `BT`/`Td`/`Tj` content stream against the
+    standard (unembedded) Helvetica font, the same technique `tests/fixtures/cvs/README.md` says
+    built `sample.pdf`. Verified empirically (T30b-C): a single `Tj` string round-trips through
+    `PdfWriter` -> bytes -> `PdfReader` -> `extract_text()` with no characters added or dropped —
+    `add_blank_page`'s pages (used elsewhere in this file for the page-cap tests) have no text layer
+    at all and cannot stand in for this."""
+    writer = PdfWriter()
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    font_ref = writer._add_object(font)  # no public "add a resource" API exists
+    for text_value in page_texts:
+        page = writer.add_blank_page(width=200, height=200)
+        page[NameObject("/Resources")] = DictionaryObject(
+            {NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})}
+        )
+        escaped = text_value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        content = ContentStream(None, writer)
+        content.set_data(f"BT /F1 10 Tf 5 100 Td ({escaped}) Tj ET".encode("latin-1"))
+        page.replace_contents(content)
+    buffer = io.BytesIO()
+    writer.write(buffer)
+    return buffer.getvalue()
+
+
+# --- Over the cap: exactly `CvTextTooLong`, reason `TEXT_TOO_LONG`, for each content type ---------
+
+_OVER_CAP_CASES = [
+    pytest.param(CvContentType.TXT, id="txt"),
+    pytest.param(CvContentType.DOCX, id="docx"),
+    pytest.param(CvContentType.PDF, id="pdf"),
+]
+
+
+def _over_cap_bytes(content_type: CvContentType) -> bytes:
+    if content_type is CvContentType.TXT:
+        return _txt_bytes(_CAP + 1)
+    if content_type is CvContentType.DOCX:
+        return _docx_bytes_with_paragraphs([_CAP + 1])
+    return _pdf_bytes_with_page_texts(["A" * (_CAP + 1)])
+
+
+@pytest.mark.parametrize("content_type", _OVER_CAP_CASES)
+async def test_text_one_character_over_the_cap_raises_cv_text_too_long(
+    content_type: CvContentType,
+) -> None:
+    data = _over_cap_bytes(content_type)
+    extractor = _extractor_with_cap(_CAP)
+
+    with pytest.raises(CvExtractionFailed) as exc_info:
+        await extractor.extract(content_type, data)
+
+    assert exc_info.value.reason is ExtractionFailureReason.TEXT_TOO_LONG
+    assert type(exc_info.value) is CvTextTooLong
+
+
+# --- Exactly at the cap: boundary is strict `>`, so the cap itself is accepted ---------------------
+
+
+def _at_cap_bytes(content_type: CvContentType) -> bytes:
+    if content_type is CvContentType.TXT:
+        return _txt_bytes(_CAP)
+    if content_type is CvContentType.DOCX:
+        return _docx_bytes_with_paragraphs([_CAP])
+    return _pdf_bytes_with_page_texts(["A" * _CAP])
+
+
+@pytest.mark.parametrize("content_type", _OVER_CAP_CASES)
+async def test_text_exactly_at_the_cap_is_accepted(content_type: CvContentType) -> None:
+    data = _at_cap_bytes(content_type)
+    extractor = _extractor_with_cap(_CAP)
+
+    result = await extractor.extract(content_type, data)
+
+    assert isinstance(result, ExtractedText)
+    # Every character is a non-whitespace `A`, so the normalized count equals the raw count exactly
+    # — the cap itself, never one more and never fewer.
+    assert result.character_count == _CAP
+
+
+# --- Under the cap: ordinary extraction, unaffected by the cap being configured --------------------
+#
+# Already true today (not a red): nothing calls `_refuse_text_too_long()` unless the running count
+# has already passed `max_characters`, so a file that never reaches the cap takes exactly the same
+# path it always has. Recorded anyway, per CLAUDE.md's I-47 precedent ("a red-first task that only
+# ever asserts things which already pass would be an easy way to fail to notice the bound quietly
+# disappearing later").
+
+
+@pytest.mark.parametrize("content_type", _OVER_CAP_CASES)
+async def test_text_comfortably_under_the_cap_is_unaffected(content_type: CvContentType) -> None:
+    under_cap = _CAP - 200
+    if content_type is CvContentType.TXT:
+        data = _txt_bytes(under_cap)
+    elif content_type is CvContentType.DOCX:
+        data = _docx_bytes_with_paragraphs([under_cap])
+    else:
+        data = _pdf_bytes_with_page_texts(["A" * under_cap])
+    extractor = _extractor_with_cap(_CAP)
+
+    result = await extractor.extract(content_type, data)
+
+    assert isinstance(result, ExtractedText)
+    assert result.character_count == under_cap
+
+
+# --- DOCX: the cap is enforced per paragraph, stopping the loop early, not after the whole document
+# is read into one string ---------------------------------------------------------------------------
+
+
+async def test_docx_with_many_paragraphs_stops_reading_paragraphs_once_the_cap_is_passed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`document.paragraphs` (python-docx) hands back the whole paragraph list up front — the cap
+    cannot stop *that* — but each paragraph's own `.text` is where its run-joined string is actually
+    built (`Paragraph.text.fget`, verified by reading its source: `return self._p.text`), and that is
+    the per-piece cost the running count exists to bound. 300 fifty-character paragraphs, cap 1_000:
+    arithmetic (50 the first paragraph, 51 every one after, for the "\\n" separator) crosses 1_000
+    at the 20th paragraph's `.text` access — so the assertion here is not "eventually stops" but
+    "reads at most a handful of paragraphs out of 300", counted by wrapping the real property rather
+    than by timing or by touching `extraction.py`'s own floor.
+    """
+    paragraph_length = 50
+    paragraph_count = 300
+    data = _docx_bytes_with_paragraphs([paragraph_length] * paragraph_count)
+
+    accessed = 0
+
+    def _counting_text_getter(self: Paragraph) -> str:
+        # The real property's own body (`Paragraph.text.fget`'s source, read above): delegating to
+        # it directly rather than fetching `.fget` dynamically keeps this typed under mypy --strict.
+        # `CT_P.text` (docx/oxml/text/paragraph.py) is itself unannotated, so `cast` — not this
+        # module's own untyped surface — is what mypy sees, matching the real property's own return
+        # type (`str`, per `Paragraph.text`'s docstring, read above).
+        nonlocal accessed
+        accessed += 1
+        return cast("str", self._p.text)
+
+    monkeypatch.setattr(Paragraph, "text", property(_counting_text_getter))
+
+    extractor = _extractor_with_cap(_CAP)
+    with pytest.raises(CvExtractionFailed) as exc_info:
+        await extractor.extract(CvContentType.DOCX, data)
+
+    assert exc_info.value.reason is ExtractionFailureReason.TEXT_TOO_LONG
+    assert accessed < 25, (
+        f"expected the cap to stop paragraph reads well short of all {paragraph_count}; "
+        f"{accessed} paragraphs' `.text` was accessed"
+    )

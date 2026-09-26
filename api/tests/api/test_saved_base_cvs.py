@@ -560,6 +560,42 @@ async def test_extraction_failure_is_a_201_with_the_reason_and_the_row_kept(
     )
 
 
+# ---------------------------------------------------------------------------------------------
+# T30b-C (slice 2.2, technical-plan.md's 2026-09-26 amendment) — the extracted-character cap, on
+# the saved-CV route. RED half of a red-first cycle: `_refuse_text_too_long()` (extraction.py) is a
+# SKELETON that raises `NotImplementedError`, caught by the extractor's own `except Exception` floor
+# and recorded as `EXTRACTOR_ERROR` — so this reds on `failure_reason == "extractor_error"` (not
+# `"text_too_long"`) and on `failure_message` reading the placeholder `"TODO(T30b-C): text_too_long
+# copy."`, never on an ImportError. The small-cap override is `test_intake.py`'s own pattern
+# (`_override_settings`, already imported above); `model_copy(update=...)` does not re-validate, so
+# a cap below `Settings`' own `ge=25_000` floor is fine here even though `Settings(...)` directly
+# would refuse it.
+# ---------------------------------------------------------------------------------------------
+
+_T30B_C_SMALL_CAP = 1_000
+
+
+async def test_saved_cv_over_the_character_cap_is_text_too_long_with_the_spec_sentence(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    _override_settings(app, settings, max_extracted_characters=_T30B_C_SMALL_CAP)
+    token, _ = await _register(client, settings)
+    over_cap_text = "A" * (_T30B_C_SMALL_CAP + 1)
+
+    response = await _upload_saved(
+        client, token, filename="cv.txt", data=over_cap_text.encode("utf-8")
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "extraction_failed"
+    assert body["failure_reason"] == "text_too_long"
+    assert body["failure_message"] == (
+        f"This file holds more than {_T30B_C_SMALL_CAP:,} characters of text, which is far longer "
+        "than a CV. Try a shorter version of your CV."
+    )
+
+
 async def test_account_erased_between_the_cap_check_and_the_insert_is_401_not_signed_in(
     client: AsyncClient,
     app: FastAPI,

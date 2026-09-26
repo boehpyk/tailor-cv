@@ -801,6 +801,74 @@ async def test_pdf_over_the_page_cap_returns_too_many_pages(
 
 
 # ---------------------------------------------------------------------------------------------
+# T30b-C (slice 2.2, technical-plan.md's 2026-09-26 amendment) — the extracted-character cap.
+#
+# RED half of a red-first cycle: `_refuse_text_too_long()` (extraction.py) raises `NotImplementedError`
+# today, which the extractor's own `except Exception` floor converts to `EXTRACTOR_ERROR` — so this
+# reds on `body["failure_reason"] == "extractor_error"` (not `"text_too_long"`) and on
+# `body["failure_message"]` reading the placeholder `"TODO(T30b-C): text_too_long copy."`, never on
+# an ImportError. `_override_settings` to a small cap (1_000, well below the `ge=25_000` floor
+# `Settings` itself enforces — `model_copy(update=...)` does not re-validate, the same tolerance
+# `extraction_timeout_seconds=0` above relies on) keeps the over-cap fixture a few KB, not tens of MB.
+# ---------------------------------------------------------------------------------------------
+
+_T30B_C_SMALL_CAP = 1_000
+
+
+def _spec_text_too_long_message(max_characters: int) -> str:
+    """The exact sentence technical-plan.md's amendment specifies, verbatim, for a given cap —
+    shared by the guest-route test here and the saved-CV/copy tests in test_saved_base_cvs.py's and
+    this file's own 2.2 block, so a change to the wording only has to be made in one English sentence
+    and this one Python string, never independently in three test files."""
+    return (
+        f"This file holds more than {max_characters:,} characters of text, which is far longer "
+        "than a CV. Try a shorter version of your CV."
+    )
+
+
+async def test_txt_over_the_character_cap_returns_text_too_long_and_the_spec_sentence(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    _override_settings(app, settings, max_extracted_characters=_T30B_C_SMALL_CAP)
+    over_cap_text = "A" * (_T30B_C_SMALL_CAP + 1)
+
+    response = await client.post(
+        "/api/base-cvs",
+        files=_file_part("cv.txt", over_cap_text.encode("utf-8"), "text/plain"),
+    )
+
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["status"] == "extraction_failed"
+    assert body["failure_reason"] == "text_too_long"
+    assert body["failure_message"] == _spec_text_too_long_message(_T30B_C_SMALL_CAP)
+
+
+async def test_text_too_long_refusal_logs_no_fragment_of_the_file(
+    client: AsyncClient, app: FastAPI, settings: Settings, caplog: pytest.LogCaptureFixture
+) -> None:
+    """AC-50/Constitution §8: the refusal is recorded (`extractor_error` today, `text_too_long`
+    after GREEN), and either way the log line carries only `content_type`/`size_bytes`/`duration_ms`/
+    `character_count`/`outcome` (`cv_extraction.finished`) — never a byte of the file. Already true
+    today (`_log_outcome` never receives `raw_text`), and stays true across GREEN by construction:
+    recorded per CLAUDE.md's I-47 precedent rather than left unasserted, the same reasoning as the
+    settings-floor tests in test_settings.py."""
+    _override_settings(app, settings, max_extracted_characters=_T30B_C_SMALL_CAP)
+    marker = "PRIVACY-MARKER-DOES-NOT-BELONG-IN-ANY-LOG"
+    over_cap_text = marker + "A" * (_T30B_C_SMALL_CAP + 1 - len(marker))
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(
+            "/api/base-cvs",
+            files=_file_part("cv.txt", over_cap_text.encode("utf-8"), "text/plain"),
+        )
+
+    assert response.status_code == 201, response.text
+    assert caplog.records, "expected the refusal to have produced at least one log record"
+    assert marker not in caplog.text
+
+
+# ---------------------------------------------------------------------------------------------
 # F-12 — extraction timeout
 # ---------------------------------------------------------------------------------------------
 
@@ -1774,6 +1842,38 @@ async def test_copy_of_a_saved_cv_whose_extraction_failed_is_409(
 
     assert response.status_code == 409, response.text
     assert _error_code(response) == "base_cv_not_extracted"
+
+
+# ---------------------------------------------------------------------------------------------
+# T30b-C — a saved CV that failed as `text_too_long` is exactly as uncopyable as any other failed
+# extraction (S-28's rule does not special-case a reason): the saved-CV response carries the new
+# reason and the spec sentence, and a copy of it is still 409 `base_cv_not_extracted`.
+# ---------------------------------------------------------------------------------------------
+
+
+async def test_saved_cv_over_the_character_cap_is_text_too_long_and_uncopyable(
+    client: AsyncClient, app: FastAPI, settings: Settings
+) -> None:
+    _override_settings(app, settings, max_extracted_characters=_T30B_C_SMALL_CAP)
+    token, _ = await _register_2_2(client, settings)
+    over_cap_text = "A" * (_T30B_C_SMALL_CAP + 1)
+
+    saved = await _upload_saved_2_2(
+        client, token, filename="cv.txt", data=over_cap_text.encode("utf-8")
+    )
+
+    assert saved.status_code == 201, saved.text
+    saved_body = saved.json()
+    assert saved_body["status"] == "extraction_failed"
+    assert saved_body["failure_reason"] == "text_too_long"
+    assert saved_body["failure_message"] == _spec_text_too_long_message(_T30B_C_SMALL_CAP)
+
+    copy_response = await client.post(
+        COPIES_URL, json={"saved_base_cv_id": saved_body["id"]}, headers=_bearer_2_2(token)
+    )
+
+    assert copy_response.status_code == 409, copy_response.text
+    assert _error_code(copy_response) == "base_cv_not_extracted"
 
 
 # ---------------------------------------------------------------------------------------------
