@@ -42,13 +42,13 @@ from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
 from tailorcraft.application.intake.copy_saved_base_cv import CopySavedBaseCvToWorkspace
 from tailorcraft.application.intake.delete_saved_base_cv import DeleteSavedBaseCv
-from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
+from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
 from tailorcraft.application.intake.list_saved_base_cvs import ListSavedBaseCvs
 from tailorcraft.application.intake.rename_saved_base_cv import RenameSavedBaseCv
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCv
 from tailorcraft.application.posting.capture_job_posting import CaptureJobPosting
-from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
 from tailorcraft.application.retention.erase_account import EraseAccount
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
@@ -313,12 +313,13 @@ StartGuestSessionDep = Annotated[StartGuestSession, Depends(get_start_guest_sess
 def get_get_base_cv(
     cvs: BaseCvRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetBaseCvForSession:
-    return GetBaseCvForSession(cvs, sessions, clock)
+) -> GetBaseCv:
+    return GetBaseCv(cvs, sessions, users, clock)
 
 
-GetBaseCvDep = Annotated[GetBaseCvForSession, Depends(get_get_base_cv)]
+GetBaseCvDep = Annotated[GetBaseCv, Depends(get_get_base_cv)]
 
 
 def get_list_base_cvs(
@@ -484,14 +485,18 @@ PostingFetchRateLimiterDep = Annotated[
 def get_capture_job_posting(
     postings: JobPostingRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     fetcher: JobPostingFetcherDep,
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
 ) -> CaptureJobPosting:
+    # `max_per_user` keeps the use case's default (500, OQ-6) until T20 adds
+    # `max_job_postings_per_user` to Settings and wires it here.
     return CaptureJobPosting(
         postings,
         sessions,
+        users,
         fetcher,
         events,
         clock,
@@ -505,12 +510,13 @@ CaptureJobPostingDep = Annotated[CaptureJobPosting, Depends(get_capture_job_post
 def get_get_job_posting(
     postings: JobPostingRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetJobPostingForSession:
-    return GetJobPostingForSession(postings, sessions, clock)
+) -> GetJobPosting:
+    return GetJobPosting(postings, sessions, users, clock)
 
 
-GetJobPostingDep = Annotated[GetJobPostingForSession, Depends(get_get_job_posting)]
+GetJobPostingDep = Annotated[GetJobPosting, Depends(get_get_job_posting)]
 
 
 def get_list_job_postings(
@@ -634,8 +640,8 @@ def get_request_tailoring_run(
 ) -> RequestTailoringRun:
     """Note what the second and third arguments are: the two *use cases*, not their repositories.
 
-    `RequestTailoringRun` reads the base CV and the job posting through `GetBaseCvForSession` and
-    `GetJobPostingForSession` so that "what authorizes access is the link to the session" is
+    `RequestTailoringRun` reads the base CV and the job posting through `GetBaseCv` and
+    `GetJobPosting` so that "what authorizes access is the link to the session" is
     inherited from the slices that already own that rule, rather than written a third time here
     (ADR-0008). Rebuilding those two from `BaseCvRepositoryDep`/`JobPostingRepositoryDep` would
     compile, produce an identical object graph today, and quietly become a second copy of an

@@ -19,6 +19,7 @@ from tailorcraft.application.posting.capture_job_posting import (
     FetchJobPostingCommand,
     PasteJobPostingCommand,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText, SourceUrl
 from tailorcraft.domain.shared.errors import DomainError
@@ -240,9 +241,9 @@ async def create_job_posting(
     # the fetch counters are never even reached for a URL we would not have fetched.
     try:
         command = (
-            PasteJobPostingCommand(guest_session_id=session.id, text=JobPostingText(body.text))
+            PasteJobPostingCommand(owner=GuestOwner(session.id), text=JobPostingText(body.text))
             if body.source == "pasted"
-            else FetchJobPostingCommand(guest_session_id=session.id, url=SourceUrl(body.url))
+            else FetchJobPostingCommand(owner=GuestOwner(session.id), url=SourceUrl(body.url))
         )
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
@@ -364,7 +365,7 @@ async def get_job_posting(
     """
     _no_store(response)
     try:
-        posting = await get_use_case(JobPostingId(job_posting_id), session.id)
+        posting = await get_use_case(JobPostingId(job_posting_id), GuestOwner(session.id))
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 

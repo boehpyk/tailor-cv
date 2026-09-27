@@ -34,8 +34,8 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
-from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.intake.get_base_cv import GetBaseCv
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.tailoring.request_tailoring_run import (
     RequestTailoringRun,
     RequestTailoringRunCommand,
@@ -81,6 +81,7 @@ from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -184,15 +185,16 @@ def _use_case(
     clock: FixedClock,
 ) -> RequestTailoringRun:
     """Builds `RequestTailoringRun` from the two *composed use cases* its own docstring insists on
-    — `GetBaseCvForSession` and `GetJobPostingForSession`, real, not faked — so that every test in
+    — `GetBaseCv` and `GetJobPosting`, real, not faked — so that every test in
     this module exercises the actual ownership check rather than a stand-in for it. Never passes
     `max_per_session`: only the cap test (`test_twentieth_run_succeeds_...`) cares about that
     parameter, and it constructs its own instance with the default left implicit, on purpose (see
     that test's docstring)."""
+    users = FakeUserRepository()
     return RequestTailoringRun(
         runs,
-        GetBaseCvForSession(cvs, sessions, clock),
-        GetJobPostingForSession(postings, sessions, clock),
+        GetBaseCv(cvs, sessions, users, clock),
+        GetJobPosting(postings, sessions, users, clock),
         events,
         clock,
     )

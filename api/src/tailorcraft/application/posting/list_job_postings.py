@@ -1,7 +1,7 @@
 """The `ListJobPostingsForSession` use case: every `JobPosting` a guest session owns.
 
 A use case rather than a bare `postings.list_for_session(sid)` for the same reason
-`GetJobPostingForSession` is one: it carries the authorization rule. Here the rule is enforced **by
+`GetJobPosting` is one: it carries the authorization rule. Here the rule is enforced **by
 construction** rather than by a per-row comparison — the link (`posting.owner == GuestOwner(the
 resolved session id)`) is exactly what `list_for_session` queries by, so there is no row in the
 result the caller does not own.
@@ -31,7 +31,7 @@ class ListJobPostingsForSession:
     error, and the API contract says the same: `items: []`, status 200.
 
     Raises `GuestSessionNotFound` / `GuestSessionExpired` if the session itself no longer resolves —
-    the same defense-in-depth `GetJobPostingForSession` applies, so this use case is self-contained
+    the same defense-in-depth `GetJobPosting` applies, so this use case is self-contained
     against a caller that skips the API's own cookie dependency.
     """
 

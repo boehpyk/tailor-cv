@@ -408,7 +408,7 @@ async def get_base_cv(
     indistinguishable from one that does not exist at all: both are 404 (F-20/AC-8).
     """
     try:
-        cv = await get_use_case(BaseCvId(base_cv_id), session.id)
+        cv = await get_use_case(BaseCvId(base_cv_id), GuestOwner(session.id))
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 

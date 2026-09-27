@@ -82,7 +82,7 @@ class RequestExport:
 
     **It takes the read *use case* `GetTailoringRunForSession`, not `TailoringRunRepository`, and
     that is the load-bearing choice here.** This is the fourth time this codebase makes it — 1.3
-    made it twice (`GetBaseCvForSession`, `GetJobPostingForSession`) and 1.4 made it once
+    made it twice (`GetBaseCv`, `GetJobPosting`) and 1.4 made it once
     (`ReviseTailoredDocument`) — so it is a convention now rather than a judgement call, but the
     reason is worth restating because it is the whole argument for the shape:
 

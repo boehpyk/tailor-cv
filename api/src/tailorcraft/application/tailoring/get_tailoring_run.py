@@ -39,7 +39,7 @@ class GetTailoringRunForSession:
     """Look up a `TailoringRun` by id, but only if it belongs to `guest_session_id`.
 
     Raises `GuestSessionNotFound` / `GuestSessionExpired` if the session itself no longer resolves —
-    the same defense-in-depth `GetBaseCvForSession` and `GetJobPostingForSession` apply, repeated
+    the same defense-in-depth `GetBaseCv` and `GetJobPosting` apply, repeated
     here so this use case is safe to call from anywhere and not only from behind the API's cookie
     dependency.
 

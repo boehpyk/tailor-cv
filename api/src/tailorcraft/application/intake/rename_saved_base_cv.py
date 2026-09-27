@@ -8,7 +8,7 @@ the boundary, distinguishable on `__cause__` for this use case's own tests.
 `label=None` clears the label; the value object already refused anything that cannot be a display
 name before this use case was called (`InvalidLabel`, AC-4).
 
-**No command dataclass**, like `GetBaseCvForSession`: three already-validated values, each a domain
+**No command dataclass**, like `GetBaseCv`: three already-validated values, each a domain
 type, with nothing to validate between them.
 """
 

@@ -74,6 +74,7 @@ from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeJobPostingFetcher,
     FakeJobPostingRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -107,10 +108,11 @@ async def test_pasting_returns_pasted_result_saves_and_publishes_after_the_save(
     postings = FakeJobPostingRepository()
     fetcher = FakeJobPostingFetcher(outcome=_harmless_fetched_posting())
     events = RecordingEventPublisher(repo=postings)
-    use_case = CaptureJobPosting(postings, sessions, fetcher, events, clock)
+    users = FakeUserRepository()
+    use_case = CaptureJobPosting(postings, sessions, users, fetcher, events, clock)
 
     text = _long_enough_text("p")
-    cmd = PasteJobPostingCommand(guest_session_id=session.id, text=text)
+    cmd = PasteJobPostingCommand(owner=GuestOwner(session.id), text=text)
     result = await use_case(cmd)
 
     assert isinstance(result, CaptureJobPostingResult)
@@ -154,10 +156,11 @@ async def test_fetching_returns_fetched_result_saves_and_publishes_after_the_sav
     fetched_title = PostingTitle("Senior Python Engineer")
     fetcher = FakeJobPostingFetcher(outcome=FetchedPosting(text=fetched_text, title=fetched_title))
     events = RecordingEventPublisher(repo=postings)
-    use_case = CaptureJobPosting(postings, sessions, fetcher, events, clock)
+    users = FakeUserRepository()
+    use_case = CaptureJobPosting(postings, sessions, users, fetcher, events, clock)
 
     url = SourceUrl(_SOME_URL)
-    cmd = FetchJobPostingCommand(guest_session_id=session.id, url=url)
+    cmd = FetchJobPostingCommand(owner=GuestOwner(session.id), url=url)
     result = await use_case(cmd)
 
     assert isinstance(result, CaptureJobPostingResult)
@@ -212,9 +215,10 @@ async def test_every_fetch_failure_propagates_unchanged_and_creates_no_row(
     postings = FakeJobPostingRepository()
     fetcher = FakeJobPostingFetcher(outcome=failure)
     events = RecordingEventPublisher()
-    use_case = CaptureJobPosting(postings, sessions, fetcher, events, clock)
+    users = FakeUserRepository()
+    use_case = CaptureJobPosting(postings, sessions, users, fetcher, events, clock)
 
-    cmd = FetchJobPostingCommand(guest_session_id=session.id, url=SourceUrl(_SOME_URL))
+    cmd = FetchJobPostingCommand(owner=GuestOwner(session.id), url=SourceUrl(_SOME_URL))
 
     with pytest.raises(type(failure)):
         await use_case(cmd)
@@ -248,15 +252,18 @@ async def test_tenth_job_posting_succeeds_and_eleventh_raises_too_many_job_posti
 
     fetcher = FakeJobPostingFetcher(outcome=_harmless_fetched_posting())
     events = RecordingEventPublisher()
-    use_case = CaptureJobPosting(postings, sessions, fetcher, events, clock, max_per_session=10)
+    users = FakeUserRepository()
+    use_case = CaptureJobPosting(
+        postings, sessions, users, fetcher, events, clock, max_per_session=10
+    )
 
-    tenth_cmd = PasteJobPostingCommand(guest_session_id=session.id, text=_long_enough_text("t"))
+    tenth_cmd = PasteJobPostingCommand(owner=GuestOwner(session.id), text=_long_enough_text("t"))
     tenth_result = await use_case(tenth_cmd)
 
     assert isinstance(tenth_result, CaptureJobPostingResult)
     assert len(postings.all()) == 10
 
-    eleventh_cmd = PasteJobPostingCommand(guest_session_id=session.id, text=_long_enough_text("v"))
+    eleventh_cmd = PasteJobPostingCommand(owner=GuestOwner(session.id), text=_long_enough_text("v"))
 
     with pytest.raises(TooManyJobPostings):
         await use_case(eleventh_cmd)
@@ -280,9 +287,10 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     postings = FakeJobPostingRepository()
     fetcher = FakeJobPostingFetcher(outcome=_harmless_fetched_posting())
     events = RecordingEventPublisher()
-    use_case = CaptureJobPosting(postings, sessions, fetcher, events, clock)
+    users = FakeUserRepository()
+    use_case = CaptureJobPosting(postings, sessions, users, fetcher, events, clock)
 
-    cmd = PasteJobPostingCommand(guest_session_id=expired.id, text=_long_enough_text())
+    cmd = PasteJobPostingCommand(owner=GuestOwner(expired.id), text=_long_enough_text())
 
     with pytest.raises(GuestSessionExpired):
         await use_case(cmd)
@@ -296,10 +304,11 @@ async def test_missing_guest_session_raises_guest_session_not_found(clock: Fixed
     postings = FakeJobPostingRepository()
     fetcher = FakeJobPostingFetcher(outcome=_harmless_fetched_posting())
     events = RecordingEventPublisher()
-    use_case = CaptureJobPosting(postings, sessions, fetcher, events, clock)
+    users = FakeUserRepository()
+    use_case = CaptureJobPosting(postings, sessions, users, fetcher, events, clock)
 
     unknown_session_id = GuestSessionId(value=uuid4())
-    cmd = PasteJobPostingCommand(guest_session_id=unknown_session_id, text=_long_enough_text())
+    cmd = PasteJobPostingCommand(owner=GuestOwner(unknown_session_id), text=_long_enough_text())
 
     with pytest.raises(GuestSessionNotFound):
         await use_case(cmd)

@@ -100,7 +100,7 @@ class ExecuteTailoringRun:
     success or failure — as a **state of the aggregate**, never as an exception that escapes.
 
     **The contrast with `RequestTailoringRun`, stated as a contrast because it is the design.** That
-    use case composes `GetBaseCvForSession` and `GetJobPostingForSession` — two *use cases*, each
+    use case composes `GetBaseCv` and `GetJobPosting` — two *use cases*, each
     carrying an authorization rule — precisely so the "not mine → 404" check cannot be forgotten at
     a new entry point. This one takes `BaseCvRepository` and `JobPostingRepository` — two
     **repositories**, used directly, with no ownership check anywhere in it — and that is deliberate

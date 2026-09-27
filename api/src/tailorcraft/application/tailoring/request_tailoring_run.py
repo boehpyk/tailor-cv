@@ -7,8 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
-from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.intake.get_base_cv import GetBaseCv
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
@@ -62,7 +62,7 @@ class RequestTailoringRun:
     """Record a visitor's request to tailor one base CV against one job posting.
 
     **It takes two *use cases*, not two repositories, and that is the load-bearing choice here.**
-    `GetBaseCvForSession` and `GetJobPostingForSession` each carry an authorization rule — *what
+    `GetBaseCv` and `GetJobPosting` each carry an authorization rule — *what
     authorizes access is the link*, `cv.guest_session_id == the resolved session id`, checked on
     every read, because owning a session id is not authority over an object that references it
     (ADR-0008). Slice 1.2's plan said in as many words that 1.3 and 1.5 would reach a `JobPosting`
@@ -92,9 +92,9 @@ class RequestTailoringRun:
 
     Flow (technical-plan.md, "Application layer"):
 
-    1. ``cv = await get_base_cv(cmd.base_cv_id, cmd.guest_session_id)`` — resolves the session and
+    1. ``cv = await get_base_cv(cmd.base_cv_id, GuestOwner(cmd.guest_session_id))`` — resolves the session and
        raises `GuestSessionNotFound` / `GuestSessionExpired` / `BaseCvNotFound` (G-5, G-6).
-    2. ``posting = await get_job_posting(cmd.job_posting_id, cmd.guest_session_id)`` —
+    2. ``posting = await get_job_posting(cmd.job_posting_id, GuestOwner(...))`` —
        `JobPostingNotFound` (G-7).
     3. ``if cv.status is not BaseCvStatus.EXTRACTED: raise BaseCvNotReadyForTailoring(...)`` (G-8).
        The check reads the **aggregate's own status**, not `extracted_text is not None`: I-2 makes
@@ -132,8 +132,8 @@ class RequestTailoringRun:
     def __init__(
         self,
         runs: TailoringRunRepository,
-        get_base_cv: GetBaseCvForSession,
-        get_job_posting: GetJobPostingForSession,
+        get_base_cv: GetBaseCv,
+        get_job_posting: GetJobPosting,
         events: EventPublisherPort,
         clock: Clock,
         max_per_session: int = 20,
@@ -150,8 +150,8 @@ class RequestTailoringRun:
         # "what authorizes access is the link" rule (ADR-0008) is inherited rather than written a
         # third time. Each resolves the guest session itself — that is the pair of extra
         # primary-key lookups this class's docstring puts a price on, paid deliberately.
-        cv = await self._get_base_cv(cmd.base_cv_id, cmd.guest_session_id)
-        posting = await self._get_job_posting(cmd.job_posting_id, cmd.guest_session_id)
+        cv = await self._get_base_cv(cmd.base_cv_id, GuestOwner(cmd.guest_session_id))
+        posting = await self._get_job_posting(cmd.job_posting_id, GuestOwner(cmd.guest_session_id))
 
         # G-8 reads the **aggregate's own status**, not `cv.extracted_text is not None`. I-2 makes
         # the two equivalent, so this is not a correctness choice — it is a meaning one: the status
