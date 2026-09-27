@@ -38,6 +38,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobId,
     ExportJobStatus,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -56,7 +57,7 @@ def _a_run_id() -> TailoringRunId:
 def _rendering_job(*, requested_at: datetime, started_at: datetime) -> ExportJob:
     job = ExportJob.request(
         id=ExportJobId(value=uuid4()),
-        guest_session_id=_a_session_id(),
+        owner=GuestOwner(_a_session_id()),
         tailoring_run_id=_a_run_id(),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,

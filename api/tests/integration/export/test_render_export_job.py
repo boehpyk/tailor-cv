@@ -89,11 +89,9 @@ def _a_queued_job(
     *, run: TailoringRun, document: TailoredDocumentKind, format: ExportFormat
 ) -> ExportJob:
     assert run.completed_at is not None
-    owner = run.owner
-    assert isinstance(owner, GuestOwner)
     return ExportJob.request(
         id=ExportJobId(value=uuid4()),
-        guest_session_id=owner.guest_session_id,
+        owner=run.owner,
         tailoring_run_id=run.id,
         document=document,
         format=format,
@@ -463,7 +461,7 @@ async def test_two_concurrent_deliveries_the_loser_is_skipped_with_one_render_ca
         assert run.completed_at is not None
         return ExportJob.request(
             id=job_id,
-            guest_session_id=session_id,
+            owner=GuestOwner(session_id),
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,

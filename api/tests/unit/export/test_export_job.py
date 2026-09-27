@@ -38,6 +38,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobId,
     ExportJobStatus,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.files import FileRef
@@ -70,7 +71,7 @@ def _requested(
     """The only constructor, so every other builder below starts here."""
     return ExportJob.request(
         id=_JOB_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         tailoring_run_id=_RUN_ID,
         document=_DOCUMENT,
         format=format,
@@ -121,7 +122,7 @@ def test_request_stores_the_owner_session_run_document_format_and_run_version() 
     job = _requested()
 
     assert job.id == _JOB_ID
-    assert job.guest_session_id == _SESSION_ID
+    assert job.owner == GuestOwner(_SESSION_ID)
     assert job.tailoring_run_id == _RUN_ID
     assert job.document is _DOCUMENT
     assert job.format is _FORMAT
@@ -442,7 +443,7 @@ def test_two_jobs_with_the_same_id_and_format_have_equal_storage_refs() -> None:
 
 @pytest.mark.parametrize(
     "attribute",
-    ["guest_session_id", "tailoring_run_id", "document", "format", "run_version", "requested_at"],
+    ["owner", "tailoring_run_id", "document", "format", "run_version", "requested_at"],
 )
 def test_export_job_key_fields_are_read_only(attribute: str) -> None:
     job = _requested()
@@ -476,7 +477,7 @@ def test_export_job_cannot_be_constructed_with_the_request_arguments() -> None:
     with pytest.raises(TypeError):
         ExportJob(  # type: ignore[call-arg]
             id=_JOB_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             tailoring_run_id=_RUN_ID,
             document=_DOCUMENT,
             format=_FORMAT,

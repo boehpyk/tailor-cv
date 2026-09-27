@@ -4,8 +4,8 @@ session, together with the run's version *now*.
 A use case rather than `jobs.get(id)` called straight from a router, **because it carries the
 authorization rule** (ADR-0008, ADR-0010):
 
-    What authorizes access to an export job is **the link** — `job.guest_session_id == the resolved
-    session id` — checked here, on every read. Owning a session id is not authority over an object
+    What authorizes access to an export job is **the link** — `job.owner == GuestOwner(the resolved
+    session id)` — checked here, on every read. Owning a session id is not authority over an object
     that references it: a guest session is not a login, and the id itself proves nothing about
     which rows it may see.
 
@@ -30,6 +30,7 @@ from tailorcraft.domain.export.errors import ExportJobNotFound, ExportJobNotOwne
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportJobId
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.clock import Clock
@@ -90,7 +91,7 @@ class GetExportJobForSession:
 
     1. ``session = await resolve_active_guest_session(sessions, clock, guest_session_id)``.
     2. ``job = await jobs.get(job_id)`` — `ExportJobNotFound` if there is no such row.
-    3. ``if job.guest_session_id != session.id:`` raise the collapsed `ExportJobNotFound`, chained
+    3. ``if job.owner != GuestOwner(session.id):`` raise the collapsed `ExportJobNotFound`, chained
        from `ExportJobNotOwnedBySession`.
     4. ``run = await runs.find(job.tailoring_run_id)`` — **`find`, not `get`**: a run that has gone
        is an ordinary answer here rather than an exception, because the job is the thing being
@@ -125,7 +126,9 @@ class GetExportJobForSession:
         # repository raises the same type step 3 raises.
         job = await self._jobs.get(job_id)
 
-        if job.guest_session_id != session.id:
+        # Authorization is one value equality (ADR-0022): a user-owned id on this guest route is
+        # "not mine" exactly as another session's is.
+        if job.owner != GuestOwner(session.id):
             # "Not mine" must be indistinguishable from "does not exist" at this boundary (X-43,
             # AC-24): the public exception is `ExportJobNotFound`, the same type `jobs.get` raises
             # for an id that was never issued, because a 403 here would confirm to someone

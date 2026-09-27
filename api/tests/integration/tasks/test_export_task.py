@@ -140,7 +140,7 @@ def _a_queued_export_job(
 ) -> ExportJob:
     return ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         tailoring_run_id=run.id,
         document=document,
         format=format,

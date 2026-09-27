@@ -325,7 +325,7 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
     await jobs.add(
         ExportJob.request(
             id=job_id,
-            guest_session_id=owner.id,
+            owner=GuestOwner(owner.id),
             tailoring_run_id=TailoringRunId(value=uuid4()),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,

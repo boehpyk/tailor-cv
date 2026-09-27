@@ -26,6 +26,7 @@ from tailorcraft.application.export.get_export_job import GetExportJobForSession
 from tailorcraft.domain.export.errors import ExportNotReady
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat, ExportJobId
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -62,7 +63,7 @@ def _a_job(
 ) -> ExportJob:
     return ExportJob.request(
         id=ExportJobId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         tailoring_run_id=run_id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,

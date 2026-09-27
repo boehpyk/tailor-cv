@@ -337,7 +337,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     export_bytes_marker = _marker("EXPORTBYTES")
     job = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,

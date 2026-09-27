@@ -45,6 +45,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobStatus,
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.errors import TailoringRunNotFound, TailoringRunNotOwnedBySession
 from tailorcraft.domain.tailoring.value_objects import (
@@ -101,7 +102,7 @@ async def test_happy_path_creates_a_queued_job_and_publishes_export_requested(
 
     assert result.created is True
     assert result.export_job.status is ExportJobStatus.QUEUED
-    assert result.export_job.guest_session_id == session.id
+    assert result.export_job.owner == GuestOwner(session.id)
     assert result.export_job.tailoring_run_id == run.id
     assert result.export_job.document is TailoredDocumentKind.CV
     assert result.export_job.format is ExportFormat.PDF
@@ -112,7 +113,7 @@ async def test_happy_path_creates_a_queued_job_and_publishes_export_requested(
     published = [e for e in events.published if isinstance(e, ExportRequested)]
     assert len(published) == 1
     assert published[0].export_job_id == result.export_job.id
-    assert published[0].guest_session_id == session.id
+    assert published[0].owner == GuestOwner(session.id)
     assert published[0].tailoring_run_id == run.id
     assert published[0].document is TailoredDocumentKind.CV
     assert published[0].format is ExportFormat.PDF
@@ -312,7 +313,7 @@ async def test_existing_non_terminal_job_at_the_current_version_is_returned_unch
     await runs.add(run)
     existing = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -352,7 +353,7 @@ async def test_existing_ready_job_at_the_current_version_is_returned_unchanged(
     await runs.add(run)
     existing = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -390,7 +391,7 @@ async def test_failed_latest_job_for_the_key_is_superseded_by_a_new_job(clock: F
     await runs.add(run)
     stale = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -428,7 +429,7 @@ async def test_latest_job_requested_for_a_stale_run_version_is_superseded_by_a_n
     await runs.add(run)
     stale = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -471,7 +472,7 @@ async def test_session_at_the_cap_raises_too_many_export_jobs(clock: FixedClock)
     for _ in range(40):
         other = ExportJob.request(
             id=jobs.next_identity(),
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,
@@ -508,7 +509,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
     await runs.add(run)
     existing = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -519,7 +520,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
     for _ in range(39):
         other = ExportJob.request(
             id=jobs.next_identity(),
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,

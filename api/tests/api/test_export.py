@@ -391,7 +391,7 @@ async def _seed_jobs_for_cap(
     for _ in range(count):
         job = ExportJob.request(
             id=repo.next_identity(),  # type: ignore[attr-defined]
-            guest_session_id=guest_session_id,
+            owner=GuestOwner(guest_session_id),
             tailoring_run_id=TailoringRunId(UUID(run_id)),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,

@@ -1,6 +1,6 @@
 """`SqlAlchemyExportJobRepository` — the `ExportJobRepository` port (ADR-0007).
 
-Filters below query `ExportJob._id` / `ExportJob._guest_session_id` / `ExportJob._status` and the
+Filters below query `ExportJob._id` / `ExportJob._owner_guest_session_id` / `ExportJob._status` and the
 rest, the **private** attributes the imperative mapping in
 `infrastructure/persistence/mapping/export/export_job.py` targets — never `ExportJob.id` /
 `ExportJob.status`. Those short names are plain read-only `@property` objects on the domain class,
@@ -61,8 +61,8 @@ log = structlog.get_logger(__name__)
 _EXPORT_JOB_ID: InstrumentedAttribute[ExportJobId] = cast(
     "InstrumentedAttribute[ExportJobId]", ExportJob._id
 )
-_EXPORT_JOB_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId] = cast(
-    "InstrumentedAttribute[GuestSessionId]", ExportJob._guest_session_id
+_EXPORT_JOB_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
+    "InstrumentedAttribute[GuestSessionId | None]", ExportJob._owner_guest_session_id
 )
 _EXPORT_JOB_TAILORING_RUN_ID: InstrumentedAttribute[TailoringRunId] = cast(
     "InstrumentedAttribute[TailoringRunId]", ExportJob._tailoring_run_id

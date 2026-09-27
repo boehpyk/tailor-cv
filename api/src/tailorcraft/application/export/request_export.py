@@ -17,6 +17,7 @@ from tailorcraft.domain.export.errors import TailoringRunNotExportable, TooManyE
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -210,7 +211,7 @@ class RequestExport:
         # boundary's literal type. `run_version` is read off the run, never taken from the caller.
         job = ExportJob.request(
             id=self._jobs.next_identity(),
-            guest_session_id=cmd.guest_session_id,
+            owner=GuestOwner(cmd.guest_session_id),
             tailoring_run_id=run.id,
             document=cmd.document,
             format=cmd.format,

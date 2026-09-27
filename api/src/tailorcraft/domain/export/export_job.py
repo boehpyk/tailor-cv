@@ -18,6 +18,7 @@ against those recorded reds. Nothing in the tests was touched to get there.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import assert_never
 
 from tailorcraft.domain.export.errors import (
     ExportAlreadyDecided,
@@ -39,7 +40,8 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobId,
     ExportJobStatus,
 )
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 from tailorcraft.domain.shared.files import FileRef
@@ -100,7 +102,8 @@ class ExportJob(RecordsEvents):
 
     Invariants (technical-plan.md):
 
-    - **XJ-1** — A job always has exactly one owner session, one run id, one document kind and one
+    - **XJ-1** — A job always has exactly one owner (`GuestOwner` or `UserOwner`, since slice 2.3 —
+      ADR-0022; `_assign_owner` is the only writer), one run id, one document kind and one
       format. `request` requires all four; there is no other constructor and no setter. The ids are
       typed rather than bare `UUID`s precisely because this aggregate holds *three* foreign ones
       plus its own, and transposing two would produce a job rendering the wrong person's document
@@ -164,7 +167,26 @@ class ExportJob(RecordsEvents):
     # imperative mapping targets these exact names, with `_recorded_events` deliberately not among
     # them (it is an in-memory outbox, not a persisted fact).
     _id: ExportJobId
-    _guest_session_id: GuestSessionId
+    # Two attributes, one fact: the owner (ADR-0022 and its amendment (a); slice 2.3 technical plan
+    # §1). This contradicts the model on purpose, and the contradiction lives here and nowhere else.
+    # The domain's `Owner` is a sum type — `GuestOwner | UserOwner`, exactly one — but a foreign key
+    # has exactly one target table, so the database stores a *product* of two nullable ids and
+    # restores "exactly one" with a CHECK. These two private fields are that product, mirrored so
+    # the imperative mapping can target them. `_assign_owner` is their only writer (a `match` with
+    # `assert_never`, so exactly one is set by construction) and `owner` their only reader.
+    #
+    # `BaseCv`, `JobPosting` and `TailoringRun` carry the same two fields, writer and reader, and
+    # **they are written out again here on purpose rather than lifted into a shared base or mixin**:
+    # aggregates sharing a shape do not share a rule (CLAUDE.md). A job's owner is not even chosen
+    # by the job — it is its run's owner, a cross-aggregate rule `RequestExport` enforces — and the
+    # cap it implies differs by variant (40 per session, 20 per user run; ADR-0016 amendment (b)).
+    _owner_guest_session_id: GuestSessionId | None
+    # SKELETON (T5c): `_owner_user_id` has no column until T12's migration, so the mapping cannot
+    # load it yet and a job read back from the database would have no such attribute at all. The
+    # class-level `None` is what such a job reads meanwhile — the truth for every row that exists
+    # today. T12 maps it (the mapper then replaces it with an instrumented attribute) and removes
+    # this default. 2.2's T4 made the same deviation on `BaseCv`, and T5a/T5b on the other two.
+    _owner_user_id: UserId | None = None
     _tailoring_run_id: TailoringRunId
     _document: TailoredDocumentKind
     _format: ExportFormat
@@ -232,7 +254,7 @@ class ExportJob(RecordsEvents):
         cls,
         *,
         id: ExportJobId,
-        guest_session_id: GuestSessionId,
+        owner: Owner,
         tailoring_run_id: TailoringRunId,
         document: TailoredDocumentKind,
         format: ExportFormat,
@@ -274,7 +296,7 @@ class ExportJob(RecordsEvents):
 
         job = cls()
         job._id = id
-        job._guest_session_id = guest_session_id
+        job._assign_owner(owner)
         job._tailoring_run_id = tailoring_run_id
         job._document = document
         job._format = format
@@ -293,7 +315,7 @@ class ExportJob(RecordsEvents):
         job.record(
             ExportRequested(
                 export_job_id=id,
-                guest_session_id=guest_session_id,
+                owner=owner,
                 tailoring_run_id=tailoring_run_id,
                 document=document,
                 format=format,
@@ -515,9 +537,23 @@ class ExportJob(RecordsEvents):
     def id(self) -> ExportJobId:
         return self._id
 
+    def _assign_owner(self, owner: Owner) -> None:
+        """The only writer of the two owner attributes (XJ-1): exactly one is set, by construction."""
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                self._owner_guest_session_id = guest_session_id
+                self._owner_user_id = None
+            case UserOwner():
+                raise NotImplementedError
+            case _:
+                assert_never(owner)
+
     @property
-    def guest_session_id(self) -> GuestSessionId:
-        return self._guest_session_id
+    def owner(self) -> Owner:
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3)."""
+        if self._owner_guest_session_id is not None:
+            return GuestOwner(self._owner_guest_session_id)
+        raise NotImplementedError
 
     @property
     def tailoring_run_id(self) -> TailoringRunId:

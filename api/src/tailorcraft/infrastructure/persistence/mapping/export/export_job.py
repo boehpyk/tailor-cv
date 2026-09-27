@@ -266,7 +266,9 @@ mapper_registry.map_imperatively(
     export_job_table,
     properties={
         "_id": export_job_table.c.id,
-        "_guest_session_id": export_job_table.c.guest_session_id,
+        # The guest half of the owner (ADR-0022). `_owner_user_id` is not mapped until T12's
+        # migration adds its column; `ExportJob` gives it a class-level `None` meanwhile.
+        "_owner_guest_session_id": export_job_table.c.guest_session_id,
         "_tailoring_run_id": export_job_table.c.tailoring_run_id,
         "_document": export_job_table.c.document,
         "_format": export_job_table.c.format,

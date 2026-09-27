@@ -47,6 +47,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobStatus,
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -95,7 +96,7 @@ def _queued(
 ) -> ExportJob:
     return ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=document,
         format=format,
@@ -190,8 +191,8 @@ async def test_round_trip_of_a_queued_job_preserves_value_object_types_and_nulls
 
     assert isinstance(reloaded.id, ExportJobId)
     assert reloaded.id == job.id
-    assert isinstance(reloaded.guest_session_id, GuestSessionId)
-    assert reloaded.guest_session_id == owner.id
+    assert isinstance(reloaded.owner, GuestOwner)
+    assert reloaded.owner == GuestOwner(owner.id)
     assert isinstance(reloaded.tailoring_run_id, TailoringRunId)
     assert reloaded.tailoring_run_id == job.tailoring_run_id
     assert reloaded.document is TailoredDocumentKind.CV

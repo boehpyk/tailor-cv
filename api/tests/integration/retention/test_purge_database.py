@@ -246,7 +246,7 @@ class _Rig:
         jobs = SqlAlchemyExportJobRepository(self.session)
         job = ExportJob.request(
             id=jobs.next_identity(),
-            guest_session_id=owner,
+            owner=GuestOwner(owner),
             tailoring_run_id=TailoringRunId(value=uuid4()),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,
@@ -269,7 +269,7 @@ class _Rig:
         jobs = SqlAlchemyExportJobRepository(self.session)
         job = ExportJob.request(
             id=jobs.next_identity(),
-            guest_session_id=owner,
+            owner=GuestOwner(owner),
             tailoring_run_id=TailoringRunId(value=uuid4()),
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,

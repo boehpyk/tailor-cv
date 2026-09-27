@@ -39,7 +39,7 @@ def test_export_requested_field_set_is_exactly_the_agreed_fields() -> None:
 
     assert field_names == {
         "export_job_id",
-        "guest_session_id",
+        "owner",
         "tailoring_run_id",
         "document",
         "format",

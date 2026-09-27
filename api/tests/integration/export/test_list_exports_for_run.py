@@ -28,6 +28,7 @@ from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunF
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.errors import TailoringRunNotFound, TailoringRunNotOwnedBySession
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -62,7 +63,7 @@ def _a_job(
 ) -> ExportJob:
     return ExportJob.request(
         id=ExportJobId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         tailoring_run_id=run_id,
         document=document,
         format=format,

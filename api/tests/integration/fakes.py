@@ -887,7 +887,7 @@ class FakeExportJobRepository:
         return candidates[0]
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
-        return len([job for job in self._by_id.values() if job.guest_session_id == sid])
+        return len([job for job in self._by_id.values() if job.owner == GuestOwner(sid)])
 
     async def list_stale_rendering(
         self, started_before: datetime, limit: int
