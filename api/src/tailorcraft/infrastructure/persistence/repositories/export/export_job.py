@@ -258,6 +258,10 @@ class SqlAlchemyExportJobRepository:
         )
         return result.scalar_one()
 
+    async def count_for_run(self, run_id: TailoringRunId) -> int:
+        # T14 implements
+        raise NotImplementedError
+
     async def list_stale_rendering(
         self, started_before: datetime, limit: int
     ) -> Sequence[ExportJob]:

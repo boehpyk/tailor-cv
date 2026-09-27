@@ -99,7 +99,7 @@ from tailorcraft.domain.identity.errors import (
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
-from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
@@ -489,6 +489,16 @@ class FakeJobPostingRepository:
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return len(await self.list_for_session(sid))
 
+    async def count_for_owner(self, owner: Owner) -> int:
+        return len([posting for posting in self._by_id.values() if posting.owner == owner])
+
+    async def list_recent_for_user(self, user_id: UserId, limit: int) -> Sequence[JobPosting]:
+        postings = [
+            posting for posting in self._by_id.values() if posting.owner == UserOwner(user_id)
+        ]
+        postings.sort(key=lambda posting: posting.created_at, reverse=True)
+        return postings[:limit]
+
     def all(self) -> list[JobPosting]:
         """Test-only inspection, not part of `JobPostingRepository`."""
         return list(self._by_id.values())
@@ -711,6 +721,16 @@ class FakeTailoringRunRepository:
                 return run
         return None
 
+    async def count_for_owner(self, owner: Owner) -> int:
+        return len([run for run in self._by_id.values() if run.owner == owner])
+
+    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+        active_statuses = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
+        for run in self._by_id.values():
+            if run.owner == owner and run.status in active_statuses:
+                return run
+        return None
+
     async def list_stale_running(
         self, started_before: datetime, limit: int
     ) -> Sequence[TailoringRun]:
@@ -872,6 +892,9 @@ class FakeExportJobRepository:
         jobs = [job for job in self._by_id.values() if job.tailoring_run_id == run_id]
         jobs.sort(key=lambda job: (job.requested_at, job.id.value), reverse=True)
         return jobs
+
+    async def count_for_run(self, run_id: TailoringRunId) -> int:
+        return len([job for job in self._by_id.values() if job.tailoring_run_id == run_id])
 
     async def find_latest_for_key(
         self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat

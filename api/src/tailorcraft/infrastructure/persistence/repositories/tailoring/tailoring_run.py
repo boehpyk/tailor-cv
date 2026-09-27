@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.exc import StaleDataError
 
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.errors import (
     TailoringRunConcurrentlyModified,
@@ -246,6 +247,14 @@ class SqlAlchemyTailoringRunRepository:
             .limit(1)
         )
         return result.scalars().first()
+
+    async def count_for_owner(self, owner: Owner) -> int:
+        # T14 implements
+        raise NotImplementedError
+
+    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+        # T14 implements
+        raise NotImplementedError
 
     async def list_stale_running(
         self, started_before: datetime, limit: int

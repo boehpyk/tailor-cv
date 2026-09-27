@@ -24,10 +24,12 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
+from uuid import UUID
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.retention.value_objects import (
     AccountCounts,
+    DeletedHistoryEntry,
     ExpiringGuestSession,
     ScannedFile,
 )
@@ -152,6 +154,11 @@ class AccountDataPort(Protocol):
     async def files_of_account(self, user_id: UserId) -> Sequence[FileRef]:
         """The storage keys of every file the account's rows name, for the unlinks that follow.
 
+        Since slice 2.3 that is the saved base CVs' keys **and** the account's export files, each
+        export key **derived** from the job's `(id, format)` for a queued format — never read from
+        its `file_key` column — so a `rendering` or `failed` job's already-written bytes are not
+        missed (the purge's rule, ADR-0018 decision 3; AC-15).
+
         Raises `AccountNotFound` if there is no such user. The answer must be **complete for a
         `delete_account` of the same user in the same unit of work**: a row inserted between this
         read and that delete would be cascaded away with its file never collected. How the adapter
@@ -162,7 +169,8 @@ class AccountDataPort(Protocol):
 
     async def delete_account(self, user_id: UserId) -> bool:
         """Delete the user and everything the cascade takes with it (logins, retired refresh
-        tokens, saved base CVs). Rows only — never a file.
+        tokens, saved base CVs — and since slice 2.3 their tailoring runs, job postings and export
+        jobs). Rows only — never a file.
 
         Returns `False` if nothing was deleted (a concurrent erasure won), `True` otherwise. The
         deletion is durable when this returns: the caller unlinks files next, and "rows first" is a
@@ -171,7 +179,39 @@ class AccountDataPort(Protocol):
         ...
 
     async def count_account(self, user_id: UserId) -> AccountCounts | None:
-        """What `delete_account` *would* take, for `erase-account --dry-run` (AC-31). Deletes
+        """What `delete_account` *would* take, for `erase-account --dry-run` (AC-31; widened in
+        slice 2.3 to runs, postings, export jobs and CV-plus-export files, AC-36). Deletes
         nothing. `None` if there is no such user — the dry run's answer to "not found" is not an
         exception, because reporting on an absent account is an ordinary outcome of looking."""
+        ...
+
+
+class HistoryEntryDataPort(Protocol):
+    """Everything retention needs to delete one entry of a signed-in user's history: the run, its
+    export jobs, and its posting if nothing else references it (slice 2.3, technical plan §0.6).
+
+    **Not a `remove` on `TailoringRunRepository`**: an entry spans three contexts' tables, and a
+    tailoring repository deleting export and posting rows would be one context reaching into two
+    others. "Delete what an owner has for X, rows committed, then files" is retention's shape
+    already (the purge, account erasure), so the port lives here.
+
+    **`run_id` is a bare `UUID`, not `TailoringRunId`, on purpose.** `domain/retention` may import
+    only `shared` and `identity` (1.6's AC-1 allowlist, `tests/unit/retention/test_import_allowlist.py`):
+    retention reaches other contexts' rows through its own ports and never through their types. The
+    application layer, which may cross contexts, passes `run_id.value` after `GetTailoringRun` has
+    authorized it. A reader who expects the typed id here should find this paragraph rather than
+    "fix" the import.
+    """
+
+    async def delete_history_entry(
+        self, user_id: UserId, run_id: UUID
+    ) -> DeletedHistoryEntry | None:
+        """Delete the run, its export jobs and — when no other run references it — its posting, all
+        owned by `user_id`, in one transaction. Rows only — never a file.
+
+        Durable on return: the bound adapter commits, because the caller unlinks the returned
+        `export_files` next and "rows first" is a statement about durability. `None` when the run
+        row was not there (a concurrent deletion won): nothing else is touched, and the loser
+        unlinks nothing (H-44).
+        """
         ...

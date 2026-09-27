@@ -57,6 +57,7 @@ from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailo
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
@@ -180,6 +181,14 @@ class CommittingTailoringRunRepository:
     async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
         return await self._inner.find_active_for_session(sid)
 
+    async def count_for_owner(self, owner: Owner) -> int:
+        # T14 implements
+        raise NotImplementedError
+
+    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+        # T14 implements
+        raise NotImplementedError
+
     async def list_stale_running(
         self, started_before: datetime, limit: int
     ) -> Sequence[TailoringRun]:
@@ -269,6 +278,10 @@ class CommittingExportJobRepository:
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return await self._inner.count_for_session(sid)
+
+    async def count_for_run(self, run_id: TailoringRunId) -> int:
+        # T14 implements
+        raise NotImplementedError
 
     async def list_stale_rendering(
         self, started_before: datetime, limit: int

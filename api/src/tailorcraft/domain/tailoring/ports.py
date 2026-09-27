@@ -22,9 +22,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.value_objects import ExtractedText
 from tailorcraft.domain.posting.value_objects import JobPostingText
+from tailorcraft.domain.tailoring.history import HistoryCursor, HistoryPage, HistoryPageSize
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDraft, TailoringRunId
 
@@ -127,6 +129,10 @@ class TailoringRunRepository(Protocol):
     async def count_for_session(self, sid: GuestSessionId) -> int:
         """How many runs `sid` owns, for the `TooManyTailoringRuns` check.
 
+        **Superseded by `count_for_owner` (slice 2.3)** and removed once T14's adapter and the test
+        fakes implement the replacement; kept until then so nothing stops satisfying this Protocol
+        in the middle of the slice.
+
         A separate method rather than `len(await list_for_session(sid))` so the SQL adapter can
         answer with `COUNT(*)`. The saving is larger here than it was for the earlier two caps: a run
         carries a tailored CV *and* a cover letter, so materializing twenty rows to measure how many
@@ -137,6 +143,9 @@ class TailoringRunRepository(Protocol):
 
     async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
         """The session's one run in flight, or `None`.
+
+        **Superseded by `find_active_for_owner` (slice 2.3)** and removed with `count_for_session`,
+        for the same reason.
 
         "Active" means a status that is **not terminal** — `QUEUED` or `RUNNING`, the two values
         `TailoringRunStatus` documents as non-terminal and the two a client's poller keeps polling
@@ -152,6 +161,20 @@ class TailoringRunRepository(Protocol):
         Returns the run rather than a bool for that second job: the 409 body carries the active run's
         id so the client can attach to the run already in flight instead of paying for another.
         """
+        ...
+
+    async def count_for_owner(self, owner: Owner) -> int:
+        """How many runs `owner` owns, for the `TooManyTailoringRuns` check — either variant (slice
+        2.3). The cap it is compared with is the use case's choice by variant (20 per guest session,
+        500 per user); this answers only the count, with `COUNT(*)` for the reason
+        `count_for_session` gives."""
+        ...
+
+    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+        """`owner`'s one run in flight (`QUEUED` or `RUNNING`), or `None` — either variant (slice
+        2.3). Same soft at-most-one-active rule and same reason for returning the run rather than a
+        bool as `find_active_for_session`, whose meaning this generalizes: a signed-in user's
+        double-click must not buy two paid calls any more than a guest's."""
         ...
 
     async def list_stale_running(
@@ -179,6 +202,31 @@ class TailoringRunRepository(Protocol):
         docstring records why the outcome is benign.
 
         Says nothing about transactions, exactly as `save` does not.
+        """
+        ...
+
+
+class TailoringHistoryQuery(Protocol):
+    """A signed-in user's tailoring history, one keyset page at a time (slice 2.3, ADR-0024).
+
+    **A read-side port, not a repository.** It returns a `HistoryPage` of read-model entries and no
+    aggregate: a history row joins a run to what is left of its base CV and its posting — three
+    contexts' tables — and loading three aggregates per row to show a list is the cost 2.2's T30
+    measured. It **never selects a document body**: an entry says a run exists and how it ended,
+    and the documents are one click away on the run's own endpoint.
+    """
+
+    async def page_for_user(
+        self, user_id: UserId, after: HistoryCursor | None, size: HistoryPageSize
+    ) -> HistoryPage:
+        """Up to `size` of `user_id`'s runs, newest first, strictly after `after` in
+        `(requested_at, tailoring_run_id)` descending order — from the start when `after` is
+        `None`. `next_cursor` is `None` exactly when no further entry exists.
+
+        Scoped to the user by construction: the query takes no other owner, so a forged cursor can
+        only move a user around their own history (ADR-0024: the cursor is unsigned on purpose).
+        Two runs in the same whole second are ordered by id, so a page boundary between them neither
+        repeats nor skips one. An empty page for a user with no runs — never an error.
         """
         ...
 

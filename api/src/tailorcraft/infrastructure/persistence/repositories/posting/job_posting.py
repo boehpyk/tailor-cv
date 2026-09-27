@@ -19,7 +19,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -98,6 +99,14 @@ class SqlAlchemyJobPostingRepository:
             select(func.count()).select_from(JobPosting).where(_JOB_POSTING_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
         )
         return result.scalar_one()
+
+    async def count_for_owner(self, owner: Owner) -> int:
+        # T14 implements
+        raise NotImplementedError
+
+    async def list_recent_for_user(self, user_id: UserId, limit: int) -> Sequence[JobPosting]:
+        # T14 implements
+        raise NotImplementedError
 
 
 if TYPE_CHECKING:
