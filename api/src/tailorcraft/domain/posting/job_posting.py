@@ -30,6 +30,7 @@ from tailorcraft.domain.posting.value_objects import (
     PostingTitle,
     SourceUrl,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
 
@@ -110,7 +111,7 @@ class JobPosting(RecordsEvents):
     # a base class would have to guess which rules it carries. Eight duplicated lines are cheaper
     # than that guess.
     _owner_guest_session_id: GuestSessionId | None
-    # SKELETON (T5a): `_owner_user_id` has no column until T12's migration, so the mapping cannot
+    # Not yet mapped (added at T5a): `_owner_user_id` has no column until T12's migration, so the mapping cannot
     # load it yet and a posting read back from the database would have no such attribute at all. The
     # class-level `None` is what such a posting reads meanwhile — which is the truth for every row
     # that exists today. T12 maps it (the mapper then replaces it with an instrumented attribute) and
@@ -292,17 +293,27 @@ class JobPosting(RecordsEvents):
             case GuestOwner(guest_session_id=guest_session_id):
                 self._owner_guest_session_id = guest_session_id
                 self._owner_user_id = None
-            case UserOwner():
-                raise NotImplementedError
+            case UserOwner(user_id=user_id):
+                self._owner_guest_session_id = None
+                self._owner_user_id = user_id
             case _:
                 assert_never(owner)
 
     @property
     def owner(self) -> Owner:
-        """Rebuilds the variant from the two private attributes (ADR-0022 §3)."""
-        if self._owner_guest_session_id is not None:
-            return GuestOwner(self._owner_guest_session_id)
-        raise NotImplementedError
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3).
+
+        The product type has four states and the sum type two; the other two (both set, neither
+        set) cannot come from `_assign_owner` and are refused by the database's CHECK, so reaching
+        the last arm means a row was written around both locks — loud, never a guess at a variant.
+        """
+        match (self._owner_guest_session_id, self._owner_user_id):
+            case (GuestSessionId() as guest_session_id, None):
+                return GuestOwner(guest_session_id)
+            case (None, UserId() as user_id):
+                return UserOwner(user_id)
+            case _:
+                raise InvariantViolated(f"{self._id!r} must have exactly one owner (J-1)")
 
     @property
     def source(self) -> PostingSource:

@@ -181,7 +181,7 @@ class ExportJob(RecordsEvents):
     # by the job — it is its run's owner, a cross-aggregate rule `RequestExport` enforces — and the
     # cap it implies differs by variant (40 per session, 20 per user run; ADR-0016 amendment (b)).
     _owner_guest_session_id: GuestSessionId | None
-    # SKELETON (T5c): `_owner_user_id` has no column until T12's migration, so the mapping cannot
+    # Not yet mapped (added at T5c): `_owner_user_id` has no column until T12's migration, so the mapping cannot
     # load it yet and a job read back from the database would have no such attribute at all. The
     # class-level `None` is what such a job reads meanwhile — the truth for every row that exists
     # today. T12 maps it (the mapper then replaces it with an instrumented attribute) and removes
@@ -543,17 +543,27 @@ class ExportJob(RecordsEvents):
             case GuestOwner(guest_session_id=guest_session_id):
                 self._owner_guest_session_id = guest_session_id
                 self._owner_user_id = None
-            case UserOwner():
-                raise NotImplementedError
+            case UserOwner(user_id=user_id):
+                self._owner_guest_session_id = None
+                self._owner_user_id = user_id
             case _:
                 assert_never(owner)
 
     @property
     def owner(self) -> Owner:
-        """Rebuilds the variant from the two private attributes (ADR-0022 §3)."""
-        if self._owner_guest_session_id is not None:
-            return GuestOwner(self._owner_guest_session_id)
-        raise NotImplementedError
+        """Rebuilds the variant from the two private attributes (ADR-0022 §3).
+
+        The product type has four states and the sum type two; the other two (both set, neither
+        set) cannot come from `_assign_owner` and are refused by the database's CHECK, so reaching
+        the last arm means a row was written around both locks — loud, never a guess at a variant.
+        """
+        match (self._owner_guest_session_id, self._owner_user_id):
+            case (GuestSessionId() as guest_session_id, None):
+                return GuestOwner(guest_session_id)
+            case (None, UserId() as user_id):
+                return UserOwner(user_id)
+            case _:
+                raise InvariantViolated(f"{self._id!r} must have exactly one owner (XJ-1)")
 
     @property
     def tailoring_run_id(self) -> TailoringRunId:

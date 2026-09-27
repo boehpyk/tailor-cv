@@ -29,6 +29,7 @@ from typing import ClassVar
 
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId, PostingSource
+from tailorcraft.domain.tailoring.errors import InvalidHistoryCursor, InvalidHistoryPageSize
 from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
     TailoringRunId,
@@ -54,24 +55,33 @@ class HistoryCursor:
     tailoring_run_id: TailoringRunId
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        # `utcoffset() is None` rather than `tzinfo is None`: a tzinfo object may still decline to
+        # give an offset, and such a datetime is naive for every comparison that matters here.
+        if self.requested_at.utcoffset() is None:
+            raise InvalidHistoryCursor("requested_at must be timezone-aware")
+        if self.requested_at.microsecond != 0:
+            raise InvalidHistoryCursor("requested_at must be whole-second")
 
 
 @dataclass(frozen=True, slots=True)
 class HistoryPageSize:
-    """How many entries one page holds: `1..MAXIMUM`, `DEFAULT` when the caller names none.
+    """How many entries one page holds: `MINIMUM..MAXIMUM` (1..50), `DEFAULT` when the caller names none.
 
     Out of range → `InvalidHistoryPageSize`. The ceiling is a cost bound, not a preference: the size
     is caller-chosen, and an unbounded one is "every row at once" asked for by a query string.
     """
 
     DEFAULT: ClassVar[int] = 20
+    MINIMUM: ClassVar[int] = 1
     MAXIMUM: ClassVar[int] = 50
 
     value: int
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        if not self.MINIMUM <= self.value <= self.MAXIMUM:
+            raise InvalidHistoryPageSize(
+                f"page size must be {self.MINIMUM}..{self.MAXIMUM}, got {self.value}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
