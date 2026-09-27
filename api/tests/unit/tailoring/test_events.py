@@ -317,7 +317,10 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
     new field, and this one names, for a human reading this file, exactly which strings would be the
     disaster if one showed up. `previous_text` and `diff` are `TailoredDocumentRevised`'s own
     additions to the list (AC-20): the temptation a revision event invites that the four 1.3 events
-    never did."""
+    never did. `title`, `source_url`, `label`, `original_filename` and `email` are 2.3's own
+    additions (AC-5): `owner` now crosses these events into an authorization boundary that reads a
+    saved CV's label and filename and a user's email, and none of those belongs on a fact that
+    `LoggingEventPublisher` writes into a log line any more than a posting's title or URL do."""
     field_names = {field.name for field in dataclasses.fields(event_type)}
 
     forbidden_names = {
@@ -335,6 +338,14 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
         "response",
         "raw_response",
         "message",
+        # 2.3 (AC-5): no event may carry a posting's text/title/URL, a saved CV's label or
+        # filename, or a user's email.
+        "text",
+        "title",
+        "source_url",
+        "label",
+        "original_filename",
+        "email",
     }
 
     assert field_names.isdisjoint(forbidden_names)

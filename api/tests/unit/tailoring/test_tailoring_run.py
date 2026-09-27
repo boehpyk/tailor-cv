@@ -23,8 +23,8 @@ from uuid import UUID
 
 import pytest
 
-from tailorcraft.domain.identity.ownership import GuestOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.errors import InvariantViolated
@@ -48,6 +48,7 @@ from tailorcraft.domain.tailoring.value_objects import (
 
 _RUN_ID = TailoringRunId(value=UUID("0192f0a1-89ab-7cde-8123-456789abcde0"))
 _SESSION_ID = GuestSessionId(value=UUID("11111111-1111-7111-8111-111111111111"))
+_USER_ID = UserId(value=UUID("55555555-5555-7555-8555-555555555555"))
 _BASE_CV_ID = BaseCvId(value=UUID("22222222-2222-7222-8222-222222222222"))
 _JOB_POSTING_ID = JobPostingId(value=UUID("33333333-3333-7333-8333-333333333333"))
 
@@ -145,6 +146,41 @@ def test_freshly_requested_run_is_queued_with_no_outcome_yet() -> None:
     assert run.failure_reason is None
     assert run.started_at is None
     assert run.completed_at is None
+
+
+# --- 2.3's AC-2: ownership — both variants, the removed property ---------------------------------
+#
+# The two round-trip tests below encode the REAL requirement — a `UserOwner` round-trips exactly
+# like a `GuestOwner` — not the skeleton's placeholder. Run today, `_assign_owner`'s `UserOwner` arm
+# raises `NotImplementedError` before the `assert` is ever reached, so the red is on that escaping
+# exception, never on a failed equality (never `pytest.raises(NotImplementedError)`, which would
+# assert the placeholder itself and stay green through T11 for the wrong reason). The guest-arm
+# test above (`test_request_stores_the_owner_session_and_the_two_input_ids`) is this pair's
+# discriminating positive: the same constructor, the same call shape, succeeding for the variant
+# that is already implemented.
+
+
+def test_request_with_a_user_owner_round_trips() -> None:
+    run = TailoringRun.request(
+        id=_RUN_ID,
+        owner=UserOwner(_USER_ID),
+        base_cv_id=_BASE_CV_ID,
+        job_posting_id=_JOB_POSTING_ID,
+        requested_at=_REQUESTED_AT,
+    )
+
+    assert run.owner == UserOwner(_USER_ID)
+
+
+def test_tailoring_run_has_no_guest_session_id_property_any_more() -> None:
+    """AC-2: `guest_session_id` is **removed**, not merely deprecated — every caller reads `owner`.
+    Green on arrival (T5b's skeleton already removed it) — pinned here as an explicit regression
+    guard, asserted as an `AttributeError` on a real, fully-constructed run rather than on the class,
+    because the property could in principle exist and simply return the wrong thing."""
+    run = _requested()
+
+    with pytest.raises(AttributeError):
+        _ = run.guest_session_id  # type: ignore[attr-defined]
 
 
 # --- AC-3: the full legal-transition table, one parametrized test per column ----------------------
@@ -259,6 +295,41 @@ def test_mark_failed_is_legal_from_queued() -> None:
     assert run.failure_reason is TailoringFailureReason.NOT_QUEUED
     assert run.started_at is None
     assert run.completed_at == _REQUESTED_AT
+
+
+# --- 2.3's AC-4: BASE_CV_DELETED fits the same (unchanged) mark_failed table as every other reason -
+#
+# `mark_failed` does not branch on which reason it is given (see its own docstring: "no status check
+# beyond the terminal guard"), so the tenth value is exercised through the identical parametrized
+# shape `test_mark_failed_transition_table` already uses for `LLM_ERROR` — legal from both
+# non-terminal statuses, refused from both terminal ones by `TailoringAlreadyDecided`. In practice
+# `ExecuteTailoringRun` only ever calls `mark_failed(BASE_CV_DELETED, …)` from `running` (AC-12: the
+# saved CV is checked at step 5, after `mark_started`), but that is a fact about the one call site,
+# not a new aggregate-level restriction this table does not already express.
+
+
+@pytest.mark.parametrize(
+    ("from_status", "expected_error"),
+    [
+        pytest.param(TailoringRunStatus.QUEUED, None, id="queued-to-failed"),
+        pytest.param(TailoringRunStatus.RUNNING, None, id="running-to-failed"),
+        pytest.param(TailoringRunStatus.SUCCEEDED, TailoringAlreadyDecided, id="succeeded"),
+        pytest.param(TailoringRunStatus.FAILED, TailoringAlreadyDecided, id="failed"),
+    ],
+)
+def test_mark_failed_with_base_cv_deleted_follows_the_existing_transition_table(
+    from_status: TailoringRunStatus, expected_error: type[Exception] | None
+) -> None:
+    run = _run_in_status(from_status)
+
+    if expected_error is None:
+        run.mark_failed(TailoringFailureReason.BASE_CV_DELETED, _COMPLETED_AT)
+        assert run.status is TailoringRunStatus.FAILED
+        assert run.failure_reason is TailoringFailureReason.BASE_CV_DELETED
+        assert run.completed_at == _COMPLETED_AT
+    else:
+        with pytest.raises(expected_error):
+            run.mark_failed(TailoringFailureReason.BASE_CV_DELETED, _COMPLETED_AT)
 
 
 # --- TR-4: started_at >= requested_at, completed_at >= started_at (or >= requested_at from queued) -

@@ -24,8 +24,8 @@ from uuid import UUID
 
 import pytest
 
-from tailorcraft.domain.identity.ownership import GuestOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import (
     FetchedPosting,
@@ -38,6 +38,7 @@ from tailorcraft.domain.posting.value_objects import (
 
 _POSTING_ID = JobPostingId(value=UUID("0192f0a1-89ab-7cde-8123-456789abcdef"))
 _SESSION_ID = GuestSessionId(value=UUID("11111111-1111-7111-8111-111111111111"))
+_USER_ID = UserId(value=UUID("55555555-5555-7555-8555-555555555555"))
 # Whole-second, per ADR-0007: the `Clock` port truncates at the source so a database round trip can
 # never change a value, and a test double that invented microseconds would fail an equality
 # assertion after that round trip on a day nobody has time for it.
@@ -161,6 +162,54 @@ def test_from_fetched_url_accepts_a_fetched_posting_with_no_title() -> None:
     assert posting.title is None
     assert posting.source is PostingSource.FETCHED
     assert posting.source_url == _URL
+
+
+# --- 2.3's AC-1: ownership — both variants, the removed property --------------------------------
+#
+# The two `from_..._raises_not_implemented_error` tests below encode the REAL requirement — a
+# `UserOwner` round-trips exactly like a `GuestOwner` — not the skeleton's placeholder. Run today,
+# `_assign_owner`'s `UserOwner` arm raises `NotImplementedError` before the `assert` is ever reached,
+# so the red is on that escaping exception, not on a failed equality — the correct shape per
+# sdlc.md §2 (never `pytest.raises(NotImplementedError)`, which would assert the placeholder itself
+# and stay green through T11 for the wrong reason). The guest-arm tests elsewhere in this file are
+# this pair's discriminating positive: the same constructors, the same call shape, succeeding for
+# the variant that is already implemented.
+
+
+def test_from_pasted_text_with_a_user_owner_round_trips() -> None:
+    posting = JobPosting.from_pasted_text(
+        id=_POSTING_ID,
+        owner=UserOwner(_USER_ID),
+        text=_posting_text(),
+        created_at=_CREATED_AT,
+    )
+
+    assert posting.owner == UserOwner(_USER_ID)
+
+
+def test_from_fetched_url_with_a_user_owner_round_trips() -> None:
+    posting = JobPosting.from_fetched_url(
+        id=_POSTING_ID,
+        owner=UserOwner(_USER_ID),
+        url=_URL,
+        fetched=FetchedPosting(text=_posting_text(), title=None),
+        created_at=_CREATED_AT,
+    )
+
+    assert posting.owner == UserOwner(_USER_ID)
+
+
+def test_job_posting_has_no_guest_session_id_property_any_more() -> None:
+    """AC-1: `guest_session_id` is **removed**, not merely deprecated — every caller reads `owner`.
+    Green on arrival (T5a's skeleton already removed it) — pinned here as an explicit regression
+    guard against a future edit that restores it for convenience, asserted as an `AttributeError` on
+    a real, fully-constructed posting rather than on the class, because the property could in
+    principle exist and simply return the wrong thing; reading it is what proves there is nothing
+    there to read."""
+    posting = _pasted()
+
+    with pytest.raises(AttributeError):
+        _ = posting.guest_session_id  # type: ignore[attr-defined]
 
 
 # --- J-3: immutability after creation ------------------------------------------------------------

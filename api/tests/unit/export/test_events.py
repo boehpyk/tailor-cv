@@ -98,7 +98,11 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
 ) -> None:
     """The disjointness form, on top of the five exact-set assertions above — the exact-set
     assertions catch *any* new field; this one names, for a human reading this file, exactly which
-    strings would be the disaster if one showed up."""
+    strings would be the disaster if one showed up. `title`, `source_url`, `label`,
+    `original_filename` and `email` are 2.3's own additions (AC-5): `owner` now crosses these events
+    into an authorization boundary that reads a saved CV's label and filename and a user's email,
+    and none of those belongs on a fact that `LoggingEventPublisher` writes into a log line any
+    more than a posting's title or URL do."""
     field_names = {field.name for field in dataclasses.fields(event_type)}
 
     forbidden_names = {
@@ -116,6 +120,14 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
         "message",
         "error_message",
         "renderer_message",
+        # 2.3 (AC-5): no event may carry a posting's text/title/URL, a saved CV's label or
+        # filename, or a user's email.
+        "text",
+        "title",
+        "source_url",
+        "label",
+        "original_filename",
+        "email",
     }
 
     assert field_names.isdisjoint(forbidden_names)
