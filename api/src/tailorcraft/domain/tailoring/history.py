@@ -18,7 +18,7 @@ size arrive from a query string a stranger wrote — so they are refused in `__p
 value object with rules. The other four are output, pure data, and complete at the skeleton step.
 
 `retryable` is deliberately not here: whether "Try again" is worth offering is the API's rule
-(`_is_retryable` in the tailoring router, Constitution §4.5), exactly as in 1.3's run response.
+(`is_retryable` in `routers/_tailoring_handlers.py`, Constitution §4.5), exactly as in 1.3's run response.
 """
 
 from __future__ import annotations
