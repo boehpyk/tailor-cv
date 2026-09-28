@@ -310,7 +310,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     # router constructs those value objects from the client's text, so they are mapped below.)
 
     if isinstance(exc, TailoringRunNotFound):
-        # G-29: also what `GetTailoringRunForSession` raises (`from TailoringRunNotOwnedBySession`)
+        # G-29: also what `GetTailoringRun` raises (`from TailoringRunNotOwnedBySession`)
         # for a run that exists but belongs to someone else. The two are indistinguishable on the
         # wire on purpose — a 403 would confirm that a guessed id is real.
         return HTTPException(

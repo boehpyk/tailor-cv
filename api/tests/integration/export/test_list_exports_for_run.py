@@ -24,7 +24,7 @@ from tailorcraft.application.export.list_exports_for_run import (
     ExportListing,
     ListExportsForRun,
 )
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
@@ -38,6 +38,7 @@ from tests.integration.fakes import (
     FakeExportJobRepository,
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     create_active_session,
 )
 
@@ -48,7 +49,7 @@ def _use_case(
     sessions: FakeGuestSessionRepository,
     clock: FixedClock,
 ) -> ListExportsForRun:
-    get_tailoring_run = GetTailoringRunForSession(runs, sessions, clock)
+    get_tailoring_run = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     return ListExportsForRun(jobs, get_tailoring_run)
 
 

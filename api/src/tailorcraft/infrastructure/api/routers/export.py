@@ -620,7 +620,7 @@ async def request_export(
        `Retry-After`; X-20 -> the request proceeds and one log line records that Redis was
        unreachable, with the namespace and never the identifier). After shape validation, so a
        malformed request never consumes a counter.
-    4. **`RequestExport`**, which authorizes the run through `GetTailoringRunForSession` (X-13),
+    4. **`RequestExport`**, which authorizes the run through `GetTailoringRun` (X-13),
        refuses a run that is not `succeeded` (X-14), enforces the per-session cap (X-18) and does
        the idempotent lookup (X-16).
     5. **The explicit commit**, then **the enqueue** — never the other way round (ADR-0014 §5). A

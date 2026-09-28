@@ -31,7 +31,7 @@ from tailorcraft.application.export.request_export import (
     RequestExportCommand,
     RequestExportResult,
 )
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import (
     ExportFormatNotQueued,
     TailoringRunNotExportable,
@@ -59,6 +59,7 @@ from tests.integration.fakes import (
     FakeExportJobRepository,
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -73,7 +74,7 @@ def _use_case(
     *,
     max_per_session: int = 40,
 ) -> RequestExport:
-    get_tailoring_run = GetTailoringRunForSession(runs, sessions, clock)
+    get_tailoring_run = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     return RequestExport(jobs, get_tailoring_run, events, clock, max_per_session=max_per_session)
 
 

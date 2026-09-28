@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import TailoringRunNotExportable, TooManyExportJobs
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
@@ -80,7 +80,7 @@ class RequestExport:
     """Record a visitor's request to export one document of one run into one queued format, or hand
     back the job that is already doing exactly that.
 
-    **It takes the read *use case* `GetTailoringRunForSession`, not `TailoringRunRepository`, and
+    **It takes the read *use case* `GetTailoringRun`, not `TailoringRunRepository`, and
     that is the load-bearing choice here.** This is the fourth time this codebase makes it — 1.3
     made it twice (`GetBaseCv`, `GetJobPosting`) and 1.4 made it once
     (`ReviseTailoredDocument`) — so it is a convention now rather than a judgement call, but the
@@ -164,7 +164,7 @@ class RequestExport:
     def __init__(
         self,
         jobs: ExportJobRepository,
-        get_tailoring_run: GetTailoringRunForSession,
+        get_tailoring_run: GetTailoringRun,
         events: EventPublisherPort,
         clock: Clock,
         max_per_session: int = 40,
@@ -178,7 +178,7 @@ class RequestExport:
     async def __call__(self, cmd: RequestExportCommand) -> RequestExportResult:
         # Step 1. The composed read carries the authorization rule and the 404 collapse; this use
         # case never sees a run repository, so it cannot forget either (see the class docstring).
-        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)
+        run = await self._get_tailoring_run(cmd.tailoring_run_id, GuestOwner(cmd.guest_session_id))
 
         # Step 2. The aggregate's own status, not `current_documents is not None`: equivalent, but
         # this one says what it means and is the value the error carries to the client (X-14).

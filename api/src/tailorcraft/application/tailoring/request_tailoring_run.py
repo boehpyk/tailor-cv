@@ -6,11 +6,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import assert_never
 
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
-from tailorcraft.domain.identity.ownership import GuestOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.clock import Clock
@@ -37,7 +38,10 @@ class RequestTailoringRunCommand:
     anywhere.
     """
 
-    guest_session_id: GuestSessionId
+    # Who the run will belong to — a creating command keeps the word "owner" (2.2's
+    # `UploadBaseCvCommand` precedent). Both inputs are authorized against this same owner, and the
+    # run takes it, so the ownership graph never crosses owners (ADR-0022).
+    owner: Owner
     base_cv_id: BaseCvId
     job_posting_id: JobPostingId
 
@@ -63,7 +67,7 @@ class RequestTailoringRun:
 
     **It takes two *use cases*, not two repositories, and that is the load-bearing choice here.**
     `GetBaseCv` and `GetJobPosting` each carry an authorization rule — *what
-    authorizes access is the link*, `cv.guest_session_id == the resolved session id`, checked on
+    authorizes access is the link*, `cv.owner == the resolved requester`, checked on
     every read, because owning a session id is not authority over an object that references it
     (ADR-0008). Slice 1.2's plan said in as many words that 1.3 and 1.5 would reach a `JobPosting`
     from a second entry point and that *a check centralized there is a check they get for free*.
@@ -92,9 +96,9 @@ class RequestTailoringRun:
 
     Flow (technical-plan.md, "Application layer"):
 
-    1. ``cv = await get_base_cv(cmd.base_cv_id, GuestOwner(cmd.guest_session_id))`` — resolves the session and
+    1. ``cv = await get_base_cv(cmd.base_cv_id, cmd.owner)`` — resolves the session and
        raises `GuestSessionNotFound` / `GuestSessionExpired` / `BaseCvNotFound` (G-5, G-6).
-    2. ``posting = await get_job_posting(cmd.job_posting_id, GuestOwner(...))`` —
+    2. ``posting = await get_job_posting(cmd.job_posting_id, cmd.owner)`` —
        `JobPostingNotFound` (G-7).
     3. ``if cv.status is not BaseCvStatus.EXTRACTED: raise BaseCvNotReadyForTailoring(...)`` (G-8).
        The check reads the **aggregate's own status**, not `extracted_text is not None`: I-2 makes
@@ -132,26 +136,30 @@ class RequestTailoringRun:
     def __init__(
         self,
         runs: TailoringRunRepository,
+        users: UserRepository,
         get_base_cv: GetBaseCv,
         get_job_posting: GetJobPosting,
         events: EventPublisherPort,
         clock: Clock,
         max_per_session: int = 20,
+        max_per_user: int = 500,
     ) -> None:
         self._runs = runs
+        self._users = users
         self._get_base_cv = get_base_cv
         self._get_job_posting = get_job_posting
         self._events = events
         self._clock = clock
         self._max_per_session = max_per_session
+        self._max_per_user = max_per_user
 
     async def __call__(self, cmd: RequestTailoringRunCommand) -> RequestTailoringRunResult:
         # Both reads go through the composed *use cases* rather than the two repositories, so the
         # "what authorizes access is the link" rule (ADR-0008) is inherited rather than written a
         # third time. Each resolves the guest session itself — that is the pair of extra
         # primary-key lookups this class's docstring puts a price on, paid deliberately.
-        cv = await self._get_base_cv(cmd.base_cv_id, GuestOwner(cmd.guest_session_id))
-        posting = await self._get_job_posting(cmd.job_posting_id, GuestOwner(cmd.guest_session_id))
+        cv = await self._get_base_cv(cmd.base_cv_id, cmd.owner)
+        posting = await self._get_job_posting(cmd.job_posting_id, cmd.owner)
 
         # G-8 reads the **aggregate's own status**, not `cv.extracted_text is not None`. I-2 makes
         # the two equivalent, so this is not a correctness choice — it is a meaning one: the status
@@ -176,20 +184,29 @@ class RequestTailoringRun:
         # Their **order is load-bearing**: the active-run rule is checked first, so a visitor who
         # already has a run in flight is told *that*, and handed its id to attach a poller to,
         # rather than being told they are at the cap — which would also be true, and useless.
-        active_run = await self._runs.find_active_for_session(cmd.guest_session_id)
-        if active_run is not None:
-            raise TailoringAlreadyRunning(active_run.id)
+        #
+        # The cap is chosen by variant (`max_per_session` / `max_per_user`). The guest arm keeps the
+        # `_for_session` queries until T14 implements the owner-keyed ones in SQL.
+        match cmd.owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                active_run = await self._runs.find_active_for_session(guest_session_id)
+                if active_run is not None:
+                    raise TailoringAlreadyRunning(active_run.id)
 
-        run_count = await self._runs.count_for_session(cmd.guest_session_id)
-        if run_count >= self._max_per_session:
-            raise TooManyTailoringRuns(run_count, self._max_per_session)
+                run_count = await self._runs.count_for_session(guest_session_id)
+                if run_count >= self._max_per_session:
+                    raise TooManyTailoringRuns(run_count, self._max_per_session)
+            case UserOwner():
+                raise NotImplementedError
+            case _:
+                assert_never(cmd.owner)
 
         # Identity is application-assigned (ADR-0007): the aggregate is valid before it ever meets
         # the database. The two ids come off the aggregates just loaded rather than off `cmd` —
         # same values, but these two are the ones ownership was actually checked on.
         run = TailoringRun.request(
             id=self._runs.next_identity(),
-            owner=GuestOwner(cmd.guest_session_id),
+            owner=cmd.owner,
             base_cv_id=cv.id,
             job_posting_id=posting.id,
             requested_at=self._clock.now(),

@@ -84,7 +84,7 @@ class GetExportJobForSession:
     `ExportJobNotOwnedBySession` still exists as a type, and T7 raises
     ``ExportJobNotFound(...) from ExportJobNotOwnedBySession(...)``: this use case's own tests need
     to tell "absent" from "not mine" apart even though the boundary must not, and `__cause__` is
-    where that distinction survives without ever crossing the wire. `GetTailoringRunForSession`
+    where that distinction survives without ever crossing the wire. `GetTailoringRun`
     does the identical thing for a run, and 1.3's tests read `__cause__` the same way.
 
     Flow (technical-plan.md, "Application layer" §4; T7 implements it):

@@ -63,6 +63,7 @@ from tailorcraft.application.tailoring.revise_tailored_document import (
     ReviseCvCommand,
     ReviseTailoredDocumentCommand,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.clock import Clock
@@ -504,7 +505,7 @@ async def request_tailoring_run(
 
     # -- 2. The use case (G-6 … G-10, AC-14, AC-15). ---------------------------------------------
     command = RequestTailoringRunCommand(
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         base_cv_id=BaseCvId(body.base_cv_id),
         job_posting_id=JobPostingId(body.job_posting_id),
     )
@@ -624,7 +625,7 @@ async def get_tailoring_run(
     **This is the endpoint the client polls** while a run is `queued` or `running`, so it must stay
     cheap and must answer 200 for a *failed* run: a run that reached a worker and failed is a recorded
     state of the resource, never a 5xx (AC-12). The only 4xx here is "that run is not yours or does
-    not exist", and the two are the same 404 because `GetTailoringRunForSession` raises the same type
+    not exist", and the two are the same 404 because `GetTailoringRun` raises the same type
     for both (G-29).
 
     `tailoring_run_id` is typed `UUID` so a malformed id is FastAPI's own 422 rather than something
@@ -632,7 +633,7 @@ async def get_tailoring_run(
     """
     _no_store(response)
     try:
-        run = await get_use_case(TailoringRunId(tailoring_run_id), session.id)
+        run = await get_use_case(TailoringRunId(tailoring_run_id), GuestOwner(session.id))
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 
@@ -832,14 +833,14 @@ async def revise_tailored_document(
             case TailoredDocumentKind.CV:
                 command = ReviseCvCommand(
                     tailoring_run_id=run_id,
-                    guest_session_id=guest_session_id,
+                    requester=GuestOwner(guest_session_id),
                     content=TailoredCv(body.content),
                     expected_version=body.expected_version,
                 )
             case TailoredDocumentKind.COVER_LETTER:
                 command = ReviseCoverLetterCommand(
                     tailoring_run_id=run_id,
-                    guest_session_id=guest_session_id,
+                    requester=GuestOwner(guest_session_id),
                     content=CoverLetter(body.content),
                     expected_version=body.expected_version,
                 )

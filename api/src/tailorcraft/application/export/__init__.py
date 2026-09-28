@@ -8,7 +8,7 @@ the first whose two delivery shapes are not two views of one thing: an `md` or `
 (ADR-0016 (a)).
 
 - `request_export` — the API's write path for a **queued** format. Composes
-  `GetTailoringRunForSession`, so the authorization rule that use case carries applies here too,
+  `GetTailoringRun`, so the authorization rule that use case carries applies here too,
   and creates one `ExportJob`. It does **not** enqueue; the router does, after the commit
   (ADR-0014 §5).
 - `render_export_job` — the worker's path. Uses `ExportJobRepository` and `TailoringRunRepository`

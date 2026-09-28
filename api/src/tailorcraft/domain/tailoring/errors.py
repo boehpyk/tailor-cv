@@ -37,7 +37,7 @@ class TailoringRunNotOwnedBySession(DomainError):
     two error types rather than one, though, because the use case's own tests need to tell "absent"
     from "not mine" apart even when the boundary must not — collapsing them here would leave nothing
     able to prove the ownership check runs at all. `BaseCvNotOwnedBySession` and
-    `JobPostingNotOwnedBySession` exist for the same reason, and `GetTailoringRunForSession` raises
+    `JobPostingNotOwnedBySession` exist for the same reason, and `GetTailoringRun` raises
     the 404 `from` this one so a test can read it off `__cause__` (AC-14).
     """
 

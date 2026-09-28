@@ -34,7 +34,7 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
@@ -49,6 +49,7 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     create_active_session,
 )
 
@@ -81,8 +82,8 @@ async def test_get_returns_the_run_for_the_session_that_owns_it(clock: FixedCloc
     runs = FakeTailoringRunRepository()
     run = await _add_tailoring_run(runs, session.id, clock)
 
-    use_case = GetTailoringRunForSession(runs, sessions, clock)
-    result = await use_case(run.id, session.id)
+    use_case = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
+    result = await use_case(run.id, GuestOwner(session.id))
 
     assert result.id == run.id
     assert result.owner == GuestOwner(session.id)
@@ -104,10 +105,10 @@ async def test_get_for_a_run_owned_by_a_different_session_raises_tailoring_run_n
     runs = FakeTailoringRunRepository()
     run = await _add_tailoring_run(runs, owner_session.id, clock)
 
-    use_case = GetTailoringRunForSession(runs, sessions, clock)
+    use_case = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
 
     with pytest.raises(TailoringRunNotFound) as exc_info:
-        await use_case(run.id, other_session.id)
+        await use_case(run.id, GuestOwner(other_session.id))
 
     assert isinstance(exc_info.value.__cause__, TailoringRunNotOwnedBySession)
 
@@ -125,11 +126,11 @@ async def test_get_for_a_nonexistent_id_raises_tailoring_run_not_found_without_o
     session = await create_active_session(sessions, clock)
     runs = FakeTailoringRunRepository()  # empty: no run was ever added
 
-    use_case = GetTailoringRunForSession(runs, sessions, clock)
+    use_case = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     nonexistent_id = TailoringRunId(value=uuid4())
 
     with pytest.raises(TailoringRunNotFound) as exc_info:
-        await use_case(nonexistent_id, session.id)
+        await use_case(nonexistent_id, GuestOwner(session.id))
 
     assert not isinstance(exc_info.value.__cause__, TailoringRunNotOwnedBySession)
 
@@ -146,22 +147,22 @@ async def test_get_with_expired_session_raises_guest_session_expired(clock: Fixe
     runs = FakeTailoringRunRepository()
     run = await _add_tailoring_run(runs, expired.id, clock)
 
-    use_case = GetTailoringRunForSession(runs, sessions, clock)
+    use_case = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
 
     with pytest.raises(GuestSessionExpired):
-        await use_case(run.id, expired.id)
+        await use_case(run.id, GuestOwner(expired.id))
 
 
 async def test_get_with_unknown_session_raises_guest_session_not_found(clock: FixedClock) -> None:
     sessions = FakeGuestSessionRepository()  # empty: no session was ever added
     runs = FakeTailoringRunRepository()
 
-    use_case = GetTailoringRunForSession(runs, sessions, clock)
+    use_case = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     unknown_session_id = GuestSessionId(value=uuid4())
     some_run_id = TailoringRunId(value=uuid4())
 
     with pytest.raises(GuestSessionNotFound):
-        await use_case(some_run_id, unknown_session_id)
+        await use_case(some_run_id, GuestOwner(unknown_session_id))
 
 
 # --- ListTailoringRunsForSession -------------------------------------------------------------------

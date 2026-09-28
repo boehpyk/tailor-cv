@@ -51,7 +51,7 @@ from tailorcraft.application.posting.capture_job_posting import CaptureJobPostin
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
 from tailorcraft.application.retention.erase_account import EraseAccount
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
@@ -632,6 +632,7 @@ TailoringRateLimiterDep = Annotated[
 
 def get_request_tailoring_run(
     runs: TailoringRunRepositoryDep,
+    users: UserRepositoryDep,
     get_base_cv: GetBaseCvDep,
     get_job_posting: GetJobPostingDep,
     events: EventPublisherDep,
@@ -648,8 +649,11 @@ def get_request_tailoring_run(
     authorization rule the moment either use case grows a check — so the existing providers are
     reused instead.
     """
+    # `max_per_user` keeps the use case's default (500, OQ-6) until T20 adds
+    # `max_tailoring_runs_per_user` to Settings and wires it here.
     return RequestTailoringRun(
         runs,
+        users,
         get_base_cv,
         get_job_posting,
         events,
@@ -664,12 +668,13 @@ RequestTailoringRunDep = Annotated[RequestTailoringRun, Depends(get_request_tail
 def get_get_tailoring_run(
     runs: TailoringRunRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetTailoringRunForSession:
-    return GetTailoringRunForSession(runs, sessions, clock)
+) -> GetTailoringRun:
+    return GetTailoringRun(runs, sessions, users, clock)
 
 
-GetTailoringRunDep = Annotated[GetTailoringRunForSession, Depends(get_get_tailoring_run)]
+GetTailoringRunDep = Annotated[GetTailoringRun, Depends(get_get_tailoring_run)]
 
 
 def get_list_tailoring_runs(
@@ -710,7 +715,7 @@ def get_revise_tailored_document(
     events: EventPublisherDep,
     clock: ClockDep,
 ) -> ReviseTailoredDocument:
-    """The second argument is the `GetTailoringRunForSession` *use case*, not the repository, for
+    """The second argument is the `GetTailoringRun` *use case*, not the repository, for
     the reason `get_request_tailoring_run` gives: "what authorizes the write is the link to the
     session" is inherited from the read that already owns that rule (AC-14), not written again."""
     return ReviseTailoredDocument(runs, get_run, events, clock)
@@ -833,7 +838,7 @@ def get_request_export(
     clock: ClockDep,
     settings: SettingsDep,
 ) -> RequestExport:
-    """Note the second argument: the `GetTailoringRunForSession` *use case*, not a run repository.
+    """Note the second argument: the `GetTailoringRun` *use case*, not a run repository.
 
     `RequestExport` reads the run through the use case that already owns "what authorizes access is
     the link to the session", so the rule is inherited rather than written a sixth time (ADR-0008,

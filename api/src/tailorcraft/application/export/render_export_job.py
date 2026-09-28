@@ -98,7 +98,7 @@ class RenderExportJob:
     the aggregate**, never as an exception that escapes the task.
 
     **The contrast with `RequestExport`, stated as a contrast because it is the design.** That use
-    case composes `GetTailoringRunForSession` — a *use case*, carrying an authorization rule —
+    case composes `GetTailoringRun` — a *use case*, carrying an authorization rule —
     precisely so the "not mine → 404" check cannot be forgotten at a new entry point. This one
     takes `TailoringRunRepository`, used directly, with no ownership check anywhere in it, and that
     is deliberate rather than the check having been dropped on the way to the worker.

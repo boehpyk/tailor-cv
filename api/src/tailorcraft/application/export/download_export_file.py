@@ -2,7 +2,7 @@
 session that owns it.
 
 It composes `GetExportJobForSession` rather than reaching for `ExportJobRepository`, which is the
-same inheritance-of-a-rule that `RequestExport` gets from `GetTailoringRunForSession`: the
+same inheritance-of-a-rule that `RequestExport` gets from `GetTailoringRun`: the
 ownership check and the collapse of "not mine" into 404 are written once, in the read use case, and
 this — the second entry point onto a job — gets them for free. A download that authorized itself
 would be a fourth copy of a rule, guarding the one thing in this slice that is actually a file.

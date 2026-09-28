@@ -33,7 +33,7 @@ from tailorcraft.application.export.render_document_inline import (
     RenderDocumentInlineCommand,
     RenderedInlineDocument,
 )
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import (
     DocumentRenderError,
     ExportFormatNotInline,
@@ -55,6 +55,7 @@ from tests.integration.fakes import (
     FakeDocumentRenderer,
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -67,7 +68,7 @@ def _use_case(
     events: RecordingEventPublisher,
     clock: FixedClock,
 ) -> RenderDocumentInline:
-    get_tailoring_run = GetTailoringRunForSession(runs, sessions, clock)
+    get_tailoring_run = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     return RenderDocumentInline(get_tailoring_run, renderer, events, clock)
 
 

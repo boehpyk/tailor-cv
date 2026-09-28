@@ -3,7 +3,7 @@ run's current version.
 
 A use case rather than a bare `jobs.list_for_run(run_id)` for the reason every read in this codebase
 is one: it carries the authorization rule. Here the rule is **inherited** rather than re-expressed —
-the run is authorized through `GetTailoringRunForSession`, and every job of an authorized run
+the run is authorized through `GetTailoringRun`, and every job of an authorized run
 belongs to the same session by construction, because a job is created only by `RequestExport` after
 that same check.
 
@@ -18,9 +18,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 
@@ -56,7 +57,7 @@ class ListExportsForRun:
     realistic maximum and the reason this is a list rather than a lookup.
 
     Raises `GuestSessionNotFound` / `GuestSessionExpired` and `TailoringRunNotFound` — all three
-    through the composed `GetTailoringRunForSession`, all with the same collapse of "not mine" into
+    through the composed `GetTailoringRun`, all with the same collapse of "not mine" into
     "not found" (X-3). **A run that is not `succeeded` is not an error here**: unlike
     `RequestExport` and `RenderDocumentInline`, this use case raises no `TailoringRunNotExportable`,
     because listing the exports of a run that has none is a perfectly good question with the answer
@@ -80,7 +81,7 @@ class ListExportsForRun:
     def __init__(
         self,
         jobs: ExportJobRepository,
-        get_tailoring_run: GetTailoringRunForSession,
+        get_tailoring_run: GetTailoringRun,
     ) -> None:
         self._jobs = jobs
         self._get_tailoring_run = get_tailoring_run
@@ -91,7 +92,7 @@ class ListExportsForRun:
         # Step 1. The authorization, inherited whole — session resolution, the ownership link, and
         # the collapse of "not mine" into "not found" (X-3). No `TailoringRunNotExportable` here:
         # listing the exports of a run that has none is a good question whose answer is `[]`.
-        run = await self._get_tailoring_run(run_id, guest_session_id)
+        run = await self._get_tailoring_run(run_id, GuestOwner(guest_session_id))
 
         # Step 2. `run.id` — the id this use case just authorized, never the id the caller supplied.
         # For a listing that *is* the authorization rule, and it is enforced by there being nothing
