@@ -370,11 +370,9 @@ class AccountCounts:
     base_cvs: int
     files: int
     logins: int
-    # SKELETON (T5c): defaulted to `0` so 2.2's constructor call keeps compiling until T11 widens
-    # `count_account`; T11 removes the defaults.
-    tailoring_runs: int = 0
-    job_postings: int = 0
-    export_jobs: int = 0
+    tailoring_runs: int
+    job_postings: int
+    export_jobs: int
 
 
 # --------------------------------------------------------------------------------------------------

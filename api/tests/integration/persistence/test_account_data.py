@@ -203,7 +203,9 @@ async def test_count_account_counts_base_cvs_files_and_logins(
     accounts = SqlAlchemyAccountData(session)
     counts = await accounts.count_account(user_id)
 
-    assert counts == AccountCounts(base_cvs=2, files=2, logins=1)
+    assert counts == AccountCounts(
+        base_cvs=2, files=2, logins=1, tailoring_runs=0, job_postings=0, export_jobs=0
+    )
 
 
 async def test_count_account_returns_none_for_a_nonexistent_user(session: AsyncSession) -> None:
