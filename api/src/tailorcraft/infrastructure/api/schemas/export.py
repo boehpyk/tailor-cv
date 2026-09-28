@@ -126,7 +126,7 @@ class ExportJobResponse(BaseModel):
     # The run version this job was requested at, and whether that is still the run's version.
     #
     # **`current` is a cross-aggregate comparison** (`job.was_requested_for(run.version)`) and
-    # neither aggregate can make it alone, which is why `GetExportJobForSession` hands back
+    # neither aggregate can make it alone, which is why `GetExportJob` hands back
     # `ExportJobLookup(job, run_version_now)` and `ListExportsForRun` hands back one `run_version`
     # for the whole listing. `false` when the run has moved on (the user edited a document after
     # clicking Export) **and** when the run is gone entirely: a job whose source no longer exists is

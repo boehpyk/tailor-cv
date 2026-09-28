@@ -1,7 +1,7 @@
 """The `DownloadExportFile` use case: hand back the bytes of a `ready` `ExportJob`'s file, to the
 session that owns it.
 
-It composes `GetExportJobForSession` rather than reaching for `ExportJobRepository`, which is the
+It composes `GetExportJob` rather than reaching for `ExportJobRepository`, which is the
 same inheritance-of-a-rule that `RequestExport` gets from `GetTailoringRun`: the
 ownership check and the collapse of "not mine" into 404 are written once, in the read use case, and
 this — the second entry point onto a job — gets them for free. A download that authorized itself
@@ -10,11 +10,11 @@ would be a fourth copy of a rule, guarding the one thing in this slice that is a
 
 from __future__ import annotations
 
-from tailorcraft.application.export.get_export_job import GetExportJobForSession
+from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.domain.export.errors import ExportNotReady
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportJobId, ExportJobStatus
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.files import FileStorePort
 
 
@@ -23,7 +23,7 @@ class DownloadExportFile:
 
     Flow (technical-plan.md, "Application layer" §6; T7 implements it):
 
-    1. ``lookup = await get_export_job(job_id, guest_session_id)`` — `GuestSessionExpired`,
+    1. ``lookup = await get_export_job(job_id, requester)`` — `GuestSessionExpired`,
        and `ExportJobNotFound` for both "absent" and "not mine" (X-43), inherited whole.
     2. ``if lookup.job.status is not ExportJobStatus.READY: raise ExportNotReady(job.status,
        job.failure_reason)`` — 409 for a `queued` or `rendering` job (X-44) and for a `failed` one
@@ -65,18 +65,16 @@ class DownloadExportFile:
 
     def __init__(
         self,
-        get_export_job: GetExportJobForSession,
+        get_export_job: GetExportJob,
         files: FileStorePort,
     ) -> None:
         self._get_export_job = get_export_job
         self._files = files
 
-    async def __call__(
-        self, job_id: ExportJobId, guest_session_id: GuestSessionId
-    ) -> tuple[ExportJob, bytes]:
+    async def __call__(self, job_id: ExportJobId, requester: Owner) -> tuple[ExportJob, bytes]:
         # Step 1. `GuestSessionExpired`, and `ExportJobNotFound` for both "absent" and "not mine"
         # (X-43), inherited whole from the composed read.
-        lookup = await self._get_export_job(job_id, guest_session_id)
+        lookup = await self._get_export_job(job_id, requester)
         job = lookup.job
 
         # Step 2. 409 for a `queued` or `rendering` job (X-44) and for a `failed` one (X-45), with

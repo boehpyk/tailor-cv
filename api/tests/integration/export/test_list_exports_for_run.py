@@ -102,7 +102,7 @@ async def test_returns_every_job_for_the_run_newest_first_with_the_runs_version(
     await jobs.add(newer)
     use_case = _use_case(jobs, runs, sessions, clock)
 
-    result = await use_case(run.id, session.id)
+    result = await use_case(run.id, GuestOwner(session.id))
 
     assert result == ExportListing(jobs=[newer, older], run_version=run.version)
 
@@ -116,7 +116,7 @@ async def test_run_with_no_exports_returns_an_empty_list(clock: FixedClock) -> N
     jobs = FakeExportJobRepository()
     use_case = _use_case(jobs, runs, sessions, clock)
 
-    result = await use_case(run.id, session.id)
+    result = await use_case(run.id, GuestOwner(session.id))
 
     assert result == ExportListing(jobs=[], run_version=run.version)
 
@@ -134,7 +134,7 @@ async def test_run_that_is_not_succeeded_still_returns_its_exports_not_an_error(
     jobs = FakeExportJobRepository()
     use_case = _use_case(jobs, runs, sessions, clock)
 
-    result = await use_case(run.id, session.id)
+    result = await use_case(run.id, GuestOwner(session.id))
 
     assert result == ExportListing(jobs=[], run_version=run.version)
 
@@ -152,7 +152,7 @@ async def test_run_owned_by_a_different_session_raises_tailoring_run_not_found_c
     use_case = _use_case(jobs, runs, sessions, clock)
 
     with pytest.raises(TailoringRunNotFound) as exc_info:
-        await use_case(run.id, stranger.id)
+        await use_case(run.id, GuestOwner(stranger.id))
 
     assert isinstance(exc_info.value.__cause__, TailoringRunNotOwnedBySession)
 
@@ -165,7 +165,7 @@ async def test_nonexistent_run_raises_tailoring_run_not_found(clock: FixedClock)
     use_case = _use_case(jobs, runs, sessions, clock)
 
     with pytest.raises(TailoringRunNotFound):
-        await use_case(TailoringRunId(value=uuid4()), session.id)
+        await use_case(TailoringRunId(value=uuid4()), GuestOwner(session.id))
 
 
 async def test_expired_guest_session_raises_guest_session_expired(clock: FixedClock) -> None:
@@ -177,7 +177,7 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     use_case = _use_case(jobs, runs, sessions, stale_clock)
 
     with pytest.raises(GuestSessionExpired):
-        await use_case(TailoringRunId(value=uuid4()), session.id)
+        await use_case(TailoringRunId(value=uuid4()), GuestOwner(session.id))
 
 
 async def test_unknown_guest_session_raises_guest_session_not_found(clock: FixedClock) -> None:
@@ -187,4 +187,4 @@ async def test_unknown_guest_session_raises_guest_session_not_found(clock: Fixed
     use_case = _use_case(jobs, runs, sessions, clock)
 
     with pytest.raises(GuestSessionNotFound):
-        await use_case(TailoringRunId(value=uuid4()), GuestSessionId(value=uuid4()))
+        await use_case(TailoringRunId(value=uuid4()), GuestOwner(GuestSessionId(value=uuid4())))

@@ -21,8 +21,7 @@ from dataclasses import dataclass
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
-from tailorcraft.domain.identity.ownership import GuestOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 
 
@@ -32,7 +31,7 @@ class ExportListing:
 
     `run_version` is an `int` and not `int | None` — the contrast with `ExportJobLookup` is
     deliberate and is not an inconsistency to "fix". This use case *authorized* the run in order to
-    answer at all, so it is holding the aggregate; `GetExportJobForSession` is reading a **job**,
+    answer at all, so it is holding the aggregate; `GetExportJob` is reading a **job**,
     and its run may legitimately be gone. Where a value cannot be absent, the type says so.
 
     One version for the whole listing, not one per job: the caller computes `current` per row with
@@ -65,7 +64,7 @@ class ListExportsForRun:
 
     Flow (technical-plan.md, "Application layer" §5; T7 implements it):
 
-    1. ``run = await get_tailoring_run(run_id, guest_session_id)`` — the authorization, inherited.
+    1. ``run = await get_tailoring_run(run_id, requester)`` — the authorization, inherited.
     2. ``jobs = await self._jobs.list_for_run(run.id)`` — note ``run.id``, the id this use case
        just authorized, never an id the caller supplied. For a listing that *is* the authorization
        rule, and it is enforced by there being nothing else worth passing.
@@ -86,13 +85,11 @@ class ListExportsForRun:
         self._jobs = jobs
         self._get_tailoring_run = get_tailoring_run
 
-    async def __call__(
-        self, run_id: TailoringRunId, guest_session_id: GuestSessionId
-    ) -> ExportListing:
+    async def __call__(self, run_id: TailoringRunId, requester: Owner) -> ExportListing:
         # Step 1. The authorization, inherited whole — session resolution, the ownership link, and
         # the collapse of "not mine" into "not found" (X-3). No `TailoringRunNotExportable` here:
         # listing the exports of a run that has none is a good question whose answer is `[]`.
-        run = await self._get_tailoring_run(run_id, GuestOwner(guest_session_id))
+        run = await self._get_tailoring_run(run_id, requester)
 
         # Step 2. `run.id` — the id this use case just authorized, never the id the caller supplied.
         # For a listing that *is* the authorization rule, and it is enforced by there being nothing

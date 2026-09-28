@@ -19,7 +19,7 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.export.get_export_job import ExportJobLookup, GetExportJobForSession
+from tailorcraft.application.export.get_export_job import ExportJobLookup, GetExportJob
 from tailorcraft.domain.export.errors import ExportJobNotFound, ExportJobNotOwnedBySession
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
@@ -33,6 +33,7 @@ from tests.integration.fakes import (
     FakeExportJobRepository,
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     create_active_session,
 )
 
@@ -42,8 +43,8 @@ def _use_case(
     runs: FakeTailoringRunRepository,
     sessions: FakeGuestSessionRepository,
     clock: FixedClock,
-) -> GetExportJobForSession:
-    return GetExportJobForSession(jobs, runs, sessions, clock)
+) -> GetExportJob:
+    return GetExportJob(jobs, runs, sessions, FakeUserRepository(), clock)
 
 
 async def test_returns_the_job_and_the_runs_current_version_for_the_owning_session(
@@ -67,7 +68,7 @@ async def test_returns_the_job_and_the_runs_current_version_for_the_owning_sessi
     await jobs.add(job)
     use_case = _use_case(jobs, runs, sessions, clock)
 
-    result = await use_case(job.id, session.id)
+    result = await use_case(job.id, GuestOwner(session.id))
 
     assert result == ExportJobLookup(job=job, run_version_now=run.version)
 
@@ -91,7 +92,7 @@ async def test_run_gone_reports_run_version_now_as_none(clock: FixedClock) -> No
     await jobs.add(job)
     use_case = _use_case(jobs, runs, sessions, clock)
 
-    result = await use_case(job.id, session.id)
+    result = await use_case(job.id, GuestOwner(session.id))
 
     assert result.job == job
     assert result.run_version_now is None
@@ -118,7 +119,7 @@ async def test_run_that_moved_on_reports_the_runs_new_version(clock: FixedClock)
     await jobs.add(job)
     use_case = _use_case(jobs, runs, sessions, clock)
 
-    result = await use_case(job.id, session.id)
+    result = await use_case(job.id, GuestOwner(session.id))
 
     assert result.run_version_now == run.version
     assert result.run_version_now != requested_version
@@ -151,7 +152,7 @@ async def test_job_owned_by_a_different_session_raises_export_job_not_found_chai
     use_case = _use_case(jobs, runs, sessions, clock)
 
     with pytest.raises(ExportJobNotFound) as exc_info:
-        await use_case(job.id, stranger.id)
+        await use_case(job.id, GuestOwner(stranger.id))
 
     assert isinstance(exc_info.value.__cause__, ExportJobNotOwnedBySession)
 
@@ -169,7 +170,7 @@ async def test_nonexistent_job_raises_export_job_not_found_without_an_ownership_
     use_case = _use_case(jobs, runs, sessions, clock)
 
     with pytest.raises(ExportJobNotFound) as exc_info:
-        await use_case(ExportJobId(value=uuid4()), session.id)
+        await use_case(ExportJobId(value=uuid4()), GuestOwner(session.id))
 
     assert not isinstance(exc_info.value.__cause__, ExportJobNotOwnedBySession)
 
@@ -183,7 +184,7 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     use_case = _use_case(jobs, runs, sessions, stale_clock)
 
     with pytest.raises(GuestSessionExpired):
-        await use_case(ExportJobId(value=uuid4()), session.id)
+        await use_case(ExportJobId(value=uuid4()), GuestOwner(session.id))
 
 
 async def test_unknown_guest_session_raises_guest_session_not_found(clock: FixedClock) -> None:
@@ -193,4 +194,4 @@ async def test_unknown_guest_session_raises_guest_session_not_found(clock: Fixed
     use_case = _use_case(jobs, runs, sessions, clock)
 
     with pytest.raises(GuestSessionNotFound):
-        await use_case(ExportJobId(value=uuid4()), GuestSessionId(value=uuid4()))
+        await use_case(ExportJobId(value=uuid4()), GuestOwner(GuestSessionId(value=uuid4())))

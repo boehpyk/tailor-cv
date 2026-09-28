@@ -42,6 +42,7 @@ from tailorcraft.domain.export.errors import (
 from tailorcraft.domain.export.events import DocumentRenderedInline
 from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.errors import TailoringRunNotFound, TailoringRunNotOwnedBySession
 from tailorcraft.domain.tailoring.value_objects import (
@@ -88,7 +89,7 @@ async def test_renders_the_cv_to_markdown_and_publishes_document_rendered_inline
     renderer = FakeDocumentRenderer(data)
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -120,7 +121,7 @@ async def test_renders_the_cover_letter_to_plain_text(clock: FixedClock) -> None
     renderer = FakeDocumentRenderer(data)
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.COVER_LETTER,
         format=ExportFormat.TXT,
@@ -150,7 +151,7 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     stale_clock = FixedClock(clock.now() + timedelta(hours=2))
     use_case = _use_case(runs, sessions, renderer, events, stale_clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -169,7 +170,7 @@ async def test_unknown_guest_session_raises_guest_session_not_found(clock: Fixed
     renderer = FakeDocumentRenderer(b"unused")
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=GuestSessionId(value=uuid4()),
+        requester=GuestOwner(GuestSessionId(value=uuid4())),
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -194,7 +195,7 @@ async def test_run_owned_by_a_different_session_raises_tailoring_run_not_found_c
     renderer = FakeDocumentRenderer(b"unused")
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=stranger.id,
+        requester=GuestOwner(stranger.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -220,7 +221,7 @@ async def test_queued_run_raises_tailoring_run_not_exportable(clock: FixedClock)
     renderer = FakeDocumentRenderer(b"unused")
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -246,7 +247,7 @@ async def test_queued_format_raises_export_format_not_inline(clock: FixedClock) 
     renderer = FakeDocumentRenderer(b"unused")
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -276,7 +277,7 @@ async def test_reads_the_revision_when_one_exists_rather_than_the_original_draft
     renderer = FakeDocumentRenderer(revised_cv.value.encode("utf-8"))
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -298,7 +299,7 @@ async def test_reads_the_original_draft_when_no_revision_exists(clock: FixedCloc
     renderer = FakeDocumentRenderer(a_documents().cover_letter.value.encode("utf-8"))
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.COVER_LETTER,
         format=ExportFormat.TXT,
@@ -332,7 +333,7 @@ async def test_document_render_failed_propagates_rather_than_being_recorded(
     renderer = FakeDocumentRenderer(failure)
     use_case = _use_case(runs, sessions, renderer, events, clock)
     cmd = RenderDocumentInlineCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,

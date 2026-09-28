@@ -19,8 +19,7 @@ from tailorcraft.domain.export.errors import (
 from tailorcraft.domain.export.events import DocumentRenderedInline
 from tailorcraft.domain.export.ports import DocumentRendererPort
 from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat
-from tailorcraft.domain.identity.ownership import GuestOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.value_objects import (
@@ -47,7 +46,8 @@ class RenderDocumentInlineCommand:
     future non-HTTP caller cannot route around.
     """
 
-    guest_session_id: GuestSessionId
+    # Who is asking (slice 2.3, §0.3); authorized by `GetTailoringRun`, never compared here.
+    requester: Owner
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat
@@ -93,7 +93,7 @@ class RenderDocumentInline:
 
     Flow (technical-plan.md, "Application layer" §3; T7 implements it):
 
-    1. ``run = await get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)`` —
+    1. ``run = await get_tailoring_run(cmd.tailoring_run_id, cmd.requester)`` —
        `GuestSessionExpired` (X-2), `TailoringRunNotFound` for both "absent" and "not mine" (X-3).
     2. ``if run.status is not TailoringRunStatus.SUCCEEDED: raise TailoringRunNotExportable(
        run.status)`` (X-4). The aggregate's own status, as in `RequestExport` step 2.
@@ -154,7 +154,7 @@ class RenderDocumentInline:
     async def __call__(self, cmd: RenderDocumentInlineCommand) -> RenderedInlineDocument:
         # Step 1. The authorization rule and the 404 collapse are the composed read's, inherited
         # rather than written a fifth time (X-2, X-3).
-        run = await self._get_tailoring_run(cmd.tailoring_run_id, GuestOwner(cmd.guest_session_id))
+        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.requester)
 
         # Step 2. The aggregate's own status, as in `RequestExport` step 2 (X-4).
         documents = run.current_documents

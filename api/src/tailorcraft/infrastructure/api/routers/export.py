@@ -71,6 +71,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobStatus,
     download_filename,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -207,7 +208,7 @@ def _to_response(
     (`ExportJobResponse`'s docstring says so, which is why it sets no `from_attributes`).
 
     **`current` is the cross-aggregate comparison, and this is the one place it is made.** Neither
-    aggregate can answer it alone, which is why `GetExportJobForSession` hands back
+    aggregate can answer it alone, which is why `GetExportJob` hands back
     `run_version_now` beside the job and `ListExportsForRun` hands back one `run_version` for the
     whole listing. `None` — the run is gone entirely — is `false`: a job whose source no longer
     exists is certainly not current. `was_requested_for` rather than `==` written out here, because
@@ -463,7 +464,7 @@ async def download_document_inline(
     try:
         rendered = await render_inline(
             RenderDocumentInlineCommand(
-                guest_session_id=session.id,
+                requester=GuestOwner(session.id),
                 tailoring_run_id=TailoringRunId(run_id),
                 document=kind,
                 # The query parameter is the inline literal; widening it back to the domain enum
@@ -692,7 +693,7 @@ async def request_export(
     try:
         result = await request_export_job(
             RequestExportCommand(
-                guest_session_id=session.id,
+                requester=GuestOwner(session.id),
                 tailoring_run_id=TailoringRunId(run_id),
                 document=body.document,
                 format=ExportFormat(body.format),
@@ -809,7 +810,7 @@ async def list_exports_for_run(
     """
     _no_store(response)
     try:
-        listing = await list_exports(TailoringRunId(run_id), session.id)
+        listing = await list_exports(TailoringRunId(run_id), GuestOwner(session.id))
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 
@@ -850,7 +851,7 @@ async def get_export_job(
     """One `ExportJob`, authorized by the link to the caller's guest session.
 
     The only 4xx on the happy polling path is "that job is not yours or does not exist", and the two
-    are the same 404 because `GetExportJobForSession` raises the same type for both (X-43). Every
+    are the same 404 because `GetExportJob` raises the same type for both (X-43). Every
     outcome of a render — including every way it can fail — is a **200** with a `status` and a
     `failure_reason` (AC-19). A 5xx here would make a poller retry a decision that is already final.
 
@@ -860,7 +861,7 @@ async def get_export_job(
     """
     _no_store(response)
     try:
-        lookup = await get_job(ExportJobId(export_job_id), session.id)
+        lookup = await get_job(ExportJobId(export_job_id), GuestOwner(session.id))
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 
@@ -929,7 +930,7 @@ async def download_export_file(
     """The rendered file of a `ready` job, as an attachment.
 
     Authorization is inherited whole from the poll — `DownloadExportFile` composes
-    `GetExportJobForSession`, so "not mine" and "does not exist" are the same 404 here for the same
+    `GetExportJob`, so "not mine" and "does not exist" are the same 404 here for the same
     reason (X-43). That composition is the point: an ownership check written a second time beside a
     file read is the one place in this slice where forgetting it hands a stranger a stranger's CV.
 
@@ -944,7 +945,7 @@ async def download_export_file(
 
     """
     try:
-        job, data = await download(ExportJobId(export_job_id), session.id)
+        job, data = await download(ExportJobId(export_job_id), GuestOwner(session.id))
     except DomainError as exc:
         # `ExportJobNotFound` -> 404 (X-43); `ExportNotReady` -> 409 carrying `status` and, when it
         # failed, `failure_reason` (X-44, X-45); `StoredFileMissing` -> **410** and

@@ -29,7 +29,7 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from tailorcraft.application.export.download_export_file import DownloadExportFile
-from tailorcraft.application.export.get_export_job import GetExportJobForSession
+from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
@@ -846,6 +846,8 @@ def get_request_export(
     full. It is also why this provider never mentions `TailoringRunRepositoryDep`: the use case
     cannot reach a run any other way, so it cannot forget the check.
     """
+    # `max_per_user_run` keeps the use case's default (20, ADR-0016 amendment (b)) until T20 adds
+    # `max_export_jobs_per_user_run` to Settings and wires it here.
     return RequestExport(
         jobs,
         get_tailoring_run,
@@ -879,8 +881,9 @@ def get_get_export_job(
     jobs: ExportJobRepositoryDep,
     runs: TailoringRunRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetExportJobForSession:
+) -> GetExportJob:
     """The run repository is here, and it is the exception that proves `get_request_export`'s rule.
 
     This use case reads a **job**, and it reads the run only to learn one integer — the version the
@@ -889,10 +892,10 @@ def get_get_export_job(
     still exists. There is no authorization to inherit from a run here, because the job carries its
     own `guest_session_id` and *that* is what this use case checks (X-43).
     """
-    return GetExportJobForSession(jobs, runs, sessions, clock)
+    return GetExportJob(jobs, runs, sessions, users, clock)
 
 
-GetExportJobDep = Annotated[GetExportJobForSession, Depends(get_get_export_job)]
+GetExportJobDep = Annotated[GetExportJob, Depends(get_get_export_job)]
 
 
 def get_list_exports_for_run(
@@ -909,7 +912,7 @@ def get_download_export_file(
     get_export_job: GetExportJobDep,
     files: FileStoreDep,
 ) -> DownloadExportFile:
-    """The first argument is the `GetExportJobForSession` *use case*: the download inherits the
+    """The first argument is the `GetExportJob` *use case*: the download inherits the
     poll's authorization and its collapse of "not mine" into "not found" whole (X-43), rather than
     repeating an ownership check beside a file read — which is the one place in this slice where
     forgetting it would hand a stranger a stranger's CV."""
