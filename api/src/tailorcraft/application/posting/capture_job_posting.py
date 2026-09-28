@@ -140,10 +140,7 @@ class CaptureJobPosting:
         # variant (`max_per_session` / `max_per_user`).
         match owner:
             case GuestOwner(guest_session_id=guest_session_id):
-                if (
-                    await self._postings.count_for_session(guest_session_id)
-                    >= self._max_per_session
-                ):
+                if await self._postings.count_for_owner(owner) >= self._max_per_session:
                     raise TooManyJobPostings(str(guest_session_id))
             case UserOwner(user_id=user_id):
                 if await self._postings.count_for_owner(owner) >= self._max_per_user:

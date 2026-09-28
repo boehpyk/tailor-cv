@@ -102,11 +102,11 @@ class RequestTailoringRun:
     3. ``if cv.status is not BaseCvStatus.EXTRACTED: raise BaseCvNotReadyForTailoring(...)`` (G-8).
        The check reads the **aggregate's own status**, not `extracted_text is not None`: I-2 makes
        the two equivalent, and the status is the one that says what it *means*.
-    4. ``if await runs.find_active_for_session(sid) is not None: raise TailoringAlreadyRunning(id)``
+    4. ``if await runs.find_active_for_owner(owner) is not None: raise TailoringAlreadyRunning(id)``
        (G-9). Cross-aggregate, therefore here. The error carries the active run's id so the router
        can hand the client something to attach to instead of paying for a second call.
-    5. ``if await runs.count_for_session(sid) >= max_per_session: raise TooManyTailoringRuns(...)``
-       (G-10).
+    5. ``if await runs.count_for_owner(owner) >= cap: raise TooManyTailoringRuns(...)`` (G-10),
+       the cap chosen by variant.
     6. ``run_id = runs.next_identity()``; ``run = TailoringRun.request(...)``; ``await runs.add(run)``.
     7. ``await events.publish(*run.release_events())`` — after the aggregate is saved, never before.
     8. Return `RequestTailoringRunResult` built from the saved aggregate.
@@ -182,27 +182,23 @@ class RequestTailoringRun:
         # already has a run in flight is told *that*, and handed its id to attach a poller to,
         # rather than being told they are at the cap — which would also be true, and useless.
         #
-        # The cap is chosen by variant (`max_per_session` / `max_per_user`). The guest arm keeps the
-        # `_for_session` queries until T14 implements the owner-keyed ones in SQL.
+        # The two queries are owner-keyed; only the cap is chosen by variant (`max_per_session` /
+        # `max_per_user`).
         match cmd.owner:
-            case GuestOwner(guest_session_id=guest_session_id):
-                active_run = await self._runs.find_active_for_session(guest_session_id)
-                if active_run is not None:
-                    raise TailoringAlreadyRunning(active_run.id)
-
-                run_count = await self._runs.count_for_session(guest_session_id)
-                if run_count >= self._max_per_session:
-                    raise TooManyTailoringRuns(run_count, self._max_per_session)
+            case GuestOwner():
+                max_runs = self._max_per_session
             case UserOwner():
-                active_run = await self._runs.find_active_for_owner(cmd.owner)
-                if active_run is not None:
-                    raise TailoringAlreadyRunning(active_run.id)
-
-                run_count = await self._runs.count_for_owner(cmd.owner)
-                if run_count >= self._max_per_user:
-                    raise TooManyTailoringRuns(run_count, self._max_per_user)
+                max_runs = self._max_per_user
             case _:
                 assert_never(cmd.owner)
+
+        active_run = await self._runs.find_active_for_owner(cmd.owner)
+        if active_run is not None:
+            raise TailoringAlreadyRunning(active_run.id)
+
+        run_count = await self._runs.count_for_owner(cmd.owner)
+        if run_count >= max_runs:
+            raise TooManyTailoringRuns(run_count, max_runs)
 
         # Identity is application-assigned (ADR-0007): the aggregate is valid before it ever meets
         # the database. The two ids come off the aggregates just loaded rather than off `cmd` —

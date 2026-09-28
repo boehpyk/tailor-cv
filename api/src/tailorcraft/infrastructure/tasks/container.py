@@ -182,12 +182,10 @@ class CommittingTailoringRunRepository:
         return await self._inner.find_active_for_session(sid)
 
     async def count_for_owner(self, owner: Owner) -> int:
-        # T14 implements
-        raise NotImplementedError
+        return await self._inner.count_for_owner(owner)
 
     async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
-        # T14 implements
-        raise NotImplementedError
+        return await self._inner.find_active_for_owner(owner)
 
     async def list_stale_running(
         self, started_before: datetime, limit: int
@@ -280,8 +278,7 @@ class CommittingExportJobRepository:
         return await self._inner.count_for_session(sid)
 
     async def count_for_run(self, run_id: TailoringRunId) -> int:
-        # T14 implements
-        raise NotImplementedError
+        return await self._inner.count_for_run(run_id)
 
     async def list_stale_rendering(
         self, started_before: datetime, limit: int

@@ -20,16 +20,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, assert_never, cast
 
 import structlog
-from sqlalchemy import func, literal, or_, select
+from sqlalchemy import ColumnElement, func, literal, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.exc import StaleDataError
 
-from tailorcraft.domain.identity.ownership import Owner
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.tailoring.errors import (
     TailoringRunConcurrentlyModified,
     TailoringRunNotFound,
@@ -37,6 +39,7 @@ from tailorcraft.domain.tailoring.errors import (
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 from tailorcraft.infrastructure.identifiers import uuid7
+from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.types.tailoring import TailoringRunStatusType
 
 if TYPE_CHECKING:
@@ -58,6 +61,9 @@ _TAILORING_RUN_ID: InstrumentedAttribute[TailoringRunId] = cast(
 _TAILORING_RUN_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
     "InstrumentedAttribute[GuestSessionId | None]", TailoringRun._owner_guest_session_id
 )
+_TAILORING_RUN_USER_ID: InstrumentedAttribute[UserId | None] = cast(
+    "InstrumentedAttribute[UserId | None]", TailoringRun._owner_user_id
+)
 _TAILORING_RUN_STATUS: InstrumentedAttribute[TailoringRunStatus] = cast(
     "InstrumentedAttribute[TailoringRunStatus]", TailoringRun._status
 )
@@ -69,8 +75,25 @@ _TAILORING_RUN_STARTED_AT: InstrumentedAttribute[datetime | None] = cast(
 )
 
 # The two non-terminal statuses, named once. `TailoringRunStatus` documents them as the two a
-# client's poller keeps polling through, and `find_active_for_session` is the only reader.
+# client's poller keeps polling through; `find_active_for_session` and `find_active_for_owner` are
+# the only readers.
 _ACTIVE_STATUSES = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
+
+# Recognised by name, never by message (`violated_constraint`). Renaming the FK in
+# `mapping/tailoring/tailoring_run.py` is a breaking change to `add` below.
+_USER_FK: Final = "fk_tailoring_run_user_id_identity_user"
+
+
+def _owned_by(owner: Owner) -> ColumnElement[bool]:
+    """The owner as a `WHERE` clause: the variant picks the column, and
+    `ck_tailoring_run_exactly_one_owner` guarantees the other is empty on any row that matches."""
+    match owner:
+        case GuestOwner(guest_session_id=guest_session_id):
+            return _TAILORING_RUN_GUEST_SESSION_ID == guest_session_id  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        case UserOwner(user_id=user_id):
+            return _TAILORING_RUN_USER_ID == user_id  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        case _:
+            assert_never(owner)
 
 
 class SqlAlchemyTailoringRunRepository:
@@ -92,10 +115,32 @@ class SqlAlchemyTailoringRunRepository:
         return TailoringRunId(uuid7())
 
     async def add(self, run: TailoringRun) -> None:
-        self._session.add(run)
-        # `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
-        # task), not to the repository.
-        await self._session.flush()
+        """Insert `run`; raise `UserNotFound` if its `UserOwner` no longer exists (H-53).
+
+        `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
+        task), not to the repository.
+
+        The race and the shape are `SqlAlchemyBaseCvRepository.add`'s (2.2's S-12): an account
+        erasure holding the `identity_user` row `FOR UPDATE` makes this `INSERT`'s FK check wait,
+        then refuse on `fk_tailoring_run_user_id_identity_user` once the erasure commits — "the user
+        is gone", the same error and the same 401 as `resolve_existing_user`. It is also what makes
+        erasure complete (AC-37): no run can land after the erasure collected its keys.
+
+        **Inside a SAVEPOINT**, so a refused flush expires only this pending run and not every
+        instance in the session (the 1.4 lesson). Any other refusal propagates untranslated.
+        """
+        # Read before the flush: after a nested rollback the pending run is expunged.
+        run_id = run.id
+        try:
+            async with self._session.begin_nested():
+                self._session.add(run)
+                await self._session.flush()
+        except IntegrityError as exc:
+            if violated_constraint(exc) == _USER_FK:
+                # `from None`: the listener already reduced the chain to identifiers, and the frame
+                # holds `run` (Constitution §8, E-9).
+                raise UserNotFound(f"the owner of {run_id!r} no longer exists") from None
+            raise
 
     async def save(self, run: TailoringRun) -> None:
         """Make the run's current state the state the next read hands back.
@@ -249,12 +294,34 @@ class SqlAlchemyTailoringRunRepository:
         return result.scalars().first()
 
     async def count_for_owner(self, owner: Owner) -> int:
-        # T14 implements
-        raise NotImplementedError
+        """`SELECT count(*)` over the owner's column — `count_for_session`'s reason (no document
+        body is materialized to produce one integer), either variant.
+
+        A guest's count seeks `ix_tailoring_run_guest_session_id`; a user's, the leading column of
+        `ix_tailoring_run_user_id_requested_at` — at most 500 index entries (the per-user cap).
+        """
+        result = await self._session.execute(
+            select(func.count()).select_from(TailoringRun).where(_owned_by(owner))
+        )
+        return result.scalar_one()
 
     async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
-        # T14 implements
-        raise NotImplementedError
+        """The owner's newest run in flight — `queued` or `running` — or `None`.
+
+        `find_active_for_session`'s contract and shape, either variant: `LIMIT 1` over the newest-
+        first order rather than `scalar_one_or_none()`, because the at-most-one-active rule is soft
+        by decision (ADR-0014 §4) and two active rows are an accepted race, not an error. For a
+        user the owner column's index plus a status filter reads at most 500 entries; the note on
+        the missing partial index applies unchanged.
+        """
+        result = await self._session.execute(
+            select(TailoringRun)
+            .where(_owned_by(owner))
+            .where(_TAILORING_RUN_STATUS.in_(_ACTIVE_STATUSES))
+            .order_by(_TAILORING_RUN_REQUESTED_AT.desc(), _TAILORING_RUN_ID.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
 
     async def list_stale_running(
         self, started_before: datetime, limit: int

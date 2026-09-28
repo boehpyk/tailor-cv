@@ -13,18 +13,21 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, assert_never, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.infrastructure.identifiers import uuid7
+from tailorcraft.infrastructure.persistence.database import violated_constraint
 
 if TYPE_CHECKING:
     from tailorcraft.domain.posting.ports import JobPostingRepository
@@ -43,9 +46,31 @@ _JOB_POSTING_ID: InstrumentedAttribute[JobPostingId] = cast(
 _JOB_POSTING_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
     "InstrumentedAttribute[GuestSessionId | None]", JobPosting._owner_guest_session_id
 )
+_JOB_POSTING_USER_ID: InstrumentedAttribute[UserId | None] = cast(
+    "InstrumentedAttribute[UserId | None]", JobPosting._owner_user_id
+)
 _JOB_POSTING_CREATED_AT: InstrumentedAttribute[datetime] = cast(
     "InstrumentedAttribute[datetime]", JobPosting._created_at
 )
+
+# Recognised by name, never by message (`violated_constraint`). Renaming the FK in
+# `mapping/posting/job_posting.py` is a breaking change to `add` below.
+_USER_FK: Final = "fk_posting_job_posting_user_id_identity_user"
+
+
+def _owned_by(owner: Owner) -> ColumnElement[bool]:
+    """The owner as a `WHERE` clause: the variant picks the column, the CHECK implies the other.
+
+    `IS NULL` on the other column is not added, and not needed: `ck_posting_job_posting_exactly_one_owner`
+    guarantees a row matching one owner column has the other empty.
+    """
+    match owner:
+        case GuestOwner(guest_session_id=guest_session_id):
+            return _JOB_POSTING_GUEST_SESSION_ID == guest_session_id  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        case UserOwner(user_id=user_id):
+            return _JOB_POSTING_USER_ID == user_id  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        case _:
+            assert_never(owner)
 
 
 class SqlAlchemyJobPostingRepository:
@@ -64,10 +89,34 @@ class SqlAlchemyJobPostingRepository:
         return JobPostingId(uuid7())
 
     async def add(self, posting: JobPosting) -> None:
-        self._session.add(posting)
-        # `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request), not
-        # to the repository.
-        await self._session.flush()
+        """Insert `posting`; raise `UserNotFound` if its `UserOwner` no longer exists (H-53).
+
+        `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request), not
+        to the repository.
+
+        **The race this translates** is `SqlAlchemyBaseCvRepository.add`'s (2.2's S-12), one table
+        over: a capture resolves the user, then inserts; an account erasure that lands in between
+        holds the `identity_user` row `FOR UPDATE`, this `INSERT`'s FK check waits for `FOR KEY
+        SHARE` on it, and once the erasure commits the FK refuses. That refusal *is* "the user is
+        gone", so it becomes the same error `resolve_existing_user` raises, and the same 401.
+
+        **Inside a SAVEPOINT**, for the reason given there: a failed flush at the root expires every
+        instance in the session inside the flush (the 1.4 lesson); a SAVEPOINT confines it to this
+        one pending posting. Any other refusal — the guest FK, a CHECK — is not "the user is gone"
+        and propagates untranslated.
+        """
+        # Read before the flush: after a nested rollback the pending posting is expunged.
+        posting_id = posting.id
+        try:
+            async with self._session.begin_nested():
+                self._session.add(posting)
+                await self._session.flush()
+        except IntegrityError as exc:
+            if violated_constraint(exc) == _USER_FK:
+                # `from None`: the listener already reduced the chain to identifiers, and the frame
+                # holds `posting`, whose text names a job someone is applying for (Constitution §8).
+                raise UserNotFound(f"the owner of {posting_id!r} no longer exists") from None
+            raise
 
     async def get(self, posting_id: JobPostingId) -> JobPosting:
         # The column stays on the left of `==` below (silencing ruff's SIM300 "Yoda condition"):
@@ -101,12 +150,31 @@ class SqlAlchemyJobPostingRepository:
         return result.scalar_one()
 
     async def count_for_owner(self, owner: Owner) -> int:
-        # T14 implements
-        raise NotImplementedError
+        """`SELECT count(*)` over the owner's column — `count_for_session`'s reason, either variant.
+
+        A guest's count seeks `ix_posting_job_posting_guest_session_id`; a user's, the leading
+        column of `ix_posting_job_posting_user_id_created_at`.
+        """
+        result = await self._session.execute(
+            select(func.count()).select_from(JobPosting).where(_owned_by(owner))
+        )
+        return result.scalar_one()
 
     async def list_recent_for_user(self, user_id: UserId, limit: int) -> Sequence[JobPosting]:
-        # T14 implements
-        raise NotImplementedError
+        """Newest first, at most `limit` — `ORDER BY created_at DESC, id DESC LIMIT :limit`.
+
+        The order is `ix_posting_job_posting_user_id_created_at`'s exactly, so this is a range scan
+        that stops after `limit` rows: the texts it loads are the ones returned, never the user's
+        whole collection. `id DESC` breaks a whole-second tie the way `list_for_session`'s run
+        twin does — a UUIDv7's byte order is time order one resolution down.
+        """
+        result = await self._session.execute(
+            select(JobPosting)
+            .where(_JOB_POSTING_USER_ID == user_id)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+            .order_by(_JOB_POSTING_CREATED_AT.desc(), _JOB_POSTING_ID.desc())
+            .limit(limit)
+        )
+        return result.scalars().all()
 
 
 if TYPE_CHECKING:
