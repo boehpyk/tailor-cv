@@ -349,14 +349,11 @@ class AccountErasureReport:
     unlink_failures: tuple[str, ...]
     # Slice 2.3 (AC-15): the account's history is erased with it. `files` is every key the erasure
     # tried to unlink — saved-CV files **and** derived export files — so `files_unlinked` and
-    # `unlink_failures` can be read against it. SKELETON (T5c): defaulted to `0` so 2.2's
-    # constructor call keeps compiling; T11 passes all four and removes the defaults, restoring this
-    # report's "no defaults" rule. Appended rather than inserted because a defaulted dataclass field
-    # cannot precede one without a default.
-    tailoring_runs: int = 0
-    job_postings: int = 0
-    export_jobs: int = 0
-    files: int = 0
+    # `unlink_failures` can be read against it. No defaults, like every other field here.
+    tailoring_runs: int
+    job_postings: int
+    export_jobs: int
+    files: int
 
 
 @dataclass(frozen=True, slots=True)

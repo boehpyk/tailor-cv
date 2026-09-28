@@ -32,6 +32,7 @@ from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.tailoring.errors import (
     TailoringRunNotFound,
     TailoringRunNotOwnedBySession,
+    TailoringRunNotOwnedByUser,
 )
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
@@ -78,25 +79,24 @@ class GetTailoringRun:
     async def __call__(self, run_id: TailoringRunId, requester: Owner) -> TailoringRun:
         owner = await resolve_owner(self._sessions, self._users, self._clock, requester)
 
-        match owner:
-            case GuestOwner():
-                run = await self._runs.get(run_id)
+        run = await self._runs.get(run_id)
 
-                # Authorization is one value equality (ADR-0022): a user-owned id on this guest
-                # route is "not mine" exactly as another session's is.
-                if run.owner != owner:
-                    # "Not mine" must be indistinguishable from "does not exist" at this boundary
-                    # (G-29/AC-14, ADR-0008): the public exception is `TailoringRunNotFound`, the
-                    # same type `runs.get` raises for an id that was never issued, because a 403
-                    # here would confirm to someone enumerating polling handles that the id is real.
-                    # The distinction survives only on `__cause__`, where this use case's own tests
-                    # can see it and nothing that crosses the wire can.
-                    raise TailoringRunNotFound(str(run_id)) from TailoringRunNotOwnedBySession(
-                        str(run_id)
-                    )
+        # Authorization is one value equality (ADR-0022), for either variant: a user-owned id on a
+        # guest's request is "not mine" exactly as another session's is, and the reverse.
+        if run.owner != owner:
+            # "Not mine" must be indistinguishable from "does not exist" at this boundary
+            # (G-29/AC-14, ADR-0008): the public exception is `TailoringRunNotFound`, the same type
+            # `runs.get` raises for an id that was never issued, because a 403 here would confirm to
+            # someone enumerating polling handles that the id is real. The distinction survives only
+            # on `__cause__`, which names the requester's path.
+            cause: TailoringRunNotOwnedBySession | TailoringRunNotOwnedByUser
+            match owner:
+                case GuestOwner():
+                    cause = TailoringRunNotOwnedBySession(str(run_id))
+                case UserOwner():
+                    cause = TailoringRunNotOwnedByUser(str(run_id))
+                case _:
+                    assert_never(owner)
+            raise TailoringRunNotFound(str(run_id)) from cause
 
-                return run
-            case UserOwner():
-                raise NotImplementedError
-            case _:
-                assert_never(owner)
+        return run

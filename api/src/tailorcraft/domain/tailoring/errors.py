@@ -54,7 +54,7 @@ class TailoringRunNotOwnedByUser(DomainError):
 
 
 class TooManyTailoringRuns(DomainError):
-    """The session already owns the maximum number of tailoring runs (G-10).
+    """The owner already has the maximum number of tailoring runs (G-10; per user since 2.3).
 
     Carries the count it saw and the limit it compared against, so the router can tell the user what
     the limit is rather than only that they hit one.
@@ -69,7 +69,7 @@ class TooManyTailoringRuns(DomainError):
     """
 
     def __init__(self, count: int, limit: int) -> None:
-        super().__init__(f"session already owns {count} tailoring runs; the limit is {limit}")
+        super().__init__(f"owner already has {count} tailoring runs; the limit is {limit}")
         self.count = count
         self.limit = limit
 

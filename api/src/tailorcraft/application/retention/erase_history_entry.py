@@ -24,11 +24,14 @@ point writes one line per element (1.6's R-3/R-4 fix, third use).
 from __future__ import annotations
 
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
+from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.value_objects import UserId
+from tailorcraft.domain.retention.errors import HistoryEntryInProgress
 from tailorcraft.domain.retention.ports import HistoryEntryDataPort
 from tailorcraft.domain.retention.value_objects import HistoryEntryErasureReport
 from tailorcraft.domain.shared.files import FileStorePort
-from tailorcraft.domain.tailoring.value_objects import TailoringRunId
+from tailorcraft.domain.tailoring.errors import TailoringRunNotFound
+from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 
 
 class EraseHistoryEntry:
@@ -46,7 +49,44 @@ class EraseHistoryEntry:
         self._files = files
 
     async def __call__(self, user_id: UserId, run_id: TailoringRunId) -> HistoryEntryErasureReport:
-        raise NotImplementedError
+        # The authorization and the 404 collapse, inherited: `UserNotFound` for an erased account,
+        # `TailoringRunNotFound` (from `TailoringRunNotOwnedByUser`) for a run that is not this
+        # user's — a guest's included.
+        run = await self._get_tailoring_run(run_id, UserOwner(user_id))
+
+        # A worker may be on it: deleting the row under it would throw away a paid call's result.
+        # Refused with nothing touched; the run decides within seconds (H-42).
+        if run.status in (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING):
+            raise HistoryEntryInProgress(run.status.value)
+
+        # Rows first, committed by the bound adapter, before any unlink (ADR-0006 §2). The port
+        # takes the bare UUID: `domain/retention` may not name another context's types.
+        deleted = await self._entries.delete_history_entry(user_id, run_id.value)
+        if deleted is None:
+            # A concurrent deletion won between the read and the delete (H-44). Its unlinks are
+            # its own; this loser touches nothing.
+            raise TailoringRunNotFound(str(run_id))
+
+        unlinked = 0
+        failures: list[str] = []
+        for ref in deleted.export_files:
+            try:
+                await self._files.delete(ref)
+            except Exception as exc:
+                # `Exception`, never `BaseException`: a cancellation must still cancel. Only the
+                # class name is kept — a message can quote a path — and it is returned, not logged:
+                # the rows are already gone, so this is an orphan for the sweep, never a reason to
+                # fail the deletion.
+                failures.append(type(exc).__name__)
+            else:
+                unlinked += 1
+
+        return HistoryEntryErasureReport(
+            export_jobs=deleted.export_jobs,
+            files_unlinked=unlinked,
+            unlink_failures=tuple(failures),
+            posting_deleted=deleted.posting_deleted,
+        )
 
 
 __all__ = ["EraseHistoryEntry"]

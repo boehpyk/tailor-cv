@@ -57,7 +57,8 @@ class ExportJobNotOwnedByUser(DomainError):
 
 
 class TooManyExportJobs(DomainError):
-    """The session already owns `max_export_jobs_per_session` export jobs (X-18).
+    """The cap on export jobs is reached (X-18): a guest session's `max_export_jobs_per_session`, or
+    — since slice 2.3 — a user run's `max_export_jobs_per_user_run` (ADR-0016 amendment (b)).
 
     A use-case check, not an invariant of `ExportJob` — the rule spans every job a session owns,
     which is a fact one aggregate has no way to know, and reaching for it from inside a constructor

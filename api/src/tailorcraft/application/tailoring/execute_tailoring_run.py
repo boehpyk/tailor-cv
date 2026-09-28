@@ -134,7 +134,8 @@ class ExecuteTailoringRun:
     4. ``run.mark_started(clock.now())``; ``await runs.save(run)`` **and commit** — with
        `TailoringRunConcurrentlyModified` **caught** → return `SKIPPED` before the model is called
        (AC-8). Nothing is published on that path: the start did not happen.
-    5. ``cv = await base_cvs.get(run.base_cv_id)``; ``posting = await job_postings.get(...)``.
+    5. ``cv = await base_cvs.get(run.base_cv_id)`` — `BaseCvNotFound` → record `BASE_CV_DELETED`,
+       return `FAILED` (AC-12); ``posting = await job_postings.get(...)`` — missing → `MISSING`.
     6. ``draft = await llm.tailor(cv.extracted_text, posting.text)``, with `TailoringFailed`
        **caught**.
     7. ``run.mark_succeeded(draft.documents, draft.metrics, clock.now())``; save; publish; return
@@ -179,12 +180,11 @@ class ExecuteTailoringRun:
     recording, not the propagation** (T12, G-16…G-23), so that change turns a test red rather than
     passing quietly — which is the whole point of writing it that way.
 
-    **Step 5 — the near-unreachable branch.** A `BaseCvNotFound` or `JobPostingNotFound` here means
-    the guest session was purged between step 1 and now; but the purge cascades, so the run row went
-    with it, and the branch is therefore effectively unreachable. It is handled as `MISSING` — log
-    one line, return, do not raise — rather than as a failure state, **because there is no run left
-    to record a failure on**. T13 carries one line of comment saying exactly that, so the branch
-    does not read as a forgotten failure reason someone should fill in.
+    **Step 5 — two branches, since slice 2.3 (§0.4).** A `BaseCvNotFound` is reachable: a
+    registered user deleted the saved CV a queued run references, and the run is recorded
+    `failed` / `base_cv_deleted` before the model is called. A `JobPostingNotFound` stays
+    near-unreachable and is handled as `MISSING` — return, do not raise — **because there is no
+    run left to record a failure on**; the comment at that line says why, per owner.
 
     **The narrowing at step 6.** `cv.extracted_text` is `ExtractedText | None` on the aggregate, and
     `mypy --strict` will insist on the check even though step 3 of `RequestTailoringRun` already
@@ -285,12 +285,27 @@ class ExecuteTailoringRun:
         # reason that has nothing to do with tailoring.
         try:
             cv = await self._base_cvs.get(run.base_cv_id)
+        except BaseCvNotFound:
+            # Reachable since slice 2.3 (technical plan §0.4, AC-12): a registered user may delete a
+            # saved CV that this queued run still references — deleting a saved CV leaves its
+            # history, and the reference is allowed to dangle. The run still exists, so this is a
+            # recorded outcome, not `MISSING`: `failed` / `base_cv_deleted`, from the `running`
+            # step 4 just saved, **before** the paid call. Leaving it `running` would let the stale
+            # sweep call it `abandoned` minutes later, which lies about why. (A guest's CV only goes
+            # with its session, whose purge cascades the run away too — step 1's `MISSING`.)
+            await self._record_failure(
+                run, TailoringFailureReason.BASE_CV_DELETED, self._clock.now()
+            )
+            return ExecuteTailoringRunOutcome.FAILED
+        try:
             posting = await self._job_postings.get(run.job_posting_id)
-        except (BaseCvNotFound, JobPostingNotFound):
-            # Effectively unreachable: the only way an input disappears is the guest-session purge,
-            # and that cascades the run row away with it, so step 1 would have returned `MISSING`
-            # already. Handled as `MISSING` rather than as a failure reason **because there is no
-            # run left to record a failure on** — this is not a forgotten `TailoringFailureReason`.
+        except JobPostingNotFound:
+            # Still effectively unreachable, for a different reason per owner. A guest's posting goes
+            # only with its session, and the purge cascades the run away with it (step 1 would have
+            # returned `MISSING`). A user's posting is deleted only by history-entry deletion, which
+            # requires that no *other* run references it (§0.6), or by account erasure, which takes
+            # this run too. Handled as `MISSING` rather than as a failure reason **because there is
+            # no run left to record a failure on** — this is not a forgotten `TailoringFailureReason`.
             return ExecuteTailoringRunOutcome.MISSING
 
         cv_text = cv.extracted_text
@@ -340,7 +355,8 @@ class ExecuteTailoringRun:
     ) -> None:
         """Record a decided-as-failed run: `mark_failed`, save, then publish — in that order.
 
-        The three failure paths above (`ABANDONED`, `cv_text_missing`, and every `TailoringFailed`)
+        The failure paths above (`ABANDONED`, `BASE_CV_DELETED`, `cv_text_missing`, and every
+        `TailoringFailed`)
         differ only in the reason and in the instant, so the save/publish ordering is written once.
         Publishing strictly **after** the save is the rule `RequestTailoringRun` step 7 states: a
         publish that ran first would announce a fact a failed save is about to un-happen.

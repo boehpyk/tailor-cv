@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import assert_never
 
 from tailorcraft.application.identity.resolve_owner import resolve_owner
+from tailorcraft.application.intake.owned_saved_base_cv import get_owned_saved_base_cv
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -87,7 +88,9 @@ class GetBaseCv:
                     )
 
                 return cv
-            case UserOwner():
-                raise NotImplementedError
+            case UserOwner(user_id=user_id):
+                # 2.2's rule, reused rather than restated: the user arm's cause is
+                # `BaseCvNotOwnedByUser`, whoever owns the row — a guest included.
+                return await get_owned_saved_base_cv(self._cvs, base_cv_id, user_id)
             case _:
                 assert_never(owner)

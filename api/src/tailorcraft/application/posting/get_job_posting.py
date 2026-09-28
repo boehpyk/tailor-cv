@@ -24,7 +24,11 @@ from typing import assert_never
 from tailorcraft.application.identity.resolve_owner import resolve_owner
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
-from tailorcraft.domain.posting.errors import JobPostingNotFound, JobPostingNotOwnedBySession
+from tailorcraft.domain.posting.errors import (
+    JobPostingNotFound,
+    JobPostingNotOwnedBySession,
+    JobPostingNotOwnedByUser,
+)
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.ports import JobPostingRepository
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -68,24 +72,24 @@ class GetJobPosting:
     async def __call__(self, job_posting_id: JobPostingId, requester: Owner) -> JobPosting:
         owner = await resolve_owner(self._sessions, self._users, self._clock, requester)
 
-        match owner:
-            case GuestOwner():
-                posting = await self._postings.get(job_posting_id)
+        posting = await self._postings.get(job_posting_id)
 
-                # Authorization is one value equality (ADR-0022): a user-owned id on this guest
-                # route is "not mine" exactly as another session's is.
-                if posting.owner != owner:
-                    # "Not mine" must be indistinguishable from "does not exist" at this boundary
-                    # (P-30/AC-14, ADR-0008): the public exception is `JobPostingNotFound`, the same
-                    # type a missing id raises, because a 403 here would confirm to an attacker that
-                    # the id exists. The distinction survives only on `__cause__`, where this use
-                    # case's own tests can see it and nothing that crosses the wire can.
-                    raise JobPostingNotFound(str(job_posting_id)) from JobPostingNotOwnedBySession(
-                        str(job_posting_id)
-                    )
+        # Authorization is one value equality (ADR-0022), for either variant: a user-owned id on a
+        # guest's request is "not mine" exactly as another session's is, and the reverse.
+        if posting.owner != owner:
+            # "Not mine" must be indistinguishable from "does not exist" at this boundary
+            # (P-30/AC-14, ADR-0008): the public exception is `JobPostingNotFound`, the same type a
+            # missing id raises, because a 403 here would confirm to an attacker that the id exists.
+            # The distinction survives only on `__cause__`, which names the requester's path and
+            # which this use case's own tests can see and nothing that crosses the wire can.
+            cause: JobPostingNotOwnedBySession | JobPostingNotOwnedByUser
+            match owner:
+                case GuestOwner():
+                    cause = JobPostingNotOwnedBySession(str(job_posting_id))
+                case UserOwner():
+                    cause = JobPostingNotOwnedByUser(str(job_posting_id))
+                case _:
+                    assert_never(owner)
+            raise JobPostingNotFound(str(job_posting_id)) from cause
 
-                return posting
-            case UserOwner():
-                raise NotImplementedError
-            case _:
-                assert_never(owner)
+        return posting

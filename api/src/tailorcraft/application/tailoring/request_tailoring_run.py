@@ -145,6 +145,9 @@ class RequestTailoringRun:
         max_per_user: int = 500,
     ) -> None:
         self._runs = runs
+        # Not read by this class: the composed `GetBaseCv` / `GetJobPosting` already resolve the
+        # requester (`UserNotFound` included) before anything else happens. Kept because T10's tests
+        # construct the use case with it; dropping it is a test correction, owed its own commit.
         self._users = users
         self._get_base_cv = get_base_cv
         self._get_job_posting = get_job_posting
@@ -197,7 +200,13 @@ class RequestTailoringRun:
                 if run_count >= self._max_per_session:
                     raise TooManyTailoringRuns(run_count, self._max_per_session)
             case UserOwner():
-                raise NotImplementedError
+                active_run = await self._runs.find_active_for_owner(cmd.owner)
+                if active_run is not None:
+                    raise TailoringAlreadyRunning(active_run.id)
+
+                run_count = await self._runs.count_for_owner(cmd.owner)
+                if run_count >= self._max_per_user:
+                    raise TooManyTailoringRuns(run_count, self._max_per_user)
             case _:
                 assert_never(cmd.owner)
 

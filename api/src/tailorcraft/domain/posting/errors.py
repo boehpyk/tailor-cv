@@ -86,7 +86,7 @@ class JobPostingTextTooLong(DomainError):
 
 
 class TooManyJobPostings(DomainError):
-    """The session already owns the maximum number of job postings.
+    """The owner already has the maximum number of job postings (per session, or per user since 2.3).
 
     This is a use-case check, not an invariant of `JobPosting` — the rule spans every `JobPosting` a
     session owns, which is a fact a single aggregate has no way to know, and reaching for one from

@@ -11,6 +11,7 @@ and the documents are one click away on the run's own endpoint.
 
 from __future__ import annotations
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.tailoring.history import HistoryCursor, HistoryPage, HistoryPageSize
@@ -32,7 +33,9 @@ class ListTailoringHistory:
     async def __call__(
         self, user_id: UserId, after: HistoryCursor | None, size: HistoryPageSize
     ) -> HistoryPage:
-        raise NotImplementedError
+        # Resolved first, so an erased account's still-valid token is refused before any query runs.
+        user = await resolve_existing_user(self._users, user_id)
+        return await self._history.page_for_user(user.id, after, size)
 
 
 __all__ = ["ListTailoringHistory"]

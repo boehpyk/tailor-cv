@@ -26,7 +26,11 @@ from dataclasses import dataclass
 from typing import assert_never
 
 from tailorcraft.application.identity.resolve_owner import resolve_owner
-from tailorcraft.domain.export.errors import ExportJobNotFound, ExportJobNotOwnedBySession
+from tailorcraft.domain.export.errors import (
+    ExportJobNotFound,
+    ExportJobNotOwnedBySession,
+    ExportJobNotOwnedByUser,
+)
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportJobId
@@ -121,37 +125,32 @@ class GetExportJob:
         # requester, and this use case is still safe to call from anywhere because it resolves it
         # again.
         owner = await resolve_owner(self._sessions, self._users, self._clock, requester)
-        match owner:
-            case GuestOwner():
-                # Step 2. `get`, not `find`: an id that names nothing is an error on a read, and the
-                # repository raises the same type step 3 raises.
-                job = await self._jobs.get(job_id)
+        # Step 2. `get`, not `find`: an id that names nothing is an error on a read, and the
+        # repository raises the same type step 3 raises.
+        job = await self._jobs.get(job_id)
 
-                # Authorization is one value equality (ADR-0022): a user-owned id on this guest
-                # route is "not mine" exactly as another session's is.
-                if job.owner != owner:
-                    # "Not mine" must be indistinguishable from "does not exist" at this boundary
-                    # (X-43, AC-24): the public exception is `ExportJobNotFound`, the same type
-                    # `jobs.get` raises for an id that was never issued, because a 403 here would
-                    # confirm to someone enumerating handles that the id is real — and an export job
-                    # id is both a polling handle and a download handle, so it is the id most worth
-                    # guessing, with a file behind it. The distinction survives only on `__cause__`,
-                    # where this use case's own tests can see it and nothing that crosses the wire
-                    # can.
-                    raise ExportJobNotFound(str(job_id)) from ExportJobNotOwnedBySession(
-                        str(job_id)
-                    )
+        # Step 3. Authorization is one value equality (ADR-0022), for either variant: a user-owned
+        # id on a guest's request is "not mine" exactly as another session's is, and the reverse.
+        if job.owner != owner:
+            # "Not mine" must be indistinguishable from "does not exist" at this boundary (X-43,
+            # AC-24): the public exception is `ExportJobNotFound`, the same type `jobs.get` raises
+            # for an id that was never issued, because a 403 here would confirm to someone
+            # enumerating handles that the id is real — and an export job id is both a polling
+            # handle and a download handle, so it is the id most worth guessing, with a file behind
+            # it. The distinction survives only on `__cause__`, which names the requester's path.
+            cause: ExportJobNotOwnedBySession | ExportJobNotOwnedByUser
+            match owner:
+                case GuestOwner():
+                    cause = ExportJobNotOwnedBySession(str(job_id))
+                case UserOwner():
+                    cause = ExportJobNotOwnedByUser(str(job_id))
+                case _:
+                    assert_never(owner)
+            raise ExportJobNotFound(str(job_id)) from cause
 
-                # Step 4. **`find`, not `get`**: a run that has gone is an ordinary answer here
-                # rather than an exception, because the job is the thing being read and it still
-                # exists. `None` becomes `run_version_now=None`, which the boundary renders as
-                # `current: false` — a job whose run is gone is certainly not the document as it
-                # stands.
-                run = await self._runs.find(job.tailoring_run_id)
-                return ExportJobLookup(
-                    job=job, run_version_now=run.version if run is not None else None
-                )
-            case UserOwner():
-                raise NotImplementedError
-            case _:
-                assert_never(owner)
+        # Step 4. **`find`, not `get`**: a run that has gone is an ordinary answer here rather than
+        # an exception, because the job is the thing being read and it still exists. `None` becomes
+        # `run_version_now=None`, which the boundary renders as `current: false` — a job whose run
+        # is gone is certainly not the document as it stands.
+        run = await self._runs.find(job.tailoring_run_id)
+        return ExportJobLookup(job=job, run_version_now=run.version if run is not None else None)

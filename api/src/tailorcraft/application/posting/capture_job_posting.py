@@ -145,8 +145,9 @@ class CaptureJobPosting:
                     >= self._max_per_session
                 ):
                     raise TooManyJobPostings(str(guest_session_id))
-            case UserOwner():
-                raise NotImplementedError
+            case UserOwner(user_id=user_id):
+                if await self._postings.count_for_owner(owner) >= self._max_per_user:
+                    raise TooManyJobPostings(str(user_id))
             case _:
                 assert_never(owner)
 

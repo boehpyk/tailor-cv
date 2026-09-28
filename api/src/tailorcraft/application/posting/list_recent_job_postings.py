@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -32,7 +33,8 @@ class ListRecentJobPostingsForUser:
         self._users = users
 
     async def __call__(self, user_id: UserId, limit: int) -> Sequence[JobPosting]:
-        raise NotImplementedError
+        user = await resolve_existing_user(self._users, user_id)
+        return await self._postings.list_recent_for_user(user.id, limit)
 
 
 __all__ = ["ListRecentJobPostingsForUser"]

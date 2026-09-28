@@ -210,21 +210,27 @@ class RequestExport:
         # job, rather than a 409 that would be true and useless (X-18).
         # The cap is chosen by variant (ADR-0016 amendment (b)): 40 per guest session, 20 per run for
         # a user. The guest arm keeps `count_for_session` until T14 lands the SQL adapters.
-        match cmd.requester:
+        # Matched on the **run's** owner, which `GetTailoringRun` has just proven equal to the
+        # resolved requester — the job will take that owner too (step 5), so the cap and the row
+        # agree on whose job this is.
+        match run.owner:
             case GuestOwner(guest_session_id=guest_session_id):
                 if await self._jobs.count_for_session(guest_session_id) >= self._max_per_session:
                     raise TooManyExportJobs(str(guest_session_id))
             case UserOwner():
-                raise NotImplementedError
+                if await self._jobs.count_for_run(run.id) >= self._max_per_user_run:
+                    raise TooManyExportJobs(str(run.id))
             case _:
-                assert_never(cmd.requester)
+                assert_never(run.owner)
 
         # Step 5. `ExportFormatNotQueued` propagates from here (X-15) — the second lock behind the
         # boundary's literal type. `run_version` is read off the run, never taken from the caller.
         job = ExportJob.request(
             id=self._jobs.next_identity(),
-            # SKELETON (T9c): T11 GREEN takes the owner from the run (`run.owner`, ADR-0016 (a)).
-            owner=cmd.requester,
+            # From the run, never from the command (ADR-0016 amendment (a)): *a job's owner is its
+            # run's owner* is a cross-aggregate invariant no `ExportJob` can see, so it is kept here,
+            # and the ownership graph cannot cross owners (ADR-0022).
+            owner=run.owner,
             tailoring_run_id=run.id,
             document=cmd.document,
             format=cmd.format,

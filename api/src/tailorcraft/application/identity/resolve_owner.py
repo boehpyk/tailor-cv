@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import assert_never
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.application.identity.resolve_guest_session import resolve_active_guest_session
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
@@ -39,7 +40,8 @@ async def resolve_owner(
         case GuestOwner(guest_session_id=guest_session_id):
             session = await resolve_active_guest_session(sessions, clock, guest_session_id)
             return GuestOwner(session.id)
-        case UserOwner():
-            raise NotImplementedError
+        case UserOwner(user_id=user_id):
+            user = await resolve_existing_user(users, user_id)
+            return UserOwner(user.id)
         case _:
             assert_never(requester)
