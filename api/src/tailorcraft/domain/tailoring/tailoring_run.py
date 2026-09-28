@@ -213,12 +213,7 @@ class TailoringRun(RecordsEvents):
     # 500 per user), how long the row lives, whether its exports are purged — differs by variant
     # and by aggregate, and a base class would have to guess which rules it carries.
     _owner_guest_session_id: GuestSessionId | None
-    # Not yet mapped (added at T5b): `_owner_user_id` has no column until T12's migration, so the mapping cannot
-    # load it yet and a run read back from the database would have no such attribute at all. The
-    # class-level `None` is what such a run reads meanwhile — the truth for every row that exists
-    # today. T12 maps it (the mapper then replaces it with an instrumented attribute) and removes
-    # this default. 2.2's T4 made the same deviation on `BaseCv`, and T5a on `JobPosting`.
-    _owner_user_id: UserId | None = None
+    _owner_user_id: UserId | None
     _base_cv_id: BaseCvId
     _job_posting_id: JobPostingId
     _status: TailoringRunStatus

@@ -111,12 +111,7 @@ class JobPosting(RecordsEvents):
     # a base class would have to guess which rules it carries. Eight duplicated lines are cheaper
     # than that guess.
     _owner_guest_session_id: GuestSessionId | None
-    # Not yet mapped (added at T5a): `_owner_user_id` has no column until T12's migration, so the mapping cannot
-    # load it yet and a posting read back from the database would have no such attribute at all. The
-    # class-level `None` is what such a posting reads meanwhile — which is the truth for every row
-    # that exists today. T12 maps it (the mapper then replaces it with an instrumented attribute) and
-    # removes this default. 2.2's T4 made the same deviation on `BaseCv`.
-    _owner_user_id: UserId | None = None
+    _owner_user_id: UserId | None
     _source: PostingSource
     _source_url: SourceUrl | None
     _title: PostingTitle | None

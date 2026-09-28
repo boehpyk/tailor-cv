@@ -181,12 +181,7 @@ class ExportJob(RecordsEvents):
     # by the job — it is its run's owner, a cross-aggregate rule `RequestExport` enforces — and the
     # cap it implies differs by variant (40 per session, 20 per user run; ADR-0016 amendment (b)).
     _owner_guest_session_id: GuestSessionId | None
-    # Not yet mapped (added at T5c): `_owner_user_id` has no column until T12's migration, so the mapping cannot
-    # load it yet and a job read back from the database would have no such attribute at all. The
-    # class-level `None` is what such a job reads meanwhile — the truth for every row that exists
-    # today. T12 maps it (the mapper then replaces it with an instrumented attribute) and removes
-    # this default. 2.2's T4 made the same deviation on `BaseCv`, and T5a/T5b on the other two.
-    _owner_user_id: UserId | None = None
+    _owner_user_id: UserId | None
     _tailoring_run_id: TailoringRunId
     _document: TailoredDocumentKind
     _format: ExportFormat
