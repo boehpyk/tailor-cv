@@ -72,6 +72,11 @@ Used by:
   `AccountDataPort`, `domain/retention/ports.py`'s three methods reproduced rather than stubbed —
   see its own docstring for `race_delete_account_result`, the one behaviour `files_by_user` alone
   cannot model).
+- Slice 2.3's application tests (T10 — AC-7…AC-15): `InMemoryTailoringHistoryQuery`
+  (`ListTailoringHistory`), `RecordingHistoryEntryData` (`EraseHistoryEntry`), the test-only
+  `discard` on the run, export-job and posting fakes (the rows those two model going), and
+  `FakeAccountDataPort`'s `export_files_by_user` / `history_by_user` (`EraseAccount`'s widened
+  report). Every addition is backward-compatible: 2.2's callers pass none of the new arguments.
 """
 
 from __future__ import annotations
@@ -79,7 +84,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import NamedTuple, Protocol
 from uuid import UUID, uuid4
 
 from tailorcraft.domain.export.errors import (
@@ -127,7 +132,7 @@ from tailorcraft.domain.posting.value_objects import (
     SourceUrl,
 )
 from tailorcraft.domain.retention.errors import AccountNotFound
-from tailorcraft.domain.retention.value_objects import AccountCounts
+from tailorcraft.domain.retention.value_objects import AccountCounts, DeletedHistoryEntry
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -135,6 +140,14 @@ from tailorcraft.domain.tailoring.errors import (
     TailoringNotQueued,
     TailoringRunConcurrentlyModified,
     TailoringRunNotFound,
+)
+from tailorcraft.domain.tailoring.history import (
+    HistoryBaseCv,
+    HistoryCursor,
+    HistoryPage,
+    HistoryPageSize,
+    HistoryPosting,
+    TailoringHistoryEntry,
 )
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
@@ -503,6 +516,12 @@ class FakeJobPostingRepository:
         """Test-only inspection, not part of `JobPostingRepository`."""
         return list(self._by_id.values())
 
+    def discard(self, posting_id: JobPostingId) -> None:
+        """Test-only removal, not part of `JobPostingRepository` — the row going the way a database
+        `DELETE` would take it (a history-entry erasure's third statement, an account cascade), for
+        `RecordingHistoryEntryData` below. Idempotent, like the `DELETE` it models."""
+        self._by_id.pop(posting_id, None)
+
 
 class InMemoryFileStore:
     """In-memory `FileStorePort`, backed by a plain dict.
@@ -755,6 +774,13 @@ class FakeTailoringRunRepository:
         """Test-only inspection, not part of `TailoringRunRepository`."""
         return list(self._by_id.values())
 
+    def discard(self, run_id: TailoringRunId) -> None:
+        """Test-only removal, not part of `TailoringRunRepository` (which has no delete on purpose —
+        a history entry is erased through retention's port, technical plan §0.6). Models the row
+        going under a Core `DELETE`, for `RecordingHistoryEntryData` and for tests that need a run
+        to vanish between two reads. Idempotent."""
+        self._by_id.pop(run_id, None)
+
 
 class FakeLlm:
     """`LlmPort` that either returns a fixed `TailoredDraft` or raises a fixed `TailoringFailed` —
@@ -933,6 +959,11 @@ class FakeExportJobRepository:
         """Test-only inspection, not part of `ExportJobRepository`."""
         return list(self._by_id.values())
 
+    def discard(self, job_id: ExportJobId) -> None:
+        """Test-only removal, not part of `ExportJobRepository` — `FakeTailoringRunRepository.
+        discard`'s reason, for `RecordingHistoryEntryData`. Idempotent."""
+        self._by_id.pop(job_id, None)
+
 
 class FakeDocumentRenderer:
     """`DocumentRendererPort` that either returns fixed bytes or raises a fixed
@@ -1013,16 +1044,35 @@ class MissingFileStore:
         raise AssertionError("delete_partial() should not be reached in this scenario")
 
 
-class FakeAccountDataPort:
-    """In-memory `AccountDataPort` (slice 2.2, T9) — `EraseAccount`'s two reads and one write,
-    `domain/retention/ports.py`'s shape reproduced honestly rather than reduced to a stub.
+class AccountHistory(NamedTuple):
+    """What an account's tailoring history holds, for `FakeAccountDataPort` (slice 2.3, AC-15):
+    the rows the erasure's cascade takes that name no file of their own. The export jobs are not
+    here — each one names a file, so the fake counts them from `export_files_by_user` instead, and
+    the two can never disagree."""
 
-    Seeded with `files_by_user`: every account this fake knows about, and the `FileRef`s
-    `files_of_account` returns for it. An id **not** in that mapping, or one already erased, raises
-    `AccountNotFound` from `files_of_account` — the ordinary "unknown or already-gone account" case,
-    and what makes **a second `EraseAccount(user_id)` call for the same user** raise `AccountNotFound`
-    (AC-11): the first call's `delete_account` marks the id erased, and the second call's
-    `files_of_account` sees that and refuses before anything else runs.
+    tailoring_runs: int
+    job_postings: int
+
+
+class FakeAccountDataPort:
+    """In-memory `AccountDataPort` (slice 2.2, T9; widened in slice 2.3, T10) — `EraseAccount`'s two
+    reads and one write, `domain/retention/ports.py`'s shape reproduced honestly rather than reduced
+    to a stub.
+
+    Seeded with `files_by_user`: every account this fake knows about, and its **saved base CVs'**
+    `FileRef`s. An id **not** in that mapping, or one already erased, raises `AccountNotFound` from
+    `files_of_account` — the ordinary "unknown or already-gone account" case, and what makes **a
+    second `EraseAccount(user_id)` call for the same user** raise `AccountNotFound` (AC-11): the first
+    call's `delete_account` marks the id erased, and the second call's `files_of_account` sees that
+    and refuses before anything else runs.
+
+    **Slice 2.3 (AC-15).** `export_files_by_user` holds each account's export files — one per export
+    job, since every job has a queued format and its key is derived from `(id, format)` — and
+    `history_by_user` its tailoring runs and job postings. `files_of_account` returns the CV keys
+    **and** the export keys, as the widened port docstring says; `count_account` answers every field
+    of the widened `AccountCounts` from the same data, so a use case may read its counts from either
+    method and get one consistent story. Both new arguments default to "no history", which is what
+    keeps 2.2's callers meaning exactly what they meant.
 
     `files_of_account_calls` / `delete_account_calls` are ordered call logs (not just counts) — what
     AC-11's "`files_of_account` before `delete_account`, and every unlink after `delete_account`
@@ -1041,9 +1091,13 @@ class FakeAccountDataPort:
         files_by_user: dict[UserId, Sequence[FileRef]] | None = None,
         *,
         logins_by_user: dict[UserId, int] | None = None,
+        export_files_by_user: dict[UserId, Sequence[FileRef]] | None = None,
+        history_by_user: dict[UserId, AccountHistory] | None = None,
     ) -> None:
         self._files_by_user = dict(files_by_user or {})
         self._logins_by_user = dict(logins_by_user or {})
+        self._export_files_by_user = dict(export_files_by_user or {})
+        self._history_by_user = dict(history_by_user or {})
         self._erased: set[UserId] = set()
         self._race_delete_account_result: bool | None = None
         self.files_of_account_calls: list[UserId] = []
@@ -1053,11 +1107,14 @@ class FakeAccountDataPort:
         """Arms the one-shot race override `delete_account` consumes on its next call."""
         self._race_delete_account_result = result
 
+    def _exists(self, user_id: UserId) -> bool:
+        return user_id in self._files_by_user and user_id not in self._erased
+
     async def files_of_account(self, user_id: UserId) -> Sequence[FileRef]:
         self.files_of_account_calls.append(user_id)
-        if user_id not in self._files_by_user or user_id in self._erased:
+        if not self._exists(user_id):
             raise AccountNotFound(str(user_id))
-        return self._files_by_user[user_id]
+        return [*self._files_by_user[user_id], *self._export_files_by_user.get(user_id, ())]
 
     async def delete_account(self, user_id: UserId) -> bool:
         self.delete_account_calls.append(user_id)
@@ -1065,19 +1122,182 @@ class FakeAccountDataPort:
             result = self._race_delete_account_result
             self._race_delete_account_result = None
             return result
-        if user_id not in self._files_by_user or user_id in self._erased:
+        if not self._exists(user_id):
             return False
         self._erased.add(user_id)
         return True
 
     async def count_account(self, user_id: UserId) -> AccountCounts | None:
-        if user_id not in self._files_by_user or user_id in self._erased:
+        if not self._exists(user_id):
             return None
-        files = self._files_by_user[user_id]
+        cv_files = self._files_by_user[user_id]
+        export_files = self._export_files_by_user.get(user_id, ())
+        history = self._history_by_user.get(user_id, AccountHistory(0, 0))
         return AccountCounts(
-            base_cvs=len(files),
-            files=len(files),
+            base_cvs=len(cv_files),
+            files=len(cv_files) + len(export_files),
             logins=self._logins_by_user.get(user_id, 0),
+            tailoring_runs=history.tailoring_runs,
+            job_postings=history.job_postings,
+            export_jobs=len(export_files),
+        )
+
+
+class InMemoryTailoringHistoryQuery:
+    """In-memory `TailoringHistoryQuery` (slice 2.3, T10, AC-13) — technical plan §0.5's statement,
+    re-expressed over the three in-memory repositories so `ListTailoringHistory` can be driven
+    without a database. **The SQL is T15's and is proven against Postgres in T17**; this double
+    exists so the use case's own obligations (resolve the user, pass `after` and `size` through
+    unchanged, hand back the page) are observable, and so the history *contract* has one executable
+    statement before the adapter exists.
+
+    Faithful to the query clause by clause, because a lenient double would let a use-case bug hide:
+
+    - `WHERE r.user_id = :u` — only `UserOwner(user_id)`'s runs; a guest's run never appears.
+    - `ORDER BY requested_at DESC, id DESC` — `UUID` compares by its 128-bit integer, which is
+      PostgreSQL's byte-wise `uuid` order, so a same-second tie breaks the way the index does.
+    - `(requested_at, id) < (:cursor_at, :cursor_id)` — **strictly** after the cursor.
+    - `LIMIT size + 1` — the extra row decides `next_cursor` and is never returned.
+    - Both `LEFT JOIN`s carry the owner (`c.user_id = r.user_id`): a CV or posting that is gone,
+      **or owned by anyone else**, yields `None` rather than lending its label to this history.
+    - `left(p.text, 140)` for the preview; `edited` from the two revision instants.
+
+    `calls` records every `(user_id, after, size)` in order.
+    """
+
+    def __init__(
+        self,
+        runs: FakeTailoringRunRepository,
+        cvs: FakeBaseCvRepository,
+        postings: FakeJobPostingRepository,
+    ) -> None:
+        self._runs = runs
+        self._cvs = cvs
+        self._postings = postings
+        self.calls: list[tuple[UserId, HistoryCursor | None, HistoryPageSize]] = []
+
+    async def page_for_user(
+        self, user_id: UserId, after: HistoryCursor | None, size: HistoryPageSize
+    ) -> HistoryPage:
+        self.calls.append((user_id, after, size))
+        owner = UserOwner(user_id)
+        mine = [run for run in self._runs.all() if run.owner == owner]
+        mine.sort(key=lambda run: (run.requested_at, run.id.value), reverse=True)
+        if after is not None:
+            bound = (after.requested_at, after.tailoring_run_id.value)
+            mine = [run for run in mine if (run.requested_at, run.id.value) < bound]
+        window = mine[: size.value + 1]
+        entries = tuple(self._entry(run) for run in window[: size.value])
+        next_cursor = (
+            HistoryCursor(
+                requested_at=entries[-1].requested_at,
+                tailoring_run_id=entries[-1].tailoring_run_id,
+            )
+            if len(window) > size.value
+            else None
+        )
+        return HistoryPage(entries=entries, next_cursor=next_cursor)
+
+    def _entry(self, run: TailoringRun) -> TailoringHistoryEntry:
+        cv = next(
+            (c for c in self._cvs.all() if c.id == run.base_cv_id and c.owner == run.owner), None
+        )
+        posting = next(
+            (
+                p
+                for p in self._postings.all()
+                if p.id == run.job_posting_id and p.owner == run.owner
+            ),
+            None,
+        )
+        return TailoringHistoryEntry(
+            tailoring_run_id=run.id,
+            status=run.status,
+            failure_reason=run.failure_reason,
+            requested_at=run.requested_at,
+            completed_at=run.completed_at,
+            version=run.version,
+            edited=run.cv_edited_at is not None or run.cover_letter_edited_at is not None,
+            base_cv_id=run.base_cv_id,
+            base_cv=(
+                HistoryBaseCv(
+                    base_cv_id=cv.id,
+                    label=cv.label.value if cv.label is not None else None,
+                    original_filename=cv.original_filename.value,
+                )
+                if cv is not None
+                else None
+            ),
+            posting=(
+                HistoryPosting(
+                    job_posting_id=posting.id,
+                    source=posting.source,
+                    title=posting.title.value if posting.title is not None else None,
+                    source_url=posting.source_url.value if posting.source_url is not None else None,
+                    preview=posting.text.value[:140],
+                )
+                if posting is not None
+                else None
+            ),
+        )
+
+
+class RecordingHistoryEntryData:
+    """In-memory `HistoryEntryDataPort` (slice 2.3, T10, AC-14) — technical plan §0.6's three
+    `DELETE`s re-expressed over the in-memory repositories, so a second call really does find the run
+    gone (`GetTailoringRun` then raises `TailoringRunNotFound`) instead of a flag pretending it is.
+
+    1. The run, **only if** `UserOwner(user_id)` owns it; otherwise `None` and nothing else touched
+       (the loser of a concurrent deletion, H-44).
+    2. The run's export jobs owned by the same user; each job's key comes back **derived**
+       (`job.storage_ref`, i.e. `FileRef.for_export(id, format)`) — never read off a `file_key`.
+    3. The posting, only if it is the user's and **no remaining run** references it.
+
+    `calls` records every `(user_id, run_id)` in order — `run_id` a bare `UUID`, as the port takes it.
+    Rows only; this fake never touches a file store, exactly as the port promises.
+    """
+
+    def __init__(
+        self,
+        runs: FakeTailoringRunRepository,
+        jobs: FakeExportJobRepository,
+        postings: FakeJobPostingRepository,
+    ) -> None:
+        self._runs = runs
+        self._jobs = jobs
+        self._postings = postings
+        self.calls: list[tuple[UserId, UUID]] = []
+
+    async def delete_history_entry(
+        self, user_id: UserId, run_id: UUID
+    ) -> DeletedHistoryEntry | None:
+        self.calls.append((user_id, run_id))
+        owner = UserOwner(user_id)
+        run = await self._runs.find(TailoringRunId(value=run_id))
+        if run is None or run.owner != owner:
+            return None
+        self._runs.discard(run.id)
+
+        jobs = [
+            job for job in self._jobs.all() if job.tailoring_run_id == run.id and job.owner == owner
+        ]
+        for job in jobs:
+            self._jobs.discard(job.id)
+
+        posting_deleted = False
+        still_referenced = any(
+            other.job_posting_id == run.job_posting_id for other in self._runs.all()
+        )
+        if not still_referenced:
+            for posting in self._postings.all():
+                if posting.id == run.job_posting_id and posting.owner == owner:
+                    self._postings.discard(posting.id)
+                    posting_deleted = True
+
+        return DeletedHistoryEntry(
+            export_files=tuple(job.storage_ref for job in jobs),
+            export_jobs=len(jobs),
+            posting_deleted=posting_deleted,
         )
 
 

@@ -94,7 +94,18 @@ async def test_the_correct_password_verifies_before_erase_account_reads_and_retu
 
     report = await use_case(user.id, Password.from_input("correct horse battery staple"))
 
-    assert report == AccountErasureReport(base_cvs=1, files_unlinked=1, unlink_failures=())
+    # Slice 2.3 (AC-15, T10): the report's widened fields, amended on purpose in the RED commit —
+    # an account with no history erases zero runs, postings and export jobs, and `files` counts
+    # every key it tried to unlink.
+    assert report == AccountErasureReport(
+        base_cvs=1,
+        files_unlinked=1,
+        unlink_failures=(),
+        tailoring_runs=0,
+        job_postings=0,
+        export_jobs=0,
+        files=1,
+    )
     assert order[0] == "verify"
     assert order.index("verify") < order.index("files_of_account")
     assert hasher.verify_calls == [
