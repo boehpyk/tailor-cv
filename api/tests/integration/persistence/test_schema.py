@@ -368,3 +368,91 @@ async def test_ix_intake_base_cv_user_id_exists(session: AsyncSession) -> None:
         )
     )
     assert result.scalar_one_or_none() == "ix_intake_base_cv_user_id"
+
+
+# --- AC-18 (slice 2.3, T18): every owned table has exactly one owner --------------------------------
+
+
+async def test_every_owned_table_has_exactly_one_owner(session: AsyncSession) -> None:
+    """AC-18 — the replacement for 2.2's `test_guest_session_id_is_not_null_today_the_2_2_tripwire`,
+    retired in T13's commit when migration `03494836ce30` fired it on its last three tables (the
+    survives-a-purge proofs it asked for are `tests/integration/retention/
+    test_history_survives_retention.py`).
+
+    **The tables come from the catalog, not from a list**: every ordinary table in `public` with a
+    `guest_session_id` column. For each one, a validated `ON DELETE CASCADE` foreign key on
+    `guest_session_id` to `identity_guest_session`, another on `user_id` to `identity_user`, and a
+    validated `ck_<table>_exactly_one_owner` whose definition is
+    `num_nonnulls(guest_session_id, user_id) = 1`. A fifth owned table added without all three —
+    most dangerously without the CHECK, which is what keeps the guest cascade away from a user's row
+    (AC-21) — turns this red by name. The known four are asserted present so an enumeration that
+    silently found nothing cannot pass.
+
+    **Observed red, 2026-09-28**, with `ALTER TABLE export_job DROP CONSTRAINT
+    ck_export_job_exactly_one_owner` prepended inside the test's rolled-back transaction:
+    `AssertionError: … Left contains one more item: 'export_job has no ck_export_job_exactly_one_owner'`.
+    Removed; green. (`confdeltype` is read `::text`: asyncpg hands a bare `"char"` back as bytes,
+    and the first draft reported all eight foreign keys "not a validated CASCADE" for that reason.)
+    """
+    tables = set(
+        (
+            await session.execute(
+                text(
+                    "SELECT c.table_name FROM information_schema.columns c "
+                    "JOIN information_schema.tables t "
+                    "  ON t.table_schema = c.table_schema AND t.table_name = c.table_name "
+                    "WHERE c.table_schema = 'public' AND c.column_name = 'guest_session_id' "
+                    "  AND t.table_type = 'BASE TABLE'"
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert set(_GUEST_OWNED_TABLES) <= tables
+
+    problems: list[str] = []
+    for table_name in sorted(tables):
+        foreign_keys = (
+            await session.execute(
+                text(
+                    "SELECT a.attname, target.relname, con.confdeltype::text AS confdeltype, con.convalidated "
+                    "FROM pg_constraint con "
+                    "JOIN pg_class rel ON rel.oid = con.conrelid "
+                    "JOIN pg_class target ON target.oid = con.confrelid "
+                    "JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey) "
+                    "WHERE rel.relname = :table_name AND con.contype = 'f' "
+                    "  AND cardinality(con.conkey) = 1"
+                ),
+                {"table_name": table_name},
+            )
+        ).all()
+        by_column = {row.attname: row for row in foreign_keys}
+        for column, target in (
+            ("guest_session_id", "identity_guest_session"),
+            ("user_id", "identity_user"),
+        ):
+            fk = by_column.get(column)
+            if fk is None or fk.relname != target:
+                problems.append(f"{table_name}.{column} has no foreign key to {target}")
+            elif fk.confdeltype != "c" or not fk.convalidated:
+                problems.append(f"{table_name}.{column}'s foreign key is not a validated CASCADE")
+
+        check = (
+            await session.execute(
+                text(
+                    "SELECT pg_get_constraintdef(con.oid) AS definition, con.convalidated "
+                    "FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid "
+                    "WHERE rel.relname = :table_name AND con.conname = :name AND con.contype = 'c'"
+                ),
+                {"table_name": table_name, "name": f"ck_{table_name}_exactly_one_owner"},
+            )
+        ).one_or_none()
+        if check is None:
+            problems.append(f"{table_name} has no ck_{table_name}_exactly_one_owner")
+        elif "num_nonnulls(guest_session_id, user_id) = 1" not in check.definition:
+            problems.append(f"{table_name}'s exactly-one-owner CHECK reads {check.definition!r}")
+        elif not check.convalidated:
+            problems.append(f"{table_name}'s exactly-one-owner CHECK is NOT VALID")
+
+    assert problems == []
