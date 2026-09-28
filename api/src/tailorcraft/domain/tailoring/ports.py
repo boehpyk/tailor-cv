@@ -126,43 +126,6 @@ class TailoringRunRepository(Protocol):
         ordinary answer, and it is the first thing a new visitor's history says."""
         ...
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        """How many runs `sid` owns, for the `TooManyTailoringRuns` check.
-
-        **Superseded by `count_for_owner` (slice 2.3)** and removed once T14's adapter and the test
-        fakes implement the replacement; kept until then so nothing stops satisfying this Protocol
-        in the middle of the slice.
-
-        A separate method rather than `len(await list_for_session(sid))` so the SQL adapter can
-        answer with `COUNT(*)`. The saving is larger here than it was for the earlier two caps: a run
-        carries a tailored CV *and* a cover letter, so materializing twenty rows to measure how many
-        there are would pull every document body of a session's whole history into memory to produce
-        one integer.
-        """
-        ...
-
-    async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
-        """The session's one run in flight, or `None`.
-
-        **Superseded by `find_active_for_owner` (slice 2.3)** and removed with `count_for_session`,
-        for the same reason.
-
-        "Active" means a status that is **not terminal** — `QUEUED` or `RUNNING`, the two values
-        `TailoringRunStatus` documents as non-terminal and the two a client's poller keeps polling
-        through. `SUCCEEDED` and `FAILED` are decided exactly once and are never active again.
-
-        Serves the at-most-one-active-run rule, which is **soft** by decision (ADR-0014 §4): it spans
-        aggregates, so it lives in `RequestTailoringRun` rather than on `TailoringRun`, and two
-        genuinely concurrent requests may both pass it and both create a run. That is accepted,
-        exactly as slice 1.1's F-23 and 1.2's P-32 accepted the same shape. The rule's job is to stop
-        a double-click from buying two paid calls and to make "reattach after a refresh" trivial —
-        not to be a lock on the hot path.
-
-        Returns the run rather than a bool for that second job: the 409 body carries the active run's
-        id so the client can attach to the run already in flight instead of paying for another.
-        """
-        ...
-
     async def count_for_owner(self, owner: Owner) -> int:
         """How many runs `owner` owns, for the `TooManyTailoringRuns` check — either variant (slice
         2.3). The cap it is compared with is the use case's choice by variant (20 per guest session,

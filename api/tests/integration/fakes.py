@@ -499,9 +499,6 @@ class FakeJobPostingRepository:
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[JobPosting]:
         return [posting for posting in self._by_id.values() if posting.owner == GuestOwner(sid)]
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        return len(await self.list_for_session(sid))
-
     async def count_for_owner(self, owner: Owner) -> int:
         return len([posting for posting in self._by_id.values() if posting.owner == owner])
 
@@ -729,16 +726,6 @@ class FakeTailoringRunRepository:
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[TailoringRun]:
         runs = [run for run in self._by_id.values() if run.owner == GuestOwner(sid)]
         return sorted(runs, key=lambda run: run.requested_at, reverse=True)
-
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        return len([run for run in self._by_id.values() if run.owner == GuestOwner(sid)])
-
-    async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
-        active_statuses = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
-        for run in self._by_id.values():
-            if run.owner == GuestOwner(sid) and run.status in active_statuses:
-                return run
-        return None
 
     async def count_for_owner(self, owner: Owner) -> int:
         return len([run for run in self._by_id.values() if run.owner == owner])

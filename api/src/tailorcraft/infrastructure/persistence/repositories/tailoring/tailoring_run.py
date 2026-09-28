@@ -251,48 +251,6 @@ class SqlAlchemyTailoringRunRepository:
         )
         return result.scalars().all()
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        """`SELECT count(*)`, not `len(await list_for_session(sid))` — the port docstring is explicit
-        that this must not materialize every row just to measure them, and the saving is larger here
-        than for the earlier two caps: each row carries a tailored CV *and* a cover letter, so
-        counting by materializing would pull every document body of a session's whole history into
-        memory to produce one integer."""
-        result = await self._session.execute(
-            select(func.count())
-            .select_from(TailoringRun)
-            .where(_TAILORING_RUN_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
-        )
-        return result.scalar_one()
-
-    async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
-        """The session's one run in flight — `queued` or `running` — or `None`.
-
-        Returns the run rather than a bool because the 409 body carries its id, so a client that
-        double-clicked can attach to the run already in flight instead of paying for a second call.
-
-        `LIMIT 1` over an ordered query rather than `scalar_one_or_none()`, because the
-        at-most-one-active rule is **soft** by decision (ADR-0014 §4): it spans aggregates, lives in
-        `RequestTailoringRun`, and two genuinely concurrent requests may both pass it. That is
-        accepted — but it means two active rows are possible, and `scalar_one_or_none()` would turn
-        that accepted race into a `MultipleResultsFound` at the one moment the user is already
-        confused. Ordering matches `list_for_session` so "the active one" means the newest, which is
-        the run a double-clicking client wants to attach to.
-
-        **No partial index on `(guest_session_id) WHERE status IN ('queued','running')`, and the
-        absence is a decision rather than an oversight** (the same note sits on the column in the
-        mapping module): with at most twenty runs per session, `ix_tailoring_run_guest_session_id`
-        plus a filter on a handful of rows is free. A partial index is the change to make if a
-        session ever holds thousands of runs — not before.
-        """
-        result = await self._session.execute(
-            select(TailoringRun)
-            .where(_TAILORING_RUN_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
-            .where(_TAILORING_RUN_STATUS.in_(_ACTIVE_STATUSES))
-            .order_by(_TAILORING_RUN_REQUESTED_AT.desc(), _TAILORING_RUN_ID.desc())
-            .limit(1)
-        )
-        return result.scalars().first()
-
     async def count_for_owner(self, owner: Owner) -> int:
         """`SELECT count(*)` over the owner's column — `count_for_session`'s reason (no document
         body is materialized to produce one integer), either variant.

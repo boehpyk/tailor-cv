@@ -63,19 +63,6 @@ class JobPostingRepository(Protocol):
         session owns none — never an error; "you have captured nothing yet" is an ordinary answer."""
         ...
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        """How many postings `sid` owns, for the `TooManyJobPostings` check (P-32).
-
-        A separate method rather than `len(await list_for_session(sid))` so the SQL adapter can
-        answer with `COUNT(*)` instead of materializing every row — including every row's full
-        posting text — just to measure how many there are.
-
-        **Superseded by `count_for_owner` (slice 2.3)** and removed once T14's adapter and the test
-        fakes implement the replacement; kept until then so nothing stops satisfying this Protocol
-        in the middle of the slice.
-        """
-        ...
-
     async def count_for_owner(self, owner: Owner) -> int:
         """How many postings `owner` owns, for the `TooManyJobPostings` check — either variant
         (slice 2.3). The cap is the use case's choice by variant; this answers only the count, with

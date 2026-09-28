@@ -140,15 +140,6 @@ class SqlAlchemyJobPostingRepository:
         )
         return result.scalars().all()
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        """`SELECT count(*)`, not `len(await list_for_session(sid))` — the port docstring is explicit
-        that this must not materialize every row just to measure them, and here each row carries up
-        to 30,000 characters of posting text."""
-        result = await self._session.execute(
-            select(func.count()).select_from(JobPosting).where(_JOB_POSTING_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
-        )
-        return result.scalar_one()
-
     async def count_for_owner(self, owner: Owner) -> int:
         """`SELECT count(*)` over the owner's column — `count_for_session`'s reason, either variant.
 

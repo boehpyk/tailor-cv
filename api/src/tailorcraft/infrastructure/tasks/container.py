@@ -175,12 +175,6 @@ class CommittingTailoringRunRepository:
     async def list_for_session(self, sid: GuestSessionId) -> Sequence[TailoringRun]:
         return await self._inner.list_for_session(sid)
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        return await self._inner.count_for_session(sid)
-
-    async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
-        return await self._inner.find_active_for_session(sid)
-
     async def count_for_owner(self, owner: Owner) -> int:
         return await self._inner.count_for_owner(owner)
 

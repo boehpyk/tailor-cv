@@ -209,7 +209,7 @@ class RequestExport:
         # purpose: a visitor at the cap who asks again for a job that already exists is handed that
         # job, rather than a 409 that would be true and useless (X-18).
         # The cap is chosen by variant (ADR-0016 amendment (b)): 40 per guest session, 20 per run for
-        # a user. The guest arm keeps `count_for_session` until T14 lands the SQL adapters.
+        # a user. The guest cap stays `count_for_session`: it spans every run in the session.
         # Matched on the **run's** owner, which `GetTailoringRun` has just proven equal to the
         # resolved requester — the job will take that owner too (step 5), so the cap and the row
         # agree on whose job this is.
