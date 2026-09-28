@@ -87,7 +87,6 @@ class _World:
     def use_case(self) -> RequestTailoringRun:
         return RequestTailoringRun(
             self.runs,
-            self.users,
             GetBaseCv(self.cvs, self.sessions, self.users, self.clock),
             GetJobPosting(self.postings, self.sessions, self.users, self.clock),
             self.events,

@@ -632,7 +632,6 @@ TailoringRateLimiterDep = Annotated[
 
 def get_request_tailoring_run(
     runs: TailoringRunRepositoryDep,
-    users: UserRepositoryDep,
     get_base_cv: GetBaseCvDep,
     get_job_posting: GetJobPostingDep,
     events: EventPublisherDep,
@@ -653,7 +652,6 @@ def get_request_tailoring_run(
     # `max_tailoring_runs_per_user` to Settings and wires it here.
     return RequestTailoringRun(
         runs,
-        users,
         get_base_cv,
         get_job_posting,
         events,

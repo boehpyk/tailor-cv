@@ -11,7 +11,6 @@ from typing import assert_never
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
-from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.clock import Clock
@@ -136,7 +135,6 @@ class RequestTailoringRun:
     def __init__(
         self,
         runs: TailoringRunRepository,
-        users: UserRepository,
         get_base_cv: GetBaseCv,
         get_job_posting: GetJobPosting,
         events: EventPublisherPort,
@@ -145,10 +143,6 @@ class RequestTailoringRun:
         max_per_user: int = 500,
     ) -> None:
         self._runs = runs
-        # Not read by this class: the composed `GetBaseCv` / `GetJobPosting` already resolve the
-        # requester (`UserNotFound` included) before anything else happens. Kept because T10's tests
-        # construct the use case with it; dropping it is a test correction, owed its own commit.
-        self._users = users
         self._get_base_cv = get_base_cv
         self._get_job_posting = get_job_posting
         self._events = events

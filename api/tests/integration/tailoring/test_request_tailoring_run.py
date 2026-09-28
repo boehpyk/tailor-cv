@@ -193,7 +193,6 @@ def _use_case(
     users = FakeUserRepository()
     return RequestTailoringRun(
         runs,
-        users,
         GetBaseCv(cvs, sessions, users, clock),
         GetJobPosting(postings, sessions, users, clock),
         events,
