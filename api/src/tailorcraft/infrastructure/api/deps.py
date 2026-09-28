@@ -491,8 +491,6 @@ def get_capture_job_posting(
     clock: ClockDep,
     settings: SettingsDep,
 ) -> CaptureJobPosting:
-    # `max_per_user` keeps the use case's default (500, OQ-6) until T20 adds
-    # `max_job_postings_per_user` to Settings and wires it here.
     return CaptureJobPosting(
         postings,
         sessions,
@@ -501,6 +499,7 @@ def get_capture_job_posting(
         events,
         clock,
         max_per_session=settings.max_job_postings_per_session,
+        max_per_user=settings.max_job_postings_per_user,
     )
 
 
@@ -648,8 +647,6 @@ def get_request_tailoring_run(
     authorization rule the moment either use case grows a check — so the existing providers are
     reused instead.
     """
-    # `max_per_user` keeps the use case's default (500, OQ-6) until T20 adds
-    # `max_tailoring_runs_per_user` to Settings and wires it here.
     return RequestTailoringRun(
         runs,
         get_base_cv,
@@ -657,6 +654,7 @@ def get_request_tailoring_run(
         events,
         clock,
         max_per_session=settings.max_tailoring_runs_per_session,
+        max_per_user=settings.max_tailoring_runs_per_user,
     )
 
 
@@ -844,14 +842,13 @@ def get_request_export(
     full. It is also why this provider never mentions `TailoringRunRepositoryDep`: the use case
     cannot reach a run any other way, so it cannot forget the check.
     """
-    # `max_per_user_run` keeps the use case's default (20, ADR-0016 amendment (b)) until T20 adds
-    # `max_export_jobs_per_user_run` to Settings and wires it here.
     return RequestExport(
         jobs,
         get_tailoring_run,
         events,
         clock,
         max_per_session=settings.max_export_jobs_per_session,
+        max_per_user_run=settings.max_export_jobs_per_user_run,
     )
 
 

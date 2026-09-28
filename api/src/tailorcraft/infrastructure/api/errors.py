@@ -66,12 +66,13 @@ from tailorcraft.domain.posting.errors import (
     TooManyJobPostings,
 )
 from tailorcraft.domain.posting.value_objects import FetchFailureReason
-from tailorcraft.domain.retention.errors import AccountNotFound
+from tailorcraft.domain.retention.errors import AccountNotFound, HistoryEntryInProgress
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
     BaseCvNotReadyForTailoring,
     EmptyTailoredDocument,
+    InvalidHistoryCursor,
     InvalidTailoredDocument,
     TailoredDocumentTooLong,
     TailoredDocumentTooShort,
@@ -472,6 +473,32 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         # have. Inventing one would be a lie the client would send straight back as
         # `expected_version`.
         return _document_version_conflict(current_version=None)
+
+    # -- history (slice 2.3, technical plan §3 `errors.py`) ---------------------------------------
+    if isinstance(exc, HistoryEntryInProgress):
+        # H-42. 409, the `tailoring_run_not_editable` reasoning: a well-formed request for a run the
+        # caller owns, refused because of the run's *state*. Nothing was deleted. The body carries
+        # `status` so the client can say "still being prepared" rather than "something went wrong".
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_run_in_progress",
+                "message": "This run is still being prepared. Delete it once it has finished.",
+                "status": exc.status,
+            },
+        )
+
+    if isinstance(exc, InvalidHistoryCursor):
+        # H-26. One code for every refused cursor — bad base64, bad shape, naive or fractional time,
+        # bad UUID all reach the domain value object or the codec as this. A fixed sentence: the
+        # cursor itself is never echoed and never logged.
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_cursor",
+                "message": "That page link is not valid. Start again from the first page.",
+            },
+        )
 
     # -- export (slice 1.5, ADR-0016 / ADR-0017) ------------------------------------------------
     # Again a branch in the SAME function, for the reason this module's docstring gives: `deps.py`

@@ -56,7 +56,7 @@ from tailorcraft.infrastructure.settings import Settings
 # ---------------------------------------------------------------------------------------------
 
 
-def to_response(posting: JobPosting, expires_at: datetime) -> JobPostingResponse:
+def to_response(posting: JobPosting, expires_at: datetime | None) -> JobPostingResponse:
     """The full shape, including the text. `expires_at` is the SESSION's, not the row's — the
     session owns the 24-hour promise, and carrying it here puts that promise in the payload as well
     as in the UI copy."""
@@ -72,7 +72,7 @@ def to_response(posting: JobPosting, expires_at: datetime) -> JobPostingResponse
     )
 
 
-def to_summary(posting: JobPosting, expires_at: datetime) -> JobPostingSummary:
+def to_summary(posting: JobPosting, expires_at: datetime | None) -> JobPostingSummary:
     """The list shape: everything except the full text, plus a bounded preview.
 
     Five postings at 30,000 characters is 150 KB of user content in one response and in whatever
@@ -111,7 +111,7 @@ async def create_job_posting(
     request: Request,
     body: CreateJobPostingRequest,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     principal: tuple[RateLimitScope, str],
     settings: Settings,
     create_limiter: RedisFixedWindowRateLimiter,

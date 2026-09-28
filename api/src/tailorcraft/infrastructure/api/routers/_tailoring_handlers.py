@@ -124,7 +124,7 @@ def is_retryable(reason: TailoringFailureReason | None) -> bool:
             assert_never(reason)
 
 
-def to_response(run: TailoringRun, expires_at: datetime) -> TailoringRunResponse:
+def to_response(run: TailoringRun, expires_at: datetime | None) -> TailoringRunResponse:
     """The full shape, including both documents. `expires_at` is the **session's** — the session
     owns the 24-hour promise (ADR-0006), exactly as `BaseCvResponse` and `JobPostingResponse` carry
     it.
@@ -166,7 +166,7 @@ def to_response(run: TailoringRun, expires_at: datetime) -> TailoringRunResponse
     )
 
 
-def to_summary(run: TailoringRun, expires_at: datetime) -> TailoringRunSummary:
+def to_summary(run: TailoringRun, expires_at: datetime | None) -> TailoringRunSummary:
     """The list shape: `to_response` minus the two document bodies.
 
     Written out in full rather than derived from `to_response` (e.g. by dumping and dropping two
@@ -316,7 +316,7 @@ async def request_tailoring_run(
     response: Response,
     body: CreateTailoringRunRequest,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     principal: tuple[RateLimitScope, str],
     location_prefix: str,
     settings: Settings,
@@ -450,7 +450,7 @@ async def get_tailoring_run(
     tailoring_run_id: TailoringRunId,
     response: Response,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     get_use_case: GetTailoringRun,
 ) -> TailoringRunResponse:
     """`GET /api/tailoring-runs/{id}`'s body — the endpoint a client polls."""
@@ -470,7 +470,7 @@ async def revise_tailored_document(
     response: Response,
     body: ReviseDocumentRequest,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     principal: tuple[RateLimitScope, str],
     settings: Settings,
     rate_limiter: RedisFixedWindowRateLimiter,

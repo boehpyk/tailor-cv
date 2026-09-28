@@ -113,7 +113,7 @@ def is_retryable(reason: ExportFailureReason | None) -> bool:
 
 
 def to_response(
-    job: ExportJob, *, run_version_now: int | None, expires_at: datetime, jobs_prefix: str
+    job: ExportJob, *, run_version_now: int | None, expires_at: datetime | None, jobs_prefix: str
 ) -> ExportJobResponse:
     """One `ExportJob` as the wire sees it — the body of the `POST`, of the poll, and of every row
     of the listing, so the client has one parser and one renderer.
@@ -325,7 +325,7 @@ async def request_export(
     response: Response,
     body: CreateExportRequest,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     principal: tuple[RateLimitScope, str],
     jobs_prefix: str,
     settings: Settings,
@@ -488,7 +488,7 @@ async def list_exports_for_run(
     run_id: TailoringRunId,
     response: Response,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     jobs_prefix: str,
     list_exports: ListExportsForRun,
 ) -> ExportJobListResponse:
@@ -520,7 +520,7 @@ async def get_export_job(
     export_job_id: ExportJobId,
     response: Response,
     requester: Owner,
-    expires_at: datetime,
+    expires_at: datetime | None,
     jobs_prefix: str,
     get_job: GetExportJob,
 ) -> ExportJobResponse:

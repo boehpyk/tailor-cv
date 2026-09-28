@@ -44,6 +44,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from tailorcraft.domain.posting.value_objects import PostingSource
 from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason, TailoringRunStatus
 
 
@@ -171,7 +172,11 @@ class TailoringRunResponse(BaseModel):
     # The **guest session's** expiry, not a property of the run row — the session owns the 24-hour
     # promise (ADR-0006) and carrying it here puts that promise in the payload as well as in the UI
     # copy, exactly as `BaseCvResponse` and `JobPostingResponse` do.
-    expires_at: datetime
+    # **`null` since slice 2.3 (OQ-8) means "kept until you delete it"**: an account row has no
+    # retention clock. A guest route always sets it (AC-34); an `/api/me/` route always sends `null`.
+    # One schema for both owners rather than an account twin, because the React components are shared
+    # (plan §0.9) and `expires_at` is a fact about the owner's retention, not about the row.
+    expires_at: datetime | None
 
     # The optimistic-concurrency token (ADR-0015 §3): the client sends it back as
     # `expected_version` on every `PUT`, and a stale one is a 409 `document_version_conflict`
@@ -228,7 +233,11 @@ class TailoringRunSummary(BaseModel):
     requested_at: datetime
     started_at: datetime | None
     completed_at: datetime | None
-    expires_at: datetime
+    # **`null` since slice 2.3 (OQ-8) means "kept until you delete it"**: an account row has no
+    # retention clock. A guest route always sets it (AC-34); an `/api/me/` route always sends `null`.
+    # One schema for both owners rather than an account twin, because the React components are shared
+    # (plan §0.9) and `expires_at` is a fact about the owner's retention, not about the row.
+    expires_at: datetime | None
 
     # Same three fields, same "required, no default" rule, as `TailoringRunResponse` — see there.
     version: int
@@ -243,3 +252,63 @@ class TailoringRunListResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     items: list[TailoringRunSummary] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.3 — a signed-in user's history (technical plan §4, ADR-0024).
+# --------------------------------------------------------------------------------------------------
+
+
+class HistoryBaseCvResponse(BaseModel):
+    """The base CV half of a history entry, present only while the saved CV still exists."""
+
+    id: UUID
+    label: str | None
+    original_filename: str
+
+
+class HistoryPostingResponse(BaseModel):
+    """The posting half of a history entry. `preview` is at most 140 characters, computed in SQL;
+    the full text is never in a list (AC-55)."""
+
+    id: UUID
+    source: PostingSource
+    title: str | None
+    source_url: str | None
+    preview: str
+
+
+class HistoryEntryResponse(BaseModel):
+    """One run in a user's history: how it ended and what is left of its two inputs — **never a
+    document body** (AC-55). The documents are one click away on `GET /api/me/tailoring-runs/{id}`.
+
+    **Not a `TailoringRunSummary`**, and not a subclass of it: the guest list is 1.3's shape for a
+    24-hour workspace, and this one carries the CV and the posting a user needs to recognise an entry
+    a month later (plan §4). Shared shape is not shared meaning.
+
+    `base_cv_id` is always present — the run's own reference — and `base_cv` is `null` exactly when
+    that saved CV has been deleted (H-29): two facts, two fields. `posting` is `null` only for an
+    entry whose posting row is missing, which should be impossible (H-30). `retryable` is the API's
+    rule (`_tailoring_handlers.is_retryable`), as on the run.
+    """
+
+    id: UUID
+    status: TailoringRunStatus
+    failure_reason: TailoringFailureReason | None
+    retryable: bool
+    requested_at: datetime
+    completed_at: datetime | None
+    version: int
+    edited: bool
+    base_cv_id: UUID
+    base_cv: HistoryBaseCvResponse | None
+    posting: HistoryPostingResponse | None
+
+
+class HistoryPageResponse(BaseModel):
+    """One keyset page of a user's history, newest first. `next_cursor` is an opaque string to send
+    back as `?cursor=`, or `null` on the last page. An empty history is `{"items": [], "next_cursor":
+    null}` and a 200, never a 404."""
+
+    items: list[HistoryEntryResponse]
+    next_cursor: str | None

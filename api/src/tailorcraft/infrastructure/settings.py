@@ -322,6 +322,11 @@ class Settings(BaseSettings):
     # A cross-aggregate cap enforced in `CaptureJobPosting`, not on the aggregate — the rule spans
     # every posting a session owns, which no single `JobPosting` can know.
     max_job_postings_per_session: int = 10
+    # The per-user cap on job postings (slice 2.3, OQ-6), `TooManyJobPostings` at the use case. A
+    # separate setting from the per-session cap for 2.2's reason: a guest's postings live 24 hours, a
+    # user's until the history entry that uses them is deleted. Bounded both ways — 0 would make the
+    # account's posting input unusable, and a large value is a storage promise nobody decided to make.
+    max_job_postings_per_user: int = Field(default=500, ge=1, le=5000)
 
     # The `MaxBodySizeMiddleware` cap for NON-multipart bodies. 30,000 characters of UTF-8 is at
     # most ~120 KB, so this refuses an absurd paste before it is parsed while leaving every legal
@@ -416,6 +421,10 @@ class Settings(BaseSettings):
     # A cross-aggregate cap enforced in `RequestTailoringRun`, not on `TailoringRun` — the rule spans
     # every run a session owns, which no single run can know.
     max_tailoring_runs_per_session: int = 20
+    # The per-user cap on tailoring runs — the length of a history (slice 2.3, OQ-6). Every run is a
+    # paid call already made, so this bounds storage, not spend; the per-principal rate limit bounds
+    # spend. Bounded both ways, as `max_saved_base_cvs_per_user` is.
+    max_tailoring_runs_per_user: int = Field(default=500, ge=1, le=5000)
     # How long a run may stay `running` before it is recorded `failed` / `abandoned`. The stale-run
     # sweep (`AbandonStaleTailoringRuns`, run by beat every minute) applies this window, and so does
     # `ExecuteTailoringRun` step 3 when a redelivered message arrives late.
@@ -469,6 +478,10 @@ class Settings(BaseSettings):
     # every export a session owns, which no single job can know. 2 documents x 2 formats x a
     # generous number of re-exports, bounded by the purge.
     max_export_jobs_per_session: int = 40
+    # A user's export cap is per **run**, not per account (ADR-0016 amendment (b), OQ-15): a guest's
+    # jobs die with the session, a user's with the history entry, so the bound that matters is how
+    # many files one entry can accumulate. 2 documents x 2 formats x re-exports after edits.
+    max_export_jobs_per_user_run: int = Field(default=20, ge=1, le=100)
 
     # NOT settings, deliberately, and this list is the answer to "why is X not configurable?":
     #
