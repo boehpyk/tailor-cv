@@ -67,18 +67,10 @@ from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run
 
 # The four tables AC-2 reads the schema of — the ones ADR-0006's retention obligation names as "a
 # guest-owned row" (feature-spec.md's ubiquitous-language table). Index and cascade still hold for
-# all four after 2.2; only the NOT NULL half of the claim now differs by table (below).
+# all four. Since 2.3 (ADR-0023) none of them is NOT NULL on `guest_session_id` any more: each can be
+# user-owned, and `ck_<table>_exactly_one_owner` carries the invariant the NOT NULL used to.
 _GUEST_OWNED_TABLES: Final[tuple[str, ...]] = (
     "intake_base_cv",
-    "posting_job_posting",
-    "tailoring_run",
-    "export_job",
-)
-
-# AC-18: 2.2 made `intake_base_cv.guest_session_id` nullable (`ck_intake_base_cv_exactly_one_owner`
-# now carries the "exactly one owner" invariant the NOT NULL used to), so it is retired from AC-12's
-# tripwire. The other three tables are untouched — 2.3/2.4 are the slices expected to widen them next.
-_GUEST_OWNED_TABLES_STILL_NOT_NULL: Final[tuple[str, ...]] = (
     "posting_job_posting",
     "tailoring_run",
     "export_job",
@@ -148,10 +140,9 @@ async def test_guest_session_id_is_not_null_indexed_and_cascades_to_identity_gue
     """AC-2. For each of the four guest-owned tables: `guest_session_id` is the first column of at
     least one index (the cascade delete and, on `intake_base_cv`/`export_job`, a real application
     query both depend on it existing) and carries a foreign key to `identity_guest_session.id` with
-    `ON DELETE CASCADE` (`confdeltype = 'c'`). On three of the four it is also still `NOT NULL`;
-    `intake_base_cv` is the exception since 2.2 (AC-13) — a saved CV can be user-owned instead of
-    guest-owned, so the column is nullable and `ck_intake_base_cv_exactly_one_owner` carries the
-    "exactly one owner" invariant the `NOT NULL` used to.
+    `ON DELETE CASCADE` (`confdeltype = 'c'`). Since 2.2 (`intake_base_cv`) and 2.3 (the other
+    three, ADR-0023) the column is nullable on all four — the row can be user-owned — and
+    `ck_<table>_exactly_one_owner` carries the "exactly one owner" invariant the `NOT NULL` used to.
 
     This is a proof, not a discovery: the task list and CLAUDE.md both record that every column here
     was written correctly one slice early, specifically so 1.6 would add no migration. The test
@@ -166,28 +157,24 @@ async def test_guest_session_id_is_not_null_indexed_and_cascades_to_identity_gue
         ),
         {"table_name": table_name},
     )
-    if table_name == "intake_base_cv":
-        assert not_null.scalar_one() == "YES", (
-            "intake_base_cv.guest_session_id is NOT NULL — AC-13's migration was expected to make "
-            "it nullable so a saved CV can be user-owned"
-        )
-        check = await session.execute(
-            text(
-                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
-                "WHERE conrelid = 'intake_base_cv'::regclass "
-                "AND conname = 'ck_intake_base_cv_exactly_one_owner'"
-            )
-        )
-        definition = check.scalar_one_or_none()
-        assert definition is not None, (
-            "intake_base_cv carries no constraint named ck_intake_base_cv_exactly_one_owner"
-        )
-        assert "num_nonnulls(guest_session_id, user_id) = 1" in definition, (
-            f"ck_intake_base_cv_exactly_one_owner's definition is {definition!r}, not the "
-            "'exactly one owner' invariant AC-13 specifies"
-        )
-    else:
-        assert not_null.scalar_one() == "NO", f"{table_name}.guest_session_id is nullable"
+    assert not_null.scalar_one() == "YES", (
+        f"{table_name}.guest_session_id is NOT NULL — 2.2 (intake_base_cv) and 2.3 (the other three)"
+        " made it nullable so the row can be user-owned"
+    )
+    constraint_name = f"ck_{table_name}_exactly_one_owner"
+    check = await session.execute(
+        text(
+            "SELECT pg_get_constraintdef(con.oid) FROM pg_constraint con "
+            "JOIN pg_class rel ON rel.oid = con.conrelid "
+            "WHERE rel.relname = :table_name AND con.conname = :constraint_name"
+        ),
+        {"table_name": table_name, "constraint_name": constraint_name},
+    )
+    definition = check.scalar_one_or_none()
+    assert definition is not None, f"{table_name} carries no constraint named {constraint_name}"
+    assert "num_nonnulls(guest_session_id, user_id) = 1" in definition, (
+        f"{constraint_name}'s definition is {definition!r}, not the 'exactly one owner' invariant"
+    )
 
     indexed = await session.execute(
         text(
@@ -231,37 +218,6 @@ async def test_identity_guest_session_expires_at_is_indexed(session: AsyncSessio
         )
     )
     assert result.scalar_one() > 0
-
-
-# --- T31 / AC-12: the 2.2 tripwire ------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("table_name", _GUEST_OWNED_TABLES_STILL_NOT_NULL)
-async def test_guest_session_id_is_not_null_today_the_2_2_tripwire(
-    session: AsyncSession, table_name: str
-) -> None:
-    """AC-12 / AC-18. `guest_session_id` was `NOT NULL` on all four guest-owned tables until 2.2
-    (AC-13) made `intake_base_cv`'s nullable so a saved CV can be user- instead of guest-owned —
-    that table is retired from this tripwire's parameter list on purpose, in the same commit that
-    adds the "a registered user's CV survives a purge run" proof its firing was meant to unblock
-    (feature-spec.md AC-18, AC-15). The other three tables have no such column yet, so the fact this
-    test pins for them still holds: a row the purge must spare — a registered user's — cannot exist
-    on `posting_job_posting`, `tailoring_run` or `export_job` today. **When 2.3 or 2.4 makes one of
-    those nullable too, that table's parametrization goes red here**, and that is the signal to write
-    the equivalent survives-a-purge-run proof for it and retire it from this list in turn.
-    """
-    result = await session.execute(
-        text(
-            "SELECT is_nullable FROM information_schema.columns "
-            "WHERE table_name = :table_name AND column_name = 'guest_session_id'"
-        ),
-        {"table_name": table_name},
-    )
-    assert result.scalar_one() == "NO", (
-        f"{table_name}.guest_session_id is now nullable — the 2.2 tripwire has fired. Write the "
-        "real 'a registered user's row survives a purge run' test now, in this slice's successor, "
-        "and only then may this test be deleted or amended."
-    )
 
 
 # --- T32: one DELETE cascades across all four guest-owned tables in a single statement -------------
