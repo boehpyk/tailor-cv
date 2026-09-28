@@ -22,12 +22,14 @@ from typing import Final
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import Table, func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from tailorcraft.domain.export.export_job import ExportJob
+from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat
 from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.login import Login
-from tailorcraft.domain.identity.ownership import UserOwner
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, TokenHash, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -35,10 +37,19 @@ from tailorcraft.domain.intake.value_objects import CvContentType, OriginalFilen
 from tailorcraft.domain.retention.errors import AccountNotFound
 from tailorcraft.domain.retention.value_objects import AccountCounts
 from tailorcraft.domain.shared.files import FileRef
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.infrastructure.clock import FixedClock
+from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
 from tailorcraft.infrastructure.persistence.mapping.identity.login import login_table
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
+from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
+from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
+    tailoring_run_table,
+)
+from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
+    SqlAlchemyExportJobRepository,
+)
 from tailorcraft.infrastructure.persistence.repositories.identity.login import (
     SqlAlchemyLoginRepository,
 )
@@ -48,8 +59,16 @@ from tailorcraft.infrastructure.persistence.repositories.identity.user import (
 from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
     SqlAlchemyBaseCvRepository,
 )
+from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+    SqlAlchemyJobPostingRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+    SqlAlchemyTailoringRunRepository,
+)
 from tailorcraft.infrastructure.persistence.retention.account_data import SqlAlchemyAccountData
 from tailorcraft.infrastructure.settings import Settings
+from tests.integration.owners import pasted_posting, queued_export, ready_export, succeeded_run
+from tests.integration.persistence.owner_rows import persist_guest
 
 _PASSWORD_HASH = PasswordHash("$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA")
 _LOGIN_LIFETIME = timedelta(days=30)
@@ -302,3 +321,96 @@ async def test_ac32_an_upload_racing_an_erasure_finds_no_owner_and_leaves_no_row
         assert remaining_cvs.scalar_one() == 0, (
             "the racing upload left a row behind despite its INSERT failing"
         )
+
+
+# --- Slice 2.3 (T17): the account's history ----------------------------------------------------------
+
+
+async def _history(
+    session: AsyncSession, clock: FixedClock, owner: UserOwner | GuestOwner
+) -> tuple[TailoringRun, list[ExportJob]]:
+    """A posting, a run over it, and a `ready`, a `rendering` and a `failed` export job."""
+    posting = pasted_posting(owner, clock.now())
+    await SqlAlchemyJobPostingRepository(session).add(posting)
+    run = succeeded_run(owner, clock.now(), job_posting_id=posting.id)
+    await SqlAlchemyTailoringRunRepository(session).add(run)
+    ready = ready_export(owner, run, clock.now(), format=ExportFormat.PDF)
+    rendering = queued_export(owner, run, clock.now(), format=ExportFormat.DOCX)
+    rendering.mark_started(clock.now())
+    failed = queued_export(owner, run, clock.now(), format=ExportFormat.PDF)
+    failed.mark_started(clock.now())
+    failed.mark_failed(ExportFailureReason.RENDER_FAILED, clock.now())
+    jobs = SqlAlchemyExportJobRepository(session)
+    for job in (ready, rendering, failed):
+        await jobs.add(job)
+    await session.flush()
+    return run, [ready, rendering, failed]
+
+
+async def test_files_of_account_adds_every_export_jobs_derived_key_even_without_its_run(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """AC-15: the export keys are **derived** from `(id, format)`, never read from `file_key`, so a
+    `rendering` or `failed` job's bytes are collected too — and a job whose run row is already gone
+    (H-49's residual) still names its file. Another user's and a guest's jobs are not included."""
+    user_id = await _persist_user(session, clock, email="history-files@example.com")
+    user = UserOwner(user_id)
+    cvs = SqlAlchemyBaseCvRepository(session)
+    cv = _saved_cv(cvs, user_id, clock)
+    await cvs.add(cv)
+    run, jobs = await _history(session, clock, user)
+    await _history(
+        session, clock, UserOwner(await _persist_user(session, clock, email="x@example.com"))
+    )
+    await _history(session, clock, await persist_guest(session, clock))
+    await session.execute(tailoring_run_table.delete().where(tailoring_run_table.c.id == run.id))
+
+    keys = await SqlAlchemyAccountData(session).files_of_account(user_id)
+
+    assert sorted(ref.key for ref in keys) == sorted(
+        [cv.file.key, *(FileRef.for_export(job.id, job.format).key for job in jobs)]
+    )
+
+
+async def test_count_account_counts_the_history_and_files_matches_files_of_account(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    user_id = await _persist_user(session, clock, email="history-count@example.com")
+    user = UserOwner(user_id)
+    cvs = SqlAlchemyBaseCvRepository(session)
+    await cvs.add(_saved_cv(cvs, user_id, clock))
+    await _history(session, clock, user)
+    await _history(session, clock, user)
+    await _history(session, clock, await persist_guest(session, clock))
+
+    accounts = SqlAlchemyAccountData(session)
+    counts = await accounts.count_account(user_id)
+    files = await accounts.files_of_account(user_id)
+
+    assert counts == AccountCounts(
+        base_cvs=1, files=7, logins=0, tailoring_runs=2, job_postings=2, export_jobs=6
+    )
+    assert counts.files == len(files)
+
+
+async def test_delete_account_cascades_the_users_history_and_spares_a_guests(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    user_id = await _persist_user(session, clock, email="history-cascade@example.com")
+    mine, my_jobs = await _history(session, clock, UserOwner(user_id))
+    theirs, their_jobs = await _history(session, clock, await persist_guest(session, clock))
+
+    assert await SqlAlchemyAccountData(session).delete_account(user_id) is True
+
+    async def exists(table: Table, row_id: object) -> bool:
+        found = await session.execute(
+            select(func.count()).select_from(table).where(table.c.id == row_id)
+        )
+        return found.scalar_one() == 1
+
+    assert not await exists(tailoring_run_table, mine.id)
+    assert not await exists(job_posting_table, mine.job_posting_id)
+    assert not any([await exists(export_job_table, job.id) for job in my_jobs])
+    assert await exists(tailoring_run_table, theirs.id)
+    assert await exists(job_posting_table, theirs.job_posting_id)
+    assert all([await exists(export_job_table, job.id) for job in their_jobs])
