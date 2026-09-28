@@ -307,7 +307,7 @@ async def test_deleting_a_guest_session_cascades_to_its_job_postings(
 
 
 async def test_guest_session_id_index_exists_on_job_posting(session: AsyncSession) -> None:
-    """Serves `GET /api/job-postings`, `count_for_session`, and the cascade above."""
+    """Serves `GET /api/job-postings`, `count_for_owner`, and the cascade above."""
     result = await session.execute(
         text(
             "SELECT indexname FROM pg_indexes "
@@ -321,7 +321,7 @@ async def test_guest_session_id_index_exists_on_job_posting(session: AsyncSessio
 # --- Repository scoping ------------------------------------------------------------------------------
 
 
-async def test_count_for_session_counts_only_that_sessions_rows(
+async def test_count_for_owner_counts_only_that_guest_sessions_rows(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner_a = await _persist_owner(session, clock, token_hash="9" * 64)
@@ -332,8 +332,8 @@ async def test_count_for_session_counts_only_that_sessions_rows(
     await postings.add(_pasted(postings, owner_a.id, clock))
     await postings.add(_pasted(postings, owner_b.id, clock))
 
-    assert await postings.count_for_session(owner_a.id) == 2
-    assert await postings.count_for_session(owner_b.id) == 1
+    assert await postings.count_for_owner(GuestOwner(owner_a.id)) == 2
+    assert await postings.count_for_owner(GuestOwner(owner_b.id)) == 1
 
 
 async def test_list_for_session_is_scoped_and_ordered_newest_first(

@@ -536,7 +536,7 @@ async def test_deleting_a_guest_session_cascades_to_its_tailoring_runs(
 
 
 async def test_guest_session_id_index_exists_on_tailoring_run(session: AsyncSession) -> None:
-    """Serves `GET /api/tailoring-runs`, `count_for_session`, `find_active_for_session` and the
+    """Serves `GET /api/tailoring-runs`, `count_for_owner`, `find_active_for_owner` and the
     cascade above."""
     result = await session.execute(
         text(
@@ -608,10 +608,10 @@ async def test_list_for_session_breaks_a_tie_on_the_same_second_by_id_descending
     assert [run.id for run in result] == [newer.id, older.id]
 
 
-# --- count_for_session and find_active_for_session against the real database -----------------------
+# --- count_for_owner and find_active_for_owner (guest owner) against the real database ------------
 
 
-async def test_count_for_session_counts_only_that_sessions_rows(
+async def test_count_for_owner_counts_only_that_guest_sessions_rows(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner_a = await _persist_owner(session, clock, token_hash="1b" * 32)
@@ -622,11 +622,11 @@ async def test_count_for_session_counts_only_that_sessions_rows(
     await runs.add(_succeeded(runs, owner_a.id, clock))
     await runs.add(_queued(runs, owner_b.id, clock))
 
-    assert await runs.count_for_session(owner_a.id) == 2
-    assert await runs.count_for_session(owner_b.id) == 1
+    assert await runs.count_for_owner(GuestOwner(owner_a.id)) == 2
+    assert await runs.count_for_owner(GuestOwner(owner_b.id)) == 1
 
 
-async def test_find_active_for_session_returns_none_when_every_run_is_terminal(
+async def test_find_active_for_owner_returns_none_when_every_run_is_terminal(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1d" * 32)
@@ -634,10 +634,10 @@ async def test_find_active_for_session_returns_none_when_every_run_is_terminal(
     await runs.add(_succeeded(runs, owner.id, clock))
     await runs.add(_failed(runs, owner.id, clock))
 
-    assert await runs.find_active_for_session(owner.id) is None
+    assert await runs.find_active_for_owner(GuestOwner(owner.id)) is None
 
 
-async def test_find_active_for_session_finds_a_queued_run(
+async def test_find_active_for_owner_finds_a_queued_run(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1e" * 32)
@@ -646,13 +646,13 @@ async def test_find_active_for_session_finds_a_queued_run(
     await runs.add(active)
     await runs.add(_succeeded(runs, owner.id, clock))  # a decoy, must not be returned
 
-    found = await runs.find_active_for_session(owner.id)
+    found = await runs.find_active_for_owner(GuestOwner(owner.id))
 
     assert found is not None
     assert found.id == active.id
 
 
-async def test_find_active_for_session_finds_a_running_run(
+async def test_find_active_for_owner_finds_a_running_run(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1f" * 32)
@@ -661,13 +661,13 @@ async def test_find_active_for_session_finds_a_running_run(
     await runs.add(active)
     await runs.add(_failed(runs, owner.id, clock))  # a decoy, must not be returned
 
-    found = await runs.find_active_for_session(owner.id)
+    found = await runs.find_active_for_owner(GuestOwner(owner.id))
 
     assert found is not None
     assert found.id == active.id
 
 
-async def test_find_active_for_session_with_two_active_runs_returns_the_newest_without_raising(
+async def test_find_active_for_owner_with_two_active_runs_returns_the_newest_without_raising(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     """ADR-0014 §4: the one-active-run rule is a SOFT use-case check (`RequestTailoringRun`'s own
@@ -686,7 +686,7 @@ async def test_find_active_for_session_with_two_active_runs_returns_the_newest_w
     newer_active = _running(runs, owner.id, clock)
     await runs.add(newer_active)
 
-    found = await runs.find_active_for_session(owner.id)
+    found = await runs.find_active_for_owner(GuestOwner(owner.id))
 
     assert found is not None
     assert found.id == newer_active.id
