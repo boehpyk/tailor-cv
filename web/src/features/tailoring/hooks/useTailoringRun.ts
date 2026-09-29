@@ -2,14 +2,26 @@ import { queryOptions, useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
 import { fetchTailoringRun } from '@/api/tailoringRuns';
+import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import { isActiveTailoringRunStatus } from '../types';
 
 import type { TailoringRun } from '../types';
+import type { ScopeMap } from '@/features/scope/scopeMap';
 
-/** The cache key for one run. `null` is a legal member: it is the key of the disabled query. */
-export function tailoringRunQueryKey(runId: string | null) {
-  return ['tailoring', 'tailoringRun', runId] as const;
+/**
+ * The cache key for one run. `null` is a legal member: it is the key of the disabled query.
+ *
+ * Under the scope's key root (slice 2.3): a guest's is exactly 1.4's `['tailoring', 'tailoringRun',
+ * id]`, an account's the same tail under `['auth', 'account', userId]`. The default is the guest
+ * map, which is what every caller that predates the scope means.
+ */
+export function tailoringRunQueryKey(
+  runId: string | null,
+  map: Pick<ScopeMap, 'keyRoot'> = GUEST_SCOPE_MAP,
+): readonly unknown[] {
+  return [...map.keyRoot, 'tailoring', 'tailoringRun', runId];
 }
 
 /**
@@ -20,10 +32,10 @@ export function tailoringRunQueryKey(runId: string | null) {
  * retry policy and the 4xx stop stay `useTailoringRun`'s alone; sharing only the key and the
  * fetcher is what keeps two readers of one resource from disagreeing about what it is.
  */
-export function tailoringRunQueryOptions(runId: string) {
+export function tailoringRunQueryOptions(runId: string, map: ScopeMap = GUEST_SCOPE_MAP) {
   return queryOptions({
-    queryKey: tailoringRunQueryKey(runId),
-    queryFn: ({ signal }) => fetchTailoringRun(runId, signal),
+    queryKey: tailoringRunQueryKey(runId, map),
+    queryFn: ({ signal }) => fetchTailoringRun(map, runId, signal),
   });
 }
 
@@ -97,15 +109,16 @@ function isClientError(error: Error): boolean {
  * it is handled by narrowing rather than asserted away.
  */
 export function useTailoringRun(runId: string | null): ReturnType<typeof useQuery<TailoringRun>> {
+  const map = useScopeMap();
   return useQuery({
-    queryKey: tailoringRunQueryKey(runId),
+    queryKey: tailoringRunQueryKey(runId, map),
     queryFn: ({ signal }) => {
       if (runId === null) {
         // Reached only through `refetch()` on the disabled query. Rejecting puts the query in its
         // error state rather than issuing a request to `/api/tailoring-runs/null`.
         return Promise.reject(new Error('useTailoringRun: there is no run to fetch.'));
       }
-      return fetchTailoringRun(runId, signal);
+      return fetchTailoringRun(map, runId, signal);
     },
     enabled: runId !== null,
     retry: (failureCount, error) => !isClientError(error) && failureCount < MAX_TRANSIENT_RETRIES,

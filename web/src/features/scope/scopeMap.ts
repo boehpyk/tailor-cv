@@ -1,5 +1,6 @@
 import { ACCOUNT_API_TARGET, GUEST_API_TARGET } from '@/api/target';
 import { authQueryKeyPrefix } from '@/features/auth/hooks/authCache';
+import { tailoringRunsQueryKey } from '@/features/tailoring/hooks/useTailoringRuns';
 
 import type { ApiTarget } from '@/api/target';
 
@@ -52,12 +53,16 @@ export interface ScopeMap extends ApiTarget {
   readonly linkPrefix: '/runs' | '/history';
 }
 
-/** Today's values, frozen as one object so the default scope is referentially stable. */
-const GUEST_SCOPE_MAP: ScopeMap = {
+/**
+ * Today's values, as one object so the default scope is referentially stable. Exported for the
+ * per-feature key builders' default argument: a key built without a map is a guest key, which is
+ * what every caller that predates slice 2.3 — its tests included — means.
+ */
+export const GUEST_SCOPE_MAP: ScopeMap = {
   kind: 'guest',
   ...GUEST_API_TARGET,
   keyRoot: [],
-  runListKey: ['tailoring', 'tailoringRuns'],
+  runListKey: tailoringRunsQueryKey,
   linkPrefix: '/runs',
 };
 

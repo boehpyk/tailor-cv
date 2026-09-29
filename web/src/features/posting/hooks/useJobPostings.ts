@@ -2,10 +2,23 @@ import { useQuery } from '@tanstack/react-query';
 
 import { fetchJobPostings } from '@/api/jobPostings';
 import { ApiError } from '@/api/client';
+import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import type { JobPostingListResponse } from '../types';
+import type { ScopeMap } from '@/features/scope/scopeMap';
 
 export const jobPostingsQueryKey = ['posting', 'jobPostings'] as const;
+
+/**
+ * The posting list's key in a scope — `jobPostingsQueryKey` itself for a guest, the same tail
+ * under `['auth', 'account', userId]` for an account (slice 2.3, AC-43).
+ */
+export function jobPostingsKey(
+  map: Pick<ScopeMap, 'keyRoot'> = GUEST_SCOPE_MAP,
+): readonly unknown[] {
+  return [...map.keyRoot, ...jobPostingsQueryKey];
+}
 
 /**
  * The guest session's job postings.
@@ -29,11 +42,12 @@ export const jobPostingsQueryKey = ['posting', 'jobPostings'] as const;
  * the postings are server state and live entirely in TanStack Query.
  */
 export function useJobPostings(): ReturnType<typeof useQuery<JobPostingListResponse>> {
+  const map = useScopeMap();
   return useQuery({
-    queryKey: jobPostingsQueryKey,
+    queryKey: jobPostingsKey(map),
     queryFn: async ({ signal }) => {
       try {
-        return await fetchJobPostings(signal);
+        return await fetchJobPostings(map, signal);
       } catch (error) {
         if (
           error instanceof ApiError &&

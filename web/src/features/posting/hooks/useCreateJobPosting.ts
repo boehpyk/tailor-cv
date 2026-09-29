@@ -1,10 +1,13 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { createJobPosting } from '@/api/jobPostings';
+import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
-import { jobPostingsQueryKey } from './useJobPostings';
+import { jobPostingsKey } from './useJobPostings';
 
 import type { JobPosting, NewJobPosting } from '../types';
+import type { ScopeMap } from '@/features/scope/scopeMap';
 
 /**
  * The mutation's key — observable from outside the panel through `useIsMutating({ mutationKey })`,
@@ -12,6 +15,17 @@ import type { JobPosting, NewJobPosting } from '../types';
  * while a paste or a fetch is on the wire, and the panel keeps its mutation to itself.
  */
 export const createJobPostingMutationKey = ['posting', 'createJobPosting'] as const;
+
+/**
+ * The mutation key in a scope — `createJobPostingMutationKey` itself for a guest, rooted under the
+ * account for an account (slice 2.3), so a workspace's `useIsMutating` counts its own scope's
+ * submissions and no other's.
+ */
+export function createJobPostingMutationKeyFor(
+  map: Pick<ScopeMap, 'keyRoot'> = GUEST_SCOPE_MAP,
+): readonly unknown[] {
+  return [...map.keyRoot, ...createJobPostingMutationKey];
+}
 
 /**
  * Capture a job posting and refresh the list.
@@ -31,10 +45,11 @@ export function useCreateJobPosting(): ReturnType<
   typeof useMutation<JobPosting, Error, NewJobPosting>
 > {
   const queryClient = useQueryClient();
+  const map = useScopeMap();
 
   return useMutation({
-    mutationKey: createJobPostingMutationKey,
-    mutationFn: (input: NewJobPosting) => createJobPosting(input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: jobPostingsQueryKey }),
+    mutationKey: createJobPostingMutationKeyFor(map),
+    mutationFn: (input: NewJobPosting) => createJobPosting(map, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: jobPostingsKey(map) }),
   });
 }

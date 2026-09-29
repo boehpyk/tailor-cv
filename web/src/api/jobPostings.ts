@@ -1,6 +1,8 @@
 import { request } from './client';
+import { ACCOUNT_API_TARGET, authOptionFor } from './target';
 
 import type { JobPosting, JobPostingListResponse, NewJobPosting } from '@/features/posting/types';
+import type { ApiTarget } from './target';
 
 /**
  * The job-posting endpoints. No change to `client.ts` was needed: the JSON path already works, and
@@ -16,8 +18,14 @@ import type { JobPosting, JobPostingListResponse, NewJobPosting } from '@/featur
  * *means* for the UI is a rendering decision, not a transport one, so it is made in
  * `useJobPostings`, one layer up.
  */
-export function fetchJobPostings(signal?: AbortSignal): Promise<JobPostingListResponse> {
-  return request<JobPostingListResponse>('/api/job-postings', {
+export function fetchJobPostings(
+  target: ApiTarget,
+  signal?: AbortSignal,
+): Promise<JobPostingListResponse> {
+  // For an account this is `GET /api/me/job-postings` with the server's default `limit` of 1 — the
+  // newest posting, which is exactly what the workspace reads from the guest's full list too.
+  return request<JobPostingListResponse>(target.jobPostingsPath, {
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -40,10 +48,15 @@ export function fetchJobPosting(id: string, signal?: AbortSignal): Promise<JobPo
  * session rather than answering 401, so this call never needs the session-expiry handling
  * `fetchJobPostings` defers to its caller.
  */
-export function createJobPosting(input: NewJobPosting, signal?: AbortSignal): Promise<JobPosting> {
-  return request<JobPosting>('/api/job-postings', {
+export function createJobPosting(
+  target: ApiTarget,
+  input: NewJobPosting,
+  signal?: AbortSignal,
+): Promise<JobPosting> {
+  return request<JobPosting>(target.jobPostingsPath, {
     method: 'POST',
     body: input,
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -54,12 +67,10 @@ export function createJobPosting(input: NewJobPosting, signal?: AbortSignal): Pr
  * (AC-40, AC-48). A posting captured here is born user-owned — kept until the user deletes the
  * history entry that uses it — so its `expires_at` is `null`.
  *
- * Twins rather than a flag on the guest functions: the path and the credential are one decision,
- * and a boolean threaded from a caller is the shape that lets them come apart.
+ * Named twins beside the target-taking functions above, for a caller that is account-only by
+ * construction (a picker of recent postings) and holds no scope: the path and the credential still
+ * come from one value, `ACCOUNT_API_TARGET`, never from a boolean threaded by a caller.
  */
-
-/** The account posting collection. */
-const ACCOUNT_JOB_POSTINGS_PATH = '/api/me/job-postings';
 
 /**
  * The account's most recent postings, newest first — `limit` of them (1…20; the server's default is
@@ -73,9 +84,9 @@ export function fetchRecentAccountJobPostings(
   signal?: AbortSignal,
 ): Promise<JobPostingListResponse> {
   return request<JobPostingListResponse>(
-    `${ACCOUNT_JOB_POSTINGS_PATH}?limit=${encodeURIComponent(String(limit))}`,
+    `${ACCOUNT_API_TARGET.jobPostingsPath}?limit=${encodeURIComponent(String(limit))}`,
     {
-      auth: 'required',
+      ...authOptionFor(ACCOUNT_API_TARGET),
       ...(signal ? { signal } : {}),
     },
   );
@@ -94,10 +105,5 @@ export function createAccountJobPosting(
   input: NewJobPosting,
   signal?: AbortSignal,
 ): Promise<JobPosting> {
-  return request<JobPosting>(ACCOUNT_JOB_POSTINGS_PATH, {
-    method: 'POST',
-    body: input,
-    auth: 'required',
-    ...(signal ? { signal } : {}),
-  });
+  return createJobPosting(ACCOUNT_API_TARGET, input, signal);
 }

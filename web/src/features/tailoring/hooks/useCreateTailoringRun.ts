@@ -1,8 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { createTailoringRun } from '@/api/tailoringRuns';
-
-import { tailoringRunsQueryKey } from './useTailoringRuns';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import type { NewTailoringRun, TailoringRun } from '../types';
 
@@ -32,9 +31,12 @@ export function useCreateTailoringRun(): ReturnType<
   typeof useMutation<TailoringRun, Error, NewTailoringRun>
 > {
   const queryClient = useQueryClient();
+  // The scope's run list: 1.3's guest list (`tailoringRunsQueryKey`), or the account's history —
+  // every page and the workspace's latest-run card (slice 2.3).
+  const map = useScopeMap();
 
   return useMutation({
-    mutationFn: (input: NewTailoringRun) => createTailoringRun(input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey }),
+    mutationFn: (input: NewTailoringRun) => createTailoringRun(map, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: map.runListKey }),
   });
 }

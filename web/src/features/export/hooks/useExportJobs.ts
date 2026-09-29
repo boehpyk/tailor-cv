@@ -2,10 +2,13 @@ import { useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
 import { fetchExportJobs } from '@/api/exports';
+import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import { isActiveExportStatus } from '../types';
 
 import type { ExportJobListResponse } from '../types';
+import type { ScopeMap } from '@/features/scope/scopeMap';
 
 /**
  * The cache key for one run's export jobs — the key the poller owns, and the key a successful
@@ -17,8 +20,11 @@ import type { ExportJobListResponse } from '../types';
  * *stale* without a reload. A key written out by hand in three places is three chances to write
  * `'exports'` in one of them and watch an invalidation quietly do nothing.
  */
-export function exportJobsQueryKey(runId: string) {
-  return ['export', 'exportJobs', runId] as const;
+export function exportJobsQueryKey(
+  runId: string,
+  map: Pick<ScopeMap, 'keyRoot'> = GUEST_SCOPE_MAP,
+): readonly unknown[] {
+  return [...map.keyRoot, 'export', 'exportJobs', runId];
 }
 
 /** How often to re-read the list while any job of this run is `queued` or `rendering`. */
@@ -86,9 +92,10 @@ function isClientError(error: Error): boolean {
  * whole workspace down on those, and the export bar is rendered inside it.
  */
 export function useExportJobs(runId: string): ReturnType<typeof useQuery<ExportJobListResponse>> {
+  const map = useScopeMap();
   return useQuery({
-    queryKey: exportJobsQueryKey(runId),
-    queryFn: ({ signal }) => fetchExportJobs(runId, signal),
+    queryKey: exportJobsQueryKey(runId, map),
+    queryFn: ({ signal }) => fetchExportJobs(map, runId, signal),
     retry: (failureCount, error) => !isClientError(error) && failureCount < MAX_TRANSIENT_RETRIES,
     refetchInterval: (query) => {
       if (query.state.status === 'error') {
