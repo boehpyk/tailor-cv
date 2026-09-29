@@ -17,6 +17,7 @@ for its own two-connection scenario instead.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Coroutine
 from datetime import timedelta
 from typing import Final
 from uuid import uuid4
@@ -414,3 +415,100 @@ async def test_delete_account_cascades_the_users_history_and_spares_a_guests(
     assert await exists(tailoring_run_table, theirs.id)
     assert await exists(job_posting_table, theirs.job_posting_id)
     assert all([await exists(export_job_table, job.id) for job in their_jobs])
+
+
+# --- Slice 2.3 (T25, AC-37): the erasure's row lock covers the new tables ----------------------------
+
+_LOCK_TIMEOUT_MS: Final = 5_000
+
+
+async def _insert_a_run(session: AsyncSession, owner: UserOwner, clock: FixedClock) -> None:
+    await SqlAlchemyTailoringRunRepository(session).add(succeeded_run(owner, clock.now()))
+
+
+async def _insert_an_export(session: AsyncSession, owner: UserOwner, clock: FixedClock) -> None:
+    run = succeeded_run(owner, clock.now())  # no FK from export_job to its run (ADR-0016)
+    await SqlAlchemyExportJobRepository(session).add(queued_export(owner, run, clock.now()))
+
+
+@pytest.mark.parametrize(
+    ("insert", "table"),
+    [(_insert_a_run, "tailoring_run"), (_insert_an_export, "export_job")],
+    ids=["run", "export"],
+)
+async def test_ac37_an_insert_racing_an_erasure_waits_then_finds_no_owner_and_leaves_no_row(
+    settings: Settings,
+    engine: AsyncEngine,
+    clock: FixedClock,
+    insert: Callable[[AsyncSession, UserOwner, FixedClock], Coroutine[object, object, None]],
+    table: str,
+) -> None:
+    """AC-37 / H-53, 2.2's AC-32 shape on the two new owned tables. `files_of_account` takes the
+    `identity_user` row `FOR UPDATE`; a user-owned `INSERT` needs `FOR KEY SHARE` on that row for its
+    `fk_<table>_user_id_identity_user` check, so it **waits** (observed: still pending after 200 ms);
+    once the erasure commits, the FK refuses and the repository answers `UserNotFound` — the error the
+    API maps to 401 `not_signed_in` (H-9's mapping, tested over HTTP in T21). No row is left behind.
+
+    **Two real connections, each pinned, each with `lock_timeout` set and the `SET` committed**
+    (CLAUDE.md: a `SET` on a pooled connection does not survive a commit, and a bare `SET` is itself
+    transactional). If the erasure never released its lock, the racing `INSERT` would fail on
+    `lock_timeout` within 5 s rather than hang the suite.
+
+    **Observed red, 2026-09-29, and restored byte-exact** (`git diff --stat -- src` empty): with
+    `.with_for_update()` removed from `SqlAlchemyAccountData.files_of_account`, both cases (and 2.2's
+    AC-32 beside them) failed on `the racing INSERT finished before the erasure committed — it never
+    contended the lock` (`assert not True`). Green again after the restore."""
+    _assert_test_database(settings)
+    user_id = await _committed_user(engine, clock, email=f"ac37-{uuid4().hex}@example.com")
+    owner = UserOwner(user_id)
+    try:
+        async with engine.connect() as lock_conn:
+            await lock_conn.execute(text(f"SET lock_timeout = '{_LOCK_TIMEOUT_MS}ms'"))
+            await lock_conn.execute(text(f"SET statement_timeout = '{_STATEMENT_TIMEOUT_MS}ms'"))
+            await lock_conn.commit()
+            lock_session = async_sessionmaker(
+                bind=lock_conn, expire_on_commit=False, autoflush=False
+            )()
+            try:
+                accounts = SqlAlchemyAccountData(lock_session)
+                await accounts.files_of_account(user_id)  # holds FOR UPDATE; no commit yet
+
+                async with engine.connect() as insert_conn:
+                    await insert_conn.execute(text(f"SET lock_timeout = '{_LOCK_TIMEOUT_MS}ms'"))
+                    await insert_conn.execute(
+                        text(f"SET statement_timeout = '{_STATEMENT_TIMEOUT_MS}ms'")
+                    )
+                    await insert_conn.commit()
+                    insert_session = async_sessionmaker(
+                        bind=insert_conn, expire_on_commit=False, autoflush=False
+                    )()
+                    try:
+                        racing: asyncio.Task[None] = asyncio.create_task(
+                            insert(insert_session, owner, clock)
+                        )
+                        await asyncio.sleep(0.2)
+                        assert not racing.done(), (
+                            "the racing INSERT finished before the erasure committed — it never "
+                            "contended the lock, so this test would prove nothing"
+                        )
+
+                        assert await accounts.delete_account(user_id) is True
+                        await lock_session.commit()  # releases the lock
+
+                        with pytest.raises(UserNotFound) as exc_info:
+                            await racing
+                        assert type(exc_info.value) is UserNotFound
+                    finally:
+                        await insert_session.close()
+            finally:
+                await lock_session.close()
+
+        async with engine.connect() as verify:
+            left = await verify.execute(
+                text(f"SELECT count(*) FROM {table} WHERE user_id = :u"),  # noqa: S608 -- test-owned name
+                {"u": user_id.value},
+            )
+            assert left.scalar_one() == 0, "the racing INSERT left a row behind"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(user_table.delete().where(user_table.c.id == user_id))

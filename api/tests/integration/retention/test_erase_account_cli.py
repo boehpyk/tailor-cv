@@ -36,10 +36,11 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.cli import main
+from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.user import User
@@ -76,6 +77,7 @@ from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
 )
 from tailorcraft.infrastructure.retention import erase_account_command
 from tailorcraft.infrastructure.settings import Settings
+from tests.integration.owners import pasted_posting, ready_export, succeeded_run
 
 _A_LOGIN_LIFETIME_DAYS = 30
 
@@ -680,3 +682,131 @@ async def test_erase_account_never_logs_the_erased_users_email_label_filename_or
         "no captured log line names the erased user_id — the absence assertions above would hold "
         f"even if nothing were logged at all. Captured text:\n{log_text}"
     )
+
+
+# --- Slice 2.3 (T25, AC-36): the CLI with history ------------------------------------------------
+
+
+async def _seed_history(
+    rig: _AccountRig, owner: UserOwner | GuestOwner, *, runs: int, exports_per_run: int
+) -> list[FileRef]:
+    """`runs` entries (a posting and a succeeded run each) with `exports_per_run` ready export jobs
+    each, committed, their files on the real volume. Returns the export keys."""
+    # Deferred: these repositories read mapped attributes at import time, and this module is
+    # collected before the session's `configure_mappings()` fixture runs.
+    from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
+        SqlAlchemyExportJobRepository,
+    )
+    from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+        SqlAlchemyJobPostingRepository,
+    )
+    from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+        SqlAlchemyTailoringRunRepository,
+    )
+
+    now = _now()
+    keys: list[FileRef] = []
+    factory = async_sessionmaker(bind=rig.engine, expire_on_commit=False, autoflush=False)
+    async with factory() as session:
+        for _ in range(runs):
+            posting = pasted_posting(owner, now)
+            await SqlAlchemyJobPostingRepository(session).add(posting)
+            run = succeeded_run(owner, now, job_posting_id=posting.id)
+            await SqlAlchemyTailoringRunRepository(session).add(run)
+            formats = [ExportFormat.PDF, ExportFormat.DOCX][:exports_per_run]
+            for export_format in formats:
+                job = ready_export(owner, run, now, format=export_format)
+                await SqlAlchemyExportJobRepository(session).add(job)
+                keys.append(job.storage_ref)
+        await session.commit()
+    for ref in keys:
+        await rig.files.put(ref, b"rendered-export")
+        rig._file_refs.append(ref)
+    return keys
+
+
+async def _count_owned(rig: _AccountRig, table: str, user_id: UserId) -> int:
+    async with rig.engine.connect() as conn:
+        result = await conn.execute(
+            text(f"SELECT count(*) FROM {table} WHERE user_id = :u"),  # noqa: S608 -- test-owned name
+            {"u": user_id.value},
+        )
+        return int(result.scalar_one())
+
+
+async def test_ac36_the_dry_run_reports_the_history_and_deletes_nothing(
+    settings: Settings,
+    account_rig: _AccountRig,
+    files: LocalFileStore,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _assert_test_database(settings)
+    seeded = await account_rig.seed_account(
+        email=f"ac36-dry-{uuid4().hex}@example.com", saved_cv_specs=[("a.txt", None, None)]
+    )
+    export_keys = await _seed_history(
+        account_rig, UserOwner(seeded.user_id), runs=2, exports_per_run=1
+    )
+    await _seed_history(account_rig, UserOwner(seeded.user_id), runs=1, exports_per_run=0)
+
+    exit_code = await erase_account_command.erase_account(
+        settings, user_id=seeded.user_id, dry_run=True
+    )
+
+    assert exit_code == erase_account_command.EXIT_OK
+    out = capsys.readouterr().out
+    assert (
+        f"would erase account {seeded.user_id.value}: 1 saved CV(s), 3 file(s), 1 login(s) "
+        "(dry run); history: 3 tailoring run(s), 3 job posting(s), 2 export job(s)"
+    ) in out
+    assert await account_rig.user_exists(seeded.user_id)
+    for table, count in (("tailoring_run", 3), ("posting_job_posting", 3), ("export_job", 2)):
+        assert await _count_owned(account_rig, table, seeded.user_id) == count, table
+    for ref in export_keys:
+        assert await files.get(ref) == b"rendered-export"
+
+
+async def test_ac36_a_real_run_erases_the_history_and_its_files_and_spares_a_guests(
+    settings: Settings,
+    engine: AsyncEngine,
+    account_rig: _AccountRig,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _assert_test_database(settings)
+    seeded = await account_rig.seed_account(
+        email=f"ac36-real-{uuid4().hex}@example.com", saved_cv_specs=[("a.txt", None, None)]
+    )
+    export_keys = await _seed_history(
+        account_rig, UserOwner(seeded.user_id), runs=2, exports_per_run=2
+    )
+    guest_session_id, _guest_cv_id, guest_cv_ref = await _seed_guest_base_cv(
+        engine, account_rig.files
+    )
+    account_rig._file_refs.append(guest_cv_ref)
+    guest_keys = await _seed_history(
+        account_rig, GuestOwner(guest_session_id), runs=1, exports_per_run=1
+    )
+
+    try:
+        exit_code = await erase_account_command.erase_account(
+            settings, user_id=seeded.user_id, dry_run=False
+        )
+
+        assert exit_code == erase_account_command.EXIT_OK
+        out = capsys.readouterr().out
+        assert (
+            f"erased account {seeded.user_id.value}: 1 saved CV(s), 5 file(s) unlinked, 0 failed; "
+            "history: 2 tailoring run(s), 2 job posting(s), 4 export job(s), 5 file(s) in all"
+        ) in out
+        assert not await account_rig.user_exists(seeded.user_id)
+        for table in ("tailoring_run", "posting_job_posting", "export_job", "intake_base_cv"):
+            assert await _count_owned(account_rig, table, seeded.user_id) == 0, table
+        for ref in export_keys:
+            assert not (account_rig.upload_dir / ref.key).exists()
+        for ref in [guest_cv_ref, *guest_keys]:
+            assert (account_rig.upload_dir / ref.key).exists(), "a guest's file was unlinked"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                guest_session_table.delete().where(guest_session_table.c.id == guest_session_id)
+            )
