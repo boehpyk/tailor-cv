@@ -1,6 +1,7 @@
 import { screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetForTests, authStore } from '@/features/auth/authStore';
 import { renderWithRouter } from '@/test/render';
 
 /**
@@ -29,6 +30,10 @@ function renderApp(): void {
 
 describe('App', () => {
   beforeEach(() => {
+    // T29: `/` is gated on the auth state (AC-38); these tests are about the guest workspace, so the
+    // store is settled `anonymous` first rather than left `booting`.
+    __resetForTests();
+    authStore.signOut('expired');
     // Every request hangs forever, so each panel sits in its own loading state and the shell's own
     // static markup — the four sections and their headings — is all that is asserted here.
     vi.stubGlobal(

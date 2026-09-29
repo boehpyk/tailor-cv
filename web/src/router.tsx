@@ -5,6 +5,8 @@ import { AccountPage } from './features/auth/components/AccountPage';
 import { LoginPage } from './features/auth/components/LoginPage';
 import { RegisterPage } from './features/auth/components/RegisterPage';
 import { RequireAuth } from './features/auth/components/RequireAuth';
+import { HistoryPage } from './features/history/components/HistoryPage';
+import { AccountScope } from './features/scope/AccountScope';
 import { NotFoundPage } from './features/tailoring/components/NotFoundPage';
 import { RunPage } from './features/tailoring/components/RunPage';
 import { WorkspacePage } from './features/workspace/components/WorkspacePage';
@@ -24,6 +26,9 @@ import type { RouteObject } from 'react-router';
  * | `/login`                  | `LoginPage`                   |
  * | `/register`               | `RegisterPage`                |
  * | `/account`                | `RequireAuth` → `AccountPage` |
+ * | `/history`                | `RequireAuth` → `AccountScope` → `HistoryPage` (2.3) |
+ * | `/history/:runId`         | redirect → `/history/:runId/cv` (2.3)                 |
+ * | `/history/:runId/:document` | `RequireAuth` → `AccountScope` → `RunPage` (2.3)    |
  * | `*`                       | `NotFoundPage` (E-28)         |
  *
  * `App` is the layout route: every page renders through its `<Outlet />`, between the header and
@@ -39,6 +44,11 @@ import type { RouteObject } from 'react-router';
  * for a guest, and a guard there would turn "not logged in" into "cannot use TailorCraft". `/login`
  * and `/register` guard themselves the other way round — an authenticated visitor is sent on to
  * `safeNext(next)` by the page — so they need no wrapper here.
+ *
+ * **Slice 2.3: the route decides the scope** (plan §0.9, AC-48). `/runs/…` renders with no
+ * provider — the guest scope, the context's default — and `/history/…` inside `AccountScope`, so
+ * the same `RunPage` reads and writes `/api/me/…` with the bearer there. `/` decides by the auth
+ * state, inside `WorkspacePage`'s gate. Nothing asks "is someone signed in?" at request time.
  *
  * Exported separately from the browser router so a test can mount the same table on a
  * `createMemoryRouter` at any path.
@@ -65,6 +75,33 @@ export const routes: RouteObject[] = [
             <AccountPage />
           </RequireAuth>
         ),
+      },
+      {
+        path: 'history',
+        children: [
+          {
+            index: true,
+            element: (
+              <RequireAuth>
+                <AccountScope>{(userId) => <HistoryPage userId={userId} />}</AccountScope>
+              </RequireAuth>
+            ),
+          },
+          {
+            path: ':runId',
+            children: [
+              { index: true, element: <Navigate to="cv" replace /> },
+              {
+                path: ':document',
+                element: (
+                  <RequireAuth>
+                    <AccountScope>{() => <RunPage />}</AccountScope>
+                  </RequireAuth>
+                ),
+              },
+            ],
+          },
+        ],
       },
       { path: '*', element: <NotFoundPage /> },
     ],

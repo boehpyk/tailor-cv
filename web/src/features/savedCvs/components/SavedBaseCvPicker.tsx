@@ -28,14 +28,33 @@ const buttonClass =
   'rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
 
 /**
- * The saved-CV picker in the workspace's base-CV tab (AC-38, AC-39, AC-45) — a container.
+ * How the picker is used (slice 2.3, plan §7):
+ *
+ * - **`'copy'`** — 2.2's picker in the guest workspace's base-CV tab: *Use this CV* copies the chosen
+ *   saved CV into the workspace (`POST /api/base-cvs/copies`). The default, so every existing caller
+ *   is unchanged.
+ * - **`'select'`** — the account workspace's (AC-39): the selection **is** the run's base CV, a saved
+ *   CV referenced directly, so nothing is copied and no copy request is ever made. Controlled: the
+ *   workspace owns `chosenId` (form state, `useState`) and validates it against the list on render.
+ */
+export type SavedBaseCvPickerProps =
+  | { readonly mode?: 'copy' }
+  | {
+      readonly mode: 'select';
+      /** The user's choice, as the workspace holds it — possibly stale; the list decides. */
+      readonly chosenId: string | null;
+      readonly onChoose: (id: string) => void;
+    };
+
+/**
+ * The saved-CV picker (2.2's AC-38, AC-39, AC-45; 2.3's AC-39) — a container.
  *
  * Gated on the auth state first: **nothing** while `anonymous` (a guest never sees it) and nothing
  * while `booting` (no flicker); `unavailable` → "Couldn't check your account…" + Retry. Only when
  * `authenticated` does it read the list — the gate is a component boundary, so the list hook is not
  * even called for a guest.
  */
-export function SavedBaseCvPicker(): React.JSX.Element | null {
+export function SavedBaseCvPicker(props: SavedBaseCvPickerProps = {}): React.JSX.Element | null {
   const auth = useAuth();
 
   switch (auth.status) {
@@ -52,8 +71,20 @@ export function SavedBaseCvPicker(): React.JSX.Element | null {
         </div>
       );
     case 'authenticated':
-      return <AuthenticatedPicker />;
+      return props.mode === 'select' ? <SelectPicker /> : <AuthenticatedPicker />;
   }
+}
+
+/**
+ * `mode: 'select'` (AC-39): 2.2's list states and radiogroup, preselected only when exactly one CV
+ * is `extracted`, `extraction_failed` CVs listed and disabled with their reason, an inline *Upload a
+ * CV to your account*, and an empty state that offers the upload — with no *Use this CV* button and
+ * no copy.
+ *
+ * SKELETON (T29): a distinguishable stub; T31 builds it.
+ */
+function SelectPicker(): React.JSX.Element {
+  return <p>SavedBaseCvPicker select mode (skeleton)</p>;
 }
 
 /**
