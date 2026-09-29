@@ -25,11 +25,16 @@
 export type TailoringRunStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
 /**
- * Why a run ended in `failed`. Mirrors the domain's `TailoringFailureReason` — nine values, closed.
+ * Why a run ended in `failed`. Mirrors the domain's `TailoringFailureReason` — ten values, closed.
  *
- * A component maps these to copy with an exhaustive `Record<TailoringFailureReason, …>`, so a tenth
- * reason added on the server becomes a TypeScript error at the one place that must write a sentence
- * for it, rather than a blank box in the browser.
+ * `base_cv_deleted` (slice 2.3, ADR-0014 amendment (a)) is the tenth: an account run whose saved CV
+ * was deleted after the run was requested and before the worker read it — recorded **before any
+ * paid call**, and not retryable. It is not "source CV deleted", which is a *derived* fact about a
+ * succeeded history entry whose CV went later (`HistoryEntry.base_cv === null`).
+ *
+ * A component maps these to copy with an exhaustive `Record<TailoringFailureReason, …>`, so an
+ * eleventh reason added on the server becomes a TypeScript error at the one place that must write a
+ * sentence for it, rather than a blank box in the browser.
  *
  * What these reasons do **not** decide here is whether "Try again" is offered. That is `retryable`,
  * below, and it comes from the API.
@@ -43,7 +48,8 @@ export type TailoringFailureReason =
   | 'inputs_too_large'
   | 'llm_error'
   | 'not_queued'
-  | 'abandoned';
+  | 'abandoned'
+  | 'base_cv_deleted';
 
 /**
  * The request body for `POST /api/tailoring-runs` — the whole of it.
@@ -194,8 +200,14 @@ export interface TailoringRun {
   readonly started_at: string | null;
   readonly completed_at: string | null;
 
-  /** The **guest session's** expiry — the session owns the 24-hour promise (ADR-0006). */
-  readonly expires_at: string;
+  /**
+   * **Whose retention this row lives under**, stated by the server: the guest session's expiry
+   * (ADR-0006's 24-hour promise) for a guest's row, and **`null`** for an account's — *kept until
+   * you delete it* (slice 2.3, plan §4 / OQ-8). One field with two honest values rather than two
+   * schemas, because the components that render it are shared (plan §0.9). A reader must handle
+   * `null`; there is no date to format for an account row.
+   */
+  readonly expires_at: string | null;
 
   /**
    * The optimistic-concurrency token (ADR-0015 §3). Send it back as `expected_version` on every
@@ -249,7 +261,8 @@ export interface TailoringRunSummary {
   readonly requested_at: string;
   readonly started_at: string | null;
   readonly completed_at: string | null;
-  readonly expires_at: string;
+  /** See `TailoringRun.expires_at` — the session's expiry for a guest, `null` for an account. */
+  readonly expires_at: string | null;
 
   /** See `TailoringRun.version` — the same token, so both surfaces agree on it. */
   readonly version: number;

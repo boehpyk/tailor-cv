@@ -71,7 +71,13 @@ export function JobPostingCard({ posting, onReplace }: JobPostingCardProps): Rea
 
       <p className="text-sm text-slate-600">{posting.preview}</p>
 
-      <p className="text-xs text-slate-500">Stored until {formatStoredUntil(posting.expires_at)}</p>
+      {/* `null` is an account's posting (slice 2.3): there is no date to state. Its own sentence
+          ("Saved with your history", AC-40) is chosen by scope in T32; until then, no line. */}
+      {posting.expires_at !== null && (
+        <p className="text-xs text-slate-500">
+          Stored until {formatStoredUntil(posting.expires_at)}
+        </p>
+      )}
     </div>
   );
 }

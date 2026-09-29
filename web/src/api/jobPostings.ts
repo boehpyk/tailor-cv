@@ -47,3 +47,57 @@ export function createJobPosting(input: NewJobPosting, signal?: AbortSignal): Pr
     ...(signal ? { signal } : {}),
   });
 }
+
+/**
+ * The account's twins of the two calls above (slice 2.3, technical plan §4): the same bodies and
+ * the same response shapes, under `/api/me/job-postings`, **`auth: 'required'`** and nothing else
+ * (AC-40, AC-48). A posting captured here is born user-owned — kept until the user deletes the
+ * history entry that uses it — so its `expires_at` is `null`.
+ *
+ * Twins rather than a flag on the guest functions: the path and the credential are one decision,
+ * and a boolean threaded from a caller is the shape that lets them come apart.
+ */
+
+/** The account posting collection. */
+const ACCOUNT_JOB_POSTINGS_PATH = '/api/me/job-postings';
+
+/**
+ * The account's most recent postings, newest first — `limit` of them (1…20; the server's default is
+ * 1, the workspace's posting card). A picker, not an archive: there is no cursor.
+ *
+ * Refusals: 401 `invalid_access_token` / `not_signed_in`; 422 `validation_error`; 503
+ * `service_unavailable`.
+ */
+export function fetchRecentAccountJobPostings(
+  limit: number,
+  signal?: AbortSignal,
+): Promise<JobPostingListResponse> {
+  return request<JobPostingListResponse>(
+    `${ACCOUNT_JOB_POSTINGS_PATH}?limit=${encodeURIComponent(String(limit))}`,
+    {
+      auth: 'required',
+      ...(signal ? { signal } : {}),
+    },
+  );
+}
+
+/**
+ * Capture one job posting into the account — pasted text or a link to fetch, 1.2's tagged union.
+ * **201** `JobPosting` with `expires_at: null`. Unlike the guest `POST`, nothing is minted: a
+ * missing or stale bearer is a 401, answered once by the client's refresh-and-retry.
+ *
+ * Refusals: 401 ×2; 409 `too_many_job_postings`; 413 `request_too_large`; 422 1.2's codes (the
+ * `FETCH_FAILURE_CODES` among them, which the UI answers with the paste fallback); 429
+ * `rate_limited`; 503 `rate_limit_unavailable` / `service_unavailable`.
+ */
+export function createAccountJobPosting(
+  input: NewJobPosting,
+  signal?: AbortSignal,
+): Promise<JobPosting> {
+  return request<JobPosting>(ACCOUNT_JOB_POSTINGS_PATH, {
+    method: 'POST',
+    body: input,
+    auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}

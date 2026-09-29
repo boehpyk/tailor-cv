@@ -152,8 +152,14 @@ export interface ExportJob {
   readonly started_at: string | null;
   readonly completed_at: string | null;
 
-  /** The **guest session's** expiry — the session owns the 24-hour promise (ADR-0006). */
-  readonly expires_at: string;
+  /**
+   * **Whose retention this row lives under**, stated by the server: the guest session's expiry
+   * (ADR-0006's 24-hour promise) for a guest's row, and **`null`** for an account's — *kept until
+   * you delete it* (slice 2.3, plan §4 / OQ-8). One field with two honest values rather than two
+   * schemas, because the components that render it are shared (plan §0.9). A reader must handle
+   * `null`; there is no date to format for an account row.
+   */
+  readonly expires_at: string | null;
 }
 
 /**
