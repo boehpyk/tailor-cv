@@ -104,7 +104,7 @@ async def test_inline_download_serves_the_current_document_with_1_5s_headers_and
     run = entry.run
     run.revise_cv(TailoredCv(_REVISED_CV), expected_version=run.version, at=clock.now())
     await SqlAlchemyTailoringRunRepository(session).save(run)
-    await session.flush()
+    await session.commit()
     jobs_before = await count_rows(session, "export_job", tailoring_run_id=run.id.value)
 
     response = await client.get(
@@ -128,7 +128,7 @@ async def test_inline_download_of_a_queued_run_is_409_not_exportable(
     account = await register(client, settings)
     run = queued_run(account.owner, clock.now())
     await SqlAlchemyTailoringRunRepository(session).add(run)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(
         f"{ME_RUNS}/{run.id.value}/documents/cv/download?format=md", headers=account.headers
@@ -195,7 +195,7 @@ async def test_h37_at_twenty_per_run_the_request_is_409_with_no_row(
     await SqlAlchemyExportJobRepository(session).add(
         queued_export(account.owner, entry.run, clock.now(), format=ExportFormat.DOCX)
     )
-    await session.flush()
+    await session.commit()
 
     response = await client.post(
         _exports_url(entry),
@@ -249,7 +249,7 @@ async def test_exporting_a_queued_run_is_409_not_exportable(
     account = await register(client, settings)
     run = queued_run(account.owner, clock.now())
     await SqlAlchemyTailoringRunRepository(session).add(run)
-    await session.flush()
+    await session.commit()
 
     response = await client.post(
         f"{ME_RUNS}/{run.id.value}/exports",
@@ -336,7 +336,7 @@ async def test_a_ready_job_is_current_with_a_user_file_url_until_the_run_is_edit
 
     entry.run.revise_cv(TailoredCv(_REVISED_CV), expected_version=entry.run_version, at=clock.now())
     await SqlAlchemyTailoringRunRepository(session).save(entry.run)
-    await session.flush()
+    await session.commit()
     after = await client.get(url, headers=account.headers)
 
     assert after.status_code == 200, after.text
@@ -360,7 +360,7 @@ async def test_h7_a_failed_render_reads_as_1_5_on_the_user_route(
     job.mark_started(clock.now())
     job.mark_failed(reason, clock.now())
     await SqlAlchemyExportJobRepository(session).add(job)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(f"{ME_EXPORT_JOBS}/{job.id.value}", headers=account.headers)
 
@@ -377,7 +377,7 @@ async def test_h40_a_job_no_worker_picked_up_stays_queued(
     account, entry = await _entry(client, settings, session, clock)
     job = queued_export(account.owner, entry.run, clock.now(), format=ExportFormat.DOCX)
     await SqlAlchemyExportJobRepository(session).add(job)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(f"{ME_EXPORT_JOBS}/{job.id.value}", headers=account.headers)
 
@@ -410,7 +410,7 @@ async def test_a_file_that_is_not_ready_is_409_export_not_ready(
     account, entry = await _entry(client, settings, session, clock)
     job = queued_export(account.owner, entry.run, clock.now(), format=ExportFormat.DOCX)
     await SqlAlchemyExportJobRepository(session).add(job)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(f"{ME_EXPORT_JOBS}/{job.id.value}/file", headers=account.headers)
 

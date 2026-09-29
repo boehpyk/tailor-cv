@@ -41,12 +41,10 @@ from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
-from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.files.orphan_scanner import LocalOrphanFileScanner
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
-from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
     SqlAlchemyExportJobRepository,
 )
@@ -60,13 +58,13 @@ from tailorcraft.infrastructure.persistence.retention.history_entry_data import 
     SqlAlchemyHistoryEntryData,
 )
 from tailorcraft.infrastructure.settings import Settings
-from tailorcraft.infrastructure.tasks.app import app as celery_app
 from tests.api.me_support import (
     ME_BASE_CVS,
     ME_RUNS,
     Account,
     Entry,
     assert_test_database,
+    build_concurrent_app,
     count_rows,
     error_body,
     error_code,
@@ -87,15 +85,8 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
 def concurrent_app(
     settings: Settings, engine: AsyncEngine, password_hasher: Argon2PasswordHasher
 ) -> FastAPI:
-    """A real session per request (`main.py`'s production wiring), for the commit-visibility and
-    race tests — 2.2's `concurrent_app`, reproduced for the same reason."""
-    app = create_app(settings)
-    app.state.settings = settings
-    app.state.engine = engine
-    app.state.session_factory = create_session_factory(engine)
-    app.state.celery = celery_app
-    app.state.password_hasher = password_hasher
-    return app
+    """A real session per request, for the commit-visibility and race tests (`me_support`)."""
+    return build_concurrent_app(settings, engine, password_hasher)
 
 
 @pytest.fixture(autouse=True)
@@ -169,7 +160,7 @@ async def test_h45_a_posting_shared_with_another_entry_survives(
     account, entry = await _entry(client, settings, session, clock)
     sibling = succeeded_run(account.owner, clock.now(), job_posting_id=entry.posting_id)
     await SqlAlchemyTailoringRunRepository(session).add(sibling)
-    await session.flush()
+    await session.commit()
 
     response = await client.delete(entry.run_url, headers=account.headers)
 
@@ -330,7 +321,7 @@ async def _job_on(
 ) -> ExportJob:
     job = ready_export(account.owner, entry.run, clock.now(), format=ExportFormat.PDF)
     await SqlAlchemyExportJobRepository(session).add(job)
-    await session.flush()
+    await session.commit()
     return job
 
 

@@ -23,7 +23,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import event, select, text
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
@@ -35,7 +35,9 @@ from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 from tailorcraft.infrastructure.api.deps import get_app_settings
+from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
+from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
     SqlAlchemyExportJobRepository,
@@ -50,6 +52,7 @@ from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run
     SqlAlchemyTailoringRunRepository,
 )
 from tailorcraft.infrastructure.settings import Settings
+from tailorcraft.infrastructure.tasks.app import app as celery_app
 from tests.integration.owners import (
     extracted_cv,
     pasted_posting,
@@ -176,6 +179,22 @@ def new_client(app: FastAPI) -> AsyncClient:
     )
 
 
+def build_concurrent_app(
+    settings: Settings, engine: AsyncEngine, password_hasher: object
+) -> FastAPI:
+    """An app that opens and commits a real session per request, as `main.py`'s lifespan wires
+    production — for tests about commits and races, where the shared `app` fixture's one
+    SAVEPOINT-bound session cannot tell "committed" from "issued". Rows it writes are real and must
+    be cleaned up by the test (delete the user; the cascades take the rest)."""
+    app = create_app(settings)
+    app.state.settings = settings
+    app.state.engine = engine
+    app.state.session_factory = create_session_factory(engine)
+    app.state.celery = celery_app
+    app.state.password_hasher = password_hasher
+    return app
+
+
 def override_settings(app: FastAPI, base: Settings, **updates: object) -> Settings:
     """Both settings paths overridden together (`test_intake.py`'s helper). `model_copy` does not
     validate, which is what lets a per-user cap drop below its `ge=1`-bounded production range."""
@@ -289,7 +308,7 @@ async def seed_entry(
         await SqlAlchemyExportJobRepository(session).add(job)
         await files.put(job.storage_ref, export_bytes(job.id))
         jobs.append(SeededJob(job.id, job.storage_ref, job.format))
-    await session.flush()
+    await session.commit()
     return Entry(
         cv_id=cv.id,
         posting_id=posting.id,
@@ -308,7 +327,7 @@ async def seed_queued_export(
         owner, run, at, document=TailoredDocumentKind.COVER_LETTER, format=ExportFormat.DOCX
     )
     await SqlAlchemyExportJobRepository(session).add(job)
-    await session.flush()
+    await session.commit()
     return job
 
 

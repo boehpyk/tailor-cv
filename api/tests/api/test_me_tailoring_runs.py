@@ -31,7 +31,7 @@ from fastapi import FastAPI
 from httpx import AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRunCommand,
@@ -41,9 +41,9 @@ from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.tailoring.errors import TailoringNotQueued
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredCv, TailoringRunId
-from tailorcraft.infrastructure.api.deps import get_session, get_tailoring_queue
-from tailorcraft.infrastructure.api.main import create_app
+from tailorcraft.infrastructure.api.deps import get_tailoring_queue
 from tailorcraft.infrastructure.clock import FixedClock
+from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
@@ -67,6 +67,8 @@ from tests.api.me_support import (
     ME_RUNS,
     TAILORING_RUN_RESPONSE_KEYS,
     Account,
+    assert_test_database,
+    build_concurrent_app,
     captured_statements,
     count_rows,
     error_body,
@@ -77,7 +79,6 @@ from tests.api.me_support import (
     register,
     seed_entry,
 )
-from tests.conftest import _committing_session_override
 from tests.integration.fakes import FakeLlm, FakeTailoringQueue
 from tests.integration.owners import (
     a_draft,
@@ -118,13 +119,13 @@ async def _inputs(session: AsyncSession, owner: Owner, clock: FixedClock) -> dic
     posting = pasted_posting(owner, clock.now())
     await SqlAlchemyBaseCvRepository(session).add(cv)
     await SqlAlchemyJobPostingRepository(session).add(posting)
-    await session.flush()
+    await session.commit()
     return {"base_cv_id": str(cv.id.value), "job_posting_id": str(posting.id.value)}
 
 
 async def _add_run(session: AsyncSession, run: TailoringRun) -> TailoringRun:
     await SqlAlchemyTailoringRunRepository(session).add(run)
-    await session.flush()
+    await session.commit()
     return run
 
 
@@ -198,7 +199,7 @@ async def test_h15_a_saved_cv_whose_extraction_failed_is_409(
     body = await _inputs(session, account.owner, clock)
     failed_cv = extraction_failed_cv(account.owner, clock.now())
     await SqlAlchemyBaseCvRepository(session).add(failed_cv)
-    await session.flush()
+    await session.commit()
     body["base_cv_id"] = str(failed_cv.id.value)
 
     response = await client.post(ME_RUNS, json=body, headers=account.headers)
@@ -563,6 +564,7 @@ async def test_h28_a_cursor_whose_run_was_deleted_continues_correctly(
     await session.execute(
         tailoring_run_table.delete().where(tailoring_run_table.c.id == expected[1])
     )
+    await session.commit()
 
     second = await client.get(
         f"{ME_RUNS}?limit=2&cursor={first.json()['next_cursor']}", headers=account.headers
@@ -581,7 +583,7 @@ async def test_h29_h30_an_entry_with_its_cv_or_posting_gone_is_still_listed(
         session, succeeded_run(account.owner, clock.now() - timedelta(minutes=1))
     )
     await SqlAlchemyBaseCvRepository(session).remove(entry.cv_id, account.owner)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(ME_RUNS, headers=account.headers)
 
@@ -670,7 +672,7 @@ async def _edited_entry(
     run = entry.run
     run.revise_cv(TailoredCv(_REVISED_CV), expected_version=run.version, at=clock.now())
     await SqlAlchemyTailoringRunRepository(session).save(run)
-    await session.flush()
+    await session.commit()
     return run
 
 
@@ -822,46 +824,95 @@ async def test_the_save_limiter_fails_open(
     assert response.status_code == 200, response.text
 
 
-async def test_h33_an_edit_racing_a_deletion_is_409_null_version_then_404(
-    client: AsyncClient,
-    app: FastAPI,
-    settings: Settings,
-    session: AsyncSession,
-    connection: AsyncConnection,
-    clock: FixedClock,
+@pytest.fixture
+def concurrent_app(
+    settings: Settings, engine: AsyncEngine, password_hasher: Argon2PasswordHasher
+) -> FastAPI:
+    """A real session per request — H-33's race needs a delete that is genuinely committed on
+    another connection while the edit request is between its read and its write."""
+    return build_concurrent_app(settings, engine, password_hasher)
+
+
+async def test_h33_an_edit_racing_a_committed_deletion_is_409_null_version_then_404(
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine, clock: FixedClock
 ) -> None:
-    """1.4's racing-writer technique: a second session holds a stale copy of the run; the entry is
-    then deleted underneath it (what `DELETE` committing first leaves behind); the edit's
-    `UPDATE … WHERE version` matches no row → 409 `document_version_conflict` with
-    `current_version: null`; *Load latest* is then 404."""
+    """H-33 as its row reads: the edit request has **already read** the run (`GetTailoringRun`)
+    when the entry's deletion commits on another connection; the edit's `UPDATE … WHERE version`
+    then matches no row → 409 `document_version_conflict` with `current_version: null`, nothing is
+    written (the row stays gone), and *Load latest* is 404.
+
+    The deletion is scheduled at the repository's `save` — after the read, before the flush —
+    by a wrapper that commits a Core `DELETE` on a separate connection and then delegates to the
+    real `save` unchanged. Real, committed rows on `concurrent_app`; the user is deleted at the
+    end, and the cascades take the rest."""
+    assert_test_database(settings)
+    async with new_client(concurrent_app) as setup:
+        account = await register(setup, settings)
+    async with async_sessionmaker(engine, expire_on_commit=False)() as seeding:
+        run = succeeded_run(account.owner, clock.now() - timedelta(minutes=1))
+        await SqlAlchemyTailoringRunRepository(seeding).add(run)
+        await seeding.commit()
+    run_id, version = run.id, run.version
+
+    original_save = SqlAlchemyTailoringRunRepository.save
+    deleted_mid_request: list[bool] = []
+
+    async def _save_after_a_committed_delete(
+        self: SqlAlchemyTailoringRunRepository, target: TailoringRun
+    ) -> None:
+        async with engine.begin() as other_connection:
+            gone = await other_connection.execute(
+                tailoring_run_table.delete().where(tailoring_run_table.c.id == run_id)
+            )
+            deleted_mid_request.append(gone.rowcount == 1)
+        await original_save(self, target)
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(SqlAlchemyTailoringRunRepository, "save", _save_after_a_committed_delete)
+            async with new_client(concurrent_app) as editor:
+                edit = await editor.put(
+                    f"{ME_RUNS}/{run_id.value}/documents/cv",
+                    json={"content": _REVISED_CV, "expected_version": version},
+                    headers=account.headers,
+                )
+
+        assert deleted_mid_request == [True], "the delete must land between the read and the write"
+        assert edit.status_code == 409, edit.text
+        assert error_code(edit) == "document_version_conflict"
+        assert error_body(edit)["current_version"] is None
+        async with engine.connect() as reader:
+            still_gone = await reader.execute(
+                text("SELECT count(*) FROM tailoring_run WHERE id = :id"), {"id": run_id.value}
+            )
+        assert still_gone.scalar_one() == 0, "the losing edit must not write the row back"
+        async with new_client(concurrent_app) as reloader:
+            reload = await reloader.get(f"{ME_RUNS}/{run_id.value}", headers=account.headers)
+        assert reload.status_code == 404, reload.text
+        assert error_code(reload) == "tailoring_run_not_found"
+    finally:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM identity_user WHERE id = :id"), {"id": account.user_id.value}
+            )
+
+
+async def test_an_edit_after_the_entry_was_deleted_is_404(
+    client: AsyncClient, settings: Settings, session: AsyncSession, clock: FixedClock
+) -> None:
+    """H-33's tail on its own: once the deletion has committed, a fresh edit reads nothing — 404
+    `tailoring_run_not_found`, never a 409."""
     account = await register(client, settings)
     run = await _add_run(session, succeeded_run(account.owner, clock.now() - timedelta(minutes=1)))
-    await session.commit()
+    run_uuid, version = run.id.value, run.version
+    deleted = await client.delete(f"{ME_RUNS}/{run_uuid}", headers=account.headers)
+    assert deleted.status_code == 204, deleted.text
 
-    second_session = async_sessionmaker(
-        bind=connection, expire_on_commit=False, join_transaction_mode="create_savepoint"
-    )()
-    stale_copy = await SqlAlchemyTailoringRunRepository(second_session).get(run.id)
-    await second_session.commit()
-    await session.execute(tailoring_run_table.delete().where(tailoring_run_table.c.id == run.id))
-    await session.commit()
+    edit = await client.put(
+        f"{ME_RUNS}/{run_uuid}/documents/cv",
+        json={"content": _REVISED_CV, "expected_version": version},
+        headers=account.headers,
+    )
 
-    app2 = create_app(settings)
-    app2.dependency_overrides[get_session] = _committing_session_override(second_session)
-    app2.state.settings = settings
-    app2.state.engine = app.state.engine
-    app2.state.session_factory = lambda: second_session
-    app2.state.celery = app.state.celery
-    app2.state.password_hasher = app.state.password_hasher
-    try:
-        async with new_client(app2) as editor:
-            edit = await _put(editor, account, stale_copy, stale_copy.version)
-    finally:
-        await second_session.close()
-
-    assert edit.status_code == 409, edit.text
-    assert error_code(edit) == "document_version_conflict"
-    assert error_body(edit)["current_version"] is None
-    reload = await client.get(f"{ME_RUNS}/{run.id.value}", headers=account.headers)
-    assert reload.status_code == 404, reload.text
-    assert error_code(reload) == "tailoring_run_not_found"
+    assert edit.status_code == 404, edit.text
+    assert error_code(edit) == "tailoring_run_not_found"

@@ -230,7 +230,7 @@ async def _fill(session: AsyncSession, owner: object, count: int, clock: FixedCl
     repo = SqlAlchemyJobPostingRepository(session)
     for _ in range(count):
         await repo.add(pasted_posting(owner, clock.now()))  # type: ignore[arg-type]
-    await session.flush()
+    await session.commit()
 
 
 async def test_h10_at_the_user_cap_a_fetch_is_409_with_no_fetch_and_no_row(
@@ -350,7 +350,7 @@ async def test_the_recent_list_is_the_users_own_newest_first_as_summaries(
         pasted_posting(guest, clock.now()),
     ]:
         await repo.add(posting)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(f"{ME_POSTINGS}?limit=20", headers=account.headers)
 
@@ -375,7 +375,7 @@ async def test_the_recent_list_defaults_to_one(
     newest = pasted_posting(account.owner, clock.now())
     await repo.add(pasted_posting(account.owner, clock.now() - timedelta(minutes=5)))
     await repo.add(newest)
-    await session.flush()
+    await session.commit()
 
     response = await client.get(ME_POSTINGS, headers=account.headers)
 

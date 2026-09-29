@@ -188,6 +188,7 @@ async def test_h9_a_valid_bearer_whose_account_is_gone_is_401_not_signed_in(
     await session.execute(
         text("DELETE FROM identity_user WHERE id = :id"), {"id": account.user_id.value}
     )
+    await session.commit()  # erased for real: a refused request's rollback must not bring it back
 
     response = await _call(client, route, route.url(entry), account.headers)
 
