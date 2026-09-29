@@ -14,6 +14,7 @@ implements is documented on the guest route.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import assert_never
 
@@ -336,9 +337,14 @@ async def request_export(
     events: EventPublisherPort,
     clock: Clock,
     db: AsyncSession,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> ExportJobResponse:
     """`POST …/exports`'s body: the fail-open limiter (principal and IP), the use case, the commit,
-    then the enqueue for a created job, then `Location: {jobs_prefix}/{id}` and 202 or 200."""
+    then the enqueue for a created job, then `Location: {jobs_prefix}/{id}` and 202 or 200.
+
+    `translate` maps a `DomainError` from the use case to a response; the account twin passes one
+    whose cap messages speak to a signed-in user (`errors.account_error_to_http_exception`).
+    """
     # -- 1. The rate limiter, both scopes, FAIL-OPEN (X-19, X-20). --------------------------------
     #
     # **Open, where `request_tailoring_run`'s twin is closed**, and the difference is the invoice
@@ -408,7 +414,7 @@ async def request_export(
             )
         )
     except DomainError as exc:
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     job = result.export_job
     # **Read the id into a local, and build the wire shape, BEFORE the commit** (1.4's lesson,

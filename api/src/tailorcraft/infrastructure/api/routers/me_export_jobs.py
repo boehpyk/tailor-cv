@@ -1,8 +1,8 @@
 """A signed-in user's export jobs: poll one, download its file (slice 2.3, technical plan §4).
 
-Built red-first (sdlc.md §2): **SKELETON** (T20, this file — real paths, real schemas, every
-documented status in each `responses=` map, handlers raising `NotImplementedError`), **RED** (T21,
-`qa`), **GREEN** (T23 — thin calls into `_export_handlers.py`, T19's shared bodies).
+Built red-first (sdlc.md §2): **SKELETON** (T20 — real paths, real schemas, every documented status
+in each `responses=` map), **RED** (T21, `qa`), **GREEN** (T23, this file — thin calls into
+`_export_handlers.py`, T19's shared bodies, with the account as requester and `expires_at: null`).
 
 A job, once it exists, is its own resource (1.5's reasoning): its poll and its download name the job,
 not the run. Jobs are **created** under their run (`POST /api/me/tailoring-runs/{id}/exports`), whose
@@ -15,11 +15,20 @@ it. A guest's job id is a 404, byte-identical to one that does not exist. Every 
 
 from __future__ import annotations
 
+from typing import Final
 from uuid import UUID
 
 from fastapi import APIRouter, Response, status
 
-from tailorcraft.infrastructure.api.deps import RequireUserDep
+from tailorcraft.domain.export.value_objects import ExportJobId
+from tailorcraft.domain.identity.ownership import UserOwner
+from tailorcraft.infrastructure.api.deps import (
+    DownloadExportFileDep,
+    GetExportJobDep,
+    RequireUserDep,
+    SessionDep,
+)
+from tailorcraft.infrastructure.api.routers import _export_handlers as handlers
 from tailorcraft.infrastructure.api.routers._me_responses import (
     EXPORT_JOB_NOT_FOUND,
     NOT_SIGNED_IN,
@@ -30,6 +39,9 @@ from tailorcraft.infrastructure.api.schemas.export import ExportJobResponse
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 
 router = APIRouter(prefix="/api/me/export-jobs", tags=["export"])
+
+# This router's own prefix is the job collection's URL: `file_url` points back into it.
+_JOBS_PREFIX: Final = router.prefix
 
 
 @router.get(
@@ -52,9 +64,20 @@ async def get_my_export_job(
     export_job_id: UUID,
     response: Response,
     user_id: RequireUserDep,
+    get_job: GetExportJobDep,
+    db: SessionDep,
 ) -> ExportJobResponse:
-    """One of the account's export jobs — 1.5's poll."""
-    raise NotImplementedError
+    """One of the account's export jobs — 1.5's poll. The shared body sets `no-store`."""
+    wire = await handlers.get_export_job(
+        export_job_id=ExportJobId(export_job_id),
+        response=response,
+        requester=UserOwner(user_id),
+        expires_at=None,
+        jobs_prefix=_JOBS_PREFIX,
+        get_job=get_job,
+    )
+    await db.commit()
+    return wire
 
 
 @router.get(
@@ -88,7 +111,12 @@ async def get_my_export_job(
 async def download_my_export_file(
     export_job_id: UUID,
     user_id: RequireUserDep,
+    download: DownloadExportFileDep,
 ) -> Response:
     """The rendered file of one of the account's `ready` jobs — 1.5's download. Returns its own
-    `Response` (no injected one: its headers would be dropped, see 1.5)."""
-    raise NotImplementedError
+    `Response` (no injected one: its headers would be dropped, see 1.5), which carries `no-store`."""
+    return await handlers.download_export_file(
+        export_job_id=ExportJobId(export_job_id),
+        requester=UserOwner(user_id),
+        download=download,
+    )

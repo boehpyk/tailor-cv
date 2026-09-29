@@ -545,6 +545,58 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     raise exc
 
 
+def account_error_to_http_exception(
+    exc: DomainError, *, max_job_postings_per_user: int
+) -> HTTPException:
+    """The `/api/me/` routes' translation (slice 2.3): the shared mapping, except that the three
+    caps speak to a signed-in user rather than to a 24-hour session.
+
+    **Same codes, different sentences** — a client branches on `code`, and the guest sentences ("…
+    for this session. Start a new session.") would be wrong advice to someone whose data is kept
+    until they delete it. The account's fix is always the same: delete older history.
+
+    - H-10: `too_many_job_postings` names the cap. `TooManyJobPostings` carries no number, so the
+      caller passes the setting it was checked against.
+    - H-17: `too_many_tailoring_runs` names the cap (the error carries it) and points at history.
+    - H-37: `too_many_export_jobs`, a per-run cap: still no number (X-18's reason), and the two ways
+      out — re-tailor, or the inline formats that make no job.
+    """
+    if isinstance(exc, TooManyJobPostings):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_job_postings",
+                "message": (
+                    f"You have reached the limit of {max_job_postings_per_user} saved job "
+                    "postings. Delete older entries in your history to make room."
+                ),
+            },
+        )
+    if isinstance(exc, TooManyTailoringRuns):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_tailoring_runs",
+                "message": (
+                    f"You have reached the limit of {exc.limit} tailoring runs. "
+                    "Delete older entries in your history to make room."
+                ),
+            },
+        )
+    if isinstance(exc, TooManyExportJobs):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_export_jobs",
+                "message": (
+                    "This entry has been exported many times. Delete it and tailor again, or "
+                    "download it as Markdown or plain text."
+                ),
+            },
+        )
+    return domain_error_to_http_exception(exc)
+
+
 def _identity_error_to_http(exc: DomainError) -> HTTPException:
     """Map one `identity` `DomainError` to its status and `code` (the API contract, technical plan §4).
 

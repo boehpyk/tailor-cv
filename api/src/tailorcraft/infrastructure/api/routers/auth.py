@@ -682,6 +682,12 @@ def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
         EVENT_ACCOUNT_ERASED,
         user_id=str(user_id.value),
         base_cvs=report.base_cvs,
+        # Slice 2.3 (H-52): an account is also its history. `files` is every key the erasure tried
+        # to unlink — saved CVs' and derived export keys — so the two numbers below read against it.
+        tailoring_runs=report.tailoring_runs,
+        job_postings=report.job_postings,
+        export_jobs=report.export_jobs,
+        files=report.files,
         files_unlinked=report.files_unlinked,
         files_failed=len(report.unlink_failures),
     )

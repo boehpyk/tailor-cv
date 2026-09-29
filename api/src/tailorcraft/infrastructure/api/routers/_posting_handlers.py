@@ -16,6 +16,7 @@ The contract each body implements is documented on the guest route that calls it
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from fastapi import Request, Response, status
@@ -119,11 +120,15 @@ async def create_job_posting(
     capture: CaptureJobPosting,
     postings: JobPostingRepository,
     db: AsyncSession,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> JobPostingResponse:
     """Capture one job posting for `requester`, pasted or fetched — `POST /api/job-postings`'s body.
 
     `principal` keys the per-principal budgets (create, and fetch for a `fetched` body); the fetch
     path also checks the client-IP budget. Each limit is the setting the guest route has always used.
+
+    `translate` maps a `DomainError` from the use case to a response; the account twin passes one
+    whose cap messages speak to a signed-in user (`errors.account_error_to_http_exception`).
     """
     principal_scope, principal_id = principal
 
@@ -222,7 +227,7 @@ async def create_job_posting(
     except DomainError as exc:
         # Every `JobPostingFetchFailed` subclass arrives here, having propagated straight through
         # the use case (ADR-0013). This is the boundary that turns one into a status and a code.
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     saved = await postings.get(result.job_posting_id)
     wire = to_response(saved, expires_at)

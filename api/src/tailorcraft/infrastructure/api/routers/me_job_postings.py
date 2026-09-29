@@ -1,8 +1,8 @@
 """A signed-in user's job postings: capture one, list the recent ones (slice 2.3, technical plan §4).
 
-Built red-first (sdlc.md §2): **SKELETON** (T20, this file — real paths, real schemas, every
-documented status in each `responses=` map, handlers raising `NotImplementedError`), **RED** (T21,
-`qa`), **GREEN** (T23 — thin calls into `_posting_handlers.py`, T19's shared bodies).
+Built red-first (sdlc.md §2): **SKELETON** (T20 — real paths, real schemas, every documented status
+in each `responses=` map), **RED** (T21, `qa`), **GREEN** (T23, this file — thin calls into
+`_posting_handlers.py`, T19's shared bodies, with the account's principal and `expires_at: null`).
 
 **One credential: the bearer** (`require_user`). A `tc_guest` cookie riding along changes nothing,
 and nothing in this module reads it (ADR-0008 (f)): the account twin of `POST /api/job-postings`, not
@@ -15,11 +15,28 @@ posting is kept until the history entry that uses it is deleted (OQ-8).
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Query, Request, Response, status
 
-from tailorcraft.infrastructure.api.deps import RequireUserDep
+from tailorcraft.domain.identity.ownership import UserOwner
+from tailorcraft.domain.shared.errors import DomainError
+from tailorcraft.infrastructure.api.deps import (
+    CaptureJobPostingDep,
+    JobPostingRepositoryDep,
+    ListRecentJobPostingsDep,
+    PostingCreateRateLimiterDep,
+    PostingFetchRateLimiterDep,
+    RequireUserDep,
+    SessionDep,
+    SettingsDep,
+)
+from tailorcraft.infrastructure.api.errors import (
+    account_error_to_http_exception,
+    domain_error_to_http_exception,
+)
+from tailorcraft.infrastructure.api.routers import _posting_handlers as handlers
 from tailorcraft.infrastructure.api.routers._me_responses import (
     NOT_SIGNED_IN,
     RATE_LIMITED,
@@ -38,6 +55,8 @@ router = APIRouter(prefix="/api/me/job-postings", tags=["posting"])
 
 # The bound on `GET ?limit=` — the "recent postings" list is a picker, not an archive (plan §4).
 RECENT_POSTINGS_MAX = 20
+# AC-28: the workspace shows the newest posting, so one is the default; the picker asks for more.
+RECENT_POSTINGS_DEFAULT = 1
 
 
 @router.post(
@@ -90,11 +109,35 @@ async def create_my_job_posting(
     response: Response,
     body: Annotated[CreateJobPostingRequest, Body()],
     user_id: RequireUserDep,
+    settings: SettingsDep,
+    create_limiter: PostingCreateRateLimiterDep,
+    fetch_limiter: PostingFetchRateLimiterDep,
+    capture: CaptureJobPostingDep,
+    postings: JobPostingRepositoryDep,
+    db: SessionDep,
 ) -> JobPostingResponse:
     """Capture one job posting for the bearer's account, pasted or fetched — 1.2's body, 1.2's
     codes, the principal `("user", <id>)` on the create and fetch budgets (the fetch path also
-    checks the client-IP budget)."""
-    raise NotImplementedError
+    checks the client-IP budget). The create budget fails open and the fetch budget closed, as
+    1.2's do; the cap is checked before any fetch (H-10). The shared body commits."""
+    response.headers["Cache-Control"] = "no-store"
+    return await handlers.create_job_posting(
+        request=request,
+        body=body,
+        requester=UserOwner(user_id),
+        expires_at=None,
+        principal=("user", str(user_id.value)),
+        settings=settings,
+        create_limiter=create_limiter,
+        fetch_limiter=fetch_limiter,
+        capture=capture,
+        postings=postings,
+        db=db,
+        translate=partial(
+            account_error_to_http_exception,
+            max_job_postings_per_user=settings.max_job_postings_per_user,
+        ),
+    )
 
 
 @router.get(
@@ -105,8 +148,24 @@ async def create_my_job_posting(
 async def list_my_recent_job_postings(
     response: Response,
     user_id: RequireUserDep,
-    limit: Annotated[int, Query(ge=1, le=RECENT_POSTINGS_MAX)] = RECENT_POSTINGS_MAX,
+    list_recent: ListRecentJobPostingsDep,
+    db: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=RECENT_POSTINGS_MAX)] = RECENT_POSTINGS_DEFAULT,
 ) -> JobPostingListResponse:
     """The account's most recent postings, newest first, as summaries with a preview — never the
-    full text. `items: []` for none, never a 404."""
-    raise NotImplementedError
+    full text. `items: []` for none, never a 404.
+
+    Writes nothing and commits anyway — 2.1's `/me` reason: `get_session`'s commit runs after the
+    response is on the wire, so a failing database would otherwise answer 200.
+    """
+    handlers.no_store(response)
+    try:
+        postings = await list_recent(user_id, limit)
+    except DomainError as exc:
+        raise domain_error_to_http_exception(exc) from None
+
+    wire = JobPostingListResponse(
+        items=[handlers.to_summary(posting, None) for posting in postings]
+    )
+    await db.commit()
+    return wire

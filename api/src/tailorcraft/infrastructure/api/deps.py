@@ -50,8 +50,11 @@ from tailorcraft.application.intake.upload_base_cv import UploadBaseCv
 from tailorcraft.application.posting.capture_job_posting import CaptureJobPosting
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
+from tailorcraft.application.posting.list_recent_job_postings import ListRecentJobPostingsForUser
 from tailorcraft.application.retention.erase_account import EraseAccount
+from tailorcraft.application.retention.erase_history_entry import EraseHistoryEntry
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
+from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
@@ -78,12 +81,13 @@ from tailorcraft.domain.identity.value_objects import (
 )
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
-from tailorcraft.domain.retention.ports import AccountDataPort
+from tailorcraft.domain.retention.ports import AccountDataPort, HistoryEntryDataPort
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
 from tailorcraft.domain.tailoring.ports import (
     LlmPort,
+    TailoringHistoryQuery,
     TailoringQueuePort,
     TailoringRunRepository,
 )
@@ -113,7 +117,10 @@ from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolic
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
-from tailorcraft.infrastructure.retention.data_access import CommittingAccountData
+from tailorcraft.infrastructure.retention.data_access import (
+    CommittingAccountData,
+    CommittingHistoryEntryData,
+)
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 
@@ -1325,3 +1332,67 @@ def get_delete_own_account(
 
 
 DeleteOwnAccountDep = Annotated[DeleteOwnAccount, Depends(get_delete_own_account)]
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.3 — a signed-in user's history (technical plan §3 "Wiring"). Deferred imports throughout,
+# for the mapper-configuration reason `get_base_cv_repository` documents.
+# --------------------------------------------------------------------------------------------------
+
+
+def get_tailoring_history_query(session: SessionDep) -> TailoringHistoryQuery:
+    """Binds `TailoringHistoryQuery` -> `SqlAlchemyTailoringHistoryQuery` (ADR-0024): a read-side
+    port, one Core statement over the request's session."""
+    from tailorcraft.infrastructure.persistence.queries.tailoring_history import (
+        SqlAlchemyTailoringHistoryQuery,
+    )
+
+    return SqlAlchemyTailoringHistoryQuery(session)
+
+
+TailoringHistoryQueryDep = Annotated[TailoringHistoryQuery, Depends(get_tailoring_history_query)]
+
+
+def get_list_tailoring_history(
+    history: TailoringHistoryQueryDep, users: UserRepositoryDep
+) -> ListTailoringHistory:
+    return ListTailoringHistory(history, users)
+
+
+ListTailoringHistoryDep = Annotated[ListTailoringHistory, Depends(get_list_tailoring_history)]
+
+
+def get_history_entry_data(session: SessionDep) -> HistoryEntryDataPort:
+    """Binds `HistoryEntryDataPort` -> `CommittingHistoryEntryData(SqlAlchemyHistoryEntryData)`
+    (technical plan §0.6): the three `DELETE`s commit before `EraseHistoryEntry` unlinks a file —
+    `get_account_data`'s rule, one entry instead of one account."""
+    from tailorcraft.infrastructure.persistence.retention.history_entry_data import (
+        SqlAlchemyHistoryEntryData,
+    )
+
+    return CommittingHistoryEntryData(SqlAlchemyHistoryEntryData(session), session)
+
+
+HistoryEntryDataDep = Annotated[HistoryEntryDataPort, Depends(get_history_entry_data)]
+
+
+def get_erase_history_entry(
+    get_tailoring_run: GetTailoringRunDep, entries: HistoryEntryDataDep, files: FileStoreDep
+) -> EraseHistoryEntry:
+    """The `GetTailoringRun` *use case*, not a repository, for `get_request_export`'s reason: the
+    authorization and the 404 collapse are inherited rather than written again."""
+    return EraseHistoryEntry(get_tailoring_run, entries, files)
+
+
+EraseHistoryEntryDep = Annotated[EraseHistoryEntry, Depends(get_erase_history_entry)]
+
+
+def get_list_recent_job_postings(
+    postings: JobPostingRepositoryDep, users: UserRepositoryDep
+) -> ListRecentJobPostingsForUser:
+    return ListRecentJobPostingsForUser(postings, users)
+
+
+ListRecentJobPostingsDep = Annotated[
+    ListRecentJobPostingsForUser, Depends(get_list_recent_job_postings)
+]

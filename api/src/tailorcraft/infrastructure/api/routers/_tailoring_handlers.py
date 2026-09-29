@@ -17,6 +17,7 @@ is computed once, handed to the limiter as an identifier, and goes nowhere else.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 from typing import assert_never
 
@@ -116,9 +117,8 @@ def is_retryable(reason: TailoringFailureReason | None) -> bool:
         ):
             return True
         case TailoringFailureReason.BASE_CV_DELETED:
-            # SKELETON (T5b): an explicit arm so `assert_never` still type-checks with the tenth
-            # reason. `False` is the provisional answer — a second run against a deleted CV fails the
-            # same way — and T21's RED decides whether it is right.
+            # H-22: no *Try again*. A new run needs the CV this one was made from, and that CV is
+            # gone — a retry would 404 on it. The user picks another CV, which is a new request.
             return False
         case _:
             assert_never(reason)
@@ -327,9 +327,14 @@ async def request_tailoring_run(
     queue: TailoringQueuePort,
     events: EventPublisherPort,
     db: AsyncSession,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> TailoringRunResponse:
     """`POST /api/tailoring-runs`'s body: the fail-closed limiter (principal and IP), the use case,
-    the in-handler commit, **then** the enqueue, then `Location: {location_prefix}/{id}`."""
+    the in-handler commit, **then** the enqueue, then `Location: {location_prefix}/{id}`.
+
+    `translate` maps a `DomainError` from the use case to a response; the account twin passes one
+    whose cap messages speak to a signed-in user (`errors.account_error_to_http_exception`).
+    """
     # -- 1. The rate limiter, both scopes, FAIL-CLOSED (G-11, G-12, AC-17, AC-18). -----------------
     #
     # Before the use case, so a 429 or a 503 here creates no row and spends nothing (ADR-0014 §2:
@@ -393,7 +398,7 @@ async def request_tailoring_run(
     except DomainError as exc:
         # `TailoringAlreadyRunning`'s 409 carries `active_tailoring_run_id` — built in errors.py, so
         # the one mapping stays the one mapping.
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     # The wire shape is built from the aggregate as the repository hands it back — the same
     # instance the use case just added, served from this session's identity map — rather than
