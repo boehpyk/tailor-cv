@@ -182,9 +182,10 @@ class ExecuteTailoringRun:
 
     **Step 5 — two branches, since slice 2.3 (§0.4).** A `BaseCvNotFound` is reachable: a
     registered user deleted the saved CV a queued run references, and the run is recorded
-    `failed` / `base_cv_deleted` before the model is called. A `JobPostingNotFound` stays
-    near-unreachable and is handled as `MISSING` — return, do not raise — **because there is no
-    run left to record a failure on**; the comment at that line says why, per owner.
+    `failed` / `base_cv_deleted` before the model is called. A `JobPostingNotFound` is
+    unreachable by invariant (enforced by two row locks in the infrastructure) and is handled as
+    `MISSING` — return, do not raise — **because there is no run left to record a failure on**;
+    the comment at that line says why, per owner.
 
     **The narrowing at step 6.** `cv.extracted_text` is `ExtractedText | None` on the aggregate, and
     `mypy --strict` will insist on the check even though step 3 of `RequestTailoringRun` already
@@ -300,12 +301,16 @@ class ExecuteTailoringRun:
         try:
             posting = await self._job_postings.get(run.job_posting_id)
         except JobPostingNotFound:
-            # Still effectively unreachable, for a different reason per owner. A guest's posting goes
-            # only with its session, and the purge cascades the run away with it (step 1 would have
-            # returned `MISSING`). A user's posting is deleted only by history-entry deletion, which
-            # requires that no *other* run references it (§0.6), or by account erasure, which takes
-            # this run too. Handled as `MISSING` rather than as a failure reason **because there is
-            # no run left to record a failure on** — this is not a forgotten `TailoringFailureReason`.
+            # Unreachable by invariant: no run ever references a posting that no longer exists. A
+            # guest's posting goes only with its session, and the purge cascades the run away with
+            # it (step 1 would have returned `MISSING`). A user's posting is deleted only by account
+            # erasure, which takes this run too, or by history-entry deletion, which keeps a posting
+            # any other run references. The column has no FK, so that last rule is enforced by two
+            # row locks in the infrastructure (2.3 /verify, reviewer MINOR #1): the run's insert
+            # holds the posting `FOR KEY SHARE` and refuses if it is gone, and the deletion takes it
+            # `FOR UPDATE` before re-checking for runs. Handled as `MISSING` rather than as a
+            # failure reason **because there is no run left to record a failure on** in every way
+            # this could be reached — this is not a forgotten `TailoringFailureReason`.
             return ExecuteTailoringRunOutcome.MISSING
 
         cv_text = cv.extracted_text

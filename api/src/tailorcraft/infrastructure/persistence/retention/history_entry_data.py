@@ -2,10 +2,11 @@
 
 Deleting one entry of a signed-in user's history is retention's shape — *delete what an owner has for
 X, rows committed, then files* — over three contexts' tables, so it is Core SQL here rather than a
-`remove` on `TailoringRunRepository`. Three statements, one transaction, the owner in every `WHERE`:
+`remove` on `TailoringRunRepository`. Four statements, one transaction, the owner in every `WHERE`:
 
     DELETE FROM tailoring_run WHERE id = :r AND user_id = :u RETURNING job_posting_id;  -- 0 rows → None
     DELETE FROM export_job WHERE tailoring_run_id = :r AND user_id = :u RETURNING id, format;
+    SELECT id FROM posting_job_posting WHERE id = :p AND user_id = :u FOR UPDATE;
     DELETE FROM posting_job_posting
      WHERE id = :p AND user_id = :u
        AND NOT EXISTS (SELECT 1 FROM tailoring_run WHERE job_posting_id = :p);        -- rowcount
@@ -22,7 +23,13 @@ row's lock; the second's `DELETE` matches nothing once the first commits.
 
 **The posting survives while any run still references it** — whoever owns that run. The `NOT
 EXISTS` names no owner on purpose: a reference is a reference, and a posting is cheaper to keep than
-to explain the dangling id of.
+to explain the dangling id of. **The `FOR UPDATE` is what makes that true under concurrency**
+(2.3 /verify, reviewer MINOR #1): `tailoring_run.job_posting_id` has no FK, and a run request for
+the same posting holds it `FOR KEY SHARE` from its `INSERT` to its commit
+(`SqlAlchemyTailoringRunRepository.add`). The lock waits that out, and the `DELETE` that follows is
+a separate statement with a fresh READ COMMITTED snapshot, so it sees the new run and keeps the
+posting. The run request, for its part, refuses with `JobPostingNotFound` if the posting is already
+gone by the time it locks it. Between the two, no run can reference a deleted posting.
 
 **Nothing here logs and nothing here commits.** `CommittingHistoryEntryData`
 (`infrastructure/retention/data_access.py`) commits after this returns — which is what makes the
@@ -74,7 +81,7 @@ class SqlAlchemyHistoryEntryData:
     async def delete_history_entry(
         self, user_id: UserId, run_id: UUID
     ) -> DeletedHistoryEntry | None:
-        """The port's contract; the three statements are the module docstring's.
+        """The port's contract; the four statements are the module docstring's.
 
         **Loaded aggregates leave the identity map first**, by identity: `EraseHistoryEntry` loaded
         the run through `GetTailoringRun` to authorize it, and a Core `DELETE` does not tell the ORM
@@ -118,6 +125,23 @@ class SqlAlchemyHistoryEntryData:
             if job_format in _QUEUED_FORMATS:
                 export_files.append(FileRef.for_export(job_id, job_format))
 
+        # Lock the posting, THEN decide in a separate statement (2.3 /verify, reviewer MINOR #1).
+        # A run request that authorized this posting holds it `FOR KEY SHARE` from its `INSERT`
+        # until its commit (`SqlAlchemyTailoringRunRepository.add`); `FOR UPDATE` waits behind that.
+        # The wait is the point: the `DELETE` below is its own statement, so under READ COMMITTED
+        # it takes a fresh snapshot *after* the lock is granted and sees a run committed while we
+        # waited — the posting is kept. Folded into one statement, the `NOT EXISTS` would read the
+        # snapshot from before the wait and delete a posting the new run references.
+        # No row here (a foreign or already-gone posting) needs no special case: the `DELETE`
+        # below matches nothing either.
+        await connection.execute(
+            select(job_posting_table.c.id)
+            .where(
+                job_posting_table.c.id == posting_id,
+                job_posting_table.c.user_id == user_id,
+            )
+            .with_for_update()
+        )
         still_referenced = exists(
             select(tailoring_run_table.c.id).where(
                 tailoring_run_table.c.job_posting_id == posting_id

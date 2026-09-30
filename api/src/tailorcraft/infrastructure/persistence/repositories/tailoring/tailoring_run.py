@@ -32,6 +32,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.tailoring.errors import (
     TailoringRunConcurrentlyModified,
     TailoringRunNotFound,
@@ -40,6 +41,7 @@ from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.persistence.database import violated_constraint
+from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
 from tailorcraft.infrastructure.persistence.types.tailoring import TailoringRunStatusType
 
 if TYPE_CHECKING:
@@ -106,8 +108,16 @@ class SqlAlchemyTailoringRunRepository:
     call is still in flight (the port's `save` docstring).
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, *, refuse_missing_posting: bool = False) -> None:
+        """`refuse_missing_posting` is `add`'s second half (its docstring): the composition root
+        that serves run *requests* (`api/deps.py`) turns it on. Off, `add` still takes the posting
+        lock and simply does not refuse when there is no row to lock — the shape every direct
+        construction in the test suite relies on, since its seeds write runs over posting ids they
+        never create (there is no FK to stop them). Nothing in production calls `add` with it off:
+        the worker and the sweep never insert a run.
+        """
         self._session = session
+        self._refuse_missing_posting = refuse_missing_posting
 
     def next_identity(self) -> TailoringRunId:
         """Synchronous: application-assigned UUIDv7 needs no I/O (ADR-0007). Here it does a second
@@ -128,13 +138,54 @@ class SqlAlchemyTailoringRunRepository:
 
         **Inside a SAVEPOINT**, so a refused flush expires only this pending run and not every
         instance in the session (the 1.4 lesson). Any other refusal propagates untranslated.
+
+        **Then the run's posting is locked `FOR KEY SHARE`, and a vanished posting is
+        `JobPostingNotFound`** (2.3 /verify, reviewer MINOR #1). A cross-table lock in a repository
+        is unusual, so the reason: `tailoring_run.job_posting_id` has no FK (ADR-0014 declined the
+        cross-context one), and a history-entry deletion removes a user's posting with a
+        `DELETE … WHERE NOT EXISTS (a run on it)`. Nothing serialized the two, so a run authorized
+        against posting P could race P's deletion **in either direction** and land referencing a
+        posting that no longer exists:
+
+        - *insert first* — this `INSERT` is uncommitted when the deletion's `NOT EXISTS` runs, so
+          it cannot see the row and deletes P. Now the deletion takes P `FOR UPDATE`, which waits
+          behind this `FOR KEY SHARE` until our transaction ends, and then re-reads in a fresh
+          statement that sees the committed run: P is kept.
+        - *delete first* — the use case authorized P, then the deletion committed. This
+          `SELECT … FOR KEY SHARE` finds no row (READ COMMITTED re-checks a row that was deleted
+          while it waited, too), so — with `refuse_missing_posting`, which the request route's
+          composition root sets — the request is refused `JobPostingNotFound` — the same 404 the
+          authorization would have given a moment later — and the SAVEPOINT's rollback takes the
+          run with it.
+
+        **The lock follows the `INSERT`, never precedes it**, and the order is load-bearing: the
+        `INSERT`'s FK check takes the *owner* row `FOR KEY SHARE` first, exactly as before. An
+        account erasure (user row `FOR UPDATE`, then postings) or a guest purge (session row, then
+        its cascade) therefore meets us on the owner row before either of us touches the posting,
+        so the two can queue but never deadlock. Locking the posting first would let us hold P
+        while waiting on the user row the erasure holds while it waits on P.
+
+        Guest runs take the same path; it is harmless there (a guest posting is deleted only by the
+        purge's session cascade, which the owner-row ordering above already serializes).
         """
         # Read before the flush: after a nested rollback the pending run is expunged.
         run_id = run.id
+        posting_id = run.job_posting_id
         try:
             async with self._session.begin_nested():
                 self._session.add(run)
                 await self._session.flush()
+                posting_still_exists = (
+                    await self._session.execute(
+                        select(job_posting_table.c.id)
+                        .where(job_posting_table.c.id == posting_id)
+                        .with_for_update(key_share=True)
+                    )
+                ).scalar_one_or_none()
+                if posting_still_exists is None and self._refuse_missing_posting:
+                    # Raised inside the SAVEPOINT so its rollback discards the run just flushed.
+                    # The message names the id only, as `SqlAlchemyJobPostingRepository.get` does.
+                    raise JobPostingNotFound(f"no JobPosting with id {posting_id!r}")
         except IntegrityError as exc:
             if violated_constraint(exc) == _USER_FK:
                 # `from None`: the listener already reduced the chain to identifiers, and the frame

@@ -155,8 +155,12 @@ tailoring_run_table = Table(
     # their history), and a cascade (silently erasing paid-for documents the user may still be
     # sending).
     #
-    # `job_posting_id` does **not** dangle in practice: a user-owned posting is deleted only with its
-    # last referencing run (history-entry deletion checks) or with the account (which takes the run).
+    # `job_posting_id` does **not** dangle — an invariant, not a hope. A user-owned posting is
+    # deleted only with the account (which takes the run) or by history-entry deletion, which keeps a
+    # posting any run references. With no FK, concurrency is covered by two row locks (2.3 /verify,
+    # reviewer MINOR #1): `SqlAlchemyTailoringRunRepository.add` takes the posting `FOR KEY SHARE`
+    # after its `INSERT` and refuses `JobPostingNotFound` if it is gone, and
+    # `SqlAlchemyHistoryEntryData` takes it `FOR UPDATE` before a separate `DELETE … NOT EXISTS`.
     #
     # They still use the typed decorators rather than a bare `postgresql.UUID`, so a loaded run
     # hands back a `BaseCvId` and a `JobPostingId` — with four UUID columns in one table, the types
