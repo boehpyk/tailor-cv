@@ -26,21 +26,28 @@ import os
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from httpx import AsyncClient
+from httpx import AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
+from tailorcraft.domain.tailoring.value_objects import TailoringRunId
+from tailorcraft.infrastructure.api.deps import get_tailoring_queue
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.files.orphan_scanner import LocalOrphanFileScanner
@@ -72,6 +79,7 @@ from tests.api.me_support import (
     register,
     seed_entry,
 )
+from tests.integration.fakes import FakeTailoringQueue
 from tests.integration.owners import queued_run, ready_export, running_run, succeeded_run
 
 
@@ -416,5 +424,205 @@ async def test_ac33_two_concurrent_deletes_are_one_204_and_one_404(
         loser = next(r for r in results if r.status_code == 404)
         assert error_code(loser) == "tailoring_run_not_found"
         assert not (settings.upload_dir / entry.jobs[0].storage_ref.key).exists()
+    finally:
+        await _drop_user(engine, account)
+
+
+# --- Reviewer MINOR #1: a new run racing a posting deletion -----------------------------------
+#
+# `SqlAlchemyHistoryEntryData.delete_history_entry`'s posting `DELETE` is a bare
+# `NOT EXISTS (SELECT … FROM tailoring_run WHERE job_posting_id = :p)` with no lock and no owner in
+# the `NOT EXISTS`. `tailoring_run.job_posting_id` carries no FK (the mapping's own comment: "does
+# not dangle in practice: a user-owned posting is deleted only with its last referencing run" — the
+# claim this pair of tests is checking). A second run request (B, `POST /api/me/tailoring-runs`,
+# authorizing the same posting P a first run's history entry (R1) already references) can race a
+# `DELETE` of that entry (A): if B's `INSERT` of its own run (R2, on P) is still open —
+# flushed inside a SAVEPOINT, uncommitted — when A's `NOT EXISTS` runs, A cannot see R2, deletes P,
+# and R2 ends up referencing a posting that no longer exists once B commits.
+#
+# The invariant both tests check is the same one either way: once both requests have committed, no
+# `tailoring_run` row may reference a `posting_job_posting` row that does not exist, and neither
+# request may answer 5xx.
+
+
+async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference(
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine, clock: FixedClock
+) -> None:
+    """Direction (i), insert-first: B's `INSERT` (uncommitted, inside its SAVEPOINT) lands before
+    A's `DELETE …/tailoring-runs/{R1}` commits and removes P.
+
+    This needs **real concurrency**, not H-33's single-coroutine technique: B's transaction has to
+    stay open across the whole of A's request (A's own commit has to land while B is paused), so
+    two `asyncio` tasks trade control through two `Event`s, each awaited under `asyncio.wait_for` —
+    a hang here is a bug in the test, not a legitimate outcome, and must fail loudly rather than
+    hang the suite.
+
+    `SqlAlchemyTailoringRunRepository.add` is the pause point: by the time it is called, B's
+    `RequestTailoringRun` use case has already authorized P through `GetJobPosting` (2.3's shared
+    ownership check) and is about to flush the new run's `INSERT`. The wrapper lets the real `add`
+    run — so the `INSERT` really is flushed, uncommitted, inside its own SAVEPOINT — then signals A
+    and blocks until A's whole request (a real, separate connection, a real commit) has finished.
+
+    Recorded, never forced: this is the direction the reviewer's report says is reachable **today**,
+    and the assertion that must be observed red is the last one — no dangling reference — which
+    today's `NOT EXISTS` cannot honour because it never sees B's uncommitted row.
+    """
+    account, entry = await _seed_committed(concurrent_app, settings, engine, clock)
+    queue = FakeTailoringQueue()
+    concurrent_app.dependency_overrides[get_tailoring_queue] = lambda: queue
+
+    b_inserted_uncommitted = asyncio.Event()
+    a_committed = asyncio.Event()
+    order: list[str] = []
+    original_add = SqlAlchemyTailoringRunRepository.add
+
+    async def _pause_after_uncommitted_insert(
+        self: SqlAlchemyTailoringRunRepository, run: TailoringRun
+    ) -> None:
+        await original_add(self, run)
+        order.append("b_inserted_uncommitted")
+        b_inserted_uncommitted.set()
+        await asyncio.wait_for(a_committed.wait(), timeout=5)
+
+    async def _run_b() -> Response:
+        async with new_client(concurrent_app) as client_b:
+            return await client_b.post(
+                ME_RUNS,
+                json={
+                    "base_cv_id": str(entry.cv_id.value),
+                    "job_posting_id": str(entry.posting_id.value),
+                },
+                headers=account.headers,
+            )
+
+    async def _run_a() -> Response:
+        await asyncio.wait_for(b_inserted_uncommitted.wait(), timeout=5)
+        async with new_client(concurrent_app) as client_a:
+            response = await client_a.delete(entry.run_url, headers=account.headers)
+        async with engine.connect() as separate:
+            still_there = await separate.execute(
+                text("SELECT count(*) FROM posting_job_posting WHERE id = :id"),
+                {"id": entry.posting_id.value},
+            )
+            order.append(
+                "a_deleted_posting_committed" if still_there.scalar_one() == 0 else "a_left_posting"
+            )
+        a_committed.set()
+        return response
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(SqlAlchemyTailoringRunRepository, "add", _pause_after_uncommitted_insert)
+            response_b, response_a = await asyncio.wait_for(
+                asyncio.gather(_run_b(), _run_a()), timeout=10
+            )
+
+        assert order == ["b_inserted_uncommitted", "a_deleted_posting_committed"], (
+            "A's delete-and-commit must land on a separate connection while B's insert is still "
+            f"open and uncommitted, but the observed order was {order!r}"
+        )
+        assert response_a.status_code == 204, response_a.text
+        assert response_b.status_code < 500, response_b.text
+
+        if response_b.status_code == 202:
+            run2_id = UUID(response_b.json()["id"])
+            assert queue.enqueued == [TailoringRunId(run2_id)], (
+                "the accepted run must be the one actually enqueued"
+            )
+            async with engine.connect() as reader:
+                dangling = await reader.execute(
+                    text(
+                        "SELECT count(*) FROM tailoring_run t "
+                        "LEFT JOIN posting_job_posting p ON p.id = t.job_posting_id "
+                        "WHERE t.id = :run2_id AND p.id IS NULL"
+                    ),
+                    {"run2_id": run2_id},
+                )
+            assert dangling.scalar_one() == 0, (
+                "no tailoring_run row may reference a nonexistent posting_job_posting row"
+            )
+        else:
+            assert response_b.status_code == 404, response_b.text
+            assert error_code(response_b) == "job_posting_not_found"
+    finally:
+        await _drop_user(engine, account)
+
+
+async def test_reviewer_minor1_delete_first_leaves_no_dangling_posting_reference(
+    concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine, clock: FixedClock
+) -> None:
+    """Direction (ii), delete-first: A's whole `DELETE` (a real, separate connection, a real commit)
+    lands strictly between B's posting authorization read and B's `INSERT` — the opposite ordering
+    from the test above.
+
+    This one does not need real concurrency: A's request can run to completion **inside** B's own
+    coroutine, synchronously, the same technique 1.4/H-33 use for a bare `DELETE`, just with a whole
+    nested request in place of one statement. `GetJobPosting.__call__` is the seam — B's
+    `RequestTailoringRun` calls it to authorize P and does nothing else with the database until its
+    own `INSERT` — so the wrapper lets the real authorization read return, then issues A's `DELETE`
+    against `concurrent_app` and awaits it fully (so A's commit is real and already landed) before
+    handing the posting back to B, which then proceeds to try to insert its run.
+
+    Recorded, never forced (per the task): this direction is not asserted to be red. Whichever way
+    it reads against today's adapter — a clean 404 with no row, or a 202 with a dangling
+    reference — is reported in the commit body instead of being masked here.
+    """
+    account, entry = await _seed_committed(concurrent_app, settings, engine, clock)
+    queue = FakeTailoringQueue()
+    concurrent_app.dependency_overrides[get_tailoring_queue] = lambda: queue
+
+    original_get_job_posting = GetJobPosting.__call__
+    delete_responses: list[Response] = []
+
+    async def _delete_between_authorize_and_insert(
+        self: GetJobPosting, job_posting_id: JobPostingId, requester: Owner
+    ) -> JobPosting:
+        posting = await original_get_job_posting(self, job_posting_id, requester)
+        async with new_client(concurrent_app) as client_a:
+            delete_responses.append(await client_a.delete(entry.run_url, headers=account.headers))
+        return posting
+
+    try:
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(GetJobPosting, "__call__", _delete_between_authorize_and_insert)
+            async with new_client(concurrent_app) as client_b:
+                response_b = await client_b.post(
+                    ME_RUNS,
+                    json={
+                        "base_cv_id": str(entry.cv_id.value),
+                        "job_posting_id": str(entry.posting_id.value),
+                    },
+                    headers=account.headers,
+                )
+
+        assert len(delete_responses) == 1, "A's delete must run exactly once, mid-request"
+        assert delete_responses[0].status_code == 204, delete_responses[0].text
+        async with engine.connect() as reader:
+            posting_gone = await reader.execute(
+                text("SELECT count(*) FROM posting_job_posting WHERE id = :id"),
+                {"id": entry.posting_id.value},
+            )
+        assert posting_gone.scalar_one() == 0, (
+            "A's delete-and-commit must already have landed before B's insert is attempted"
+        )
+
+        assert response_b.status_code < 500, response_b.text
+        if response_b.status_code == 202:
+            run2_id = UUID(response_b.json()["id"])
+            async with engine.connect() as reader:
+                dangling = await reader.execute(
+                    text(
+                        "SELECT count(*) FROM tailoring_run t "
+                        "LEFT JOIN posting_job_posting p ON p.id = t.job_posting_id "
+                        "WHERE t.id = :run2_id AND p.id IS NULL"
+                    ),
+                    {"run2_id": run2_id},
+                )
+            assert dangling.scalar_one() == 0, (
+                "no tailoring_run row may reference a nonexistent posting_job_posting row"
+            )
+        else:
+            assert response_b.status_code == 404, response_b.text
+            assert error_code(response_b) == "job_posting_not_found"
     finally:
         await _drop_user(engine, account)
