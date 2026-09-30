@@ -37,7 +37,9 @@ from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRunCommand,
     ExecuteTailoringRunOutcome,
 )
-from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingText
 from tailorcraft.domain.tailoring.errors import TailoringNotQueued
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredCv, TailoringRunId
@@ -124,7 +126,55 @@ async def _inputs(session: AsyncSession, owner: Owner, clock: FixedClock) -> dic
 
 
 async def _add_run(session: AsyncSession, run: TailoringRun) -> TailoringRun:
+    """A real posting for `run.job_posting_id` first — since 2.3 /verify (reviewer MINOR #1),
+    `SqlAlchemyTailoringRunRepository.add` takes it `FOR KEY SHARE` and, through the request route's
+    composition root, refuses a run whose posting does not exist. Every seed in this file that is
+    not deliberately building H-30's "posting already gone" state goes through this one place."""
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=run.job_posting_id,
+            owner=run.owner,
+            text=JobPostingText("posting " * 40),
+            created_at=run.requested_at,
+        )
+    )
     await SqlAlchemyTailoringRunRepository(session).add(run)
+    await session.commit()
+    return run
+
+
+async def _add_orphan_run(session: AsyncSession, run: TailoringRun) -> TailoringRun:
+    """H-30 needs a history entry whose posting is already gone — precisely the row
+    `SqlAlchemyTailoringRunRepository.add`'s posting lock now refuses to create. Inserted with Core
+    SQL directly against `tailoring_run_table`, bypassing the repository (and its lock) entirely:
+    the only way left to build this state on purpose, the same technique
+    `test_tailoring_run_repository.py`'s `_raw_insert` uses for the CHECK-constraint rows the
+    aggregate itself cannot build. `run` is returned unchanged — only how it lands differs."""
+    owner = run.owner
+    documents = run.documents
+    metrics = run.metrics
+    await session.execute(
+        tailoring_run_table.insert().values(
+            id=run.id,
+            guest_session_id=owner.guest_session_id if isinstance(owner, GuestOwner) else None,
+            user_id=owner.user_id if isinstance(owner, UserOwner) else None,
+            base_cv_id=run.base_cv_id,
+            job_posting_id=run.job_posting_id,
+            status=run.status,
+            failure_reason=run.failure_reason,
+            tailored_cv=documents.cv if documents is not None else None,
+            cover_letter=documents.cover_letter if documents is not None else None,
+            model_name=metrics.model if metrics is not None else None,
+            prompt_version=metrics.prompt_version if metrics is not None else None,
+            prompt_tokens=metrics.prompt_tokens if metrics is not None else None,
+            completion_tokens=metrics.completion_tokens if metrics is not None else None,
+            llm_duration_ms=metrics.duration_ms if metrics is not None else None,
+            requested_at=run.requested_at,
+            started_at=run.started_at,
+            completed_at=run.completed_at,
+            version=run.version,
+        )
+    )
     await session.commit()
     return run
 
@@ -579,7 +629,7 @@ async def test_h29_h30_an_entry_with_its_cv_or_posting_gone_is_still_listed(
 ) -> None:
     account = await register(client, settings)
     entry = await seed_entry(session, settings, account.owner, at=clock.now(), ready_formats=())
-    orphan = await _add_run(
+    orphan = await _add_orphan_run(
         session, succeeded_run(account.owner, clock.now() - timedelta(minutes=1))
     )
     await SqlAlchemyBaseCvRepository(session).remove(entry.cv_id, account.owner)
@@ -850,6 +900,16 @@ async def test_h33_an_edit_racing_a_committed_deletion_is_409_null_version_then_
         account = await register(setup, settings)
     async with async_sessionmaker(engine, expire_on_commit=False)() as seeding:
         run = succeeded_run(account.owner, clock.now() - timedelta(minutes=1))
+        # A real posting for `run.job_posting_id` first (2.3 /verify, reviewer MINOR #1): `add`
+        # now takes it `FOR KEY SHARE` and refuses a run whose posting does not exist.
+        await SqlAlchemyJobPostingRepository(seeding).add(
+            JobPosting.from_pasted_text(
+                id=run.job_posting_id,
+                owner=run.owner,
+                text=JobPostingText("posting " * 40),
+                created_at=run.requested_at,
+            )
+        )
         await SqlAlchemyTailoringRunRepository(seeding).add(run)
         await seeding.commit()
     run_id, version = run.id, run.version

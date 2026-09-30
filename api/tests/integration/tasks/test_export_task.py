@@ -55,7 +55,8 @@ from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
-from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 from tailorcraft.infrastructure.clock import FixedClock
@@ -72,6 +73,9 @@ from tailorcraft.infrastructure.persistence.mapping.export.export_job import (
 from tailorcraft.infrastructure.persistence.mapping.identity.guest_session import (
     guest_session_table,  # noqa: F401
 )
+from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import (
+    job_posting_table,  # noqa: F401
+)
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,  # noqa: F401
 )
@@ -80,6 +84,9 @@ from tailorcraft.infrastructure.persistence.repositories.export.export_job impor
 )
 from tailorcraft.infrastructure.persistence.repositories.identity.guest_session import (
     SqlAlchemyGuestSessionRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+    SqlAlchemyJobPostingRepository,
 )
 from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
     SqlAlchemyTailoringRunRepository,
@@ -111,9 +118,12 @@ async def _persist_succeeded_run(
 ) -> TailoringRun:
     """A real, persisted `succeeded` `TailoringRun` at `version == 3` (`request` -> `mark_started`
     -> `mark_succeeded`, each bumping `version` by one) — the only status `RenderExportJob` ever
-    renders from. `base_cv_id`/`job_posting_id` are random: `ExportJob` carries no FK to either and
-    `RenderExportJob` never looks them up (its own class docstring), so a real `BaseCv` or
-    `JobPosting` row would prove nothing this file needs.
+    renders from. `base_cv_id` is random: `ExportJob` carries no FK to it and `RenderExportJob`
+    never looks it up (its own class docstring), so a real `BaseCv` row would prove nothing this
+    file needs. `job_posting_id` also carries no FK and is never looked up here either, but it
+    does need a real backing row since 2.3 /verify (reviewer MINOR #1):
+    `SqlAlchemyTailoringRunRepository.add` now takes it `FOR KEY SHARE` and, through the request
+    route's composition root, refuses a run whose posting does not exist.
     """
     runs = SqlAlchemyTailoringRunRepository(session)
     run = TailoringRun.request(
@@ -122,6 +132,14 @@ async def _persist_succeeded_run(
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=clock.now(),
+    )
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=run.job_posting_id,
+            owner=GuestOwner(owner_id),
+            text=JobPostingText("posting " * 40),
+            created_at=clock.now(),
+        )
     )
     run.mark_started(clock.now())
     run.mark_succeeded(a_documents(), a_metrics(), clock.now())

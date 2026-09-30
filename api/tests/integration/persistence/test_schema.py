@@ -35,7 +35,7 @@ from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, OriginalFilename
 from tailorcraft.domain.posting.job_posting import JobPosting
-from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
+from tailorcraft.domain.posting.value_objects import JobPostingText
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -264,6 +264,20 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
         )
     )
 
+    # A real posting for the run's `job_posting_id` too (2.3 /verify, reviewer MINOR #1):
+    # `SqlAlchemyTailoringRunRepository.add` now takes it `FOR KEY SHARE` and, through the request
+    # route's composition root, refuses a run whose posting does not exist. A fresh, independent
+    # posting — never `posting_id` above — keeps this row "genuinely independent" as the test's own
+    # docstring intends; it cascades with the rest of the session's rows regardless.
+    run_posting_id = postings.next_identity()
+    await postings.add(
+        JobPosting.from_pasted_text(
+            id=run_posting_id,
+            owner=GuestOwner(owner.id),
+            text=JobPostingText("y" * 150),
+            created_at=clock.now(),
+        )
+    )
     runs = SqlAlchemyTailoringRunRepository(session)
     run_id = runs.next_identity()
     await runs.add(
@@ -271,7 +285,7 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
             id=run_id,
             owner=GuestOwner(owner.id),
             base_cv_id=BaseCvId(value=uuid4()),
-            job_posting_id=JobPostingId(value=uuid4()),
+            job_posting_id=run_posting_id,
             requested_at=clock.now(),
         )
     )

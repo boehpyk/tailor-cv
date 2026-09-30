@@ -23,11 +23,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.export.errors import ExportNotQueued
 from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat, ExportJobId
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingText
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredCv
 from tailorcraft.infrastructure.api.deps import get_export_queue
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
     SqlAlchemyExportJobRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+    SqlAlchemyJobPostingRepository,
 )
 from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
     SqlAlchemyTailoringRunRepository,
@@ -85,6 +91,23 @@ def _exports_url(entry: Entry) -> str:
     return f"{ME_RUNS}/{entry.run_id.value}/exports"
 
 
+async def _add_run(session: AsyncSession, run: TailoringRun) -> TailoringRun:
+    """A real posting for `run.job_posting_id` first — since 2.3 /verify (reviewer MINOR #1),
+    `SqlAlchemyTailoringRunRepository.add` takes it `FOR KEY SHARE` and, through the request
+    route's composition root, refuses a run whose posting does not exist."""
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=run.job_posting_id,
+            owner=run.owner,
+            text=JobPostingText("posting " * 40),
+            created_at=run.requested_at,
+        )
+    )
+    await SqlAlchemyTailoringRunRepository(session).add(run)
+    await session.commit()
+    return run
+
+
 # --- Inline download ----------------------------------------------------------------------------
 
 
@@ -126,9 +149,7 @@ async def test_inline_download_of_a_queued_run_is_409_not_exportable(
     client: AsyncClient, settings: Settings, session: AsyncSession, clock: FixedClock
 ) -> None:
     account = await register(client, settings)
-    run = queued_run(account.owner, clock.now())
-    await SqlAlchemyTailoringRunRepository(session).add(run)
-    await session.commit()
+    run = await _add_run(session, queued_run(account.owner, clock.now()))
 
     response = await client.get(
         f"{ME_RUNS}/{run.id.value}/documents/cv/download?format=md", headers=account.headers
@@ -247,9 +268,7 @@ async def test_exporting_a_queued_run_is_409_not_exportable(
 ) -> None:
     _install_queue(app)
     account = await register(client, settings)
-    run = queued_run(account.owner, clock.now())
-    await SqlAlchemyTailoringRunRepository(session).add(run)
-    await session.commit()
+    run = await _add_run(session, queued_run(account.owner, clock.now()))
 
     response = await client.post(
         f"{ME_RUNS}/{run.id.value}/exports",

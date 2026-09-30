@@ -284,6 +284,13 @@ class _Rig:
         return ref
 
     async def add_tailoring_run(self, owner: GuestSessionId) -> TailoringRunId:
+        """`job_posting_id` is deliberately a random id with **no** backing row — this rig's own
+        `add_job_posting` seeds a posting as a genuinely independent row, and several callers
+        assert its count separately from the run's. `SqlAlchemyTailoringRunRepository.add`'s
+        posting lock (2.3 /verify, reviewer MINOR #1) would refuse that, so the row is inserted
+        with Core SQL directly against the mapped table, bypassing the repository (and its lock)
+        entirely — the same technique `test_tailoring_run_repository.py`'s `_raw_insert` uses for
+        the CHECK-constraint rows the aggregate itself cannot build."""
         runs = SqlAlchemyTailoringRunRepository(self.session)
         run = TailoringRun.request(
             id=runs.next_identity(),
@@ -292,7 +299,28 @@ class _Rig:
             job_posting_id=JobPostingId(value=uuid4()),
             requested_at=self.clock.now(),
         )
-        await runs.add(run)
+        await self.session.execute(
+            tailoring_run_table.insert().values(
+                id=run.id,
+                guest_session_id=owner,
+                user_id=None,
+                base_cv_id=run.base_cv_id,
+                job_posting_id=run.job_posting_id,
+                status=run.status,
+                failure_reason=run.failure_reason,
+                tailored_cv=None,
+                cover_letter=None,
+                model_name=None,
+                prompt_version=None,
+                prompt_tokens=None,
+                completion_tokens=None,
+                llm_duration_ms=None,
+                requested_at=run.requested_at,
+                started_at=run.started_at,
+                completed_at=run.completed_at,
+                version=run.version,
+            )
+        )
         await self.session.commit()
         return run.id
 

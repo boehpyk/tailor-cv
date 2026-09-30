@@ -43,6 +43,8 @@ from tailorcraft.domain.identity.value_objects import (
     PasswordHash,
     UserId,
 )
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingText
 from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identifiers import uuid7
@@ -317,6 +319,16 @@ def test_downgrade_refuses_while_a_base_cv_deleted_run_exists(settings: Settings
         session_id.append(guest.id)
         run = running_run(GuestOwner(guest.id), now)
         run.mark_failed(TailoringFailureReason.BASE_CV_DELETED, now)
+        # A real posting for `run.job_posting_id` first (2.3 /verify, reviewer MINOR #1): `add`
+        # now takes it `FOR KEY SHARE` and refuses a run whose posting does not exist.
+        await SqlAlchemyJobPostingRepository(session).add(
+            JobPosting.from_pasted_text(
+                id=run.job_posting_id,
+                owner=GuestOwner(guest.id),
+                text=JobPostingText("posting " * 40),
+                created_at=now,
+            )
+        )
         await SqlAlchemyTailoringRunRepository(session).add(run)
 
     async def clean(session: AsyncSession) -> None:
@@ -398,6 +410,16 @@ async def _a_2_2_row(
         await SqlAlchemyJobPostingRepository(session).add(posting)
         mapped, row_id = job_posting_table, posting.id
     elif table == "tailoring_run":
+        # A real posting for `run.job_posting_id` first (2.3 /verify, reviewer MINOR #1): `add`
+        # now takes it `FOR KEY SHARE` and refuses a run whose posting does not exist.
+        await SqlAlchemyJobPostingRepository(session).add(
+            JobPosting.from_pasted_text(
+                id=run.job_posting_id,
+                owner=owner,
+                text=JobPostingText("posting " * 40),
+                created_at=clock.now(),
+            )
+        )
         await SqlAlchemyTailoringRunRepository(session).add(run)
         mapped, row_id = tailoring_run_table, run.id
     else:

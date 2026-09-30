@@ -33,7 +33,7 @@ from sqlalchemy import event
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tailorcraft.domain.identity.ownership import UserOwner
+from tailorcraft.domain.identity.ownership import Owner, UserOwner
 from tailorcraft.domain.intake.value_objects import BaseCvLabel
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
@@ -42,6 +42,9 @@ from tailorcraft.domain.tailoring.value_objects import TailoredCv, TailoringRunI
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.observability import configure_logging
+from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
+    tailoring_run_table,
+)
 from tailorcraft.infrastructure.persistence.queries.tailoring_history import (
     SqlAlchemyTailoringHistoryQuery,
 )
@@ -61,6 +64,19 @@ from tests.integration.persistence.owner_rows import persist_guest, persist_user
 _INDEX = "ix_tailoring_run_user_id_requested_at"
 
 
+async def _persist_posting_for(
+    session: AsyncSession, owner: Owner, job_posting_id: JobPostingId, at: datetime
+) -> None:
+    """A real posting at exactly `job_posting_id` — since 2.3 /verify (reviewer MINOR #1),
+    `SqlAlchemyTailoringRunRepository.add` takes a run's posting `FOR KEY SHARE` and, through the
+    request route's composition root, refuses a run whose posting does not exist."""
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=job_posting_id, owner=owner, text=JobPostingText("posting " * 40), created_at=at
+        )
+    )
+
+
 class _Rig:
     def __init__(self, session: AsyncSession, clock: FixedClock) -> None:
         self.session = session
@@ -71,10 +87,53 @@ class _Rig:
     async def run_at(
         self, owner: UserOwner, at: datetime, run_id: UUID | None = None, **ids: object
     ) -> TailoringRunId:
+        """When the caller does not name `job_posting_id` itself, a matching posting is created
+        here so the repository's posting lock has a row to find — every caller that names one of
+        its own (H-30's deliberately-missing posting via `run_at_with_orphan_posting`, a stranger's
+        real posting, a posting built for the preview test) already handles it."""
         run = succeeded_run(
             owner, at, run_id=TailoringRunId(run_id) if run_id is not None else None, **ids
         )
+        if "job_posting_id" not in ids:
+            await _persist_posting_for(self.session, owner, run.job_posting_id, at)
         await self.runs.add(run)
+        await self.session.flush()
+        return run.id
+
+    async def run_at_with_orphan_posting(
+        self, owner: UserOwner, at: datetime, *, job_posting_id: JobPostingId
+    ) -> TailoringRunId:
+        """H-30: a run whose posting was never stored. `SqlAlchemyTailoringRunRepository.add`'s
+        posting lock (2.3 /verify, reviewer MINOR #1) would refuse this, so it is inserted with
+        Core SQL directly against the mapped table, bypassing the repository (and its lock)
+        entirely — the only way left to build this state on purpose, the same technique
+        `test_tailoring_run_repository.py`'s `_raw_insert` uses for the CHECK-constraint rows the
+        aggregate itself cannot build."""
+        run = succeeded_run(owner, at, job_posting_id=job_posting_id)
+        documents = run.documents
+        metrics = run.metrics
+        await self.session.execute(
+            tailoring_run_table.insert().values(
+                id=run.id,
+                guest_session_id=None,
+                user_id=owner.user_id,
+                base_cv_id=run.base_cv_id,
+                job_posting_id=run.job_posting_id,
+                status=run.status,
+                failure_reason=run.failure_reason,
+                tailored_cv=documents.cv if documents is not None else None,
+                cover_letter=documents.cover_letter if documents is not None else None,
+                model_name=metrics.model if metrics is not None else None,
+                prompt_version=metrics.prompt_version if metrics is not None else None,
+                prompt_tokens=metrics.prompt_tokens if metrics is not None else None,
+                completion_tokens=metrics.completion_tokens if metrics is not None else None,
+                llm_duration_ms=metrics.duration_ms if metrics is not None else None,
+                requested_at=run.requested_at,
+                started_at=run.started_at,
+                completed_at=run.completed_at,
+                version=run.version,
+            )
+        )
         await self.session.flush()
         return run.id
 
@@ -110,8 +169,14 @@ async def test_only_the_users_own_runs_newest_first(
     oldest = await rig.run_at(user, clock.now() - timedelta(hours=3))
     newest = await rig.run_at(user, clock.now() - timedelta(hours=1))
     middle = await rig.run_at(user, clock.now() - timedelta(hours=2))
-    await rig.runs.add(succeeded_run(await persist_user(session, clock), clock.now()))
-    await rig.runs.add(succeeded_run(await persist_guest(session, clock), clock.now()))
+    other_user = await persist_user(session, clock)
+    other_user_run = succeeded_run(other_user, clock.now())
+    await _persist_posting_for(session, other_user, other_user_run.job_posting_id, clock.now())
+    await rig.runs.add(other_user_run)
+    guest = await persist_guest(session, clock)
+    guest_run = succeeded_run(guest, clock.now())
+    await _persist_posting_for(session, guest, guest_run.job_posting_id, clock.now())
+    await rig.runs.add(guest_run)
     await session.flush()
 
     page = await rig.page(user, 20)
@@ -281,7 +346,7 @@ async def test_a_missing_posting_is_logged_with_ids_only(
     rig = _Rig(session, clock)
     user = await persist_user(session, clock)
     missing = pasted_posting(user, clock.now())  # never stored
-    run_id = await rig.run_at(user, clock.now(), job_posting_id=missing.id)
+    run_id = await rig.run_at_with_orphan_posting(user, clock.now(), job_posting_id=missing.id)
 
     with caplog.at_level(logging.WARNING):
         (entry,) = (await rig.page(user, 20)).entries

@@ -40,6 +40,8 @@ from tailorcraft.domain.identity.value_objects import (
     PasswordHash,
     UserId,
 )
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingText
 from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.infrastructure.clock import FixedClock
@@ -340,6 +342,16 @@ async def _both_owners_run(
     """A user-owned run through the repository, then given a `guest_session_id` too by a raw
     `UPDATE` — the only way to reach the shape, since the aggregate's owner is a sum type."""
     run = succeeded_run(UserOwner(user_id), clock.now())
+    # A real posting for `run.job_posting_id` first (2.3 /verify, reviewer MINOR #1): `add` now
+    # takes it `FOR KEY SHARE` and refuses a run whose posting does not exist.
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=run.job_posting_id,
+            owner=UserOwner(user_id),
+            text=JobPostingText("posting " * 40),
+            created_at=clock.now(),
+        )
+    )
     await SqlAlchemyTailoringRunRepository(session).add(run)
     await session.flush()
     await session.execute(

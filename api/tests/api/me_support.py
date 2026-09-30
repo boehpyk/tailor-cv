@@ -30,7 +30,8 @@ from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId
-from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -55,7 +56,6 @@ from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
 from tests.integration.owners import (
     extracted_cv,
-    pasted_posting,
     queued_export,
     ready_export,
     succeeded_run,
@@ -294,10 +294,22 @@ async def seed_entry(
     ready_formats: tuple[ExportFormat, ...] = (ExportFormat.PDF,),
 ) -> Entry:
     """A CV and a posting owned by `owner`, a run over them (succeeded unless `run` is given), and
-    one `ready` export per format whose bytes are on the real upload volume at the job's key."""
+    one `ready` export per format whose bytes are on the real upload volume at the job's key.
+
+    **The posting's id follows `run`'s, when one is given** — since 2.3 /verify (reviewer MINOR #1),
+    `SqlAlchemyTailoringRunRepository.add` takes the run's posting `FOR KEY SHARE` and, through the
+    request route's composition root, refuses a run whose posting does not exist. A caller-supplied
+    `run` (H-42's `queued`/`running` builds, for instance) already carries its own `job_posting_id`,
+    so the posting built here is given that same id rather than a fresh, unrelated one — otherwise
+    `run`'s posting would not exist at all and `add` would refuse it.
+    """
     cv = extracted_cv(owner, at)
     await SqlAlchemyBaseCvRepository(session).add(cv)
-    posting = pasted_posting(owner, at)
+    posting_id = run.job_posting_id if run is not None else JobPostingId(value=uuid4())
+    posting = JobPosting.from_pasted_text(
+        id=posting_id, owner=owner, text=JobPostingText("post " * 40), created_at=at
+    )
+    posting.release_events()
     await SqlAlchemyJobPostingRepository(session).add(posting)
     the_run = run or succeeded_run(owner, at, base_cv_id=cv.id, job_posting_id=posting.id)
     await SqlAlchemyTailoringRunRepository(session).add(the_run)

@@ -31,6 +31,9 @@ from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingText
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identifiers import uuid7
@@ -64,6 +67,20 @@ _OWNER_KINDS = ["guest", "user"]
 
 async def _owner(session: AsyncSession, clock: FixedClock, kind: str) -> Owner:
     return await (persist_guest if kind == "guest" else persist_user)(session, clock)
+
+
+async def _persist_posting_for(session: AsyncSession, run: TailoringRun) -> None:
+    """A real posting for `run.job_posting_id` — since 2.3 /verify (reviewer MINOR #1),
+    `SqlAlchemyTailoringRunRepository.add` takes it `FOR KEY SHARE` and, through the request
+    route's composition root, refuses a run whose posting does not exist."""
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=run.job_posting_id,
+            owner=run.owner,
+            text=JobPostingText("posting " * 40),
+            created_at=run.requested_at,
+        )
+    )
 
 
 async def _raw_owner_columns(
@@ -114,6 +131,7 @@ async def test_a_tailoring_run_round_trips_its_owner(
     owner = await _owner(session, clock, kind)
     run = succeeded_run(owner, clock.now())
     repo = SqlAlchemyTailoringRunRepository(session)
+    await _persist_posting_for(session, run)
     await repo.add(run)
     await session.flush()
     session.expunge_all()
@@ -228,6 +246,7 @@ async def test_a_refused_add_does_not_expire_what_the_session_already_loaded(
     user = await persist_user(session, clock)
     runs = SqlAlchemyTailoringRunRepository(session)
     run = succeeded_run(user, clock.now())
+    await _persist_posting_for(session, run)
     await runs.add(run)
     await session.flush()
     session.expunge_all()
@@ -257,7 +276,9 @@ async def test_run_counts_are_isolated_per_owner_and_per_variant(
     runs = SqlAlchemyTailoringRunRepository(session)
     for owner, count in ((guest, 2), (user_a, 3), (user_b, 1)):
         for _ in range(count):
-            await runs.add(failed_run(owner, clock.now()))
+            run = failed_run(owner, clock.now())
+            await _persist_posting_for(session, run)
+            await runs.add(run)
     await session.flush()
 
     assert await runs.count_for_owner(guest) == 2
@@ -302,6 +323,7 @@ async def test_find_active_for_a_user_returns_the_newest_active_run_without_rais
         succeeded_run(user, clock.now()),
         queued_run(other, clock.now()),
     ):
+        await _persist_posting_for(session, run)
         await runs.add(run)
     await session.flush()
 
@@ -318,6 +340,8 @@ async def test_find_active_breaks_a_same_second_tie_by_id(
     runs = SqlAlchemyTailoringRunRepository(session)
     low = queued_run(user, clock.now(), run_id=TailoringRunId(UUID(int=1)))
     high = queued_run(user, clock.now(), run_id=TailoringRunId(UUID(int=2**127)))
+    await _persist_posting_for(session, low)
+    await _persist_posting_for(session, high)
     await runs.add(low)
     await runs.add(high)
     await session.flush()
@@ -333,8 +357,12 @@ async def test_find_active_for_a_user_with_only_terminal_runs_is_none(
 ) -> None:
     user = await persist_user(session, clock)
     runs = SqlAlchemyTailoringRunRepository(session)
-    await runs.add(failed_run(user, clock.now()))
-    await runs.add(queued_run(await persist_guest(session, clock), clock.now()))
+    terminal = failed_run(user, clock.now())
+    await _persist_posting_for(session, terminal)
+    await runs.add(terminal)
+    guest_active = queued_run(await persist_guest(session, clock), clock.now())
+    await _persist_posting_for(session, guest_active)
+    await runs.add(guest_active)
     await session.flush()
 
     assert await runs.find_active_for_owner(user) is None
