@@ -4150,6 +4150,60 @@ test was committed as a regression guard, and the commit says plainly **"no reco
 real-browser attempt moves to `/verify`. A RED you can't reproduce is recorded as exactly that.
 Forcing it, by changing the code until the test fails, would be manufacturing evidence.
 
+At `/verify` it got its real-browser attempt, and the first try tested **the wrong app**. The page
+at `localhost:8080` said "Create an account", which looked right, but no request ever reached
+`/api/auth/refresh`. The network tab listed `/assets/styles/app-….css` and a `data:` script, which
+is not how a Vite build names things. Another project's nginx had taken port 8080, and TailorCraft's
+had quietly come up with no published port. Once the port was freed, the real attempt delayed the
+boot refresh by 25 seconds with a wrapped `fetch`, typed into both fields while the header still
+said *"Checking your login…"*, and waited. The text and the focus were still there when it settled.
+AC-51 holds. **Before you trust a manual check, check that you're talking to the thing you think
+you are.** A plausible page title is not an identity.
+
+### The posting that two requests both thought they owned
+
+The plan said, in writing, that a run pointing at a deleted posting "should be impossible". Round
+one of the review showed how to make it happen with two browser tabs.
+
+Deleting a history entry also deletes its job posting, *if no other run uses it*. The check was one
+statement: `DELETE FROM posting … WHERE NOT EXISTS (SELECT … FROM tailoring_run WHERE
+job_posting_id = …)`. Meanwhile, the other tab clicks **Tailor** on that same posting. Its request
+has already checked the posting and has written its new run, but hasn't committed. To everyone
+else, an uncommitted row doesn't exist yet. So the `NOT EXISTS` sees no other run and deletes the
+posting, the new run commits, and now a run points at nothing. The worker finds no posting, the
+run sits `running` until the stale sweep calls it `abandoned`, and *Try again* fails on a 404. No
+money was spent, but the history now held an entry that lied about why it failed.
+
+The first idea is to lock the posting on both sides. It isn't enough on its own, because of a
+PostgreSQL detail that surprises almost everyone. A `DELETE` that has to **wait** for a row that
+another transaction only *locked* (didn't change) carries on with the snapshot it started with
+when the lock is released. It does not re-run its `NOT EXISTS`. So the deleter waits patiently for
+the new run to commit, and then deletes the posting anyway. The fix is to split it: `SELECT … FOR
+UPDATE` the posting (this is the wait), then the `DELETE` as a **second statement**, which gets a
+fresh view and sees the run that just committed. On the other side, the run insert takes a light
+`FOR KEY SHARE` lock on the posting, and it does so **after** its `INSERT`, not before. The
+INSERT's foreign-key check touches the user row first, which is also where account erasure starts.
+Taking the posting lock first creates a cycle, and a cycle is a deadlock. Both orders were staged
+with two real database connections, and each test was watched going red when its half of the fix
+was removed.
+
+It's the two-shoppers-and-one-last-item problem. Checking the shelf isn't enough. You have to hold
+the item while you decide, and look at the shelf again after you've waited.
+
+### The safety check that was off by default
+
+Round two found the first fix switched off. The run repository had grown a
+`refuse_missing_posting=False` argument, and only the web request path set it to `True`. The
+reason was honest: 78 existing tests created runs pointing at postings that had never existed, and
+refusing broke all of them. But look at who that protects. Every caller that remembers the flag.
+The next caller, maybe 2.4's claim flow or a CLI, gets the unsafe version, silently.
+
+The codebase already had the rule, written for the SSRF guard: *no off switch; the testing seam
+has a strict default*. So the order became: first fix the 78 tests so every run has a real posting
+(and the three tests that *deliberately* build an impossible state insert it with raw SQL, with a
+comment saying why). Then delete the flag. Two commits, both green, and neither one weakening a
+test. **When tests need a safety check turned off, the tests are what's wrong.**
+
 ### Smaller ones
 
 - **A migration's lock staging was a story, not a fact.** The migration adds each constraint `NOT
@@ -4164,6 +4218,19 @@ Forcing it, by changing the code until the test fails, would be manufacturing ev
 - **Skeleton leftovers.** A constructor argument nobody read and a pair of superseded repository
   methods were removed in their own commits once the real ones landed. Scaffolding again, the same
   moral as 2.2's `/verify`: it needs a removal date.
+- **A delete that left stale pages in the cache.** Deleting a history entry refreshed the history
+  list and nothing else. For up to 30 seconds, the workspace still offered the deleted posting, and
+  going back to the deleted run showed it from cache with a live editor. Now the delete removes the
+  run and its exports from the cache and re-reads the postings. A mutation owns telling the cache
+  about **everything** it changed, not just the list you were looking at.
+- **A race test that didn't race.** "Two concurrent deletes" used `asyncio.gather` and hoped. If
+  one finished before the other started, the loser got its 404 from the first read, not from the
+  branch the test was named for. It now parks the first request after its read until the second
+  has read too, and asserts which branch each one took.
+- **The hook that blocked a correct commit.** `TDD_RED=1` (skip the suite, for a RED commit) won't
+  run without a staged test file. That's a good rule, except the frontend's GREEN had to wait
+  until the backend's separate RED turned green, because the full suite is the only other way
+  through. Order a fix round so each RED's GREEN lands before the next RED starts.
 - **Interruptions were cheap.** The agents doing the work hit usage limits several times mid-task.
   Every resume started with `git status`, and because the tree was clean and each task was one
   small commit, "where was I?" always had a one-line answer. Small commits aren't only for
@@ -4175,6 +4242,11 @@ Every budget was met with room to spare. Re-opening a run: **11.4 ms** (budget 1
 entry with 20 export files: **13.4 ms** (250). Deleting an account holding 500 runs and 1,005 files:
 **280 ms** (2,000). Most of that is argon2 and the database, since the 1,005 unlinks alone take
 13.6 ms. Starting a run: **51.7 ms** (300), and queued → running in **83.4 ms** (2 s).
+
+And the budget this whole product is built around, re-measured at `/verify` on the new account path
+with one real Gemini call: the model took **6.27 s**, and click-to-done as the browser polls it was
+**6.62 s**, against **15 s**. That's in line with slice 1.3's p95 of 6.4 s. Keeping history added
+nothing you can see.
 
 The one that matters most, on the production image: a purge of 100 expired guests *beside* 100
 users holding 4,000 export files, with every file aged past the sweep's floor so the sweep has to
@@ -4198,13 +4270,14 @@ old ones, passing unedited.
 
 ## What's next
 
-- **`/verify`**: the review, the suite green twice, and a manual walk on the dev stack with real
-  Gemini. That includes AC-59 (the 15-second budget re-measured on the account path) and AC-51's
-  real-browser attempt.
+- **`/verify` passed in three rounds**: suite green twice (2,691 backend, 840 frontend), AC-51 in a
+  real browser, AC-59 against real Gemini. Two small test-hygiene items go into the PR description
+  instead of another round: a cleanup `gather` with no timeout, and eleven stale seed comments.
 - **Then the PR and the release.** The migration runs as written at production's 0 rows, and the
   release script needs no change.
 - **Re-armed, with a number:** the retired-refresh-hash table held **0 rows** on 2026-09-30, so the
   sweep now waits for 100 k rows or slice 2.5. The uploads volume held **0 files**, the baseline
   for the 5 GB / 200 MB-per-user trigger on pruning old export files.
-- **2.4** decides the copy route's fate and builds the claim flow.
+- **2.4** decides the copy route's fate and builds the claim flow. When it inserts runs, the posting
+  lock is already there for it, because it can't be turned off.
 - **Still owed by the owner:** Phase 1's gate (OQ-7).

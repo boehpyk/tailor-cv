@@ -24,7 +24,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
 > rounds plus a manual `:8080` pass, 2026-09-26), merged as PR #14 (`4c18557`) and released**
 > (deploy run 36265111930; the box's api/worker/beat all read `4c18557` on 2026-09-30). **Slice 2.3
-> `tailoring-application-history` is implemented (T0–T39, 2026-09-30) and awaiting `/verify`.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> `tailoring-application-history` was verified (three review rounds plus a real-browser pass and
+> one real-Gemini run, 2026-09-30) and is awaiting its PR.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -154,7 +155,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   were amended to what the code does on purpose. The manual pass found nothing; one observation
 >   for 2.3: typing into `/register` while the boot refresh is in flight can be wiped by a remount.
 >
-> - **2.3 `tailoring-application-history`** (branch, **implemented 2026-09-30, awaiting `/verify`**)
+> - **2.3 `tailoring-application-history`** (branch, **implemented and verified 2026-09-30**)
 >   — a signed-in user's tailoring becomes **account data** (**ADR-0023**): the workspace follows the
 >   credential, so signed in, the posting, the run and its exports are **born user-owned** and the
 >   run references the saved CV directly. Every row has its final owner from its first `INSERT`, no
@@ -204,8 +205,22 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   **AC-54 holds**: `git diff main --stat -- api/src/tailorcraft/infrastructure/llm` is empty and
 >   `LlmPort` is byte-identical. Unlike 2.1/2.2, `domain/tailoring` *does* change (the owner, the
 >   tenth reason, `history.py`), which is why the proof narrowed to the adapter and the port.
->   Carried to `/verify`: AC-51 did not reproduce (below), so it goes to the real-browser pass, and
->   AC-59's real-Gemini 15 s re-measure.
+>   **`/verify` took three rounds** (2689 → **2691 backend, 840 frontend** tests, green twice).
+>   AC-51 was proven in a real browser: a 25 s delayed boot refresh, text typed into `/register` and
+>   `/login` mid-flight, and it survived. AC-59: one real-Gemini account run, `llm_duration_ms`
+>   **6268 ms**, end-to-end **6.62 s** (budget 15 s). Round 1's review found a race that the plan had
+>   called impossible. A history deletion's `DELETE … WHERE NOT EXISTS (run)` could not see a new
+>   run's **uncommitted** `INSERT` on the same posting (there is no FK on
+>   `tailoring_run.job_posting_id`), so either order left a run pointing at a deleted posting. It is
+>   closed by two locks (below). Round 2 found the first fix disabled by default: a
+>   `refuse_missing_posting=False` constructor flag that existed because 78 test seeds inserted runs
+>   over postings that did not exist. The seeds were fixed first (`3c7e80d`), then the flag was
+>   removed (`3b57daf`), and the check always runs. **A safety check whose default is off protects
+>   only the callers that remember it.** Also fixed: a history delete now removes the run's cached
+>   detail and exports and re-reads postings; the history row's link comes from `runLink`; AC-33's
+>   concurrent-delete test now really stages the overlap. Carried to the PR: the cleanup `gather`
+>   in `test_me_history_delete.py` has no timeout, and eleven seed comments still say the refusal
+>   is "through the request route's composition root".
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -757,6 +772,10 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   from one dirty tree gives each commit a gate that checked more than the commit contains. Stash
   the rest per commit (`git stash push --keep-index --include-untracked`), so each hook sees exactly
   its commit. A `set -e` script must pop the stash even when the commit fails.
+  **`TDD_RED=1` refuses a commit with no staged test file**, so a frontend GREEN cannot commit
+  while a backend RED on the same branch is still red (2.3's `/verify`: `react-dev`'s fix waited
+  for `api-dev`'s GREEN). Order a round so each RED's GREEN lands before the next RED, or commit
+  the hardening before the RED in the same file. `--no-verify` is still never the answer.
 - **A test seed that only flushes dies with a refused request** (2.3, `fa40793`). The `app` fixture
   joins with `create_savepoint` and rolls back when a request errors, so an uncommitted seed goes
   too. 25 tests then read 0 rows where the seed should have been. Seeds on the test's session
@@ -1008,6 +1027,19 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `begin_nested()` first flushed the ORM's own `UPDATE` with **no** version predicate, so a race
   loser overwrote the winner's token and both answered 200. `expunge` the aggregate before the
   SAVEPOINT; on success re-attach it clean with `set_committed_value`.
+- **`NOT EXISTS` in a `DELETE` cannot see another transaction's uncommitted `INSERT`, and waiting
+  for a lock does not refresh it** (2.3's `/verify`). A history delete of the form `DELETE FROM
+  posting … WHERE NOT EXISTS (SELECT … FROM tailoring_run …)` deleted a posting that a concurrent
+  request had just used for a new run. Under READ COMMITTED, a `DELETE` that waits on a row that
+  was only *locked*, not updated, proceeds on its **original** snapshot and does not re-check the
+  subquery. The fix is two statements and two locks. The deleting side runs `SELECT … FOR UPDATE`
+  on the posting, then the `DELETE` as a **separate** statement, which gets a fresh snapshot. The
+  inserting side (`SqlAlchemyTailoringRunRepository.add`) takes `FOR KEY SHARE` on the posting
+  **after** its `INSERT`: the INSERT's FK check takes the owner row first, so account erasure
+  (user row `FOR UPDATE`, then cascades) meets it there. Taking the posting lock first makes a
+  lock cycle. The refusal is **unconditional**. The first fix hid it behind an off-by-default
+  constructor flag because test seeds inserted runs over postings that never existed. Fix the
+  seeds, never the default.
 - **`get_settings()` under `APP_ENV=test` still returns the *dev* `database_url`.** Only
   `tests/conftest.py` swaps in `test_database_url`, by overriding Alembic's option and the engine
   fixture. A probe or cleanup script that builds its own engine from `settings.database_url` — even

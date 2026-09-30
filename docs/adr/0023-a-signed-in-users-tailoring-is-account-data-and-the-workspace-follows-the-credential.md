@@ -93,7 +93,11 @@ file keys by derivation (`FileRef.for_export`, ADR-0018 decision 3's rule, so a 
 `failed` job's already-written bytes are not missed). *"The rows I deleted"* and *"the files I must
 unlink"* are one set, with no window between a read and a delete. A `queued` or `running` run is
 refused (409): there is no cancellation in this product, and a delete racing the worker's outcome
-write would either lose documents the user just paid for or leave a row the delete claimed was gone.
+write would either lose documents the user just paid for or leave a row the delete claimed was gone. The
+posting's `NOT EXISTS` check is not enough alone: it cannot see a concurrent request's uncommitted
+run on the same posting. The deletion therefore locks the posting (`FOR UPDATE`) and deletes it in a
+separate statement. The run insert takes `FOR KEY SHARE` on the posting after its INSERT and refuses
+a posting that is gone. Neither side can be switched off (amended at `/verify`, 2026-09-30).
 
 **6. The caps are per user, soft, in the use case** (ADR-0014 §4's reasoning — they span
 aggregates): 500 runs and 500 postings per user, 20 export jobs **per run**. At the run cap the 409
