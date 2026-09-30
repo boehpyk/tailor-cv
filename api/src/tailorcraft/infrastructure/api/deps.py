@@ -560,15 +560,15 @@ def get_tailoring_run_repository(session: SessionDep) -> TailoringRunRepository:
     client before it spends twelve seconds on a model call. Same port, two boundaries, and the
     difference between the two bindings *is* the boundary.
 
-    `refuse_missing_posting=True`: a run request whose posting was deleted after it was authorized
-    is refused `JobPostingNotFound` (404) instead of committing a run that references nothing — the
-    delete-first half of 2.3's posting race (the repository's `add` has both halves).
+    A run request whose posting was deleted after it was authorized is refused `JobPostingNotFound`
+    (404) by the adapter's `add` itself, unconditionally — the delete-first half of 2.3's posting
+    race (the repository's `add` has both halves). There is nothing to switch on here.
     """
     from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
         SqlAlchemyTailoringRunRepository,
     )
 
-    return SqlAlchemyTailoringRunRepository(session, refuse_missing_posting=True)
+    return SqlAlchemyTailoringRunRepository(session)
 
 
 TailoringRunRepositoryDep = Annotated[TailoringRunRepository, Depends(get_tailoring_run_repository)]

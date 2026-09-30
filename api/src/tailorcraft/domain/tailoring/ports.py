@@ -69,7 +69,25 @@ class TailoringRunRepository(Protocol):
         """
         ...
 
-    async def add(self, run: TailoringRun) -> None: ...
+    async def add(self, run: TailoringRun) -> None:
+        """Insert a run that does not exist yet.
+
+        Two refusals, both races the caller's own authorization cannot close, because each is a
+        concurrent writer removing something the run points at *after* it was checked:
+
+        - `UserNotFound` — the run is `UserOwner`-owned and that user was erased concurrently
+          (the account erasure holds the user row while it collects keys, so no run lands after
+          it; H-53, AC-37).
+        - `JobPostingNotFound` — the run's posting was deleted concurrently, by a history-entry
+          deletion. The adapter serializes against that deletion, so a run is never left
+          referencing a posting that no longer exists: either the insert wins and the posting is
+          kept, or the deletion wins and the insert is refused. Unconditional — no adapter may
+          offer a way to skip it.
+
+        Nothing is inserted when either is raised. Neither says anything about transactions: when
+        a successful insert becomes durable is the caller's boundary, as for `save` below.
+        """
+        ...
 
     async def save(self, run: TailoringRun) -> None:
         """Persist the current state of a run this repository already handed out.

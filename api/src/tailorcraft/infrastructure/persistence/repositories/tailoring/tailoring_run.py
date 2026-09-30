@@ -108,16 +108,8 @@ class SqlAlchemyTailoringRunRepository:
     call is still in flight (the port's `save` docstring).
     """
 
-    def __init__(self, session: AsyncSession, *, refuse_missing_posting: bool = False) -> None:
-        """`refuse_missing_posting` is `add`'s second half (its docstring): the composition root
-        that serves run *requests* (`api/deps.py`) turns it on. Off, `add` still takes the posting
-        lock and simply does not refuse when there is no row to lock — the shape every direct
-        construction in the test suite relies on, since its seeds write runs over posting ids they
-        never create (there is no FK to stop them). Nothing in production calls `add` with it off:
-        the worker and the sweep never insert a run.
-        """
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
-        self._refuse_missing_posting = refuse_missing_posting
 
     def next_identity(self) -> TailoringRunId:
         """Synchronous: application-assigned UUIDv7 needs no I/O (ADR-0007). Here it does a second
@@ -125,7 +117,8 @@ class SqlAlchemyTailoringRunRepository:
         return TailoringRunId(uuid7())
 
     async def add(self, run: TailoringRun) -> None:
-        """Insert `run`; raise `UserNotFound` if its `UserOwner` no longer exists (H-53).
+        """Insert `run`; raise `UserNotFound` if its `UserOwner` no longer exists (H-53), and
+        `JobPostingNotFound` if its posting no longer does.
 
         `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
         task), not to the repository.
@@ -153,10 +146,14 @@ class SqlAlchemyTailoringRunRepository:
           statement that sees the committed run: P is kept.
         - *delete first* — the use case authorized P, then the deletion committed. This
           `SELECT … FOR KEY SHARE` finds no row (READ COMMITTED re-checks a row that was deleted
-          while it waited, too), so — with `refuse_missing_posting`, which the request route's
-          composition root sets — the request is refused `JobPostingNotFound` — the same 404 the
+          while it waited, too), so the insert is refused `JobPostingNotFound` — the same 404 the
           authorization would have given a moment later — and the SAVEPOINT's rollback takes the
           run with it.
+
+        **The refusal is unconditional — there is no switch to turn it off** (2.3 /verify round 2,
+        reviewer MAJOR). A check that is off by default is off in the next composition root that
+        forgets it, so every caller of `add` gets it: the request routes today, and 2.4's claim or
+        any CLI tomorrow (the codebase's "strict default, no off switch" rule, ADR-0012).
 
         **The lock follows the `INSERT`, never precedes it**, and the order is load-bearing: the
         `INSERT`'s FK check takes the *owner* row `FOR KEY SHARE` first, exactly as before. An
@@ -182,7 +179,7 @@ class SqlAlchemyTailoringRunRepository:
                         .with_for_update(key_share=True)
                     )
                 ).scalar_one_or_none()
-                if posting_still_exists is None and self._refuse_missing_posting:
+                if posting_still_exists is None:
                     # Raised inside the SAVEPOINT so its rollback discards the run just flushed.
                     # The message names the id only, as `SqlAlchemyJobPostingRepository.get` does.
                     raise JobPostingNotFound(f"no JobPosting with id {posting_id!r}")
