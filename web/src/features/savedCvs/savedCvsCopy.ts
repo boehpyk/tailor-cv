@@ -135,9 +135,12 @@ export const WORKING_COPY_NOTE =
 // --- Delete the account (AC-40, AC-46) ------------------------------------------------------------
 
 export const DELETE_ACCOUNT_HEADING = 'Delete your account';
-/** AC-46, what goes: the account, the saved CVs and their files, every signed-in device. */
+/**
+ * AC-46, what goes: the account, the saved CVs and their files, every signed-in device — and, from
+ * slice 2.3, the history (runs, postings, export files), which `EraseAccount` now erases too (T24).
+ */
 export const DELETE_ACCOUNT_WHAT_GOES_NOTE =
-  'This deletes your account and your saved CVs, including their files and the text we read from them, and signs you out on every device.';
+  'This deletes your account and your saved CVs, including their files and the text we read from them, and your history — every tailored CV and cover letter, job posting and exported file — and signs you out on every device.';
 /** AC-46, what does not go at once. Verbatim; pinned. */
 export const DELETE_ACCOUNT_WHAT_STAYS_NOTE =
   "Copies in a browser's workspace are deleted with that workspace within 24 hours";

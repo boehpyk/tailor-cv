@@ -1,5 +1,8 @@
 import { Link } from 'react-router';
 
+import { runLink } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+
 import type { SaveState } from '../saveState';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
@@ -20,8 +23,9 @@ const TAB_LABELS: Readonly<Record<TailoredDocumentKind, string>> = {
 };
 
 /**
- * The two document tabs — presentational. A `role="tablist"` of two `<Link>`s to
- * `/runs/:id/cv` and `/runs/:id/cover_letter`: **the URL is the selected tab**, so switching is a
+ * The two document tabs — presentational. A `role="tablist"` of two `<Link>`s to the run's two
+ * document URLs — `/runs/:id/…` for a guest, `/history/:id/…` for an account (the route's scope,
+ * slice 2.3; a history run's tab must never jump to the guest route) — **the URL is the selected tab**, so switching is a
  * navigation and the back button undoes it. Unlike `InputTabs`, whose selection is a search
  * parameter, these are path segments — a document is a place you can link someone to.
  *
@@ -30,6 +34,7 @@ const TAB_LABELS: Readonly<Record<TailoredDocumentKind, string>> = {
  * sentence — the sentence belongs to the visible document's `SaveIndicator`.
  */
 export function DocumentTabs({ runId, selected, states }: DocumentTabsProps): React.JSX.Element {
+  const map = useScopeMap();
   return (
     <div
       role="tablist"
@@ -46,7 +51,7 @@ export function DocumentTabs({ runId, selected, states }: DocumentTabsProps): Re
             aria-selected={isSelected}
             aria-controls={`document-${kind}`}
             tabIndex={isSelected ? 0 : -1}
-            to={`/runs/${encodeURIComponent(runId)}/${kind}`}
+            to={runLink(map, runId, kind)}
             className={
               isSelected
                 ? '-mb-px border-b-2 border-slate-900 px-3 py-2 text-sm font-medium text-slate-900'

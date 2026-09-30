@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import { Link, useBlocker, useParams } from 'react-router';
 
+import { runLink } from '@/features/scope/scopeMap';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { TailoredDocumentsPreview } from '@/features/tailoring/components/TailoredDocumentsPreview';
 
@@ -278,12 +279,14 @@ function DocumentEditors({
       if (!leavingLosesWork) {
         return false;
       }
-      const base = `/runs/${encodeURIComponent(runId)}/`;
+      // The same two paths `DocumentTabs` builds, in the route's scope (slice 2.3): on a history
+      // run a tab switch is `/history/{id}/…`, and treating it as leaving would ask for nothing.
       return (
-        nextLocation.pathname !== `${base}cv` && nextLocation.pathname !== `${base}cover_letter`
+        nextLocation.pathname !== runLink(map, runId, 'cv') &&
+        nextLocation.pathname !== runLink(map, runId, 'cover_letter')
       );
     },
-    [leavingLosesWork, runId],
+    [leavingLosesWork, runId, map],
   );
   const blocker = useBlocker(shouldBlock);
 
