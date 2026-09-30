@@ -529,30 +529,38 @@ async def test_ac33_two_concurrent_deletes_are_one_204_and_one_404(
 
 # --- Reviewer MINOR #1: a new run racing a posting deletion -----------------------------------
 #
-# `SqlAlchemyHistoryEntryData.delete_history_entry`'s posting `DELETE` is a bare
+# `SqlAlchemyHistoryEntryData.delete_history_entry`'s posting `DELETE` used to be a bare
 # `NOT EXISTS (SELECT … FROM tailoring_run WHERE job_posting_id = :p)` with no lock and no owner in
 # the `NOT EXISTS`. `tailoring_run.job_posting_id` carries no FK (the mapping's own comment: "does
 # not dangle in practice: a user-owned posting is deleted only with its last referencing run" — the
 # claim this pair of tests is checking). A second run request (B, `POST /api/me/tailoring-runs`,
-# authorizing the same posting P a first run's history entry (R1) already references) can race a
-# `DELETE` of that entry (A): if B's `INSERT` of its own run (R2, on P) is still open —
-# flushed inside a SAVEPOINT, uncommitted — when A's `NOT EXISTS` runs, A cannot see R2, deletes P,
-# and R2 ends up referencing a posting that no longer exists once B commits.
+# authorizing the same posting P a first run's history entry (R1) already references) could race a
+# `DELETE` of that entry (A): if B's `INSERT` of its own run (R2, on P) was still open —
+# flushed inside a SAVEPOINT, uncommitted — when A's `NOT EXISTS` ran, A could not see R2, deleted P,
+# and R2 ended up referencing a posting that no longer existed once B committed.
 #
 # The invariant both tests check is the same one either way: once both requests have committed, no
 # `tailoring_run` row may reference a `posting_job_posting` row that does not exist, and neither
 # request may answer 5xx.
 #
-# **The decided fix is lock-based, infra-only** (owner decision, /verify round 1): the run-insert
-# path takes `SELECT … FROM posting_job_posting WHERE id = :p FOR KEY SHARE` before its `INSERT` (no
-# row → 404 `job_posting_not_found`, no run); the history-delete adapter takes `SELECT … FOR UPDATE`
-# on the posting row, then issues the posting `DELETE … WHERE NOT EXISTS (run)` as a *separate*
-# statement so it reads a fresh snapshot once it has the lock. Under that fix, direction (i)'s A
-# **blocks** on B's `FOR KEY SHARE` until B commits or rolls back — so a test that makes B wait for
-# A's whole request to *finish* before B is allowed to proceed would deadlock the two coroutines
-# against each other. The test below waits for either outcome — A finishes on its own (today's
-# unfixed code, which never takes a lock) or A is observed blocked on a lock (the fixed code) —
-# whichever comes first, so it stays valid staging for both.
+# **The fix is landed, lock-based, infra-only, and unconditional** (3afc7da, then 3b57daf dropped
+# the transitional `refuse_missing_posting` flag): `SqlAlchemyTailoringRunRepository.add` takes the
+# run's posting `SELECT … FOR KEY SHARE` — **after its `INSERT`, never before** (the order is
+# load-bearing: the `INSERT`'s own FK check takes the *owner* row first, so an account erasure or a
+# guest purge always meets this method on the owner row before either touches the posting, and the
+# two can queue but never deadlock — see `add`'s own docstring). No row → `JobPostingNotFound`, the
+# same 404 `job_posting_not_found` the authorization would have given a moment later, and no run.
+# `SqlAlchemyHistoryEntryData.delete_history_entry` takes `SELECT … FOR UPDATE` on the posting row,
+# then issues the posting `DELETE … WHERE NOT EXISTS (run)` as a *separate* statement so it reads a
+# fresh snapshot once it has the lock.
+#
+# Because the refusal is now unconditional, direction (i)'s A always **blocks** on B's
+# `FOR KEY SHARE` until B commits or rolls back — a test that made B wait for A's whole request to
+# *finish* before B is allowed to proceed would deadlock the two coroutines against each other. The
+# test below still races "A finished" against "A is observed blocked on a lock" (so a regression that
+# silently dropped the lock again fails on a clear assertion rather than hanging), but now asserts
+# the blocked path is the one that actually fires, and — GREEN being in — asserts the one outcome
+# each direction must produce rather than accepting either.
 
 
 async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference(
@@ -568,29 +576,48 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
 
     `SqlAlchemyTailoringRunRepository.add` is the pause point: by the time it is called, B's
     `RequestTailoringRun` use case has already authorized P through `GetJobPosting` (2.3's shared
-    ownership check) and is about to flush the new run's `INSERT` (and, once the decided fix lands,
-    the `SELECT … FOR KEY SHARE` that precedes it — the same infra method). The wrapper lets the
-    real `add` run — so the row really is locked and the `INSERT` really is flushed, uncommitted,
-    inside its own SAVEPOINT — then signals A.
+    ownership check) and is about to flush the new run's `INSERT`. The wrapper lets the real `add`
+    run to completion — the `INSERT` flushes, uncommitted, inside its own SAVEPOINT, and **then**
+    (never before — `add`'s own docstring explains why the lock follows the `INSERT`, not the
+    reverse) the row's posting is locked `FOR KEY SHARE` — then signals A.
 
-    **B is released the moment A has either finished or is observably blocked, never only on "A
-    finished".** Today's unfixed adapter takes no lock at all, so A's whole request — a real,
-    separate connection, a real commit — completes in milliseconds; B is released as soon as that
-    happens. The fixed adapter's `SELECT … FOR UPDATE` on the posting row conflicts with B's
-    (fixed-code) `FOR KEY SHARE` and blocks until B commits or rolls back — so under the fix, A
-    *never* finishes before B is released, and this test polls `pg_stat_activity` on a third,
-    separate connection for a backend of this database waiting on a lock, and releases B on that
-    signal instead. `asyncio.wait(..., return_when=FIRST_COMPLETED)` races the two conditions — "A
-    finished" vs. "A is blocked" — under one outer `asyncio.wait_for` so a design mistake in this
-    test (neither ever becomes true) fails on a timeout rather than hanging the suite. Whichever one
-    actually fired is recorded in `order`, so the test also documents which of the two adapters it
-    ran against.
+    **B is released the moment A is observably blocked on that lock, or A finishes unblocked —
+    the latter kept only as a regression trip-wire, never the expected path now that the refusal
+    is unconditional.** `SqlAlchemyHistoryEntryData`'s `SELECT … FOR UPDATE` on the posting row
+    conflicts with B's `FOR KEY SHARE`, so A always blocks until B commits or rolls back; this test
+    polls `pg_stat_activity`, scoped to **A's own backend pid** (captured off A's own session the
+    moment its `delete_history_entry` call starts — never any other backend's lock wait, so a
+    concurrent test process or an unrelated idle-in-transaction connection cannot produce a false
+    positive), for that one backend waiting on a lock, and releases B on that signal.
+    `asyncio.wait(..., return_when=FIRST_COMPLETED)` races the two conditions — "A finished" vs. "A
+    is blocked" — under one outer `asyncio.wait_for` so a design mistake in this test (neither ever
+    becomes true) fails on a timeout rather than hanging the suite, and `order` records which one
+    actually fired so a silent regression back to the unconditional-refusal-less shape shows up as
+    an assertion naming the wrong path rather than a hang.
 
-    Recorded, never forced: this is the direction the reviewer's report says is reachable **today**,
-    and the assertion that must be observed red is on the posting's survival — P must still exist,
-    and no `tailoring_run` row may reference a posting that does not — which today's `NOT EXISTS`
-    cannot honour because it never sees B's uncommitted row and never takes a lock that would make it
-    wait to find out.
+    Hardened now that GREEN has landed (3afc7da, 3b57daf): B must answer **202**, with R2 landed
+    referencing P, P surviving, and `posting_deleted` **false** in A's own report — never "either
+    path" the way this test accepted before the fix was unconditional.
+
+    **Mutation proofs (run by hand, not committed — both source files restored byte-exact after;
+    `git status -- api/src` empty):**
+
+    - **m1** — `SqlAlchemyTailoringRunRepository.add`'s posting lock and `JobPostingNotFound`
+      refusal removed (the flush kept, nothing after it). With no lock at all, A never observes a
+      block — `order` ends `[..., "a_finished_unblocked"]` — and this test fails on the first
+      hardened assertion:
+      `AssertionError: the refusal is unconditional now (3afc7da, 3b57daf): A must always block on
+      B's FOR KEY SHARE, never finish unblocked — observed order was ['b_inserted_uncommitted',
+      'a_delete_issued', 'a_finished_unblocked']`. (Its sibling below, delete-first, is the
+      assertion this mutation is really aimed at, and goes red there instead — see that test's own
+      docstring.)
+    - **m2** — the delete side's `SELECT … FOR UPDATE` pre-lock removed, leaving the single
+      `DELETE … WHERE NOT EXISTS (run)` statement. A no longer waits for B, so its `NOT EXISTS`
+      reads the pre-wait snapshot and deletes P before B ever commits R2. Red on the posting's
+      survival:
+      `AssertionError: the posting must survive: R2 committed to reference it while A's deletion
+      was blocked waiting on B's lock
+      assert 0 == 1`.
     """
     account, entry = await _seed_committed(concurrent_app, settings, engine, clock)
     queue = FakeTailoringQueue()
@@ -600,7 +627,10 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
     b_inserted_uncommitted = asyncio.Event()
     a_finished = asyncio.Event()
     b_may_proceed = asyncio.Event()
+    a_backend_pid: list[int] = []
+    a_report: list[DeletedHistoryEntry | None] = []
     original_add = SqlAlchemyTailoringRunRepository.add
+    original_delete_entry = SqlAlchemyHistoryEntryData.delete_history_entry
 
     async def _pause_after_uncommitted_insert(
         self: SqlAlchemyTailoringRunRepository, run: TailoringRun
@@ -609,6 +639,20 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
         order.append("b_inserted_uncommitted")
         b_inserted_uncommitted.set()
         await asyncio.wait_for(b_may_proceed.wait(), timeout=5)
+
+    async def _capture_pid_then_delete(
+        self: SqlAlchemyHistoryEntryData, user_id: UserId, run_id: UUID
+    ) -> DeletedHistoryEntry | None:
+        """Captures A's own backend pid off A's own session — the same connection about to run the
+        `FOR UPDATE` — before delegating to the real adapter, so `_a_is_blocked_on_a_lock` can scope
+        its wait to exactly that one backend. Also captures the adapter's own report, so the test
+        can assert `posting_deleted` on the thing A actually decided, not re-derive it."""
+        connection = await self._session.connection()
+        pid = (await connection.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+        a_backend_pid.append(pid)
+        result = await original_delete_entry(self, user_id, run_id)
+        a_report.append(result)
+        return result
 
     async def _run_b() -> Response:
         async with new_client(concurrent_app) as client_b:
@@ -630,22 +674,25 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
         return response
 
     async def _a_is_blocked_on_a_lock() -> bool:
-        """Polls a THIRD, separate connection — never A's or B's own — for a backend of this
-        database whose `wait_event_type` is `Lock`: the fixed adapter's `SELECT … FOR UPDATE`,
-        parked behind B's (fixed-code) `FOR KEY SHARE`. Today's unfixed adapter never produces this,
-        so this only ever returns against the fixed code, and `_wait_for_a_blocked_or_finished`'s
-        sibling task is what makes the test terminate against today's."""
+        """Polls a separate connection — never A's or B's own — for **A's own backend pid**
+        (`a_backend_pid`, set by `_capture_pid_then_delete`) waiting on a lock: the adapter's
+        `SELECT … FOR UPDATE`, parked behind B's `FOR KEY SHARE`. Scoped to that one pid rather than
+        "any backend of this database waiting on a lock" (reviewer /verify round 2), so an unrelated
+        connection — another test's, a stray idle-in-transaction session — cannot produce a false
+        positive; it also means this can only return `True` once A's request has actually reached
+        `delete_history_entry`, so it polls with the pid unset until then."""
         while True:
-            async with engine.connect() as probe:
-                blocked = await probe.execute(
-                    text(
-                        "SELECT count(*) FROM pg_stat_activity "
-                        "WHERE datname = current_database() AND wait_event_type = 'Lock' "
-                        "AND state = 'active'"
+            if a_backend_pid:
+                async with engine.connect() as probe:
+                    blocked = await probe.execute(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE pid = :pid AND wait_event_type = 'Lock' AND state = 'active'"
+                        ),
+                        {"pid": a_backend_pid[0]},
                     )
-                )
-                if blocked.scalar_one() > 0:
-                    return True
+                    if blocked.scalar_one() > 0:
+                        return True
             await asyncio.sleep(0.02)
 
     async def _wait_for_a_blocked_or_finished() -> None:
@@ -663,17 +710,29 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
             "a_observed_blocked_on_lock" if blocked_task in done else "a_finished_unblocked"
         )
 
+    task_b: asyncio.Task[Response] | None = None
+    task_a: asyncio.Task[Response] | None = None
     try:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(SqlAlchemyTailoringRunRepository, "add", _pause_after_uncommitted_insert)
+            mp.setattr(SqlAlchemyHistoryEntryData, "delete_history_entry", _capture_pid_then_delete)
             task_b = asyncio.ensure_future(_run_b())
             task_a = asyncio.ensure_future(_run_a())
-            await asyncio.wait_for(b_inserted_uncommitted.wait(), timeout=5)
-            await asyncio.wait_for(_wait_for_a_blocked_or_finished(), timeout=5)
-            b_may_proceed.set()
-            response_b, response_a = await asyncio.wait_for(
-                asyncio.gather(task_b, task_a), timeout=10
-            )
+            try:
+                await asyncio.wait_for(b_inserted_uncommitted.wait(), timeout=5)
+                await asyncio.wait_for(_wait_for_a_blocked_or_finished(), timeout=5)
+                b_may_proceed.set()
+                response_b, response_a = await asyncio.wait_for(
+                    asyncio.gather(task_b, task_a), timeout=10
+                )
+            finally:
+                # A timed-out wait_for above must not leave a request running in the background
+                # once this test moves on (and `finally` below deletes the user out from under it):
+                # cancel whatever is still in flight and wait it out before continuing.
+                for task in (task_b, task_a):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(task_b, task_a, return_exceptions=True)
 
         assert order[0] == "b_inserted_uncommitted", order
         assert "a_delete_issued" in order, (
@@ -681,43 +740,43 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
             f"the observed order was {order!r}"
         )
         assert order.index("a_delete_issued") > order.index("b_inserted_uncommitted"), order
-        assert len({"a_observed_blocked_on_lock", "a_finished_unblocked"} & set(order)) == 1, (
-            f"exactly one of the two ways A can stop waiting must have fired: {order!r}"
+        assert "a_observed_blocked_on_lock" in order, (
+            "the refusal is unconditional now (3afc7da, 3b57daf): A must always block on B's "
+            f"FOR KEY SHARE, never finish unblocked — observed order was {order!r}"
         )
+
         assert response_a.status_code == 204, response_a.text
-        assert response_b.status_code < 500, response_b.text
+        assert response_b.status_code == 202, response_b.text
+        run2_id = UUID(response_b.json()["id"])
+        assert queue.enqueued == [TailoringRunId(run2_id)], (
+            "the accepted run must be the one actually enqueued"
+        )
 
         async with engine.connect() as reader:
             posting_still_exists = await reader.execute(
                 text("SELECT count(*) FROM posting_job_posting WHERE id = :id"),
                 {"id": entry.posting_id.value},
             )
+            dangling = await reader.execute(
+                text(
+                    "SELECT count(*) FROM tailoring_run t "
+                    "LEFT JOIN posting_job_posting p ON p.id = t.job_posting_id "
+                    "WHERE t.id = :run2_id AND p.id IS NULL"
+                ),
+                {"run2_id": run2_id},
+            )
         assert posting_still_exists.scalar_one() == 1, (
-            "the posting must survive: a run either already referenced it (committed while its "
-            "deletion was in flight) or authorization for a new one was in progress against it, and "
-            "either way it is not this request's to remove"
+            "the posting must survive: R2 committed to reference it while A's deletion was "
+            "blocked waiting on B's lock"
         )
-
-        if response_b.status_code == 202:
-            run2_id = UUID(response_b.json()["id"])
-            assert queue.enqueued == [TailoringRunId(run2_id)], (
-                "the accepted run must be the one actually enqueued"
-            )
-            async with engine.connect() as reader:
-                dangling = await reader.execute(
-                    text(
-                        "SELECT count(*) FROM tailoring_run t "
-                        "LEFT JOIN posting_job_posting p ON p.id = t.job_posting_id "
-                        "WHERE t.id = :run2_id AND p.id IS NULL"
-                    ),
-                    {"run2_id": run2_id},
-                )
-            assert dangling.scalar_one() == 0, (
-                "no tailoring_run row may reference a nonexistent posting_job_posting row"
-            )
-        else:
-            assert response_b.status_code == 404, response_b.text
-            assert error_code(response_b) == "job_posting_not_found"
+        assert dangling.scalar_one() == 0, (
+            "no tailoring_run row may reference a nonexistent posting_job_posting row"
+        )
+        assert a_report, "A's delete_history_entry was never called"
+        assert a_report[0] is not None, "A's delete must have succeeded"
+        assert a_report[0].posting_deleted is False, (
+            "A must have kept the posting once its re-read, after the lock was granted, saw R2"
+        )
     finally:
         await _drop_user(engine, account)
 
@@ -737,9 +796,20 @@ async def test_reviewer_minor1_delete_first_leaves_no_dangling_posting_reference
     against `concurrent_app` and awaits it fully (so A's commit is real and already landed) before
     handing the posting back to B, which then proceeds to try to insert its run.
 
-    Recorded, never forced (per the task): this direction is not asserted to be red. Whichever way
-    it reads against today's adapter — a clean 404 with no row, or a 202 with a dangling
-    reference — is reported in the commit body instead of being masked here.
+    Hardened now that GREEN has landed (3afc7da, 3b57daf): B's `SELECT … FOR KEY SHARE` runs after
+    P is already committed-gone, finds no row, and the SAVEPOINT's rollback discards the flushed
+    run — so B must answer **404 `job_posting_not_found`**, with no R2 anywhere, never "either
+    path" the way this test accepted before the fix was unconditional.
+
+    **Mutation proof m1 (run by hand, not committed — `api/src` restored byte-exact after;
+    `git status -- api/src` empty):** `SqlAlchemyTailoringRunRepository.add`'s posting lock and
+    `JobPostingNotFound` refusal removed. With nothing to refuse the insert, B succeeds over P's
+    already-vanished id — the exact dangling reference this pair of tests exists to catch — and
+    this is the test that goes red on it, on the hardened status assertion:
+    `AssertionError: assert 202 == 404` (full body: a `202` carrying a freshly `queued` run whose
+    `job_posting_id` is the now-deleted P). m2 (the delete side's `FOR UPDATE` pre-lock removed)
+    does not move this test — A already ran to completion, alone, with no contention to wait out —
+    and is recorded on its sibling, insert-first, instead.
     """
     account, entry = await _seed_committed(concurrent_app, settings, engine, clock)
     queue = FakeTailoringQueue()
@@ -780,23 +850,19 @@ async def test_reviewer_minor1_delete_first_leaves_no_dangling_posting_reference
             "A's delete-and-commit must already have landed before B's insert is attempted"
         )
 
-        assert response_b.status_code < 500, response_b.text
-        if response_b.status_code == 202:
-            run2_id = UUID(response_b.json()["id"])
-            async with engine.connect() as reader:
-                dangling = await reader.execute(
-                    text(
-                        "SELECT count(*) FROM tailoring_run t "
-                        "LEFT JOIN posting_job_posting p ON p.id = t.job_posting_id "
-                        "WHERE t.id = :run2_id AND p.id IS NULL"
-                    ),
-                    {"run2_id": run2_id},
-                )
-            assert dangling.scalar_one() == 0, (
-                "no tailoring_run row may reference a nonexistent posting_job_posting row"
+        assert response_b.status_code == 404, response_b.text
+        assert error_code(response_b) == "job_posting_not_found"
+        assert queue.enqueued == [], "a refused request must never reach the enqueue"
+        async with engine.connect() as reader:
+            no_run = await reader.execute(
+                text(
+                    "SELECT count(*) FROM tailoring_run WHERE user_id = :u AND job_posting_id = :p"
+                ),
+                {"u": account.user_id.value, "p": entry.posting_id.value},
             )
-        else:
-            assert response_b.status_code == 404, response_b.text
-            assert error_code(response_b) == "job_posting_not_found"
+        assert no_run.scalar_one() == 0, (
+            "R2 must not exist: the SAVEPOINT's rollback discards the flushed run along with the "
+            "refusal"
+        )
     finally:
         await _drop_user(engine, account)
