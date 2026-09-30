@@ -20,6 +20,7 @@ with nothing touched; a second or concurrent delete is 404 for the loser, which 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -38,12 +39,14 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId
-from tailorcraft.domain.retention.value_objects import RetentionWindow
+from tailorcraft.domain.retention.value_objects import DeletedHistoryEntry, RetentionWindow
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
@@ -412,17 +415,113 @@ async def test_ac33_the_rows_are_committed_before_any_file_is_unlinked(
 async def test_ac33_two_concurrent_deletes_are_one_204_and_one_404(
     concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine, clock: FixedClock
 ) -> None:
+    """AC-33/H-44, hardened (reviewer /verify round-1 MINOR #3).
+
+    `asyncio.gather` alone never proved the two `DELETE`s overlapped: nothing stopped the ASGI test
+    transport from running one request to completion before the other's handler had even started,
+    and in that case the loser's 404 would come from `GetTailoringRun` finding nothing (a
+    *different* code path — the run simply is not there any more) rather than from
+    `SqlAlchemyHistoryEntryData.delete_history_entry`'s `None` branch, which is what H-44 and this
+    test's name are actually about.
+
+    Staged so the ordering is provable rather than hoped for. `GetTailoringRun.__call__` (shared by
+    both requests; patched once) is wrapped so that the **first** caller to return — having already
+    read and authorized the run, while it still exists — pauses under `asyncio.wait_for` until the
+    **second** caller has also read it, and only then proceeds. That guarantees the second request's
+    read (and so its dispatch) lands strictly after the first's read and strictly before the first
+    calls `delete_history_entry` — hence strictly before the first's commit — exactly the window the
+    reviewer named. From that point the two `delete_history_entry` calls race for real, on two
+    separate connections; which one wins is Postgres' own row lock on `tailoring_run`, not this test
+    (the adapter's own docstring: "the second's DELETE matches nothing once the first commits").
+
+    A `contextvars.ContextVar` tags each task's role ("first"/"second") across its own await chain —
+    `asyncio.gather` gives each coroutine its own task and its own copy of the context, so the two
+    never see each other's role — which lets the wrapped `delete_history_entry` and
+    `LocalFileStore.delete` be asserted **per role**: the loser's `delete_history_entry` must have
+    returned `None` (H-44's branch, never a `GetTailoringRun` 404) and the loser must never have
+    called `LocalFileStore.delete` at all.
+
+    Mutation check (run by hand, not committed — the file is restored byte-exact; `git status` is
+    clean): flipping `delete_results[loser_role] is True` to `is False` makes this test fail on
+    every run, which is the proof the assertion discriminates the branch and is not just checking
+    the two status codes again under a longer docstring.
+    """
     account, entry = await _seed_committed(concurrent_app, settings, engine, clock)
+
+    role: contextvars.ContextVar[str] = contextvars.ContextVar("role", default="unset")
+    order: list[str] = []
+    first_read_done = asyncio.Event()
+    second_read_done = asyncio.Event()
+    reads_seen: list[str] = []
+    delete_results: dict[str, bool] = {}
+    unlink_calls: list[str] = []
+
+    original_get = GetTailoringRun.__call__
+    original_delete_entry = SqlAlchemyHistoryEntryData.delete_history_entry
+    original_file_delete = LocalFileStore.delete
+
+    async def _tracking_get(
+        self: GetTailoringRun, run_id: TailoringRunId, requester: Owner
+    ) -> TailoringRun:
+        result = await original_get(self, run_id, requester)
+        reads_seen.append(role.get())
+        if len(reads_seen) == 1:
+            order.append("first_read_run")
+            first_read_done.set()
+            await asyncio.wait_for(second_read_done.wait(), timeout=5)
+        else:
+            order.append("second_read_run")
+            second_read_done.set()
+        return result
+
+    async def _tracking_delete_entry(
+        self: SqlAlchemyHistoryEntryData, user_id: UserId, run_id: UUID
+    ) -> DeletedHistoryEntry | None:
+        result = await original_delete_entry(self, user_id, run_id)
+        delete_results[role.get()] = result is None
+        return result
+
+    async def _tracking_file_delete(self: LocalFileStore, ref: FileRef) -> None:
+        unlink_calls.append(role.get())
+        await original_file_delete(self, ref)
+
+    async def _run_first() -> Response:
+        role.set("first")
+        async with new_client(concurrent_app) as client_one:
+            return await client_one.delete(entry.run_url, headers=account.headers)
+
+    async def _run_second() -> Response:
+        await asyncio.wait_for(first_read_done.wait(), timeout=5)
+        role.set("second")
+        async with new_client(concurrent_app) as client_two:
+            return await client_two.delete(entry.run_url, headers=account.headers)
+
     try:
-        async with new_client(concurrent_app) as one, new_client(concurrent_app) as two:
-            results = await asyncio.gather(
-                one.delete(entry.run_url, headers=account.headers),
-                two.delete(entry.run_url, headers=account.headers),
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(GetTailoringRun, "__call__", _tracking_get)
+            mp.setattr(SqlAlchemyHistoryEntryData, "delete_history_entry", _tracking_delete_entry)
+            mp.setattr(LocalFileStore, "delete", _tracking_file_delete)
+            response_first, response_second = await asyncio.wait_for(
+                asyncio.gather(_run_first(), _run_second()), timeout=10
             )
 
-        assert sorted(r.status_code for r in results) == [204, 404], [r.text for r in results]
-        loser = next(r for r in results if r.status_code == 404)
-        assert error_code(loser) == "tailoring_run_not_found"
+        assert order == ["first_read_run", "second_read_run"], (
+            "the second request's read must land between the first's read and its delete, but the "
+            f"observed order was {order!r}"
+        )
+        results = {"first": response_first, "second": response_second}
+        assert sorted(r.status_code for r in results.values()) == [204, 404], {
+            k: v.text for k, v in results.items()
+        }
+        loser_role = next(k for k, v in results.items() if v.status_code == 404)
+        winner_role = "second" if loser_role == "first" else "first"
+
+        assert delete_results[loser_role] is True, (
+            "the loser must reach delete_history_entry's None branch (H-44), not fail earlier"
+        )
+        assert delete_results[winner_role] is False
+        assert error_code(results[loser_role]) == "tailoring_run_not_found"
+        assert unlink_calls == [winner_role], "the loser must unlink nothing"
         assert not (settings.upload_dir / entry.jobs[0].storage_ref.key).exists()
     finally:
         await _drop_user(engine, account)
