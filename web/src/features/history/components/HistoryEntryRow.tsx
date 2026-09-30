@@ -2,6 +2,8 @@ import { useId } from 'react';
 import { Link } from 'react-router';
 
 import { formatStoredUntil } from '@/features/intake/format';
+import { runLink } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { isActiveTailoringRunStatus } from '@/features/tailoring/types';
 
 import {
@@ -43,6 +45,9 @@ const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
  * label, else its filename, else *"CV deleted"*; the status in words (incl. `base_cv_deleted`); the
  * requested date; the *Edited* badge; **Open** (a link to `/history/{id}`) and **Delete**.
  *
+ * Open is built by `runLink` from the scope's map, never by hand: a hand-built path bypasses the
+ * scope, which is how `DocumentTabs` once sent a history run's tab to the guest route (T32).
+ *
  * Delete is disabled on a `queued`/`running` entry with the reason beside it (AC-45): there is no
  * cancellation, and the server would answer 409 anyway — the client does not decide *whether* an
  * entry may go, it only avoids offering a request it has just been told will be refused. Every
@@ -54,6 +59,7 @@ export function HistoryEntryRow({
   onDelete,
 }: HistoryEntryRowProps): React.JSX.Element {
   const reasonId = useId();
+  const scope = useScopeMap();
   const stillRunning = isActiveTailoringRunStatus(entry.status);
   const note =
     stillRunning || (deletion.kind === 'failed' && deletion.reason === 'in_progress')
@@ -87,7 +93,7 @@ export function HistoryEntryRow({
         Requested <time dateTime={entry.requested_at}>{formatStoredUntil(entry.requested_at)}</time>
       </p>
       <div className="flex items-center gap-4 text-sm">
-        <Link to={`/history/${encodeURIComponent(entry.id)}`} className={LINK_CLASS}>
+        <Link to={runLink(scope, entry.id)} className={LINK_CLASS}>
           {OPEN_ENTRY_LABEL}
         </Link>
         <button
