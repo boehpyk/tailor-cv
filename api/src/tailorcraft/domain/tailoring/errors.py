@@ -37,13 +37,24 @@ class TailoringRunNotOwnedBySession(DomainError):
     two error types rather than one, though, because the use case's own tests need to tell "absent"
     from "not mine" apart even when the boundary must not — collapsing them here would leave nothing
     able to prove the ownership check runs at all. `BaseCvNotOwnedBySession` and
-    `JobPostingNotOwnedBySession` exist for the same reason, and `GetTailoringRunForSession` raises
+    `JobPostingNotOwnedBySession` exist for the same reason, and `GetTailoringRun` raises
     the 404 `from` this one so a test can read it off `__cause__` (AC-14).
     """
 
 
+class TailoringRunNotOwnedByUser(DomainError):
+    """A `TailoringRun` exists, but its owner is not the signed-in user asking — a guest-owned run
+    or another user's (slice 2.3).
+
+    The user-path twin of `TailoringRunNotOwnedBySession`, with the same shape: the use case raises
+    `TailoringRunNotFound` **from** this, so the HTTP answer is the same 404 as a nonexistent id,
+    while the use case's tests can still tell "absent" from "not mine" on `__cause__`. 2.2's
+    `BaseCvNotOwnedByUser` is the precedent.
+    """
+
+
 class TooManyTailoringRuns(DomainError):
-    """The session already owns the maximum number of tailoring runs (G-10).
+    """The owner already has the maximum number of tailoring runs (G-10; per user since 2.3).
 
     Carries the count it saw and the limit it compared against, so the router can tell the user what
     the limit is rather than only that they hit one.
@@ -58,7 +69,7 @@ class TooManyTailoringRuns(DomainError):
     """
 
     def __init__(self, count: int, limit: int) -> None:
-        super().__init__(f"session already owns {count} tailoring runs; the limit is {limit}")
+        super().__init__(f"owner already has {count} tailoring runs; the limit is {limit}")
         self.count = count
         self.limit = limit
 
@@ -427,3 +438,19 @@ class TailoringNotQueued(DomainError):
     `NOT_QUEUED` is a reason with no exception subclass: it is written by our orchestration, not
     raised by a port.
     """
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.3 — the history read model (`domain/tailoring/history.py`).
+# --------------------------------------------------------------------------------------------------
+
+
+class InvalidHistoryPageSize(DomainError):
+    """`HistoryPageSize` was given a value outside 1..50. The boundary answers 422; a page size is
+    a caller's choice, and one that could ask for every row at once is a cost a stranger chooses."""
+
+
+class InvalidHistoryCursor(DomainError):
+    """`HistoryCursor` was given a `requested_at` that is naive or not whole-second. A cursor is an
+    echo of a value the server handed out (ADR-0024, unsigned on purpose), so one that could never
+    have come from a stored `requested_at` is refused rather than silently matching nothing."""

@@ -62,9 +62,11 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
-from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
 from tailorcraft.domain.tailoring.errors import (
     TailoringRunConcurrentlyModified,
     TailoringRunNotFound,
@@ -91,11 +93,17 @@ from tailorcraft.infrastructure.persistence.mapping.identity.guest_session impor
 # `mapper_registry.map_imperatively(TailoringRun, ...)` as an import side effect. Without it
 # `TailoringRun._id` etc. do not exist yet and every repository import below fails at collection
 # time with `AttributeError: type object 'TailoringRun' has no attribute '_id'`.
+from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import (
+    job_posting_table,  # noqa: F401
+)
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
 from tailorcraft.infrastructure.persistence.repositories.identity.guest_session import (
     SqlAlchemyGuestSessionRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+    SqlAlchemyJobPostingRepository,
 )
 from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
     SqlAlchemyTailoringRunRepository,
@@ -118,6 +126,22 @@ async def _persist_owner(
     return owner
 
 
+async def _persist_posting(session: AsyncSession, owner: Owner, at: datetime) -> JobPosting:
+    """A real `posting_job_posting` row owned by `owner` — since 2.3 /verify (reviewer MINOR #1),
+    `SqlAlchemyTailoringRunRepository.add` takes the run's posting `FOR KEY SHARE` and, through
+    `api/deps.py`'s composition root, refuses a run whose posting does not exist. Every run this
+    file seeds through `add` needs one of these first; the aggregate itself never had to care."""
+    posting = JobPosting.from_pasted_text(
+        id=JobPostingId(value=uuid4()),
+        owner=owner,
+        text=JobPostingText("posting " * 40),
+        created_at=at,
+    )
+    posting.release_events()
+    await SqlAlchemyJobPostingRepository(session).add(posting)
+    return posting
+
+
 def _documents() -> TailoredDocuments:
     """Comfortably past both floors (400 / 200 non-whitespace characters) — the exact values do not
     matter to these tests, only that both round-trip intact."""
@@ -134,42 +158,53 @@ def _metrics() -> LlmCallMetrics:
     )
 
 
-def _queued(
-    runs: SqlAlchemyTailoringRunRepository, owner_id: GuestSessionId, clock: FixedClock
+async def _queued(
+    session: AsyncSession,
+    runs: SqlAlchemyTailoringRunRepository,
+    owner_id: GuestSessionId,
+    clock: FixedClock,
 ) -> TailoringRun:
+    posting = await _persist_posting(session, GuestOwner(owner_id), clock.now())
     return TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=BaseCvId(value=uuid4()),
-        job_posting_id=JobPostingId(value=uuid4()),
+        job_posting_id=posting.id,
         requested_at=clock.now(),
     )
 
 
-def _running(
-    runs: SqlAlchemyTailoringRunRepository, owner_id: GuestSessionId, clock: FixedClock
+async def _running(
+    session: AsyncSession,
+    runs: SqlAlchemyTailoringRunRepository,
+    owner_id: GuestSessionId,
+    clock: FixedClock,
 ) -> TailoringRun:
-    run = _queued(runs, owner_id, clock)
+    run = await _queued(session, runs, owner_id, clock)
     run.mark_started(clock.now())
     return run
 
 
-def _succeeded(
-    runs: SqlAlchemyTailoringRunRepository, owner_id: GuestSessionId, clock: FixedClock
+async def _succeeded(
+    session: AsyncSession,
+    runs: SqlAlchemyTailoringRunRepository,
+    owner_id: GuestSessionId,
+    clock: FixedClock,
 ) -> TailoringRun:
-    run = _running(runs, owner_id, clock)
+    run = await _running(session, runs, owner_id, clock)
     run.mark_succeeded(_documents(), _metrics(), clock.now())
     return run
 
 
-def _failed(
+async def _failed(
+    session: AsyncSession,
     runs: SqlAlchemyTailoringRunRepository,
     owner_id: GuestSessionId,
     clock: FixedClock,
     *,
     reason: TailoringFailureReason = TailoringFailureReason.LLM_UNAVAILABLE,
 ) -> TailoringRun:
-    run = _queued(runs, owner_id, clock)
+    run = await _queued(session, runs, owner_id, clock)
     run.mark_failed(reason, clock.now())
     return run
 
@@ -225,7 +260,7 @@ async def test_round_trip_of_a_queued_run_preserves_value_object_types_and_nulls
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _queued(runs, owner.id, clock)
+    run = await _queued(session, runs, owner.id, clock)
     await runs.add(run)
 
     session.expunge_all()
@@ -233,8 +268,8 @@ async def test_round_trip_of_a_queued_run_preserves_value_object_types_and_nulls
 
     assert isinstance(reloaded.id, TailoringRunId)
     assert reloaded.id == run.id
-    assert isinstance(reloaded.guest_session_id, GuestSessionId)
-    assert reloaded.guest_session_id == owner.id
+    assert isinstance(reloaded.owner, GuestOwner)
+    assert reloaded.owner == GuestOwner(owner.id)
     assert isinstance(reloaded.base_cv_id, BaseCvId)
     assert reloaded.base_cv_id == run.base_cv_id
     assert isinstance(reloaded.job_posting_id, JobPostingId)
@@ -256,7 +291,7 @@ async def test_round_trip_of_a_running_run_preserves_value_object_types(
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="2" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _running(runs, owner.id, clock)
+    run = await _running(session, runs, owner.id, clock)
     await runs.add(run)
 
     session.expunge_all()
@@ -276,7 +311,7 @@ async def test_round_trip_of_a_succeeded_run_preserves_value_object_types_and_bo
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="3" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _succeeded(runs, owner.id, clock)
+    run = await _succeeded(session, runs, owner.id, clock)
     await runs.add(run)
 
     session.expunge_all()
@@ -300,7 +335,9 @@ async def test_round_trip_of_a_failed_run_preserves_the_failure_reason_and_nulls
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="4" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _failed(runs, owner.id, clock, reason=TailoringFailureReason.LLM_OUTPUT_INVALID)
+    run = await _failed(
+        session, runs, owner.id, clock, reason=TailoringFailureReason.LLM_OUTPUT_INVALID
+    )
     await runs.add(run)
 
     session.expunge_all()
@@ -325,7 +362,7 @@ async def test_round_trip_preserves_whole_second_requested_started_and_completed
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="5" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _succeeded(runs, owner.id, clock)
+    run = await _succeeded(session, runs, owner.id, clock)
     await runs.add(run)
 
     session.expunge_all()
@@ -350,7 +387,7 @@ async def test_a_queued_run_round_trips_null_for_every_optional_column(
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="6" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _queued(runs, owner.id, clock)
+    run = await _queued(session, runs, owner.id, clock)
     await runs.add(run)
 
     session.expunge_all()
@@ -514,9 +551,9 @@ async def test_deleting_a_guest_session_cascades_to_its_tailoring_runs(
     both rows (and their documents) must be gone in the same statement."""
     owner = await _persist_owner(session, clock, token_hash="f" * 64)
     runs = SqlAlchemyTailoringRunRepository(session)
-    first = _queued(runs, owner.id, clock)
+    first = await _queued(session, runs, owner.id, clock)
     await runs.add(first)
-    second = _succeeded(runs, owner.id, clock)
+    second = await _succeeded(session, runs, owner.id, clock)
     await runs.add(second)
 
     await session.execute(guest_session_table.delete().where(guest_session_table.c.id == owner.id))
@@ -535,7 +572,7 @@ async def test_deleting_a_guest_session_cascades_to_its_tailoring_runs(
 
 
 async def test_guest_session_id_index_exists_on_tailoring_run(session: AsyncSession) -> None:
-    """Serves `GET /api/tailoring-runs`, `count_for_session`, `find_active_for_session` and the
+    """Serves `GET /api/tailoring-runs`, `count_for_owner`, `find_active_for_owner` and the
     cascade above."""
     result = await session.execute(
         text(
@@ -589,12 +626,12 @@ async def test_list_for_session_breaks_a_tie_on_the_same_second_by_id_descending
     owner = await _persist_owner(session, clock, token_hash="1a" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
 
-    older = _queued(runs, owner.id, clock)
+    older = await _queued(session, runs, owner.id, clock)
     await runs.add(older)
     await asyncio.sleep(
         0.002
     )  # cross a millisecond boundary so the newer id is unambiguously greater
-    newer = _queued(runs, owner.id, clock)
+    newer = await _queued(session, runs, owner.id, clock)
     await runs.add(newer)
 
     assert older.requested_at == newer.requested_at, (
@@ -607,66 +644,68 @@ async def test_list_for_session_breaks_a_tie_on_the_same_second_by_id_descending
     assert [run.id for run in result] == [newer.id, older.id]
 
 
-# --- count_for_session and find_active_for_session against the real database -----------------------
+# --- count_for_owner and find_active_for_owner (guest owner) against the real database ------------
 
 
-async def test_count_for_session_counts_only_that_sessions_rows(
+async def test_count_for_owner_counts_only_that_guest_sessions_rows(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner_a = await _persist_owner(session, clock, token_hash="1b" * 32)
     owner_b = await _persist_owner(session, clock, token_hash="1c" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
 
-    await runs.add(_queued(runs, owner_a.id, clock))
-    await runs.add(_succeeded(runs, owner_a.id, clock))
-    await runs.add(_queued(runs, owner_b.id, clock))
+    await runs.add(await _queued(session, runs, owner_a.id, clock))
+    await runs.add(await _succeeded(session, runs, owner_a.id, clock))
+    await runs.add(await _queued(session, runs, owner_b.id, clock))
 
-    assert await runs.count_for_session(owner_a.id) == 2
-    assert await runs.count_for_session(owner_b.id) == 1
+    assert await runs.count_for_owner(GuestOwner(owner_a.id)) == 2
+    assert await runs.count_for_owner(GuestOwner(owner_b.id)) == 1
 
 
-async def test_find_active_for_session_returns_none_when_every_run_is_terminal(
+async def test_find_active_for_owner_returns_none_when_every_run_is_terminal(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1d" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    await runs.add(_succeeded(runs, owner.id, clock))
-    await runs.add(_failed(runs, owner.id, clock))
+    await runs.add(await _succeeded(session, runs, owner.id, clock))
+    await runs.add(await _failed(session, runs, owner.id, clock))
 
-    assert await runs.find_active_for_session(owner.id) is None
+    assert await runs.find_active_for_owner(GuestOwner(owner.id)) is None
 
 
-async def test_find_active_for_session_finds_a_queued_run(
+async def test_find_active_for_owner_finds_a_queued_run(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1e" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    active = _queued(runs, owner.id, clock)
+    active = await _queued(session, runs, owner.id, clock)
     await runs.add(active)
-    await runs.add(_succeeded(runs, owner.id, clock))  # a decoy, must not be returned
+    await runs.add(
+        await _succeeded(session, runs, owner.id, clock)
+    )  # a decoy, must not be returned
 
-    found = await runs.find_active_for_session(owner.id)
+    found = await runs.find_active_for_owner(GuestOwner(owner.id))
 
     assert found is not None
     assert found.id == active.id
 
 
-async def test_find_active_for_session_finds_a_running_run(
+async def test_find_active_for_owner_finds_a_running_run(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="1f" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    active = _running(runs, owner.id, clock)
+    active = await _running(session, runs, owner.id, clock)
     await runs.add(active)
-    await runs.add(_failed(runs, owner.id, clock))  # a decoy, must not be returned
+    await runs.add(await _failed(session, runs, owner.id, clock))  # a decoy, must not be returned
 
-    found = await runs.find_active_for_session(owner.id)
+    found = await runs.find_active_for_owner(GuestOwner(owner.id))
 
     assert found is not None
     assert found.id == active.id
 
 
-async def test_find_active_for_session_with_two_active_runs_returns_the_newest_without_raising(
+async def test_find_active_for_owner_with_two_active_runs_returns_the_newest_without_raising(
     session: AsyncSession, clock: FixedClock
 ) -> None:
     """ADR-0014 §4: the one-active-run rule is a SOFT use-case check (`RequestTailoringRun`'s own
@@ -679,13 +718,13 @@ async def test_find_active_for_session_with_two_active_runs_returns_the_newest_w
     """
     owner = await _persist_owner(session, clock, token_hash="20" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    older_active = _queued(runs, owner.id, clock)
+    older_active = await _queued(session, runs, owner.id, clock)
     await runs.add(older_active)
     await asyncio.sleep(0.002)
-    newer_active = _running(runs, owner.id, clock)
+    newer_active = await _running(session, runs, owner.id, clock)
     await runs.add(newer_active)
 
-    found = await runs.find_active_for_session(owner.id)
+    found = await runs.find_active_for_owner(GuestOwner(owner.id))
 
     assert found is not None
     assert found.id == newer_active.id
@@ -694,7 +733,8 @@ async def test_find_active_for_session_with_two_active_runs_returns_the_newest_w
 # --- list_stale_running (V5f, /verify round 1): the stale-run sweep's query --------------------------
 
 
-def _running_at(
+async def _running_at(
+    session: AsyncSession,
     runs: SqlAlchemyTailoringRunRepository,
     owner_id: GuestSessionId,
     *,
@@ -707,11 +747,12 @@ def _running_at(
     tests need `started_at` placed at an arbitrary point in the past relative to a chosen cutoff, not
     "now" — the sweep's whole premise is a run whose worker vanished a while ago.
     """
+    posting = await _persist_posting(session, GuestOwner(owner_id), requested_at)
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=BaseCvId(value=uuid4()),
-        job_posting_id=JobPostingId(value=uuid4()),
+        job_posting_id=posting.id,
         requested_at=requested_at,
     )
     run.mark_started(started_at)
@@ -723,7 +764,8 @@ async def test_list_stale_running_selects_a_running_run_started_before_the_cutof
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="21" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    stale = _running_at(
+    stale = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_000),
@@ -745,13 +787,15 @@ async def test_list_stale_running_excludes_a_running_run_started_after_the_cutof
     proves `list_stale_running` actually ran rather than merely returning an empty list by accident."""
     owner = await _persist_owner(session, clock, token_hash="22" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    fresh = _running_at(
+    fresh = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=10),
         started_at=clock.now() - timedelta(seconds=5),
     )
-    stale = _running_at(
+    stale = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_000),
@@ -775,10 +819,15 @@ async def test_list_stale_running_excludes_a_run_started_exactly_at_the_cutoff(
     owner = await _persist_owner(session, clock, token_hash="23" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     cutoff = clock.now() - timedelta(seconds=300)
-    boundary = _running_at(
-        runs, owner.id, requested_at=clock.now() - timedelta(seconds=1_000), started_at=cutoff
+    boundary = await _running_at(
+        session,
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=cutoff,
     )
-    stale = _running_at(
+    stale = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_000),
@@ -801,18 +850,22 @@ async def test_list_stale_running_excludes_queued_and_terminal_runs_however_old(
     owner = await _persist_owner(session, clock, token_hash="24" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     very_old = clock.now() - timedelta(days=1)
+    queued_posting = await _persist_posting(session, GuestOwner(owner.id), very_old)
     queued = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner.id,
+        owner=GuestOwner(owner.id),
         base_cv_id=BaseCvId(value=uuid4()),
-        job_posting_id=JobPostingId(value=uuid4()),
+        job_posting_id=queued_posting.id,
         requested_at=very_old,
     )
-    succeeded = _running_at(runs, owner.id, requested_at=very_old, started_at=very_old)
+    succeeded = await _running_at(
+        session, runs, owner.id, requested_at=very_old, started_at=very_old
+    )
     succeeded.mark_succeeded(_documents(), _metrics(), very_old + timedelta(seconds=1))
-    failed = _running_at(runs, owner.id, requested_at=very_old, started_at=very_old)
+    failed = await _running_at(session, runs, owner.id, requested_at=very_old, started_at=very_old)
     failed.mark_failed(TailoringFailureReason.LLM_ERROR, very_old + timedelta(seconds=1))
-    stale = _running_at(
+    stale = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_000),
@@ -837,18 +890,27 @@ async def test_list_stale_running_orders_oldest_started_at_first_with_an_id_tieb
     owner = await _persist_owner(session, clock, token_hash="25" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     same_second = clock.now() - timedelta(seconds=400)
-    older = _running_at(
-        runs, owner.id, requested_at=clock.now() - timedelta(seconds=1_000), started_at=same_second
+    older = await _running_at(
+        session,
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=same_second,
     )
     await runs.add(older)
     await asyncio.sleep(
         0.002
     )  # cross a millisecond boundary so the newer id is unambiguously greater
-    newer = _running_at(
-        runs, owner.id, requested_at=clock.now() - timedelta(seconds=1_000), started_at=same_second
+    newer = await _running_at(
+        session,
+        runs,
+        owner.id,
+        requested_at=clock.now() - timedelta(seconds=1_000),
+        started_at=same_second,
     )
     await runs.add(newer)
-    oldest = _running_at(
+    oldest = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=2_000),
@@ -873,19 +935,22 @@ async def test_list_stale_running_respects_the_limit(
 ) -> None:
     owner = await _persist_owner(session, clock, token_hash="26" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    oldest = _running_at(
+    oldest = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=2_000),
         started_at=clock.now() - timedelta(seconds=900),
     )
-    middle = _running_at(
+    middle = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_500),
         started_at=clock.now() - timedelta(seconds=700),
     )
-    newest = _running_at(
+    newest = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_000),
@@ -912,7 +977,8 @@ async def test_list_stale_running_selects_a_null_started_at_running_row_first(
     """
     owner = await _persist_owner(session, clock, token_hash="27" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    with_timestamp = _running_at(
+    with_timestamp = await _running_at(
+        session,
         runs,
         owner.id,
         requested_at=clock.now() - timedelta(seconds=1_000),
@@ -956,7 +1022,8 @@ async def test_list_stale_running_sends_status_to_postgres_as_a_literal_not_a_bo
     owner = await _persist_owner(session, clock, token_hash="28" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     await runs.add(
-        _running_at(
+        await _running_at(
+            session,
             runs,
             owner.id,
             requested_at=clock.now() - timedelta(seconds=1_000),
@@ -1016,7 +1083,7 @@ async def test_round_trip_of_a_run_with_no_revision_leaves_the_five_new_columns_
     """
     owner = await _persist_owner(session, clock, token_hash="40" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _succeeded(runs, owner.id, clock)
+    run = await _succeeded(session, runs, owner.id, clock)
     await runs.add(run)
 
     session.expunge_all()
@@ -1038,7 +1105,7 @@ async def test_round_trip_of_a_run_with_both_revisions_preserves_version_current
     """
     owner = await _persist_owner(session, clock, token_hash="41" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _succeeded(runs, owner.id, clock)
+    run = await _succeeded(session, runs, owner.id, clock)
     await runs.add(run)
 
     revised_cv = TailoredCv("c" * 450)
@@ -1159,7 +1226,7 @@ async def test_two_sessions_racing_to_revise_one_run_the_second_save_raises_conc
     """
     owner = await _persist_owner(session, clock, token_hash="45" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _succeeded(runs, owner.id, clock)
+    run = await _succeeded(session, runs, owner.id, clock)
     await runs.add(run)
     # Close the transaction the `add()` flush opened (autobegin), so it is not left dangling
     # *underneath* the nested SAVEPOINT `session2` is about to open on this same connection — see
@@ -1249,7 +1316,7 @@ async def test_a_cv_revision_pairs_check_violation_through_the_repository_leaks_
     """
     owner = await _persist_owner(session, clock, token_hash="46" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
-    run = _succeeded(runs, owner.id, clock)
+    run = await _succeeded(session, runs, owner.id, clock)
     await runs.add(run)
 
     marker = "QA_AC19_PERSISTENCE_CV_MARKER_5e2a91d4"

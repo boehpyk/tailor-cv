@@ -10,14 +10,20 @@ aggregate carries a comment saying so.
 `ExportJob` composes `RecordsEvents`, which gives every instance a `_recorded_events` buffer
 (`domain/shared/events.py`). That attribute is deliberately **absent** from both the table and
 `properties=`: it is not a persisted fact about the job, it is an in-memory outbox the use case
-drains via `release_events()` before the transaction commits. Naming only the fifteen mapped
+drains via `release_events()` before the transaction commits. Naming only the sixteen mapped
 attributes below is what keeps SQLAlchemy from ever trying to instrument it.
+
+**Slice 2.3 (ADR-0023): one aggregate, two owner shapes, one table** — `intake_base_cv`'s 2.2 shape
+(ADR-0022), copied rather than shared. Two nullable owner columns and
+`ck_export_job_exactly_one_owner`; `ExportJob.owner` / `_assign_owner` are the translation. A job's
+owner is its run's owner, but that is a cross-aggregate rule `RequestExport` enforces, not a
+constraint here — there is no FK to `tailoring_run` to hang one on (ADR-0016).
 
 **Never `class ExportJob(Base)`, never `mapped_column` on the domain class.** That is the tutorial
 path and it ends the design: the aggregate would import SQLAlchemy and `domain/` would stop being
 pure (ADR-0002).
 
-**Fifteen columns, fifteen mapped attributes, zero assembling properties** — and after
+**Sixteen columns, sixteen mapped attributes, zero assembling properties** — and after
 `tailoring_run`'s sixteen-columns-to-two-composites asymmetry (OQ-5) that is worth one sentence
 rather than none. `ExportJob` holds no multi-column value object at all. Its one derived value,
 `storage_ref`, is a pure function of `_id` and `_format` (`FileRef.for_export`, XJ-7), so it is
@@ -41,6 +47,7 @@ from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.infrastructure.persistence.mapping.identity.guest_session import (
     guest_session_table,
 )
+from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.persistence.registry import mapper_registry, metadata
 from tailorcraft.infrastructure.persistence.types.export import (
     ExportFailureReasonType,
@@ -48,7 +55,7 @@ from tailorcraft.infrastructure.persistence.types.export import (
     ExportJobIdType,
     ExportJobStatusType,
 )
-from tailorcraft.infrastructure.persistence.types.identity import GuestSessionIdType
+from tailorcraft.infrastructure.persistence.types.identity import GuestSessionIdType, UserIdType
 from tailorcraft.infrastructure.persistence.types.shared import FileRefType
 from tailorcraft.infrastructure.persistence.types.tailoring import (
     TailoredDocumentKindType,
@@ -74,11 +81,36 @@ export_job_table = Table(
     # Indexed because this one column serves two readers: `count_for_session` (the `TooManyExportJobs`
     # cap) and the cascade itself. `registry.py`'s convention renders it
     # `ix_export_job_guest_session_id`.
+    #
+    # **Nullable since 2.3** (ADR-0023), and that is what spares a signed-in user's exports from the
+    # purge's *rows* by schema: a user-owned job has `guest_session_id IS NULL`, so neither the
+    # cascade nor `list_expired`'s `IN (…)` can reach it. The purge's *files* are spared by the other
+    # half — the orphan sweep's cross-check reads `file_key` for every row, whoever owns it (AC-20).
+    # "Exactly one owner" moved from this `NOT NULL` to `ck_export_job_exactly_one_owner` below.
     Column(
         "guest_session_id",
         GuestSessionIdType,
         ForeignKey(guest_session_table.c.id, ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
+        index=True,
+    ),
+    # The user half of the owner (2.3). `ON DELETE CASCADE` so erasing an account takes its export
+    # jobs with the rest of its history in one statement (`SqlAlchemyAccountData.delete_account`);
+    # their files are collected beforehand, each key **derived** from the job's `(id, format)`
+    # rather than read from `file_key`, so a `rendering` or `failed` job's bytes are not missed
+    # (AC-15, the purge's rule). A single entry's jobs go by `SqlAlchemyHistoryEntryData`'s
+    # `DELETE … RETURNING id, format` (technical plan §0.6).
+    #
+    # The FK's name, `fk_export_job_user_id_identity_user`, is load-bearing:
+    # `SqlAlchemyExportJobRepository.add` recognises a request racing an account erasure by it and
+    # answers `UserNotFound` (H-53). Indexed (`ix_export_job_user_id`) for erasure's key collection
+    # and the cascade — a plain single-column index, because nothing lists a user's jobs in order:
+    # every listing goes through the run, and `count_for_run` uses `ix_export_job_tailoring_run_id`.
+    Column(
+        "user_id",
+        UserIdType,
+        ForeignKey(user_table.c.id, ondelete="CASCADE"),
+        nullable=True,
         index=True,
     ),
     # **No foreign key to `tailoring_run`, deliberately** — the same call `tailoring_run` made for
@@ -259,6 +291,10 @@ export_job_table = Table(
         "id",
         postgresql_where=text("status = 'rendering'"),
     ),
+    # EJ-owner's second lock ("exactly one owner"), behind `ExportJob._assign_owner`: `num_nonnulls`
+    # refuses two owners and none in one expression. `ck_export_job_exactly_one_owner`, 2.2's shape
+    # exactly — and, as on `tailoring_run`, the lock that keeps the guest cascade off a user's rows.
+    CheckConstraint("num_nonnulls(guest_session_id, user_id) = 1", name="exactly_one_owner"),
 )
 
 mapper_registry.map_imperatively(
@@ -266,7 +302,10 @@ mapper_registry.map_imperatively(
     export_job_table,
     properties={
         "_id": export_job_table.c.id,
-        "_guest_session_id": export_job_table.c.guest_session_id,
+        # The two halves of the owner (ADR-0022): two attributes, one fact. `ExportJob._assign_owner`
+        # is their only writer and `ExportJob.owner` their only reader — see the class comment there.
+        "_owner_guest_session_id": export_job_table.c.guest_session_id,
+        "_owner_user_id": export_job_table.c.user_id,
         "_tailoring_run_id": export_job_table.c.tailoring_run_id,
         "_document": export_job_table.c.document,
         "_format": export_job_table.c.format,

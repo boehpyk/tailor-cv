@@ -27,7 +27,7 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
+from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
@@ -41,6 +41,7 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeBaseCvRepository,
     FakeGuestSessionRepository,
+    FakeUserRepository,
     create_active_session,
 )
 
@@ -77,8 +78,9 @@ async def test_get_returns_the_cv_for_the_session_that_owns_it(clock: FixedClock
     cvs = FakeBaseCvRepository()
     cv = await _add_base_cv(cvs, session.id, clock)
 
-    use_case = GetBaseCvForSession(cvs, sessions, clock)
-    result = await use_case(cv.id, session.id)
+    users = FakeUserRepository()
+    use_case = GetBaseCv(cvs, sessions, users, clock)
+    result = await use_case(cv.id, GuestOwner(session.id))
 
     assert result.id == cv.id
     assert result.owner == GuestOwner(session.id)
@@ -96,10 +98,11 @@ async def test_get_for_a_cv_owned_by_a_different_session_raises_base_cv_not_foun
     cvs = FakeBaseCvRepository()
     cv = await _add_base_cv(cvs, owner_session.id, clock)
 
-    use_case = GetBaseCvForSession(cvs, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetBaseCv(cvs, sessions, users, clock)
 
     with pytest.raises(BaseCvNotFound) as exc_info:
-        await use_case(cv.id, other_session.id)
+        await use_case(cv.id, GuestOwner(other_session.id))
 
     # The distinguishing detail lives on __cause__, visible only to this test — not to anything
     # reading the exception type that actually crosses the use-case boundary (the docstring's
@@ -114,11 +117,12 @@ async def test_get_for_a_nonexistent_id_raises_base_cv_not_found(clock: FixedClo
     session = await create_active_session(sessions, clock)
     cvs = FakeBaseCvRepository()  # empty: no base CV was ever added
 
-    use_case = GetBaseCvForSession(cvs, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetBaseCv(cvs, sessions, users, clock)
     nonexistent_id = BaseCvId(value=uuid4())
 
     with pytest.raises(BaseCvNotFound):
-        await use_case(nonexistent_id, session.id)
+        await use_case(nonexistent_id, GuestOwner(session.id))
 
 
 async def test_get_with_expired_session_raises_guest_session_expired(clock: FixedClock) -> None:
@@ -133,22 +137,24 @@ async def test_get_with_expired_session_raises_guest_session_expired(clock: Fixe
     cvs = FakeBaseCvRepository()
     cv = await _add_base_cv(cvs, expired.id, clock)
 
-    use_case = GetBaseCvForSession(cvs, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetBaseCv(cvs, sessions, users, clock)
 
     with pytest.raises(GuestSessionExpired):
-        await use_case(cv.id, expired.id)
+        await use_case(cv.id, GuestOwner(expired.id))
 
 
 async def test_get_with_unknown_session_raises_guest_session_not_found(clock: FixedClock) -> None:
     sessions = FakeGuestSessionRepository()  # empty: no session was ever added
     cvs = FakeBaseCvRepository()
 
-    use_case = GetBaseCvForSession(cvs, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetBaseCv(cvs, sessions, users, clock)
     unknown_session_id = GuestSessionId(value=uuid4())
     some_cv_id = BaseCvId(value=uuid4())
 
     with pytest.raises(GuestSessionNotFound):
-        await use_case(some_cv_id, unknown_session_id)
+        await use_case(some_cv_id, GuestOwner(unknown_session_id))
 
 
 # --- ListBaseCvsForSession -------------------------------------------------------------------------

@@ -32,6 +32,7 @@ class EraseAccount:
     """Erase `user_id`'s account and unlink every file it owned.
 
     Flow: ``keys = await accounts.files_of_account(user_id)`` (→ `AccountNotFound`) →
+    ``counts = await accounts.count_account(user_id)`` (`None` → `AccountNotFound`) →
     ``await accounts.delete_account(user_id)`` (`False` → `AccountNotFound`: a concurrent erasure
     won, and the loser unlinks nothing) → ``files.delete(key)`` for each key, collecting the type
     name of any `Exception` → `AccountErasureReport`.
@@ -45,6 +46,13 @@ class EraseAccount:
         # Collected before anything is deleted: once the rows are gone, the keys cannot be
         # recovered, and a key nobody collected is a file nobody unlinks until the sweep.
         refs = tuple(await self._accounts.files_of_account(user_id))
+
+        # The counts, read in the same unit of work before the delete (slice 2.3, AC-15): once the
+        # rows are gone there is nothing left to count. `None` means a concurrent erasure already
+        # took the account between the two reads.
+        counts = await self._accounts.count_account(user_id)
+        if counts is None:
+            raise AccountNotFound(str(user_id))
 
         if not await self._accounts.delete_account(user_id):
             # A concurrent erasure won between the read and the delete (S-46). Its unlinks are its
@@ -66,5 +74,13 @@ class EraseAccount:
                 unlinked += 1
 
         return AccountErasureReport(
-            base_cvs=len(refs), files_unlinked=unlinked, unlink_failures=tuple(failures)
+            base_cvs=counts.base_cvs,
+            files_unlinked=unlinked,
+            unlink_failures=tuple(failures),
+            tailoring_runs=counts.tailoring_runs,
+            job_postings=counts.job_postings,
+            export_jobs=counts.export_jobs,
+            # Every key this erasure tried — saved-CV files and derived export files — so
+            # `files_unlinked` and `unlink_failures` read against it.
+            files=len(refs),
         )

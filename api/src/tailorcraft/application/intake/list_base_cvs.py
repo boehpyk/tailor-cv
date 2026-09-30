@@ -1,7 +1,7 @@
 """The `ListBaseCvsForSession` use case: every `BaseCv` a guest session owns.
 
 A use case rather than a bare `cvs.list_for_session(sid)` call for the same reason
-`GetBaseCvForSession` is one: it carries the authorization rule, and that rule must not live in a
+`GetBaseCv` is one: it carries the authorization rule, and that rule must not live in a
 router (technical-plan.md, "Use cases"). Here the rule is enforced by construction rather than by a
 per-row comparison — **the link** (`cv.owner == GuestOwner(the resolved session id)`) is exactly what
 `list_for_session` queries by, so there is no row in the result a caller does not own. Owning a
@@ -31,7 +31,7 @@ class ListBaseCvsForSession:
     contract: an empty list is a perfectly ordinary answer to "what does this session own").
 
     Raises `GuestSessionNotFound` / `GuestSessionExpired` if the session itself no longer resolves,
-    the same defense-in-depth `GetBaseCvForSession` applies, so this use case is self-contained
+    the same defense-in-depth `GetBaseCv` applies, so this use case is self-contained
     against a caller that skips the API's own cookie dependency.
     """
 

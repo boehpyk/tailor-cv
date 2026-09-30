@@ -1,4 +1,5 @@
 import { request, requestBlob } from './client';
+import { authOptionFor } from './target';
 
 import type {
   ExportJob,
@@ -7,6 +8,7 @@ import type {
   NewExport,
 } from '@/features/export/types';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
+import type { ApiTarget } from './target';
 
 /**
  * The export endpoints — **two resource shapes over one router**, and the split is visible here.
@@ -25,6 +27,11 @@ import type { TailoredDocumentKind } from '@/features/tailoring/types';
  * Two of the five answer **bytes**, so they go through `requestBlob` rather than `request`. There
  * is no `<a href>` to any of these paths anywhere in the app — see `requestBlob`'s docstring for
  * the reason (AC-42).
+ *
+ * **Slice 2.3: every function takes an `ApiTarget`** — the guest routes with the cookie, or their
+ * `/api/me/` twins with the bearer (plan §0.2, §0.9). The two byte downloads carry the bearer too
+ * (`requestBlob`'s `auth`, AC-47): a bare link would drop the header, which is one more reason there
+ * is none.
  */
 
 /**
@@ -37,12 +44,13 @@ import type { TailoredDocumentKind } from '@/features/tailoring/types';
  * `tailoring_run_not_found` (identical for "does not exist" and "not yours").
  */
 export function fetchExportJobs(
+  target: ApiTarget,
   runId: string,
   signal?: AbortSignal,
 ): Promise<ExportJobListResponse> {
   return request<ExportJobListResponse>(
-    `/api/tailoring-runs/${encodeURIComponent(runId)}/exports`,
-    { ...(signal ? { signal } : {}) },
+    `${target.tailoringRunsPath}/${encodeURIComponent(runId)}/exports`,
+    { ...authOptionFor(target), ...(signal ? { signal } : {}) },
   );
 }
 
@@ -54,8 +62,13 @@ export function fetchExportJobs(
  * `Location` header names this URL and a client that follows it should not have to build the path
  * itself.
  */
-export function fetchExportJob(id: string, signal?: AbortSignal): Promise<ExportJob> {
-  return request<ExportJob>(`/api/export-jobs/${encodeURIComponent(id)}`, {
+export function fetchExportJob(
+  target: ApiTarget,
+  id: string,
+  signal?: AbortSignal,
+): Promise<ExportJob> {
+  return request<ExportJob>(`${target.exportJobsPath}/${encodeURIComponent(id)}`, {
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -78,13 +91,15 @@ export function fetchExportJob(id: string, signal?: AbortSignal): Promise<Export
  * limiter fails open, because a render costs worker seconds and no money.
  */
 export function requestExport(
+  target: ApiTarget,
   runId: string,
   body: NewExport,
   signal?: AbortSignal,
 ): Promise<ExportJob> {
-  return request<ExportJob>(`/api/tailoring-runs/${encodeURIComponent(runId)}/exports`, {
+  return request<ExportJob>(`${target.tailoringRunsPath}/${encodeURIComponent(runId)}/exports`, {
     method: 'POST',
     body,
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -104,8 +119,13 @@ export function requestExport(
  * `export_file_gone` (the row says ready and the store has nothing — the answer is *Export
  * again*); 503 `service_unavailable`.
  */
-export function downloadExportFile(id: string, signal?: AbortSignal): Promise<Blob> {
-  return requestBlob(`/api/export-jobs/${encodeURIComponent(id)}/file`, {
+export function downloadExportFile(
+  target: ApiTarget,
+  id: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  return requestBlob(`${target.exportJobsPath}/${encodeURIComponent(id)}/file`, {
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -130,13 +150,14 @@ export function downloadExportFile(id: string, signal?: AbortSignal): Promise<Bl
  * 503 `render_timed_out` or `service_unavailable`.
  */
 export function downloadDocument(
+  target: ApiTarget,
   runId: string,
   kind: TailoredDocumentKind,
   format: InlineExportFormat,
   signal?: AbortSignal,
 ): Promise<Blob> {
   return requestBlob(
-    `/api/tailoring-runs/${encodeURIComponent(runId)}/documents/${kind}/download?format=${format}`,
-    { ...(signal ? { signal } : {}) },
+    `${target.tailoringRunsPath}/${encodeURIComponent(runId)}/documents/${kind}/download?format=${format}`,
+    { ...authOptionFor(target), ...(signal ? { signal } : {}) },
   );
 }

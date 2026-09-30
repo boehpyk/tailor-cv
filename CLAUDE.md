@@ -21,8 +21,11 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > **Status: seven slices shipped; slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
-> fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` is verified (two review rounds
-> plus a manual `:8080` pass, 2026-09-26) and awaiting merge.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
+> rounds plus a manual `:8080` pass, 2026-09-26), merged as PR #14 (`4c18557`) and released**
+> (deploy run 36265111930; the box's api/worker/beat all read `4c18557` on 2026-09-30). **Slice 2.3
+> `tailoring-application-history` was verified (three review rounds plus a real-browser pass and
+> one real-Gemini run, 2026-09-30) and is awaiting its PR.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -100,7 +103,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   logout lands on `/login?next=/account`; a stale in-flight refresh can capture one made after a
 >   quick re-login; AC-25's Redis assertion is unobserved red under the limiter-first mutation.
 >
-> - **2.2 `intake-saved-base-cvs`** (branch, **verified 2026-09-26, awaiting merge**) — the first data
+> - **2.2 `intake-saved-base-cvs`** (PR #14, `4c18557`, **verified, merged, released**) — the first data
 >   the product keeps **on purpose**: a registered user saves up to five base CVs
 >   (`MAX_SAVED_BASE_CVS_PER_USER`), labels, reuses and deletes them, and can delete the account.
 >   A row's owner is a **sum type**, `GuestOwner | UserOwner` in `domain/identity/ownership.py`,
@@ -151,6 +154,73 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   without the commit. Spec rows S-5, S-12 (owner: keep `identity.user_missing`), S-23 and S-44
 >   were amended to what the code does on purpose. The manual pass found nothing; one observation
 >   for 2.3: typing into `/register` while the boot refresh is in flight can be wiped by a remount.
+>
+> - **2.3 `tailoring-application-history`** (branch, **implemented and verified 2026-09-30**)
+>   — a signed-in user's tailoring becomes **account data** (**ADR-0023**): the workspace follows the
+>   credential, so signed in, the posting, the run and its exports are **born user-owned** and the
+>   run references the saved CV directly. Every row has its final owner from its first `INSERT`, no
+>   ownership graph crosses owners, and **no transfer route is added** (the AST scan's set is still
+>   `{POST /api/base-cvs/copies}`, which now has no first-party caller until 2.4 decides its fate).
+>   2.2's owner shape (`GuestOwner | UserOwner`, two nullable FKs, `ck_<table>_exactly_one_owner`)
+>   is extended to `posting_job_posting`, `tailoring_run` and `export_job`; a job's owner is always
+>   its run's. Twelve **`/api/me/`** routes (postings, runs, history, re-open, edit, delete, inline
+>   download, exports, poll, file) answer to the bearer alone and **share one handler body with
+>   their guest twin** (`routers/_{posting,tailoring,export}_handlers.py`, taking a resolved
+>   `requester: Owner`, the rate-limit principal and a path prefix), so the two cannot drift.
+>   `Cache-Control: no-store` on every one; `expires_at: null` means "kept until you delete it".
+>   User caps: 500 runs, 500 postings, 20 exports **per run** (settings, in-code defaults).
+>   History is a **read model behind a query port** (**ADR-0024**): `TailoringHistoryQuery` in the
+>   domain, one Core statement under `infrastructure/persistence/queries/`, two LEFT JOINs with the
+>   **owner in the join condition** (a deleted or foreign CV is never lent a label),
+>   `left(text, 140)` in SQL, no document column selected, and **keyset pages on
+>   `(requested_at, id)`, never `OFFSET`**. The cursor is an unsigned domain value
+>   (`HistoryCursor`), base64url at the boundary. **Deleting a saved CV leaves history intact**:
+>   `tailoring_run.base_cv_id` becomes a dangling reference with no FK, and "CV deleted" is **derived
+>   at read time**, never stored. A run whose CV vanished between request and worker fails with the
+>   tenth reason, **`base_cv_deleted`**, from `running`, **before the paid call**, not retryable
+>   (ADR-0014 amendment). **Deleting a history entry lives in `retention`** (`EraseHistoryEntry`,
+>   `HistoryEntryDataPort`): 409 while `queued`/`running`, then three `DELETE … RETURNING`s, so
+>   **the rows that went and the files to unlink are one set**. Rows are committed, then files.
+>   Unlink failures are returned, and the orphan sweep reclaims the survivor. Account erasure now
+>   takes runs, postings and exports and their derived export keys, and its `FOR UPDATE` on the
+>   user row also serializes run and export inserts (AC-37, two real connections). React: the
+>   client's own port, **`features/scope/`**: `WorkspaceScope = guest | account(userId)` and a pure
+>   `scopeMap()` giving paths, credential and query-key root together. **One hook set serves two
+>   workspaces**: T28 threaded it through every hook with **749/749 guest tests unedited**. Account
+>   keys live under `['auth','account',userId]`, so 2.1's sign-out drops them. `/` is a gate
+>   (booting / unavailable + Retry / guest workspace / account workspace), plus `/history` (Load
+>   more, confirm dialog, no optimistic removal) and `/history/:runId/:document`, and no "24 hours"
+>   copy in account scope. One expand-only migration (`03494836ce30`) whose **downgrade refuses**
+>   while a user-owned row or a `base_cv_deleted` run exists. **2689 backend and 839 frontend
+>   tests.** Measured (T36): history first page p95 **6.3 ms** and page 20 **6.0 ms** over 500
+>   runs (budget 100; Index Scan on `ix_tailoring_run_user_id_requested_at`); re-open **11.4 ms**
+>   (100); delete an entry with 20 files **13.4 ms** (250); delete-account with 500 runs and 1 005
+>   files **280 ms** (2 000; the disk alone 13.6 ms); launch **51.7 ms** (300); queued → running
+>   **83.4 ms** (2 s). On the production image, a purge beside 4 100 user files takes **1.52 s**
+>   (10 s) and deletes 0 user rows; the sweep takes **1.16 s** and reclaims **0 of 4 100**. The one
+>   observation: at page 20 the posting join reads all 500 of the user's postings. That is cheap at
+>   the cap, so look again if the cap rises. T38 (production, read-only): the three tables hold
+>   **0** rows, so the migration runs as written. `identity_retired_refresh_token` also holds **0**
+>   (OQ-11 re-armed: 100 k rows or 2.5), and the uploads volume is empty (OQ-15's baseline).
+>   **AC-54 holds**: `git diff main --stat -- api/src/tailorcraft/infrastructure/llm` is empty and
+>   `LlmPort` is byte-identical. Unlike 2.1/2.2, `domain/tailoring` *does* change (the owner, the
+>   tenth reason, `history.py`), which is why the proof narrowed to the adapter and the port.
+>   **`/verify` took three rounds** (2689 → **2691 backend, 840 frontend** tests, green twice).
+>   AC-51 was proven in a real browser: a 25 s delayed boot refresh, text typed into `/register` and
+>   `/login` mid-flight, and it survived. AC-59: one real-Gemini account run, `llm_duration_ms`
+>   **6268 ms**, end-to-end **6.62 s** (budget 15 s). Round 1's review found a race that the plan had
+>   called impossible. A history deletion's `DELETE … WHERE NOT EXISTS (run)` could not see a new
+>   run's **uncommitted** `INSERT` on the same posting (there is no FK on
+>   `tailoring_run.job_posting_id`), so either order left a run pointing at a deleted posting. It is
+>   closed by two locks (below). Round 2 found the first fix disabled by default: a
+>   `refuse_missing_posting=False` constructor flag that existed because 78 test seeds inserted runs
+>   over postings that did not exist. The seeds were fixed first (`3c7e80d`), then the flag was
+>   removed (`3b57daf`), and the check always runs. **A safety check whose default is off protects
+>   only the callers that remember it.** Also fixed: a history delete now removes the run's cached
+>   detail and exports and re-reads postings; the history row's link comes from `runLink`; AC-33's
+>   concurrent-delete test now really stages the overlap. Carried to the PR: the cleanup `gather`
+>   in `test_me_history_delete.py` has no timeout, and eleven seed comments still say the refusal
+>   is "through the request route's composition root".
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -545,6 +615,11 @@ python -m tailorcraft.cli check-settings                  # every startup refusa
 # the rows and orphans every saved file. Dry run first. No make target, like revoke-logins.
 python -m tailorcraft.cli erase-account --user-id <uuid> --dry-run   # counts; deletes nothing
 python -m tailorcraft.cli erase-account --user-id <uuid>
+# Since 2.3 the account's history goes too, and each line appends it after 2.2's unchanged prefix:
+#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s)
+#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all
+# The dry run's file count includes derived export files. A history entry a user deletes in the UI
+# goes the same way (rows committed, then files); an unlink that fails leaves an orphan for the sweep.
 # Exit: 0 erased (incl. with unlink failures — stderr names the orphan sweep) · 1 no such account,
 # a database failure, or SELECT current_database() ≠ the database DATABASE_URL names (refused
 # before any read) · 2 usage. Logs ids, counts and class names only.
@@ -597,6 +672,13 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   guard and account deletion landed on `/login`. Fixed in the guard: anonymous with reason
   `account_deleted` goes to `/` with the notice. And TanStack skips a mutate-level `onSuccess` on
   an unmounted observer — so work that must survive the unmount runs **before** the sign-out.
+  **Whose workspace this is comes from the route's scope, never from "is someone signed in?"
+  (2.3).** Hooks take paths, credential and key root from `useScopeMap()` (`features/scope/`).
+  The default, with no provider, is the guest map, and a guest key is byte-for-byte what it was.
+  **A hand-built path bypasses the scope.** `DocumentTabs` and the editor's leave-guard hard-coded
+  `/runs/${id}/…`, so on a history run the Cover letter tab jumped to the guest route and a tab
+  switch counted as leaving. Build every link from `runLink(scope)` (fixed T32, mutation-pinned
+  T35).
 - **Tests are tiered red-first** (docs/sdlc.md §2). Domain, application, **every row of the failure
   contract**, the HTTP contract and the React loading/error/empty/success states are written
   **before** their implementation, against a skeleton of real signatures with `NotImplementedError`
@@ -677,6 +759,48 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   needs a per-test `tmp_path`, not the shared `upload_dir`, or aged files leak between tests.
 - **When the implementer finds a RED test wrong, the correction is its own commit** (`8880439`,
   `15e1f5b`), verified against the spec, so the GREEN commit still edits no test.
+- **Commit order is part of the plan, and every commit must be green (2.3).** Two orders in 2.3's
+  plan could not be green. First, 2.2's tripwire ("`guest_session_id` is `NOT NULL`") **fires by
+  design** in the commit that lands the migration, yet the plan retired it later. It was retired in
+  the migration's own commit (`7da2c4a`), with AC-2's test generalized to "nullable **and**
+  `ck_<table>_exactly_one_owner`" on all four tables, and the survives-a-purge proof it asked for
+  (`57f7087`) landed right after the adapters with nothing in between. Second, **a mapping must not
+  land before its column**: a mapped column the table lacks breaks every load, so the migration
+  (T13) was committed before its mapping (T12). When a task list's order cannot be green, reorder
+  on purpose and say so in the commit body.
+- **The pre-commit hook tests the working tree, not the staged commit.** Committing several commits
+  from one dirty tree gives each commit a gate that checked more than the commit contains. Stash
+  the rest per commit (`git stash push --keep-index --include-untracked`), so each hook sees exactly
+  its commit. A `set -e` script must pop the stash even when the commit fails.
+  **`TDD_RED=1` refuses a commit with no staged test file**, so a frontend GREEN cannot commit
+  while a backend RED on the same branch is still red (2.3's `/verify`: `react-dev`'s fix waited
+  for `api-dev`'s GREEN). Order a round so each RED's GREEN lands before the next RED, or commit
+  the hardening before the RED in the same file. `--no-verify` is still never the answer.
+- **A test seed that only flushes dies with a refused request** (2.3, `fa40793`). The `app` fixture
+  joins with `create_savepoint` and rolls back when a request errors, so an uncommitted seed goes
+  too. 25 tests then read 0 rows where the seed should have been. Seeds on the test's session
+  **commit**: that releases a savepoint, and the outer rollback still isolates the test. Guest
+  tests never met this because their inputs arrive through routes that commit.
+- **A race test must stage the race at the moment the spec names, not before the request** (H-33).
+  A delete that commits before the edit is sent is a clean 404. The spec's 409 with
+  `current_version: null` needs the delete to commit **between the edit's read and its write**.
+  That is injected by wrapping the repository's `save` on `concurrent_app` to commit a `DELETE` on
+  another connection first. The test also asserts that the delete really landed mid-request.
+- **A domain module may not import a sibling context, even where the layers allow it.**
+  `retention`'s allowlist test caught `HistoryEntryInProgress(status: TailoringRunStatus)`. The
+  status now travels as a plain `str`, and `delete_history_entry` takes a bare `UUID`. Retention
+  reaches other contexts' rows through its own ports, never their types.
+- **A skeleton's scaffolding is dead code once the real methods land.** Remove it in its own
+  commit (2.3: `RequestTailoringRun.users`, the superseded `_for_session` pair). Moving the tests
+  that call the old methods comes first and is mechanical.
+- **Every domain `Protocol` is bound by a composition root or exempted by name**
+  (`tests/integration/test_port_bindings.py`, 2.3's T23b). The Protocols are discovered, not
+  listed. The plan had assumed this test already existed, and it did not. **Check that a gate
+  exists before the plan leans on it.**
+- **A RED that cannot be reproduced is recorded as such, never forced.** 2.2's "`/register` typing
+  wiped during the boot refresh" had no `booting` branch to remount in the current code. AC-51 was
+  committed as a regression guard **with no recorded red** (`2c01310`), and the real-browser
+  attempt moved to `/verify`.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
@@ -903,6 +1027,19 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `begin_nested()` first flushed the ORM's own `UPDATE` with **no** version predicate, so a race
   loser overwrote the winner's token and both answered 200. `expunge` the aggregate before the
   SAVEPOINT; on success re-attach it clean with `set_committed_value`.
+- **`NOT EXISTS` in a `DELETE` cannot see another transaction's uncommitted `INSERT`, and waiting
+  for a lock does not refresh it** (2.3's `/verify`). A history delete of the form `DELETE FROM
+  posting … WHERE NOT EXISTS (SELECT … FROM tailoring_run …)` deleted a posting that a concurrent
+  request had just used for a new run. Under READ COMMITTED, a `DELETE` that waits on a row that
+  was only *locked*, not updated, proceeds on its **original** snapshot and does not re-check the
+  subquery. The fix is two statements and two locks. The deleting side runs `SELECT … FOR UPDATE`
+  on the posting, then the `DELETE` as a **separate** statement, which gets a fresh snapshot. The
+  inserting side (`SqlAlchemyTailoringRunRepository.add`) takes `FOR KEY SHARE` on the posting
+  **after** its `INSERT`: the INSERT's FK check takes the owner row first, so account erasure
+  (user row `FOR UPDATE`, then cascades) meets it there. Taking the posting lock first makes a
+  lock cycle. The refusal is **unconditional**. The first fix hid it behind an off-by-default
+  constructor flag because test seeds inserted runs over postings that never existed. Fix the
+  seeds, never the default.
 - **`get_settings()` under `APP_ENV=test` still returns the *dev* `database_url`.** Only
   `tests/conftest.py` swaps in `test_database_url`, by overriding Alembic's option and the engine
   fixture. A probe or cleanup script that builds its own engine from `settings.database_url` — even
@@ -922,6 +1059,20 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `_migrated` drops and recreates `public` at the start of every session, behind a guard refusing
   any database not named `*_test`, so a local run now starts where CI does. The count of dead
   columns stays flat at one run's worth instead of growing.
+- **Alembic runs a revision in one transaction, so `NOT VALID` → `VALIDATE` staging inside one
+  revision releases no lock.** The `ACCESS EXCLUSIVE` taken by `ADD CONSTRAINT … NOT VALID`, and
+  the write lock of a plain `CREATE INDEX`, are held **until the revision commits**. The later
+  `VALIDATE` running under `SHARE UPDATE EXCLUSIVE` buys nothing. 2.3's `03494836ce30` is staged
+  that way, and its docstring's "blocks neither reads nor writes" is true only per statement. It is
+  harmless at production's 0 rows (T38). If one of those tables ever grows, split the revision
+  (constraint `NOT VALID`, commit, then `VALIDATE`; `CONCURRENTLY` indexes in a non-transactional
+  revision) and set a `lock_timeout`, so a busy table fails the deploy fast rather than queueing
+  every writer behind it.
+- **`base64.urlsafe_b64decode` silently discards characters outside its alphabet**, so
+  `"not-base64!!"` decodes. Anything decoded from a client (the history cursor) uses
+  `b64decode(s, altchars=b"-_", validate=True)`. Parse integers from it as digits only, because
+  `int()` accepts a sign, spaces and underscores. Every failure is one domain error, raised
+  `from None` and never echoed.
 - **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
   nginx forwards the headers; the application decides. Two trust layers that each look right in
   isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global

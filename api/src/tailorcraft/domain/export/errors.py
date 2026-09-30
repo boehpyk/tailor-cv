@@ -45,8 +45,20 @@ class ExportJobNotOwnedBySession(DomainError):
     """
 
 
+class ExportJobNotOwnedByUser(DomainError):
+    """An `ExportJob` exists, but its owner is not the signed-in user asking — a guest-owned job or
+    another user's (slice 2.3).
+
+    The user-path twin of `ExportJobNotOwnedBySession`, with the same shape: the use case raises
+    `ExportJobNotFound` **from** this, so the HTTP answer is the same 404 as a nonexistent id, while
+    the use case's tests can still tell "absent" from "not mine" on `__cause__`. 2.2's
+    `BaseCvNotOwnedByUser` is the precedent.
+    """
+
+
 class TooManyExportJobs(DomainError):
-    """The session already owns `max_export_jobs_per_session` export jobs (X-18).
+    """The cap on export jobs is reached (X-18): a guest session's `max_export_jobs_per_session`, or
+    — since slice 2.3 — a user run's `max_export_jobs_per_user_run` (ADR-0016 amendment (b)).
 
     A use-case check, not an invariant of `ExportJob` — the rule spans every job a session owns,
     which is a fact one aggregate has no way to know, and reaching for it from inside a constructor

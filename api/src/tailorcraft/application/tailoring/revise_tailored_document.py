@@ -18,8 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
@@ -39,7 +39,9 @@ class ReviseCvCommand:
     """
 
     tailoring_run_id: TailoringRunId
-    guest_session_id: GuestSessionId
+    # Who is asking (slice 2.3, §0.3) — a guest session or a signed-in user; authorized by
+    # `GetTailoringRun`, never compared here.
+    requester: Owner
     content: TailoredCv
     expected_version: int
 
@@ -53,7 +55,8 @@ class ReviseCoverLetterCommand:
     """
 
     tailoring_run_id: TailoringRunId
-    guest_session_id: GuestSessionId
+    # See `ReviseCvCommand.requester`.
+    requester: Owner
     content: CoverLetter
     expected_version: int
 
@@ -68,9 +71,9 @@ class ReviseTailoredDocument:
     """Replace one document on a visitor's `succeeded` run with their revision, and return the run
     at its new version.
 
-    **It takes the read *use case*, `GetTailoringRunForSession`, not the repository — and that is
+    **It takes the read *use case*, `GetTailoringRun`, not the repository — and that is
     the load-bearing choice.** The read use case carries the authorization rule: *what authorizes
-    access is the link*, `run.guest_session_id == the resolved session id`, checked on every read
+    access is the link*, `run.owner == GuestOwner(the resolved session id)`, checked on every read
     (ADR-0008, ADR-0010). It also carries the collapse that goes with it — "not mine" raises
     `TailoringRunNotFound`, the same type as "does not exist", so the API answers 404 and **never
     403** (G-29/AC-14): a run id is the polling handle, so it is the id someone is most likely to be
@@ -82,7 +85,7 @@ class ReviseTailoredDocument:
 
     Flow (technical-plan.md, "Application layer"):
 
-    1. ``run = await get_run(cmd.tailoring_run_id, cmd.guest_session_id)`` — resolves the session
+    1. ``run = await get_run(cmd.tailoring_run_id, cmd.requester)`` — resolves the session
        (`GuestSessionExpired`, E-5), loads, and raises `TailoringRunNotFound` for absent **and** not
        mine (E-6, with `TailoringRunNotOwnedBySession` on `__cause__`).
     2. ``match cmd:`` → ``run.revise_cv(cmd.content, expected_version=…, at=clock.now())`` or
@@ -122,7 +125,7 @@ class ReviseTailoredDocument:
     def __init__(
         self,
         runs: TailoringRunRepository,
-        get_run: GetTailoringRunForSession,
+        get_run: GetTailoringRun,
         events: EventPublisherPort,
         clock: Clock,
     ) -> None:
@@ -135,7 +138,7 @@ class ReviseTailoredDocument:
         # Step 1. The composed read carries the authorization rule and the 404 collapse, so
         # `GuestSessionExpired` (E-5) and `TailoringRunNotFound` (E-6, absent *and* not mine)
         # propagate from here without this use case ever seeing a session or a foreign run.
-        run = await self._get_run(cmd.tailoring_run_id, cmd.guest_session_id)
+        run = await self._get_run(cmd.tailoring_run_id, cmd.requester)
 
         # Step 2. The arms differ in the *type* of `cmd.content` (see the module docstring), and
         # each calls the aggregate method whose signature accepts exactly that type.

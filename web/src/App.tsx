@@ -21,7 +21,9 @@ import { SystemStatus } from './features/health/components/SystemStatus';
  */
 export function App(): React.JSX.Element {
   return (
-    <main className="mx-auto max-w-2xl px-6 py-16">
+    <div className="mx-auto max-w-2xl px-6 py-16">
+      {/* Outside `<main>` so it is the page's `banner` landmark (slice 2.3): a `<header>` inside
+          `<main>` is only a section header, and the History link lives here (AC-44). */}
       <header className="mb-10">
         <div className="flex flex-wrap items-baseline justify-between gap-4">
           <h1 className="text-3xl font-semibold tracking-tight text-slate-900">TailorCraft</h1>
@@ -32,17 +34,19 @@ export function App(): React.JSX.Element {
         </p>
       </header>
 
-      <Outlet />
+      <main>
+        <Outlet />
 
-      <section aria-labelledby="system-status-heading">
-        <h2
-          id="system-status-heading"
-          className="mb-3 text-sm font-medium text-slate-500 uppercase"
-        >
-          System status
-        </h2>
-        <SystemStatus />
-      </section>
-    </main>
+        <section aria-labelledby="system-status-heading">
+          <h2
+            id="system-status-heading"
+            className="mb-3 text-sm font-medium text-slate-500 uppercase"
+          >
+            System status
+          </h2>
+          <SystemStatus />
+        </section>
+      </main>
+    </div>
   );
 }

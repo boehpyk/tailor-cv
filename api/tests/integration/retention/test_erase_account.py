@@ -21,6 +21,7 @@ from uuid import uuid4
 import pytest
 
 from tailorcraft.application.retention.erase_account import EraseAccount
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType
 from tailorcraft.domain.retention.errors import AccountNotFound
@@ -28,7 +29,7 @@ from tailorcraft.domain.retention.value_objects import AccountErasureReport
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable
 from tailorcraft.infrastructure.observability import configure_logging
 from tailorcraft.infrastructure.settings import Settings
-from tests.integration.fakes import FakeAccountDataPort, InMemoryFileStore
+from tests.integration.fakes import AccountHistory, FakeAccountDataPort, InMemoryFileStore
 
 
 def _numbered_ref(seed: int) -> FileRef:
@@ -80,7 +81,17 @@ async def test_happy_path_collects_keys_then_deletes_then_unlinks_each_in_that_o
 
     report = await use_case(user_id)
 
-    assert report == AccountErasureReport(base_cvs=3, files_unlinked=3, unlink_failures=())
+    # Slice 2.3 (AC-15, T10): the widened fields, amended on purpose in the RED commit — no
+    # history, so zero runs, postings and export jobs; `files` counts every key it tried.
+    assert report == AccountErasureReport(
+        base_cvs=3,
+        files_unlinked=3,
+        unlink_failures=(),
+        tailoring_runs=0,
+        job_postings=0,
+        export_jobs=0,
+        files=3,
+    )
     assert order == [
         "files_of_account",
         "delete_account",
@@ -171,3 +182,109 @@ async def test_some_unlinks_failing_are_returned_never_logged(
     assert report.unlink_failures == ("FileStoreUnavailable",)
     # the discriminating positive above (a real failure, named by type) makes this absence honest:
     assert caplog.records == []
+
+
+# --- Slice 2.3 (T10 RED, AC-15): the account's history is erased with it --------------------------
+
+
+def _export_ref() -> FileRef:
+    return FileRef.for_export(ExportJobId(value=uuid4()), ExportFormat.PDF)
+
+
+async def test_the_report_counts_the_accounts_history_and_every_file_it_tried() -> None:
+    """AC-15: `files_of_account` hands back the saved-CV keys **and** the export keys; the report
+    gains `tailoring_runs`, `job_postings`, `export_jobs` and `files` (CV + export) — and
+    `base_cvs` keeps meaning saved CVs, not "every key"."""
+    user_id = UserId(value=uuid4())
+    cv_refs = [_numbered_ref(1), _numbered_ref(2)]
+    export_refs = [_export_ref(), _export_ref(), _export_ref()]
+    accounts = FakeAccountDataPort(
+        {user_id: cv_refs},
+        export_files_by_user={user_id: export_refs},
+        history_by_user={user_id: AccountHistory(tailoring_runs=4, job_postings=2)},
+    )
+    files = InMemoryFileStore()
+    for ref in [*cv_refs, *export_refs]:
+        await files.put(ref, b"bytes")
+    use_case = EraseAccount(accounts, files)
+
+    report = await use_case(user_id)
+
+    assert report == AccountErasureReport(
+        base_cvs=2,
+        files_unlinked=5,
+        unlink_failures=(),
+        tailoring_runs=4,
+        job_postings=2,
+        export_jobs=3,
+        files=5,
+    )
+
+
+async def test_export_files_are_unlinked_after_the_rows_are_deleted() -> None:
+    """The order is unchanged (collect → delete committed → unlink) and now covers the export keys:
+    every one of the five keys is unlinked, each after `delete_account` returned."""
+    user_id = UserId(value=uuid4())
+    cv_refs = [_numbered_ref(1)]
+    export_refs = [_export_ref(), _export_ref()]
+    order: list[str] = []
+    accounts = _WidenedOrderRecordingAccountData(order, user_id, cv_refs, export_refs)
+    files = _OrderRecordingFileStore(order)
+    for ref in [*cv_refs, *export_refs]:
+        await files.put(ref, b"bytes")
+    use_case = EraseAccount(accounts, files)
+
+    report = await use_case(user_id)
+
+    assert report.files == 3
+    assert order.index("delete_account") < order.index("file_deleted")
+    assert order.count("file_deleted") == 3
+    assert order[-3:] == ["file_deleted"] * 3
+    assert set(files.delete_calls) == {*cv_refs, *export_refs}
+    assert files.data == {}
+
+
+async def test_an_export_unlink_failure_is_returned_against_the_widened_file_count() -> None:
+    user_id = UserId(value=uuid4())
+    cv_refs = [_numbered_ref(1)]
+    export_refs = [_export_ref(), _export_ref()]
+    accounts = FakeAccountDataPort(
+        {user_id: cv_refs},
+        export_files_by_user={user_id: export_refs},
+        history_by_user={user_id: AccountHistory(tailoring_runs=1, job_postings=1)},
+    )
+    files = InMemoryFileStore(
+        fail_delete=FileStoreUnavailable("simulated EIO"),
+        fail_delete_keys={export_refs[0].key},
+    )
+    for ref in [*cv_refs, *export_refs]:
+        await files.put(ref, b"bytes")
+    use_case = EraseAccount(accounts, files)
+
+    report = await use_case(user_id)
+
+    assert report.files == 3
+    assert report.files_unlinked == 2
+    assert report.unlink_failures == ("FileStoreUnavailable",)
+    assert report.export_jobs == 2
+
+
+class _WidenedOrderRecordingAccountData(FakeAccountDataPort):
+    def __init__(
+        self,
+        order: list[str],
+        user_id: UserId,
+        cv_refs: Sequence[FileRef],
+        export_refs: Sequence[FileRef],
+    ) -> None:
+        super().__init__(
+            {user_id: cv_refs},
+            export_files_by_user={user_id: export_refs},
+            history_by_user={user_id: AccountHistory(tailoring_runs=2, job_postings=1)},
+        )
+        self._order = order
+
+    async def delete_account(self, user_id: UserId) -> bool:
+        result = await super().delete_account(user_id)
+        self._order.append("delete_account")
+        return result

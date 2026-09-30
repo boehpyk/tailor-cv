@@ -1,5 +1,6 @@
 """The purge's two data-access wrappers, shared by every root that runs a purge — and, since slice
-2.2, erasure's one (`CommittingAccountData`), which is the same durability rule on request.
+2.2, erasure's one (`CommittingAccountData`), which is the same durability rule on request; since
+2.3, history-entry deletion's (`CommittingHistoryEntryData`), the same rule once more.
 
 Both classes lived in `infrastructure/tasks/container.py` until the CLI needed them (slice 1.6,
 T23). They moved here rather than being copied, and the reason is the thing they encode:
@@ -24,13 +25,19 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
-from tailorcraft.domain.retention.ports import AccountDataPort, ExpiredGuestDataPort
+from tailorcraft.domain.retention.ports import (
+    AccountDataPort,
+    ExpiredGuestDataPort,
+    HistoryEntryDataPort,
+)
 from tailorcraft.domain.retention.value_objects import (
     AccountCounts,
+    DeletedHistoryEntry,
     ExpiringGuestSession,
     RetentionWindow,
 )
@@ -148,6 +155,35 @@ class CommittingAccountData:
         return await self._inner.count_account(user_id)
 
 
+class CommittingHistoryEntryData:
+    """History-entry deletion's `HistoryEntryDataPort`: the ordinary one, except that
+    **`delete_history_entry` commits** (slice 2.3, technical plan §0.6).
+
+    `CommittingAccountData` above, one entry instead of one account, for the same sentence: *"rows
+    first, **committed**, then files"*. `EraseHistoryEntry` unlinks the returned export keys after
+    this returns, and a crash between the two must leave orphan files for the sweep — never a run or
+    a job row pointing at bytes that are gone. Only a commit makes that true, and `application/` may
+    not name one (ADR-0002).
+
+    **One commit, whatever the answer.** `None` (a concurrent deletion won) wrote nothing, so the
+    commit is empty, and it still ends the transaction that waited on the winner's row lock.
+
+    Delegation, not a subclass, for the import-order reason given on the purge's wrapper.
+    """
+
+    def __init__(self, inner: HistoryEntryDataPort, session: AsyncSession) -> None:
+        self._inner = inner
+        self._session = session
+
+    async def delete_history_entry(
+        self, user_id: UserId, run_id: UUID
+    ) -> DeletedHistoryEntry | None:
+        """The inner three `DELETE`s, **then commit** — the whole reason this class exists."""
+        deleted = await self._inner.delete_history_entry(user_id, run_id)
+        await self._session.commit()
+        return deleted
+
+
 class OverdueBacklog:
     """How many guest sessions are still expired-and-present, asked with the purge's own predicate.
 
@@ -190,3 +226,6 @@ if TYPE_CHECKING:
     # rather than only at whichever composition root binds it first. Never executed.
     def _assert_implements_account_data(adapter: CommittingAccountData) -> None:
         _: AccountDataPort = adapter
+
+    def _assert_implements_history_entry_data(adapter: CommittingHistoryEntryData) -> None:
+        _: HistoryEntryDataPort = adapter

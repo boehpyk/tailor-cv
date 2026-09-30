@@ -1,9 +1,9 @@
 """`SqlAlchemyTailoringRunRepository` — the `TailoringRunRepository` port (ADR-0007).
 
-Filters below query `TailoringRun._id` / `TailoringRun._guest_session_id` / `TailoringRun._status`,
+Filters below query `TailoringRun._id` / `TailoringRun._owner_guest_session_id` / `TailoringRun._status`,
 the **private** attributes the imperative mapping in
 `infrastructure/persistence/mapping/tailoring/tailoring_run.py` targets — never `TailoringRun.id` /
-`TailoringRun.guest_session_id` / `TailoringRun.status`. Those short names are plain read-only
+`TailoringRun.owner` / `TailoringRun.status`. Those short names are plain read-only
 `@property` objects on the domain class, not `InstrumentedAttribute`s:
 `select(TailoringRun).where(TailoringRun.id == x)` would call the property, get back a
 `TailoringRunId`, evaluate a bare Python `==` against `x`, and build `select(...).where(True)` or
@@ -20,15 +20,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, assert_never, cast
 
 import structlog
-from sqlalchemy import func, literal, or_, select
+from sqlalchemy import ColumnElement, func, literal, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.exc import StaleDataError
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.tailoring.errors import (
     TailoringRunConcurrentlyModified,
     TailoringRunNotFound,
@@ -36,6 +40,8 @@ from tailorcraft.domain.tailoring.errors import (
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 from tailorcraft.infrastructure.identifiers import uuid7
+from tailorcraft.infrastructure.persistence.database import violated_constraint
+from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
 from tailorcraft.infrastructure.persistence.types.tailoring import TailoringRunStatusType
 
 if TYPE_CHECKING:
@@ -54,8 +60,11 @@ log = structlog.get_logger(__name__)
 _TAILORING_RUN_ID: InstrumentedAttribute[TailoringRunId] = cast(
     "InstrumentedAttribute[TailoringRunId]", TailoringRun._id
 )
-_TAILORING_RUN_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId] = cast(
-    "InstrumentedAttribute[GuestSessionId]", TailoringRun._guest_session_id
+_TAILORING_RUN_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
+    "InstrumentedAttribute[GuestSessionId | None]", TailoringRun._owner_guest_session_id
+)
+_TAILORING_RUN_USER_ID: InstrumentedAttribute[UserId | None] = cast(
+    "InstrumentedAttribute[UserId | None]", TailoringRun._owner_user_id
 )
 _TAILORING_RUN_STATUS: InstrumentedAttribute[TailoringRunStatus] = cast(
     "InstrumentedAttribute[TailoringRunStatus]", TailoringRun._status
@@ -68,8 +77,25 @@ _TAILORING_RUN_STARTED_AT: InstrumentedAttribute[datetime | None] = cast(
 )
 
 # The two non-terminal statuses, named once. `TailoringRunStatus` documents them as the two a
-# client's poller keeps polling through, and `find_active_for_session` is the only reader.
+# client's poller keeps polling through; `find_active_for_session` and `find_active_for_owner` are
+# the only readers.
 _ACTIVE_STATUSES = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
+
+# Recognised by name, never by message (`violated_constraint`). Renaming the FK in
+# `mapping/tailoring/tailoring_run.py` is a breaking change to `add` below.
+_USER_FK: Final = "fk_tailoring_run_user_id_identity_user"
+
+
+def _owned_by(owner: Owner) -> ColumnElement[bool]:
+    """The owner as a `WHERE` clause: the variant picks the column, and
+    `ck_tailoring_run_exactly_one_owner` guarantees the other is empty on any row that matches."""
+    match owner:
+        case GuestOwner(guest_session_id=guest_session_id):
+            return _TAILORING_RUN_GUEST_SESSION_ID == guest_session_id  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        case UserOwner(user_id=user_id):
+            return _TAILORING_RUN_USER_ID == user_id  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        case _:
+            assert_never(owner)
 
 
 class SqlAlchemyTailoringRunRepository:
@@ -91,10 +117,78 @@ class SqlAlchemyTailoringRunRepository:
         return TailoringRunId(uuid7())
 
     async def add(self, run: TailoringRun) -> None:
-        self._session.add(run)
-        # `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
-        # task), not to the repository.
-        await self._session.flush()
+        """Insert `run`; raise `UserNotFound` if its `UserOwner` no longer exists (H-53), and
+        `JobPostingNotFound` if its posting no longer does.
+
+        `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
+        task), not to the repository.
+
+        The race and the shape are `SqlAlchemyBaseCvRepository.add`'s (2.2's S-12): an account
+        erasure holding the `identity_user` row `FOR UPDATE` makes this `INSERT`'s FK check wait,
+        then refuse on `fk_tailoring_run_user_id_identity_user` once the erasure commits — "the user
+        is gone", the same error and the same 401 as `resolve_existing_user`. It is also what makes
+        erasure complete (AC-37): no run can land after the erasure collected its keys.
+
+        **Inside a SAVEPOINT**, so a refused flush expires only this pending run and not every
+        instance in the session (the 1.4 lesson). Any other refusal propagates untranslated.
+
+        **Then the run's posting is locked `FOR KEY SHARE`, and a vanished posting is
+        `JobPostingNotFound`** (2.3 /verify, reviewer MINOR #1). A cross-table lock in a repository
+        is unusual, so the reason: `tailoring_run.job_posting_id` has no FK (ADR-0014 declined the
+        cross-context one), and a history-entry deletion removes a user's posting with a
+        `DELETE … WHERE NOT EXISTS (a run on it)`. Nothing serialized the two, so a run authorized
+        against posting P could race P's deletion **in either direction** and land referencing a
+        posting that no longer exists:
+
+        - *insert first* — this `INSERT` is uncommitted when the deletion's `NOT EXISTS` runs, so
+          it cannot see the row and deletes P. Now the deletion takes P `FOR UPDATE`, which waits
+          behind this `FOR KEY SHARE` until our transaction ends, and then re-reads in a fresh
+          statement that sees the committed run: P is kept.
+        - *delete first* — the use case authorized P, then the deletion committed. This
+          `SELECT … FOR KEY SHARE` finds no row (READ COMMITTED re-checks a row that was deleted
+          while it waited, too), so the insert is refused `JobPostingNotFound` — the same 404 the
+          authorization would have given a moment later — and the SAVEPOINT's rollback takes the
+          run with it.
+
+        **The refusal is unconditional — there is no switch to turn it off** (2.3 /verify round 2,
+        reviewer MAJOR). A check that is off by default is off in the next composition root that
+        forgets it, so every caller of `add` gets it: the request routes today, and 2.4's claim or
+        any CLI tomorrow (the codebase's "strict default, no off switch" rule, ADR-0012).
+
+        **The lock follows the `INSERT`, never precedes it**, and the order is load-bearing: the
+        `INSERT`'s FK check takes the *owner* row `FOR KEY SHARE` first, exactly as before. An
+        account erasure (user row `FOR UPDATE`, then postings) or a guest purge (session row, then
+        its cascade) therefore meets us on the owner row before either of us touches the posting,
+        so the two can queue but never deadlock. Locking the posting first would let us hold P
+        while waiting on the user row the erasure holds while it waits on P.
+
+        Guest runs take the same path; it is harmless there (a guest posting is deleted only by the
+        purge's session cascade, which the owner-row ordering above already serializes).
+        """
+        # Read before the flush: after a nested rollback the pending run is expunged.
+        run_id = run.id
+        posting_id = run.job_posting_id
+        try:
+            async with self._session.begin_nested():
+                self._session.add(run)
+                await self._session.flush()
+                posting_still_exists = (
+                    await self._session.execute(
+                        select(job_posting_table.c.id)
+                        .where(job_posting_table.c.id == posting_id)
+                        .with_for_update(key_share=True)
+                    )
+                ).scalar_one_or_none()
+                if posting_still_exists is None:
+                    # Raised inside the SAVEPOINT so its rollback discards the run just flushed.
+                    # The message names the id only, as `SqlAlchemyJobPostingRepository.get` does.
+                    raise JobPostingNotFound(f"no JobPosting with id {posting_id!r}")
+        except IntegrityError as exc:
+            if violated_constraint(exc) == _USER_FK:
+                # `from None`: the listener already reduced the chain to identifiers, and the frame
+                # holds `run` (Constitution §8, E-9).
+                raise UserNotFound(f"the owner of {run_id!r} no longer exists") from None
+            raise
 
     async def save(self, run: TailoringRun) -> None:
         """Make the run's current state the state the next read hands back.
@@ -205,42 +299,30 @@ class SqlAlchemyTailoringRunRepository:
         )
         return result.scalars().all()
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        """`SELECT count(*)`, not `len(await list_for_session(sid))` — the port docstring is explicit
-        that this must not materialize every row just to measure them, and the saving is larger here
-        than for the earlier two caps: each row carries a tailored CV *and* a cover letter, so
-        counting by materializing would pull every document body of a session's whole history into
-        memory to produce one integer."""
+    async def count_for_owner(self, owner: Owner) -> int:
+        """`SELECT count(*)` over the owner's column — `count_for_session`'s reason (no document
+        body is materialized to produce one integer), either variant.
+
+        A guest's count seeks `ix_tailoring_run_guest_session_id`; a user's, the leading column of
+        `ix_tailoring_run_user_id_requested_at` — at most 500 index entries (the per-user cap).
+        """
         result = await self._session.execute(
-            select(func.count())
-            .select_from(TailoringRun)
-            .where(_TAILORING_RUN_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+            select(func.count()).select_from(TailoringRun).where(_owned_by(owner))
         )
         return result.scalar_one()
 
-    async def find_active_for_session(self, sid: GuestSessionId) -> TailoringRun | None:
-        """The session's one run in flight — `queued` or `running` — or `None`.
+    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+        """The owner's newest run in flight — `queued` or `running` — or `None`.
 
-        Returns the run rather than a bool because the 409 body carries its id, so a client that
-        double-clicked can attach to the run already in flight instead of paying for a second call.
-
-        `LIMIT 1` over an ordered query rather than `scalar_one_or_none()`, because the
-        at-most-one-active rule is **soft** by decision (ADR-0014 §4): it spans aggregates, lives in
-        `RequestTailoringRun`, and two genuinely concurrent requests may both pass it. That is
-        accepted — but it means two active rows are possible, and `scalar_one_or_none()` would turn
-        that accepted race into a `MultipleResultsFound` at the one moment the user is already
-        confused. Ordering matches `list_for_session` so "the active one" means the newest, which is
-        the run a double-clicking client wants to attach to.
-
-        **No partial index on `(guest_session_id) WHERE status IN ('queued','running')`, and the
-        absence is a decision rather than an oversight** (the same note sits on the column in the
-        mapping module): with at most twenty runs per session, `ix_tailoring_run_guest_session_id`
-        plus a filter on a handful of rows is free. A partial index is the change to make if a
-        session ever holds thousands of runs — not before.
+        `find_active_for_session`'s contract and shape, either variant: `LIMIT 1` over the newest-
+        first order rather than `scalar_one_or_none()`, because the at-most-one-active rule is soft
+        by decision (ADR-0014 §4) and two active rows are an accepted race, not an error. For a
+        user the owner column's index plus a status filter reads at most 500 entries; the note on
+        the missing partial index applies unchanged.
         """
         result = await self._session.execute(
             select(TailoringRun)
-            .where(_TAILORING_RUN_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+            .where(_owned_by(owner))
             .where(_TAILORING_RUN_STATUS.in_(_ACTIVE_STATUSES))
             .order_by(_TAILORING_RUN_REQUESTED_AT.desc(), _TAILORING_RUN_ID.desc())
             .limit(1)

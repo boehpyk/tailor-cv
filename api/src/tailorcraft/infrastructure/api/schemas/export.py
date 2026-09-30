@@ -126,7 +126,7 @@ class ExportJobResponse(BaseModel):
     # The run version this job was requested at, and whether that is still the run's version.
     #
     # **`current` is a cross-aggregate comparison** (`job.was_requested_for(run.version)`) and
-    # neither aggregate can make it alone, which is why `GetExportJobForSession` hands back
+    # neither aggregate can make it alone, which is why `GetExportJob` hands back
     # `ExportJobLookup(job, run_version_now)` and `ListExportsForRun` hands back one `run_version`
     # for the whole listing. `false` when the run has moved on (the user edited a document after
     # clicking Export) **and** when the run is gone entirely: a job whose source no longer exists is
@@ -154,7 +154,11 @@ class ExportJobResponse(BaseModel):
     # The **guest session's** expiry, not a property of the job row — the session owns the 24-hour
     # promise (ADR-0006) and carrying it here puts that promise in the payload as well as in the UI
     # copy, exactly as `BaseCvResponse`, `JobPostingResponse` and `TailoringRunResponse` do.
-    expires_at: datetime
+    # **`null` since slice 2.3 (OQ-8) means "kept until you delete it"**: an account row has no
+    # retention clock. A guest route always sets it (AC-34); an `/api/me/` route always sends `null`.
+    # One schema for both owners rather than an account twin, because the React components are shared
+    # (plan §0.9) and `expires_at` is a fact about the owner's retention, not about the row.
+    expires_at: datetime | None
 
 
 class ExportJobListResponse(BaseModel):

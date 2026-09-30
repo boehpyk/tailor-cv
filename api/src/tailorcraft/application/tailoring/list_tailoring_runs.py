@@ -1,9 +1,9 @@
 """The `ListTailoringRunsForSession` use case: every `TailoringRun` a guest session owns.
 
 A use case rather than a bare `runs.list_for_session(sid)` for the same reason
-`GetTailoringRunForSession` is one: it carries the authorization rule. Here the rule is enforced
-**by construction** rather than by a per-row comparison — the link (`run.guest_session_id == the
-resolved session id`) is exactly what `list_for_session` queries by, so there is no row in the
+`GetTailoringRun` is one: it carries the authorization rule. Here the rule is enforced
+**by construction** rather than by a per-row comparison — the link (`run.owner == GuestOwner(the
+resolved session id)`) is exactly what `list_for_session` queries by, so there is no row in the
 result the caller does not own.
 
 The corollary for a list endpoint is worth stating on its own, because it is the mistake this shape
@@ -41,7 +41,7 @@ class ListTailoringRunsForSession:
     runs requested in the same whole second (the `Clock` port is whole-second by contract).
 
     Raises `GuestSessionNotFound` / `GuestSessionExpired` if the session itself no longer resolves —
-    the same defense-in-depth `GetTailoringRunForSession` applies, so this use case is
+    the same defense-in-depth `GetTailoringRun` applies, so this use case is
     self-contained against a caller that skips the API's own cookie dependency.
     """
 

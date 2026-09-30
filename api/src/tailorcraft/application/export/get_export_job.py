@@ -1,11 +1,12 @@
-"""The `GetExportJobForSession` use case: read one `ExportJob`, authorized by the link to its
+"""The `GetExportJob` use case (1.5's `GetExportJob`, renamed in slice 2.3 §0.3 to take a
+`requester: Owner`): read one `ExportJob`, authorized by the link to its
 session, together with the run's version *now*.
 
 A use case rather than `jobs.get(id)` called straight from a router, **because it carries the
 authorization rule** (ADR-0008, ADR-0010):
 
-    What authorizes access to an export job is **the link** — `job.guest_session_id == the resolved
-    session id` — checked here, on every read. Owning a session id is not authority over an object
+    What authorizes access to an export job is **the link** — `job.owner == GuestOwner(the resolved
+    session id)` — checked here, on every read. Owning a session id is not authority over an object
     that references it: a guest session is not a login, and the id itself proves nothing about
     which rows it may see.
 
@@ -22,16 +23,19 @@ entry point forgets.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
-from tailorcraft.application.identity.resolve_guest_session import (
-    resolve_active_guest_session,
+from tailorcraft.application.identity.resolve_owner import resolve_owner
+from tailorcraft.domain.export.errors import (
+    ExportJobNotFound,
+    ExportJobNotOwnedBySession,
+    ExportJobNotOwnedByUser,
 )
-from tailorcraft.domain.export.errors import ExportJobNotFound, ExportJobNotOwnedBySession
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportJobId
-from tailorcraft.domain.identity.ports import GuestSessionRepository
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
 
@@ -64,8 +68,8 @@ class ExportJobLookup:
     run_version_now: int | None
 
 
-class GetExportJobForSession:
-    """Look up an `ExportJob` by id, but only if it belongs to `guest_session_id`, and report the
+class GetExportJob:
+    """Look up an `ExportJob` by id, but only if it belongs to `requester`, and report the
     run's current version alongside it.
 
     Raises `GuestSessionNotFound` / `GuestSessionExpired` if the session itself no longer resolves —
@@ -83,14 +87,14 @@ class GetExportJobForSession:
     `ExportJobNotOwnedBySession` still exists as a type, and T7 raises
     ``ExportJobNotFound(...) from ExportJobNotOwnedBySession(...)``: this use case's own tests need
     to tell "absent" from "not mine" apart even though the boundary must not, and `__cause__` is
-    where that distinction survives without ever crossing the wire. `GetTailoringRunForSession`
+    where that distinction survives without ever crossing the wire. `GetTailoringRun`
     does the identical thing for a run, and 1.3's tests read `__cause__` the same way.
 
     Flow (technical-plan.md, "Application layer" §4; T7 implements it):
 
-    1. ``session = await resolve_active_guest_session(sessions, clock, guest_session_id)``.
+    1. ``owner = await resolve_owner(sessions, users, clock, requester)``.
     2. ``job = await jobs.get(job_id)`` — `ExportJobNotFound` if there is no such row.
-    3. ``if job.guest_session_id != session.id:`` raise the collapsed `ExportJobNotFound`, chained
+    3. ``if job.owner != GuestOwner(session.id):`` raise the collapsed `ExportJobNotFound`, chained
        from `ExportJobNotOwnedBySession`.
     4. ``run = await runs.find(job.tailoring_run_id)`` — **`find`, not `get`**: a run that has gone
        is an ordinary answer here rather than an exception, because the job is the thing being
@@ -107,33 +111,42 @@ class GetExportJobForSession:
         jobs: ExportJobRepository,
         runs: TailoringRunRepository,
         sessions: GuestSessionRepository,
+        users: UserRepository,
         clock: Clock,
     ) -> None:
         self._jobs = jobs
         self._runs = runs
         self._sessions = sessions
+        self._users = users
         self._clock = clock
 
-    async def __call__(
-        self, job_id: ExportJobId, guest_session_id: GuestSessionId
-    ) -> ExportJobLookup:
-        # Step 1. Defence in depth: the API's cookie dependency has already resolved this session,
-        # and this use case is still safe to call from anywhere because it resolves it again.
-        session = await resolve_active_guest_session(self._sessions, self._clock, guest_session_id)
-
+    async def __call__(self, job_id: ExportJobId, requester: Owner) -> ExportJobLookup:
+        # Step 1. Defence in depth: the API's credential dependency has already resolved the
+        # requester, and this use case is still safe to call from anywhere because it resolves it
+        # again.
+        owner = await resolve_owner(self._sessions, self._users, self._clock, requester)
         # Step 2. `get`, not `find`: an id that names nothing is an error on a read, and the
         # repository raises the same type step 3 raises.
         job = await self._jobs.get(job_id)
 
-        if job.guest_session_id != session.id:
+        # Step 3. Authorization is one value equality (ADR-0022), for either variant: a user-owned
+        # id on a guest's request is "not mine" exactly as another session's is, and the reverse.
+        if job.owner != owner:
             # "Not mine" must be indistinguishable from "does not exist" at this boundary (X-43,
             # AC-24): the public exception is `ExportJobNotFound`, the same type `jobs.get` raises
             # for an id that was never issued, because a 403 here would confirm to someone
             # enumerating handles that the id is real — and an export job id is both a polling
-            # handle and a download handle, so it is the id most worth guessing, with a file
-            # behind it. The distinction survives only on `__cause__`, where this use case's own
-            # tests can see it and nothing that crosses the wire can.
-            raise ExportJobNotFound(str(job_id)) from ExportJobNotOwnedBySession(str(job_id))
+            # handle and a download handle, so it is the id most worth guessing, with a file behind
+            # it. The distinction survives only on `__cause__`, which names the requester's path.
+            cause: ExportJobNotOwnedBySession | ExportJobNotOwnedByUser
+            match owner:
+                case GuestOwner():
+                    cause = ExportJobNotOwnedBySession(str(job_id))
+                case UserOwner():
+                    cause = ExportJobNotOwnedByUser(str(job_id))
+                case _:
+                    assert_never(owner)
+            raise ExportJobNotFound(str(job_id)) from cause
 
         # Step 4. **`find`, not `get`**: a run that has gone is an ordinary answer here rather than
         # an exception, because the job is the thing being read and it still exists. `None` becomes

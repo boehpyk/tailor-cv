@@ -34,8 +34,8 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
-from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.intake.get_base_cv import GetBaseCv
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.tailoring.request_tailoring_run import (
     RequestTailoringRun,
     RequestTailoringRunCommand,
@@ -81,6 +81,7 @@ from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -133,7 +134,7 @@ def _extracted_base_cv(session_id: GuestSessionId, *, at: object) -> BaseCv:
 def _job_posting(session_id: GuestSessionId, *, at: object) -> JobPosting:
     return JobPosting.from_pasted_text(
         id=JobPostingId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=_posting_text(),
         created_at=at,  # type: ignore[arg-type]
     )
@@ -142,7 +143,7 @@ def _job_posting(session_id: GuestSessionId, *, at: object) -> JobPosting:
 def _queued_run(session_id: GuestSessionId, *, at: object) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=at,  # type: ignore[arg-type]
@@ -184,15 +185,16 @@ def _use_case(
     clock: FixedClock,
 ) -> RequestTailoringRun:
     """Builds `RequestTailoringRun` from the two *composed use cases* its own docstring insists on
-    — `GetBaseCvForSession` and `GetJobPostingForSession`, real, not faked — so that every test in
+    — `GetBaseCv` and `GetJobPosting`, real, not faked — so that every test in
     this module exercises the actual ownership check rather than a stand-in for it. Never passes
     `max_per_session`: only the cap test (`test_twentieth_run_succeeds_...`) cares about that
     parameter, and it constructs its own instance with the default left implicit, on purpose (see
     that test's docstring)."""
+    users = FakeUserRepository()
     return RequestTailoringRun(
         runs,
-        GetBaseCvForSession(cvs, sessions, clock),
-        GetJobPostingForSession(postings, sessions, clock),
+        GetBaseCv(cvs, sessions, users, clock),
+        GetJobPosting(postings, sessions, users, clock),
         events,
         clock,
     )
@@ -217,7 +219,7 @@ async def test_happy_path_returns_queued_result_saves_and_publishes_after_the_sa
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
 
     cmd = RequestTailoringRunCommand(
-        guest_session_id=session.id, base_cv_id=cv.id, job_posting_id=posting.id
+        owner=GuestOwner(session.id), base_cv_id=cv.id, job_posting_id=posting.id
     )
     result = await use_case(cmd)
 
@@ -226,7 +228,7 @@ async def test_happy_path_returns_queued_result_saves_and_publishes_after_the_sa
     assert result.requested_at == clock.now()
 
     stored = await runs.get(result.tailoring_run_id)
-    assert stored.guest_session_id == session.id
+    assert stored.owner == GuestOwner(session.id)
     assert stored.base_cv_id == cv.id
     assert stored.job_posting_id == posting.id
     assert stored.status is TailoringRunStatus.QUEUED
@@ -235,7 +237,7 @@ async def test_happy_path_returns_queued_result_saves_and_publishes_after_the_sa
     event = events.published[0]
     assert isinstance(event, TailoringRunRequested)
     assert event.tailoring_run_id == result.tailoring_run_id
-    assert event.guest_session_id == session.id
+    assert event.owner == GuestOwner(session.id)
     assert event.base_cv_id == cv.id
     assert event.job_posting_id == posting.id
     # positive evidence of publish-after-save ordering, not just an end-state check
@@ -266,7 +268,7 @@ async def test_base_cv_owned_by_a_different_session_raises_base_cv_not_found_cha
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
 
     cmd = RequestTailoringRunCommand(
-        guest_session_id=mine.id, base_cv_id=someone_elses_cv.id, job_posting_id=posting.id
+        owner=GuestOwner(mine.id), base_cv_id=someone_elses_cv.id, job_posting_id=posting.id
     )
 
     with pytest.raises(BaseCvNotFound) as exc_info:
@@ -297,7 +299,7 @@ async def test_job_posting_owned_by_a_different_session_raises_job_posting_not_f
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
 
     cmd = RequestTailoringRunCommand(
-        guest_session_id=mine.id, base_cv_id=cv.id, job_posting_id=someone_elses_posting.id
+        owner=GuestOwner(mine.id), base_cv_id=cv.id, job_posting_id=someone_elses_posting.id
     )
 
     with pytest.raises(JobPostingNotFound) as exc_info:
@@ -333,7 +335,7 @@ async def test_base_cv_not_extracted_raises_base_cv_not_ready_for_tailoring(
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
 
     cmd = RequestTailoringRunCommand(
-        guest_session_id=session.id, base_cv_id=cv.id, job_posting_id=posting.id
+        owner=GuestOwner(session.id), base_cv_id=cv.id, job_posting_id=posting.id
     )
 
     with pytest.raises(BaseCvNotReadyForTailoring):
@@ -372,7 +374,7 @@ async def test_active_run_raises_tailoring_already_running_carrying_its_id(
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
 
     cmd = RequestTailoringRunCommand(
-        guest_session_id=session.id, base_cv_id=cv.id, job_posting_id=posting.id
+        owner=GuestOwner(session.id), base_cv_id=cv.id, job_posting_id=posting.id
     )
 
     with pytest.raises(TailoringAlreadyRunning) as exc_info:
@@ -420,7 +422,7 @@ async def test_twentieth_run_succeeds_and_twenty_first_raises_too_many_tailoring
     events = RecordingEventPublisher()
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
     cmd = RequestTailoringRunCommand(
-        guest_session_id=session.id, base_cv_id=cv.id, job_posting_id=posting.id
+        owner=GuestOwner(session.id), base_cv_id=cv.id, job_posting_id=posting.id
     )
 
     twentieth = await use_case(cmd)
@@ -471,7 +473,7 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     use_case = _use_case(runs, cvs, postings, sessions, events, clock)
 
     cmd = RequestTailoringRunCommand(
-        guest_session_id=expired.id,
+        owner=GuestOwner(expired.id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
     )
@@ -493,7 +495,7 @@ async def test_missing_guest_session_raises_guest_session_not_found(clock: Fixed
 
     unknown_session_id = GuestSessionId(value=uuid4())
     cmd = RequestTailoringRunCommand(
-        guest_session_id=unknown_session_id,
+        owner=GuestOwner(unknown_session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
     )

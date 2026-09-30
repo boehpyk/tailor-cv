@@ -2,7 +2,7 @@
 
 This is the slice's security test (P-30/AC-14, ADR-0008/ADR-0010): "owning a session id is not
 authority over an object that references it." Both use cases check **the link** —
-`posting.guest_session_id == the resolved session id` — on every read, and a caller must not be able
+`posting.owner == GuestOwner(the resolved session id)` — on every read, and a caller must not be able
 to tell "exists but belongs to someone else" from "does not exist at all", because a distinguishable
 answer would confirm the id exists. See `application/posting/get_job_posting.py`'s docstring for the
 exact contract this file tests against: `JobPostingNotFound` for both cases, chained from
@@ -29,10 +29,11 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.errors import JobPostingNotFound, JobPostingNotOwnedBySession
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -41,6 +42,7 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
+    FakeUserRepository,
     create_active_session,
 )
 
@@ -57,7 +59,7 @@ async def _add_job_posting(
     posting_id = postings.next_identity()
     posting = JobPosting.from_pasted_text(
         id=posting_id,
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=JobPostingText(marker * 150),
         created_at=clock.now(),
     )
@@ -74,11 +76,12 @@ async def test_get_returns_the_posting_for_the_session_that_owns_it(clock: Fixed
     postings = FakeJobPostingRepository()
     posting = await _add_job_posting(postings, session.id, clock)
 
-    use_case = GetJobPostingForSession(postings, sessions, clock)
-    result = await use_case(posting.id, session.id)
+    users = FakeUserRepository()
+    use_case = GetJobPosting(postings, sessions, users, clock)
+    result = await use_case(posting.id, GuestOwner(session.id))
 
     assert result.id == posting.id
-    assert result.guest_session_id == session.id
+    assert result.owner == GuestOwner(session.id)
 
 
 async def test_get_for_a_posting_owned_by_a_different_session_raises_job_posting_not_found(
@@ -94,10 +97,11 @@ async def test_get_for_a_posting_owned_by_a_different_session_raises_job_posting
     postings = FakeJobPostingRepository()
     posting = await _add_job_posting(postings, owner_session.id, clock)
 
-    use_case = GetJobPostingForSession(postings, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetJobPosting(postings, sessions, users, clock)
 
     with pytest.raises(JobPostingNotFound) as exc_info:
-        await use_case(posting.id, other_session.id)
+        await use_case(posting.id, GuestOwner(other_session.id))
 
     assert isinstance(exc_info.value.__cause__, JobPostingNotOwnedBySession)
 
@@ -115,11 +119,12 @@ async def test_get_for_a_nonexistent_id_raises_job_posting_not_found_with_no_cau
     session = await create_active_session(sessions, clock)
     postings = FakeJobPostingRepository()  # empty: no job posting was ever added
 
-    use_case = GetJobPostingForSession(postings, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetJobPosting(postings, sessions, users, clock)
     nonexistent_id = JobPostingId(value=uuid4())
 
     with pytest.raises(JobPostingNotFound) as exc_info:
-        await use_case(nonexistent_id, session.id)
+        await use_case(nonexistent_id, GuestOwner(session.id))
 
     assert exc_info.value.__cause__ is None
 
@@ -136,22 +141,24 @@ async def test_get_with_expired_session_raises_guest_session_expired(clock: Fixe
     postings = FakeJobPostingRepository()
     posting = await _add_job_posting(postings, expired.id, clock)
 
-    use_case = GetJobPostingForSession(postings, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetJobPosting(postings, sessions, users, clock)
 
     with pytest.raises(GuestSessionExpired):
-        await use_case(posting.id, expired.id)
+        await use_case(posting.id, GuestOwner(expired.id))
 
 
 async def test_get_with_unknown_session_raises_guest_session_not_found(clock: FixedClock) -> None:
     sessions = FakeGuestSessionRepository()  # empty: no session was ever added
     postings = FakeJobPostingRepository()
 
-    use_case = GetJobPostingForSession(postings, sessions, clock)
+    users = FakeUserRepository()
+    use_case = GetJobPosting(postings, sessions, users, clock)
     unknown_session_id = GuestSessionId(value=uuid4())
     some_posting_id = JobPostingId(value=uuid4())
 
     with pytest.raises(GuestSessionNotFound):
-        await use_case(some_posting_id, unknown_session_id)
+        await use_case(some_posting_id, GuestOwner(unknown_session_id))
 
 
 # --- ListJobPostingsForSession ------------------------------------------------------------------------

@@ -34,12 +34,14 @@
 import { useEffect, useState } from 'react';
 
 import { downloadDocument, downloadExportFile } from '@/api/exports';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import {
   EXPORT_LIST_ERROR_ACTION,
   EXPORT_LIST_ERROR_NOTE,
   EXPORT_LIST_LOADING_NOTE,
   EXPORT_PRIVACY_NOTE,
+  ACCOUNT_EXPORT_PRIVACY_NOTE,
   downloadFilenameFor,
   exportGateReasonFor,
 } from '../exportCopy';
@@ -199,6 +201,9 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
   const jobsQuery = useExportJobs(runId);
   const requestExport = useRequestExport(runId);
   const download = useDownload();
+  // The route's scope (slice 2.3): the two byte downloads go to the scope's paths with its
+  // credential — the bearer for an account's `/api/me/…` (AC-47), none for a guest's.
+  const map = useScopeMap();
 
   const jobs = jobsQuery.data?.items ?? NO_JOBS;
   const nowMs = useNowMs(jobs.some((job) => isActiveExportStatus(job.status)));
@@ -275,7 +280,7 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
           document,
           format,
           filename: downloadFilenameFor(document, format),
-          fetchBlob: () => downloadDocument(runId, document, format),
+          fetchBlob: () => downloadDocument(map, runId, document, format),
         });
       };
     }
@@ -294,7 +299,7 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
           document,
           format,
           filename: downloadFilenameFor(document, format),
-          fetchBlob: () => downloadExportFile(jobId),
+          fetchBlob: () => downloadExportFile(map, jobId),
         });
       };
     }
@@ -411,7 +416,9 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         </div>
       )}
 
-      <p className="text-xs text-slate-500">{EXPORT_PRIVACY_NOTE}</p>
+      <p className="text-xs text-slate-500">
+        {map.kind === 'account' ? ACCOUNT_EXPORT_PRIVACY_NOTE : EXPORT_PRIVACY_NOTE}
+      </p>
     </section>
   );
 }

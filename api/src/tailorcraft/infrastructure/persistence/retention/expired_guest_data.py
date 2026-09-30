@@ -83,6 +83,20 @@ class SqlAlchemyExpiredGuestData:
       NOT NULL`, the "tidy" edit) would declare every saved file an orphan once it aged past the
       window — and saved files do not expire. AC-16 is that edit, observed red as a named mutation.
 
+    **Slice 2.3 (ADR-0023) extends both halves to `posting_job_posting`, `tailoring_run` and
+    `export_job`, and changes nothing here.** A signed-in user's history is owner-blind to this
+    class in the same two safe directions:
+
+    - `list_expired` reaches `export_job` **only** through `guest_session_id IN (…)`, and
+      `delete_session`'s cascade only through the same column; a user-owned job, run or posting has
+      `guest_session_id IS NULL` (and `ck_<table>_exactly_one_owner` forbids it being both), so
+      neither path can touch it (AC-19, AC-21).
+    - `which_are_referenced` reads `export_job.file_key` for **every** row, whoever owns it — which
+      is what spares a user's `ready` export file from the orphan sweep once it ages past the window
+      (AC-20). A user's `rendering` or `failed` job names no `file_key`: whatever bytes it left are
+      served by nothing, so the sweep reclaiming them once aged is correct — and erasure derives
+      their key anyway when the account goes.
+
     So the rule for this class is the opposite of the usual one: **the less it knows about owners,
     the safer it is.** An owner-aware predicate belongs to erasure (`SqlAlchemyAccountData`), which
     deletes by owner on request, never to a job that deletes on a timer.

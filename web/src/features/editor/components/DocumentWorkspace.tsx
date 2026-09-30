@@ -1,6 +1,8 @@
 import { useCallback, useEffect } from 'react';
 import { Link, useBlocker, useParams } from 'react-router';
 
+import { runLink } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { TailoredDocumentsPreview } from '@/features/tailoring/components/TailoredDocumentsPreview';
 
 import { DocumentEditor } from './DocumentEditor';
@@ -45,6 +47,13 @@ export interface DocumentWorkspaceProps {
 /** The AC-36 sentence, byte for byte: where the CV now lives, said where it is now written. */
 const STORAGE_NOTICE =
   'These documents are stored for 24 hours and are never kept in your browser.';
+
+/**
+ * The same promise for an account's run (slice 2.3, AC-49): kept with the history until the user
+ * deletes it. No sentence in account scope may claim 24-hour deletion — it would be false.
+ */
+const ACCOUNT_STORAGE_NOTICE =
+  'These documents are saved to your history until you delete them, and are never kept in your browser.';
 
 /**
  * The question asked before an in-app navigation would destroy an editor that holds text the
@@ -213,6 +222,7 @@ function DocumentEditors({
 }): React.JSX.Element {
   const params = useParams<'document'>();
   const visible = visibleDocumentOf(params.document);
+  const map = useScopeMap();
 
   const cv = useDocumentEditor(run.tailored_cv ?? '', { editable: true });
   const coverLetter = useDocumentEditor(run.cover_letter ?? '', { editable: true });
@@ -269,12 +279,14 @@ function DocumentEditors({
       if (!leavingLosesWork) {
         return false;
       }
-      const base = `/runs/${encodeURIComponent(runId)}/`;
+      // The same two paths `DocumentTabs` builds, in the route's scope (slice 2.3): on a history
+      // run a tab switch is `/history/{id}/…`, and treating it as leaving would ask for nothing.
       return (
-        nextLocation.pathname !== `${base}cv` && nextLocation.pathname !== `${base}cover_letter`
+        nextLocation.pathname !== runLink(map, runId, 'cv') &&
+        nextLocation.pathname !== runLink(map, runId, 'cover_letter')
       );
     },
-    [leavingLosesWork, runId],
+    [leavingLosesWork, runId, map],
   );
   const blocker = useBlocker(shouldBlock);
 
@@ -321,7 +333,7 @@ function DocumentEditors({
             </Link>
           </p>
         ) : (
-          <p>{STORAGE_NOTICE}</p>
+          <p>{map.kind === 'account' ? ACCOUNT_STORAGE_NOTICE : STORAGE_NOTICE}</p>
         )}
       </footer>
     </div>

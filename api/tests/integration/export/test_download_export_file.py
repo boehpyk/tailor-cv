@@ -22,10 +22,11 @@ from uuid import uuid4
 import pytest
 
 from tailorcraft.application.export.download_export_file import DownloadExportFile
-from tailorcraft.application.export.get_export_job import GetExportJobForSession
+from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.domain.export.errors import ExportNotReady
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat, ExportJobId
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -36,6 +37,7 @@ from tests.integration.fakes import (
     FakeExportJobRepository,
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     InMemoryFileStore,
     MissingFileStore,
     create_active_session,
@@ -49,7 +51,7 @@ def _use_case(
     files: InMemoryFileStore | MissingFileStore | AlwaysFailingFileStore,
     clock: FixedClock,
 ) -> DownloadExportFile:
-    get_export_job = GetExportJobForSession(jobs, runs, sessions, clock)
+    get_export_job = GetExportJob(jobs, runs, sessions, FakeUserRepository(), clock)
     return DownloadExportFile(get_export_job, files)
 
 
@@ -62,7 +64,7 @@ def _a_job(
 ) -> ExportJob:
     return ExportJob.request(
         id=ExportJobId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         tailoring_run_id=run_id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -90,7 +92,7 @@ async def test_ready_job_returns_the_job_and_its_bytes(clock: FixedClock) -> Non
     files.data[job.storage_ref.key] = data
     use_case = _use_case(jobs, runs, sessions, files, clock)
 
-    result_job, result_data = await use_case(job.id, session.id)
+    result_job, result_data = await use_case(job.id, GuestOwner(session.id))
 
     assert result_job.id == job.id
     assert result_data == data
@@ -112,7 +114,7 @@ async def test_queued_job_raises_export_not_ready(clock: FixedClock) -> None:
     use_case = _use_case(jobs, runs, sessions, files, clock)
 
     with pytest.raises(ExportNotReady) as exc_info:
-        await use_case(job.id, session.id)
+        await use_case(job.id, GuestOwner(session.id))
 
     assert exc_info.value.status is job.status
     assert exc_info.value.failure_reason is None
@@ -132,7 +134,7 @@ async def test_rendering_job_raises_export_not_ready(clock: FixedClock) -> None:
     use_case = _use_case(jobs, runs, sessions, files, clock)
 
     with pytest.raises(ExportNotReady) as exc_info:
-        await use_case(job.id, session.id)
+        await use_case(job.id, GuestOwner(session.id))
 
     assert exc_info.value.status is job.status
     assert exc_info.value.failure_reason is None
@@ -155,7 +157,7 @@ async def test_failed_job_raises_export_not_ready_carrying_the_failure_reason(
     use_case = _use_case(jobs, runs, sessions, files, clock)
 
     with pytest.raises(ExportNotReady) as exc_info:
-        await use_case(job.id, session.id)
+        await use_case(job.id, GuestOwner(session.id))
 
     assert exc_info.value.status is job.status
     assert exc_info.value.failure_reason is ExportFailureReason.RENDER_FAILED
@@ -179,7 +181,7 @@ async def test_missing_file_raises_stored_file_missing(clock: FixedClock) -> Non
     use_case = _use_case(jobs, runs, sessions, files, clock)
 
     with pytest.raises(StoredFileMissing):
-        await use_case(job.id, session.id)
+        await use_case(job.id, GuestOwner(session.id))
 
 
 async def test_unreadable_store_raises_file_store_unavailable(clock: FixedClock) -> None:
@@ -197,4 +199,4 @@ async def test_unreadable_store_raises_file_store_unavailable(clock: FixedClock)
     use_case = _use_case(jobs, runs, sessions, files, clock)
 
     with pytest.raises(FileStoreUnavailable):
-        await use_case(job.id, session.id)
+        await use_case(job.id, GuestOwner(session.id))

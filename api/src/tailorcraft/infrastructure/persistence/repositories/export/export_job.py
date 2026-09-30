@@ -1,6 +1,6 @@
 """`SqlAlchemyExportJobRepository` — the `ExportJobRepository` port (ADR-0007).
 
-Filters below query `ExportJob._id` / `ExportJob._guest_session_id` / `ExportJob._status` and the
+Filters below query `ExportJob._id` / `ExportJob._owner_guest_session_id` / `ExportJob._status` and the
 rest, the **private** attributes the imperative mapping in
 `infrastructure/persistence/mapping/export/export_job.py` targets — never `ExportJob.id` /
 `ExportJob.status`. Those short names are plain read-only `@property` objects on the domain class,
@@ -26,10 +26,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 import structlog
 from sqlalchemy import func, literal, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.exc import StaleDataError
@@ -40,9 +41,11 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
+from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 from tailorcraft.infrastructure.identifiers import uuid7
+from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.types.export import ExportJobStatusType
 
 if TYPE_CHECKING:
@@ -61,8 +64,8 @@ log = structlog.get_logger(__name__)
 _EXPORT_JOB_ID: InstrumentedAttribute[ExportJobId] = cast(
     "InstrumentedAttribute[ExportJobId]", ExportJob._id
 )
-_EXPORT_JOB_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId] = cast(
-    "InstrumentedAttribute[GuestSessionId]", ExportJob._guest_session_id
+_EXPORT_JOB_GUEST_SESSION_ID: InstrumentedAttribute[GuestSessionId | None] = cast(
+    "InstrumentedAttribute[GuestSessionId | None]", ExportJob._owner_guest_session_id
 )
 _EXPORT_JOB_TAILORING_RUN_ID: InstrumentedAttribute[TailoringRunId] = cast(
     "InstrumentedAttribute[TailoringRunId]", ExportJob._tailoring_run_id
@@ -82,6 +85,10 @@ _EXPORT_JOB_REQUESTED_AT: InstrumentedAttribute[datetime] = cast(
 _EXPORT_JOB_STARTED_AT: InstrumentedAttribute[datetime | None] = cast(
     "InstrumentedAttribute[datetime | None]", ExportJob._started_at
 )
+
+# Recognised by name, never by message (`violated_constraint`). Renaming the FK in
+# `mapping/export/export_job.py` is a breaking change to `add` below.
+_USER_FK: Final = "fk_export_job_user_id_identity_user"
 
 
 class SqlAlchemyExportJobRepository:
@@ -108,10 +115,31 @@ class SqlAlchemyExportJobRepository:
         return ExportJobId(uuid7())
 
     async def add(self, job: ExportJob) -> None:
-        self._session.add(job)
-        # `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
-        # task), not to the repository.
-        await self._session.flush()
+        """Insert `job`; raise `UserNotFound` if its `UserOwner` no longer exists (H-53).
+
+        `flush()`, not `commit()`: the transaction boundary belongs to the caller (a request or a
+        task), not to the repository.
+
+        The race and the shape are `SqlAlchemyBaseCvRepository.add`'s (2.2's S-12): an account
+        erasure holding the `identity_user` row `FOR UPDATE` makes this `INSERT`'s FK check wait,
+        then refuse on `fk_export_job_user_id_identity_user` once it commits — "the user is gone",
+        the same error and the same 401. That refusal is also what keeps erasure's key collection
+        complete (AC-37): no job, and so no file, can land after the keys were read.
+
+        **Inside a SAVEPOINT**, so a refused flush expires only this pending job and not the run
+        `RequestExport` loaded beside it (the 1.4 lesson). Any other refusal propagates
+        untranslated.
+        """
+        # Read before the flush: after a nested rollback the pending job is expunged.
+        job_id = job.id
+        try:
+            async with self._session.begin_nested():
+                self._session.add(job)
+                await self._session.flush()
+        except IntegrityError as exc:
+            if violated_constraint(exc) == _USER_FK:
+                raise UserNotFound(f"the owner of {job_id!r} no longer exists") from None
+            raise
 
     async def save(self, job: ExportJob) -> None:
         """Make the job's current state the state the next read hands back.
@@ -255,6 +283,18 @@ class SqlAlchemyExportJobRepository:
         worse the abuse gets is not a defence."""
         result = await self._session.execute(
             select(func.count()).select_from(ExportJob).where(_EXPORT_JOB_GUEST_SESSION_ID == sid)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        )
+        return result.scalar_one()
+
+    async def count_for_run(self, run_id: TailoringRunId) -> int:
+        """`SELECT count(*) … WHERE tailoring_run_id = :r` — the port's reason for a count, served
+        by `ix_export_job_tailoring_run_id` (a run holds a few dozen jobs at most; 20 for a user's).
+        No owner in the predicate, on purpose: the caller authorized the run, and a job's owner is
+        its run's owner by construction (the port docstring)."""
+        result = await self._session.execute(
+            select(func.count())
+            .select_from(ExportJob)
+            .where(_EXPORT_JOB_TAILORING_RUN_ID == run_id)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
         )
         return result.scalar_one()
 

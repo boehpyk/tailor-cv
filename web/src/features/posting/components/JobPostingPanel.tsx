@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 
 import { ApiError } from '@/api/client';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import { FetchFailureNotice } from './FetchFailureNotice';
 import { JobPostingCard } from './JobPostingCard';
@@ -43,6 +44,7 @@ export function JobPostingPanel(): React.JSX.Element {
     error: listError,
   } = useJobPostings();
   const create = useCreateJobPosting();
+  const map = useScopeMap();
 
   const [mode, setMode] = useState<PostingSource>('pasted');
   const [text, setText] = useState('');
@@ -194,7 +196,11 @@ export function JobPostingPanel(): React.JSX.Element {
 
       {items.length === 0 && !create.isPending && (
         // AC-23: the retention promise, stated before the user commits anything (ADR-0006 §5).
-        <p className="text-sm text-slate-500">We delete guest job postings after 24 hours.</p>
+        <p className="text-sm text-slate-500">
+          {map.kind === 'account'
+            ? 'Job postings you add are saved with your history.'
+            : 'We delete guest job postings after 24 hours.'}
+        </p>
       )}
 
       {preCheckError !== null && (

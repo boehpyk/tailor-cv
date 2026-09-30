@@ -73,7 +73,7 @@ from tailorcraft.domain.intake.value_objects import (
     OriginalFilename,
 )
 from tailorcraft.domain.posting.job_posting import JobPosting
-from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
+from tailorcraft.domain.posting.value_objects import JobPostingText
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
@@ -287,7 +287,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     posting_text_marker = _marker("POSTINGTEXT")
     posting = JobPosting.from_pasted_text(
         id=postings.next_identity(),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=JobPostingText(_padded_document(posting_text_marker, filler_repeats=5)),
         created_at=posting_created_at,
     )
@@ -301,9 +301,12 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     revision_marker = _marker("REVISIONTEXT")
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
-        job_posting_id=JobPostingId(value=uuid4()),
+        # The posting seeded just above, not a fresh random id (2.3 /verify, reviewer MINOR #1):
+        # `SqlAlchemyTailoringRunRepository.add` now takes the run's posting `FOR KEY SHARE` and
+        # refuses a run whose posting does not exist.
+        job_posting_id=posting.id,
         requested_at=requested_at,
     )
     run.mark_started(started_at)
@@ -337,7 +340,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
     export_bytes_marker = _marker("EXPORTBYTES")
     job = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,

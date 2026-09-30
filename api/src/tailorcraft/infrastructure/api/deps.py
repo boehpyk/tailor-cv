@@ -29,7 +29,7 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from tailorcraft.application.export.download_export_file import DownloadExportFile
-from tailorcraft.application.export.get_export_job import GetExportJobForSession
+from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
@@ -42,16 +42,19 @@ from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
 from tailorcraft.application.intake.copy_saved_base_cv import CopySavedBaseCvToWorkspace
 from tailorcraft.application.intake.delete_saved_base_cv import DeleteSavedBaseCv
-from tailorcraft.application.intake.get_base_cv import GetBaseCvForSession
+from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
 from tailorcraft.application.intake.list_saved_base_cvs import ListSavedBaseCvs
 from tailorcraft.application.intake.rename_saved_base_cv import RenameSavedBaseCv
 from tailorcraft.application.intake.upload_base_cv import UploadBaseCv
 from tailorcraft.application.posting.capture_job_posting import CaptureJobPosting
-from tailorcraft.application.posting.get_job_posting import GetJobPostingForSession
+from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
+from tailorcraft.application.posting.list_recent_job_postings import ListRecentJobPostingsForUser
 from tailorcraft.application.retention.erase_account import EraseAccount
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.retention.erase_history_entry import EraseHistoryEntry
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
+from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
@@ -78,12 +81,13 @@ from tailorcraft.domain.identity.value_objects import (
 )
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
-from tailorcraft.domain.retention.ports import AccountDataPort
+from tailorcraft.domain.retention.ports import AccountDataPort, HistoryEntryDataPort
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
 from tailorcraft.domain.tailoring.ports import (
     LlmPort,
+    TailoringHistoryQuery,
     TailoringQueuePort,
     TailoringRunRepository,
 )
@@ -113,7 +117,10 @@ from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolic
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
-from tailorcraft.infrastructure.retention.data_access import CommittingAccountData
+from tailorcraft.infrastructure.retention.data_access import (
+    CommittingAccountData,
+    CommittingHistoryEntryData,
+)
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 
@@ -313,12 +320,13 @@ StartGuestSessionDep = Annotated[StartGuestSession, Depends(get_start_guest_sess
 def get_get_base_cv(
     cvs: BaseCvRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetBaseCvForSession:
-    return GetBaseCvForSession(cvs, sessions, clock)
+) -> GetBaseCv:
+    return GetBaseCv(cvs, sessions, users, clock)
 
 
-GetBaseCvDep = Annotated[GetBaseCvForSession, Depends(get_get_base_cv)]
+GetBaseCvDep = Annotated[GetBaseCv, Depends(get_get_base_cv)]
 
 
 def get_list_base_cvs(
@@ -484,6 +492,7 @@ PostingFetchRateLimiterDep = Annotated[
 def get_capture_job_posting(
     postings: JobPostingRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     fetcher: JobPostingFetcherDep,
     events: EventPublisherDep,
     clock: ClockDep,
@@ -492,10 +501,12 @@ def get_capture_job_posting(
     return CaptureJobPosting(
         postings,
         sessions,
+        users,
         fetcher,
         events,
         clock,
         max_per_session=settings.max_job_postings_per_session,
+        max_per_user=settings.max_job_postings_per_user,
     )
 
 
@@ -505,12 +516,13 @@ CaptureJobPostingDep = Annotated[CaptureJobPosting, Depends(get_capture_job_post
 def get_get_job_posting(
     postings: JobPostingRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetJobPostingForSession:
-    return GetJobPostingForSession(postings, sessions, clock)
+) -> GetJobPosting:
+    return GetJobPosting(postings, sessions, users, clock)
 
 
-GetJobPostingDep = Annotated[GetJobPostingForSession, Depends(get_get_job_posting)]
+GetJobPostingDep = Annotated[GetJobPosting, Depends(get_get_job_posting)]
 
 
 def get_list_job_postings(
@@ -547,6 +559,10 @@ def get_tailoring_run_repository(session: SessionDep) -> TailoringRunRepository:
     the individual write, because `ExecuteTailoringRun` must make `running` visible to a polling
     client before it spends twelve seconds on a model call. Same port, two boundaries, and the
     difference between the two bindings *is* the boundary.
+
+    A run request whose posting was deleted after it was authorized is refused `JobPostingNotFound`
+    (404) by the adapter's `add` itself, unconditionally — the delete-first half of 2.3's posting
+    race (the repository's `add` has both halves). There is nothing to switch on here.
     """
     from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
         SqlAlchemyTailoringRunRepository,
@@ -634,8 +650,8 @@ def get_request_tailoring_run(
 ) -> RequestTailoringRun:
     """Note what the second and third arguments are: the two *use cases*, not their repositories.
 
-    `RequestTailoringRun` reads the base CV and the job posting through `GetBaseCvForSession` and
-    `GetJobPostingForSession` so that "what authorizes access is the link to the session" is
+    `RequestTailoringRun` reads the base CV and the job posting through `GetBaseCv` and
+    `GetJobPosting` so that "what authorizes access is the link to the session" is
     inherited from the slices that already own that rule, rather than written a third time here
     (ADR-0008). Rebuilding those two from `BaseCvRepositoryDep`/`JobPostingRepositoryDep` would
     compile, produce an identical object graph today, and quietly become a second copy of an
@@ -649,6 +665,7 @@ def get_request_tailoring_run(
         events,
         clock,
         max_per_session=settings.max_tailoring_runs_per_session,
+        max_per_user=settings.max_tailoring_runs_per_user,
     )
 
 
@@ -658,12 +675,13 @@ RequestTailoringRunDep = Annotated[RequestTailoringRun, Depends(get_request_tail
 def get_get_tailoring_run(
     runs: TailoringRunRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetTailoringRunForSession:
-    return GetTailoringRunForSession(runs, sessions, clock)
+) -> GetTailoringRun:
+    return GetTailoringRun(runs, sessions, users, clock)
 
 
-GetTailoringRunDep = Annotated[GetTailoringRunForSession, Depends(get_get_tailoring_run)]
+GetTailoringRunDep = Annotated[GetTailoringRun, Depends(get_get_tailoring_run)]
 
 
 def get_list_tailoring_runs(
@@ -704,7 +722,7 @@ def get_revise_tailored_document(
     events: EventPublisherDep,
     clock: ClockDep,
 ) -> ReviseTailoredDocument:
-    """The second argument is the `GetTailoringRunForSession` *use case*, not the repository, for
+    """The second argument is the `GetTailoringRun` *use case*, not the repository, for
     the reason `get_request_tailoring_run` gives: "what authorizes the write is the link to the
     session" is inherited from the read that already owns that rule (AC-14), not written again."""
     return ReviseTailoredDocument(runs, get_run, events, clock)
@@ -827,7 +845,7 @@ def get_request_export(
     clock: ClockDep,
     settings: SettingsDep,
 ) -> RequestExport:
-    """Note the second argument: the `GetTailoringRunForSession` *use case*, not a run repository.
+    """Note the second argument: the `GetTailoringRun` *use case*, not a run repository.
 
     `RequestExport` reads the run through the use case that already owns "what authorizes access is
     the link to the session", so the rule is inherited rather than written a sixth time (ADR-0008,
@@ -841,6 +859,7 @@ def get_request_export(
         events,
         clock,
         max_per_session=settings.max_export_jobs_per_session,
+        max_per_user_run=settings.max_export_jobs_per_user_run,
     )
 
 
@@ -868,8 +887,9 @@ def get_get_export_job(
     jobs: ExportJobRepositoryDep,
     runs: TailoringRunRepositoryDep,
     sessions: GuestSessionRepositoryDep,
+    users: UserRepositoryDep,
     clock: ClockDep,
-) -> GetExportJobForSession:
+) -> GetExportJob:
     """The run repository is here, and it is the exception that proves `get_request_export`'s rule.
 
     This use case reads a **job**, and it reads the run only to learn one integer — the version the
@@ -878,10 +898,10 @@ def get_get_export_job(
     still exists. There is no authorization to inherit from a run here, because the job carries its
     own `guest_session_id` and *that* is what this use case checks (X-43).
     """
-    return GetExportJobForSession(jobs, runs, sessions, clock)
+    return GetExportJob(jobs, runs, sessions, users, clock)
 
 
-GetExportJobDep = Annotated[GetExportJobForSession, Depends(get_get_export_job)]
+GetExportJobDep = Annotated[GetExportJob, Depends(get_get_export_job)]
 
 
 def get_list_exports_for_run(
@@ -898,7 +918,7 @@ def get_download_export_file(
     get_export_job: GetExportJobDep,
     files: FileStoreDep,
 ) -> DownloadExportFile:
-    """The first argument is the `GetExportJobForSession` *use case*: the download inherits the
+    """The first argument is the `GetExportJob` *use case*: the download inherits the
     poll's authorization and its collapse of "not mine" into "not found" whole (X-43), rather than
     repeating an ownership check beside a file read — which is the one place in this slice where
     forgetting it would hand a stranger a stranger's CV."""
@@ -1316,3 +1336,67 @@ def get_delete_own_account(
 
 
 DeleteOwnAccountDep = Annotated[DeleteOwnAccount, Depends(get_delete_own_account)]
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.3 — a signed-in user's history (technical plan §3 "Wiring"). Deferred imports throughout,
+# for the mapper-configuration reason `get_base_cv_repository` documents.
+# --------------------------------------------------------------------------------------------------
+
+
+def get_tailoring_history_query(session: SessionDep) -> TailoringHistoryQuery:
+    """Binds `TailoringHistoryQuery` -> `SqlAlchemyTailoringHistoryQuery` (ADR-0024): a read-side
+    port, one Core statement over the request's session."""
+    from tailorcraft.infrastructure.persistence.queries.tailoring_history import (
+        SqlAlchemyTailoringHistoryQuery,
+    )
+
+    return SqlAlchemyTailoringHistoryQuery(session)
+
+
+TailoringHistoryQueryDep = Annotated[TailoringHistoryQuery, Depends(get_tailoring_history_query)]
+
+
+def get_list_tailoring_history(
+    history: TailoringHistoryQueryDep, users: UserRepositoryDep
+) -> ListTailoringHistory:
+    return ListTailoringHistory(history, users)
+
+
+ListTailoringHistoryDep = Annotated[ListTailoringHistory, Depends(get_list_tailoring_history)]
+
+
+def get_history_entry_data(session: SessionDep) -> HistoryEntryDataPort:
+    """Binds `HistoryEntryDataPort` -> `CommittingHistoryEntryData(SqlAlchemyHistoryEntryData)`
+    (technical plan §0.6): the three `DELETE`s commit before `EraseHistoryEntry` unlinks a file —
+    `get_account_data`'s rule, one entry instead of one account."""
+    from tailorcraft.infrastructure.persistence.retention.history_entry_data import (
+        SqlAlchemyHistoryEntryData,
+    )
+
+    return CommittingHistoryEntryData(SqlAlchemyHistoryEntryData(session), session)
+
+
+HistoryEntryDataDep = Annotated[HistoryEntryDataPort, Depends(get_history_entry_data)]
+
+
+def get_erase_history_entry(
+    get_tailoring_run: GetTailoringRunDep, entries: HistoryEntryDataDep, files: FileStoreDep
+) -> EraseHistoryEntry:
+    """The `GetTailoringRun` *use case*, not a repository, for `get_request_export`'s reason: the
+    authorization and the 404 collapse are inherited rather than written again."""
+    return EraseHistoryEntry(get_tailoring_run, entries, files)
+
+
+EraseHistoryEntryDep = Annotated[EraseHistoryEntry, Depends(get_erase_history_entry)]
+
+
+def get_list_recent_job_postings(
+    postings: JobPostingRepositoryDep, users: UserRepositoryDep
+) -> ListRecentJobPostingsForUser:
+    return ListRecentJobPostingsForUser(postings, users)
+
+
+ListRecentJobPostingsDep = Annotated[
+    ListRecentJobPostingsForUser, Depends(get_list_recent_job_postings)
+]

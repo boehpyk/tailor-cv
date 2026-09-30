@@ -171,11 +171,19 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
             base_cvs=counts.base_cvs,
             files=counts.files,
             logins=counts.logins,
+            tailoring_runs=counts.tailoring_runs,
+            job_postings=counts.job_postings,
+            export_jobs=counts.export_jobs,
             duration_ms=_elapsed_ms(started_at),
         )
+        # Slice 2.3 (AC-36): the account's history, appended to the same one line so the 2.2 prefix
+        # an operator (or a script) already reads is unchanged. `files` has counted the history's
+        # derived export files beside the saved CVs' since 2.3 (`count_account`).
         print(
             f"would erase account {user_id.value}: {counts.base_cvs} saved CV(s), "
-            f"{counts.files} file(s), {counts.logins} login(s) (dry run)"
+            f"{counts.files} file(s), {counts.logins} login(s) (dry run); history: "
+            f"{counts.tailoring_runs} tailoring run(s), {counts.job_postings} job posting(s), "
+            f"{counts.export_jobs} export job(s)"
         )
         return EXIT_OK
 
@@ -185,6 +193,10 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
         EVENT_ACCOUNT_ERASED,
         user_id=str(user_id.value),
         base_cvs=report.base_cvs,
+        tailoring_runs=report.tailoring_runs,
+        job_postings=report.job_postings,
+        export_jobs=report.export_jobs,
+        files=report.files,
         files_unlinked=report.files_unlinked,
         files_failed=len(report.unlink_failures),
         duration_ms=_elapsed_ms(started_at),
@@ -193,9 +205,14 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
         log.warning(
             EVENT_ACCOUNT_FILE_UNLINK_FAILED, user_id=str(user_id.value), error_type=error_type
         )
+    # The history counts are appended, as on the dry run, so the 2.2 prefix is unchanged. `files`
+    # is every key the erasure tried to unlink — saved CVs' and derived export keys — so the two
+    # numbers before it read against it.
     print(
         f"erased account {user_id.value}: {report.base_cvs} saved CV(s), "
-        f"{report.files_unlinked} file(s) unlinked, {len(report.unlink_failures)} failed"
+        f"{report.files_unlinked} file(s) unlinked, {len(report.unlink_failures)} failed; "
+        f"history: {report.tailoring_runs} tailoring run(s), {report.job_postings} job "
+        f"posting(s), {report.export_jobs} export job(s), {report.files} file(s) in all"
     )
     if report.unlink_failures:
         print(

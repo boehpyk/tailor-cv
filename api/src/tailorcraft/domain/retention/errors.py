@@ -62,3 +62,25 @@ class AccountNotFound(RetentionError):
 
     Carries nothing: the entry point already holds the id it asked about.
     """
+
+
+class HistoryEntryInProgress(RetentionError):
+    """The history entry's run is still `queued` or `running`, so it cannot be deleted yet (H-42):
+    **nothing is deleted**, and the boundary answers 409 `tailoring_run_in_progress`.
+
+    Refused rather than deleted-under-the-worker: a worker holding the run would write documents
+    onto a row that is gone, and its paid call would have produced nothing anyone can see. Waiting
+    the few seconds until the run decides is the honest answer. Carries the `status` it found, and
+    nothing else — the entry point already holds the ids.
+
+    **`status` is a plain `str` — the run status's wire value (`"queued"` / `"running"`) — and not
+    `TailoringRunStatus`, on purpose.** `domain/retention` may import only `shared` and `identity`
+    (1.6's AC-1 allowlist, kept by 2.2 and pinned by `tests/unit/retention/test_import_allowlist.py`):
+    retention reaches other contexts' data through its own ports, never through their types. The
+    application layer, which may cross contexts, passes `run.status.value`. A reader who expects the
+    enum here should find this paragraph rather than "fix" the import.
+    """
+
+    def __init__(self, status: str) -> None:
+        super().__init__(status)
+        self.status = status

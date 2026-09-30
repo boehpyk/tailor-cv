@@ -38,13 +38,15 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobId,
     ExportJobStatus,
 )
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 
 _JOB_ID = ExportJobId(value=UUID("0192f0a1-89ab-7cde-8123-456789abcde0"))
 _SESSION_ID = GuestSessionId(value=UUID("11111111-1111-7111-8111-111111111111"))
+_USER_ID = UserId(value=UUID("55555555-5555-7555-8555-555555555555"))
 _RUN_ID = TailoringRunId(value=UUID("33333333-3333-7333-8333-333333333333"))
 _DOCUMENT = TailoredDocumentKind.CV
 _FORMAT = ExportFormat.PDF
@@ -70,7 +72,7 @@ def _requested(
     """The only constructor, so every other builder below starts here."""
     return ExportJob.request(
         id=_JOB_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         tailoring_run_id=_RUN_ID,
         document=_DOCUMENT,
         format=format,
@@ -121,7 +123,7 @@ def test_request_stores_the_owner_session_run_document_format_and_run_version() 
     job = _requested()
 
     assert job.id == _JOB_ID
-    assert job.guest_session_id == _SESSION_ID
+    assert job.owner == GuestOwner(_SESSION_ID)
     assert job.tailoring_run_id == _RUN_ID
     assert job.document is _DOCUMENT
     assert job.format is _FORMAT
@@ -141,6 +143,43 @@ def test_freshly_requested_job_is_queued_with_no_outcome_yet() -> None:
     assert job.started_at is None
     assert job.completed_at is None
     assert job.version == 1
+
+
+# --- 2.3's AC-3: ownership — both variants, the removed property ---------------------------------
+#
+# The round-trip test below encodes the REAL requirement — a `UserOwner` round-trips exactly like a
+# `GuestOwner` — not the skeleton's placeholder. Run today, `_assign_owner`'s `UserOwner` arm raises
+# `NotImplementedError` before the `assert` is ever reached, so the red is on that escaping
+# exception, never on a failed equality (never `pytest.raises(NotImplementedError)`, which would
+# assert the placeholder itself and stay green through T11 for the wrong reason). The guest-arm test
+# above (`test_request_stores_the_owner_session_run_document_format_and_run_version`) is this test's
+# discriminating positive: the same constructor, the same call shape, succeeding for the variant
+# that is already implemented.
+
+
+def test_request_with_a_user_owner_round_trips() -> None:
+    job = ExportJob.request(
+        id=_JOB_ID,
+        owner=UserOwner(_USER_ID),
+        tailoring_run_id=_RUN_ID,
+        document=_DOCUMENT,
+        format=_FORMAT,
+        run_version=_RUN_VERSION,
+        requested_at=_REQUESTED_AT,
+    )
+
+    assert job.owner == UserOwner(_USER_ID)
+
+
+def test_export_job_has_no_guest_session_id_property_any_more() -> None:
+    """AC-3: `guest_session_id` is **removed**, not merely deprecated — every caller reads `owner`.
+    Green on arrival (T5c's skeleton already removed it) — pinned here as an explicit regression
+    guard, asserted as an `AttributeError` on a real, fully-constructed job rather than on the
+    class, because the property could in principle exist and simply return the wrong thing."""
+    job = _requested()
+
+    with pytest.raises(AttributeError):
+        _ = job.guest_session_id  # type: ignore[attr-defined]
 
 
 # --- XJ-2 / AC-2: request refuses an inline format, and refuses run_version < 1 (XJ-8) ------------
@@ -442,7 +481,7 @@ def test_two_jobs_with_the_same_id_and_format_have_equal_storage_refs() -> None:
 
 @pytest.mark.parametrize(
     "attribute",
-    ["guest_session_id", "tailoring_run_id", "document", "format", "run_version", "requested_at"],
+    ["owner", "tailoring_run_id", "document", "format", "run_version", "requested_at"],
 )
 def test_export_job_key_fields_are_read_only(attribute: str) -> None:
     job = _requested()
@@ -476,7 +515,7 @@ def test_export_job_cannot_be_constructed_with_the_request_arguments() -> None:
     with pytest.raises(TypeError):
         ExportJob(  # type: ignore[call-arg]
             id=_JOB_ID,
-            guest_session_id=_SESSION_ID,
+            owner=GuestOwner(_SESSION_ID),
             tailoring_run_id=_RUN_ID,
             document=_DOCUMENT,
             format=_FORMAT,

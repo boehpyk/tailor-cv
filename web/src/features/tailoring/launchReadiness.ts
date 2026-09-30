@@ -18,9 +18,9 @@ import type { NewTailoringRun } from './types';
  * to do next.
  */
 export type BaseCvCheck =
-  | { readonly state: 'ready'; readonly baseCv: BaseCv }
-  | { readonly state: 'reading'; readonly baseCv: BaseCv }
-  | { readonly state: 'unreadable'; readonly baseCv: BaseCv }
+  | { readonly state: 'ready'; readonly baseCv: LaunchableCv }
+  | { readonly state: 'reading'; readonly baseCv: LaunchableCv }
+  | { readonly state: 'unreadable'; readonly baseCv: LaunchableCv }
   | { readonly state: 'missing' };
 
 export type JobPostingCheck =
@@ -34,7 +34,14 @@ export type JobPostingCheck =
  * A `switch` over the status union, so a fourth status is a compile error here rather than a CV
  * the checklist silently calls ready.
  */
-export function checkBaseCv(baseCv: BaseCv | null): BaseCvCheck {
+/**
+ * The three facts a launch reads from a CV. A guest's workspace CV (`BaseCv`) and an account's saved
+ * CV (`SavedBaseCv`, slice 2.3) both carry them — the same status union — so the checklist and the
+ * launch input work for either without knowing which it holds.
+ */
+export type LaunchableCv = Pick<BaseCv, 'id' | 'original_filename' | 'status'>;
+
+export function checkBaseCv(baseCv: LaunchableCv | null): BaseCvCheck {
   if (baseCv === null) {
     return { state: 'missing' };
   }

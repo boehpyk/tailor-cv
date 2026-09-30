@@ -1,7 +1,7 @@
 """`resolve_active_guest_session`: the one "look up the session, refuse it if it is gone or stale"
 step every use case that reads on behalf of a guest session needs.
 
-`GetBaseCvForSession` and `ListBaseCvsForSession` (`application/intake/`) both start with the exact
+`GetBaseCv` and `ListBaseCvsForSession` (`application/intake/`) both start with the exact
 same three lines — resolve the session, raise `GuestSessionNotFound` if the row is gone, raise
 `GuestSessionExpired` if `clock.now()` is past `expires_at` — as defense-in-depth against a caller
 that reaches a use case without going through the API's own cookie dependency (get_base_cv.py's and

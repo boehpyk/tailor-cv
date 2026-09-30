@@ -20,6 +20,7 @@ from uuid import UUID
 
 import pytest
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -55,7 +56,7 @@ _COMPLETED_AT = _STARTED_AT + timedelta(seconds=20)
 def _requested() -> TailoringRun:
     return TailoringRun.request(
         id=_RUN_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         base_cv_id=_BASE_CV_ID,
         job_posting_id=_JOB_POSTING_ID,
         requested_at=_REQUESTED_AT,
@@ -88,7 +89,7 @@ def test_request_records_exactly_one_tailoring_run_requested() -> None:
     event = events[0]
     assert isinstance(event, TailoringRunRequested)
     assert event.tailoring_run_id == _RUN_ID
-    assert event.guest_session_id == _SESSION_ID
+    assert event.owner == GuestOwner(_SESSION_ID)
     assert event.base_cv_id == _BASE_CV_ID
     assert event.job_posting_id == _JOB_POSTING_ID
     assert event.occurred_at == _REQUESTED_AT
@@ -238,7 +239,7 @@ def test_tailoring_run_requested_field_set_is_exactly_the_agreed_fields() -> Non
 
     assert field_names == {
         "tailoring_run_id",
-        "guest_session_id",
+        "owner",
         "base_cv_id",
         "job_posting_id",
         "occurred_at",
@@ -316,7 +317,10 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
     new field, and this one names, for a human reading this file, exactly which strings would be the
     disaster if one showed up. `previous_text` and `diff` are `TailoredDocumentRevised`'s own
     additions to the list (AC-20): the temptation a revision event invites that the four 1.3 events
-    never did."""
+    never did. `title`, `source_url`, `label`, `original_filename` and `email` are 2.3's own
+    additions (AC-5): `owner` now crosses these events into an authorization boundary that reads a
+    saved CV's label and filename and a user's email, and none of those belongs on a fact that
+    `LoggingEventPublisher` writes into a log line any more than a posting's title or URL do."""
     field_names = {field.name for field in dataclasses.fields(event_type)}
 
     forbidden_names = {
@@ -334,6 +338,14 @@ def test_no_event_field_set_contains_a_document_body_or_free_text_field(
         "response",
         "raw_response",
         "message",
+        # 2.3 (AC-5): no event may carry a posting's text/title/URL, a saved CV's label or
+        # filename, or a user's email.
+        "text",
+        "title",
+        "source_url",
+        "label",
+        "original_filename",
+        "email",
     }
 
     assert field_names.isdisjoint(forbidden_names)

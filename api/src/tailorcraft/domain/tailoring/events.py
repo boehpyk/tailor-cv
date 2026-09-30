@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.events import DomainEvent
@@ -58,16 +58,18 @@ class TailoringRunRequested(DomainEvent):
     """A visitor asked for two documents: a run now exists, `queued`, and a task is about to be
     published for it.
 
-    Payload: `tailoring_run_id`, `guest_session_id`, `base_cv_id`, `job_posting_id` (+ inherited
-    `occurred_at`). **Deliberately absent: everything textual.** The four ids are the whole fact —
-    what was asked for, on whose behalf, from which two inputs. The CV's filename, the posting's URL
-    and the posting's title are all reachable from those ids by anyone with database access and a
-    reason, which is the right bar; none of them belongs in a log line (the same call 1.1 made about
+    Payload: `tailoring_run_id`, `owner`, `base_cv_id`, `job_posting_id` (+ inherited
+    `occurred_at`). `owner` replaced 1.3's `guest_session_id` in slice 2.3 (ADR-0022): still an id,
+    wrapped in its variant, rendered by `LoggingEventPublisher` as `owner_kind` + `owner_id`.
+    **Deliberately absent: everything textual.** The four ids are the whole fact — what was asked
+    for, on whose behalf, from which two inputs. The CV's filename, the posting's URL and the
+    posting's title are all reachable from those ids by anyone with database access and a reason,
+    which is the right bar; none of them belongs in a log line (the same call 1.1 made about
     `BaseCvUploaded` and 1.2 made about `JobPostingCaptured`).
     """
 
     tailoring_run_id: TailoringRunId
-    guest_session_id: GuestSessionId
+    owner: Owner
     base_cv_id: BaseCvId
     job_posting_id: JobPostingId
 

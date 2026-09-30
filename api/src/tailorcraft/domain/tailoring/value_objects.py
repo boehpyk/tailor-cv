@@ -390,7 +390,7 @@ class TailoredDocumentKind(StrEnum):
 
 
 class TailoringFailureReason(StrEnum):
-    """Why a `TailoringRun` ended in `FAILED`. Nine values, closed, exhaustive over every way a run
+    """Why a `TailoringRun` ended in `FAILED`. Ten values, closed, exhaustive over every way a run
     that reached a worker can end without two documents.
 
     **This enum is persisted**, and that is the deliberate contrast with `FetchFailureReason`, which
@@ -398,11 +398,11 @@ class TailoringFailureReason(StrEnum):
     anything spent, and is there an artifact to own?* Before the enqueue nothing has been spent, so a
     rejected request leaves no row at all. After the enqueue the user is waiting and we are about to
     pay Google on their behalf, so **every** outcome is a row — `succeeded`, and equally `failed`
-    with one of these nine reasons. A run that reached a worker and produced nothing still owns the
+    with one of these ten reasons. A run that reached a worker and produced nothing still owns the
     fact that it happened, the money it cost and the twelve seconds of a person's afternoon. That
     single line reconciles ADR-0004 with ADR-0013 rather than choosing between them.
 
-    Seven of the nine have exactly one `TailoringFailed` subclass binding them in
+    Seven of the ten have exactly one `TailoringFailed` subclass binding them in
     `domain/tailoring/errors.py`, so the adapter raises a named exception and the use case records a
     closed set. `LLM_ERROR` is the residual within that seven — the same role `FETCHER_ERROR` and
     `EXTRACTOR_ERROR` play, reached by the adapter's `except Exception` floor when a library fails in
@@ -423,6 +423,13 @@ class TailoringFailureReason(StrEnum):
     (`TailoringNotQueued` in `errors.py` is a different animal and is not this exception: it is what
     the queue adapter raises at the broker, before any reason is recorded, and it is a plain
     `DomainError` because nothing was spent.)
+
+    **`BASE_CV_DELETED` is the tenth value (slice 2.3, ADR-0014 amendment (a)), and the third with
+    no raise.** A registered user may delete a saved base CV that a queued run still references; the
+    worker then finds no CV to read. That is not the provider failing and not our plumbing losing the
+    run — it is the user's own decision, recorded as a fact through `mark_failed` from `running` by
+    the orchestration (`ExecuteTailoringRun`), never raised by an adapter, so it gets no
+    `TailoringFailed` subclass for the same reason `NOT_QUEUED` and `ABANDONED` have none.
     """
 
     LLM_UNAVAILABLE = "llm_unavailable"
@@ -434,6 +441,7 @@ class TailoringFailureReason(StrEnum):
     LLM_ERROR = "llm_error"
     NOT_QUEUED = "not_queued"
     ABANDONED = "abandoned"
+    BASE_CV_DELETED = "base_cv_deleted"
 
 
 @dataclass(frozen=True, slots=True)

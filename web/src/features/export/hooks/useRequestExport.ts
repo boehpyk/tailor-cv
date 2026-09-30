@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { requestExport } from '@/api/exports';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import { exportJobsQueryKey } from './useExportJobs';
 
@@ -36,9 +37,10 @@ export function useRequestExport(
   runId: string,
 ): ReturnType<typeof useMutation<ExportJob, Error, NewExport>> {
   const queryClient = useQueryClient();
+  const map = useScopeMap();
 
   return useMutation({
-    mutationFn: (input: NewExport) => requestExport(runId, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(runId) }),
+    mutationFn: (input: NewExport) => requestExport(map, runId, input),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(runId, map) }),
   });
 }

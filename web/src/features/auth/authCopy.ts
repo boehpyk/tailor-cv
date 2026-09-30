@@ -54,11 +54,15 @@ export const LOGOUT_PENDING_LABEL = 'Logging out…';
  */
 export const PASSWORD_HINT = 'At least 12 characters. A few unrelated words make a good one.';
 
-/** AC-40's two static notices on `/register`, verbatim. Pinned by a test; edit on purpose. */
+/**
+ * AC-40's two static notices on `/register`, verbatim. Pinned by a test; edit on purpose. Slice 2.3
+ * (AC-49) added the guest-work notice's second sentence: from 2.3 on, signing in *does* change what
+ * happens to what you tailor next — only the guest work already done stays behind.
+ */
 export const REGISTER_STORAGE_NOTICE =
   'We store your email address and a one-way hash of your password — never the password itself.';
 export const REGISTER_GUEST_WORK_NOTICE =
-  'Work you did as a guest stays with this browser for 24 hours and is not moved into your account yet.';
+  "Work you did as a guest stays with this browser for 24 hours and is not moved into your account yet. Once you're signed in, what you tailor is saved to your history until you delete it.";
 
 /** AC-42 / I-51 — the header and the guard both say this when the boot refresh could not answer. */
 export const AUTH_UNAVAILABLE_NOTE = "Couldn't check whether you're logged in";

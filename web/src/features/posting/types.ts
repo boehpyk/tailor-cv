@@ -48,7 +48,14 @@ export interface JobPosting {
   readonly character_count: number;
   readonly text: string;
   readonly created_at: string;
-  readonly expires_at: string;
+  /**
+   * **Whose retention this row lives under**, stated by the server: the guest session's expiry
+   * (ADR-0006's 24-hour promise) for a guest's row, and **`null`** for an account's — *kept until
+   * you delete it* (slice 2.3, plan §4 / OQ-8). One field with two honest values rather than two
+   * schemas, because the components that render it are shared (plan §0.9). A reader must handle
+   * `null`; there is no date to format for an account row.
+   */
+  readonly expires_at: string | null;
 }
 
 /**
@@ -64,7 +71,8 @@ export interface JobPostingSummary {
   readonly character_count: number;
   readonly preview: string;
   readonly created_at: string;
-  readonly expires_at: string;
+  /** See `JobPosting.expires_at` — the session's expiry for a guest, `null` for an account. */
+  readonly expires_at: string | null;
 }
 
 /** Every job posting a guest session owns. `items` is `[]` for a session with none. */

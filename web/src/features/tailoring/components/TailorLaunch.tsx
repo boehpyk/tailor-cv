@@ -1,5 +1,7 @@
 import { useId } from 'react';
 
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+
 import type { BaseCvCheck, JobPostingCheck } from '../launchReadiness';
 
 /** AC-25, verbatim. Stated before the first click, not buried (Constitution §8). */
@@ -12,6 +14,10 @@ const GEMINI_DISCLOSURE =
  * is about to send, so it is the CV's sentence that belongs next to the disclosure.
  */
 const RETENTION_SENTENCE = 'We delete guest CVs after 24 hours.';
+
+/** The account's half of the same line (slice 2.3, AC-49): what is tailored here is kept. */
+const ACCOUNT_RETENTION_SENTENCE =
+  'What you tailor here is saved to your history until you delete it.';
 
 export interface TailorLaunchProps {
   readonly baseCv: BaseCvCheck;
@@ -127,6 +133,7 @@ export function TailorLaunch({
   const reasonId = useId();
   const disclosureId = useId();
   const reason = blockedReason(baseCv, jobPosting, runInProgress);
+  const map = useScopeMap();
 
   return (
     <div className="space-y-3">
@@ -146,7 +153,9 @@ export function TailorLaunch({
       <p id={disclosureId} className="text-sm text-slate-600">
         {GEMINI_DISCLOSURE}
       </p>
-      <p className="text-sm text-slate-500">{RETENTION_SENTENCE}</p>
+      <p className="text-sm text-slate-500">
+        {map.kind === 'account' ? ACCOUNT_RETENTION_SENTENCE : RETENTION_SENTENCE}
+      </p>
 
       <button
         type="button"

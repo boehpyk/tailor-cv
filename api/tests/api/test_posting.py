@@ -64,6 +64,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.errors import (
     JobPostingFetchFailed,
@@ -301,7 +302,7 @@ async def _seed_posting(
     if source_url is not None:
         posting = JobPosting.from_fetched_url(
             id=posting_id,
-            guest_session_id=guest_session_id,
+            owner=GuestOwner(guest_session_id),
             url=SourceUrl(source_url),
             fetched=FetchedPosting(
                 text=JobPostingText(text), title=PostingTitle(title) if title is not None else None
@@ -311,7 +312,7 @@ async def _seed_posting(
     else:
         posting = JobPosting.from_pasted_text(
             id=posting_id,
-            guest_session_id=guest_session_id,
+            owner=GuestOwner(guest_session_id),
             text=JobPostingText(text),
             created_at=clock.now(),
         )

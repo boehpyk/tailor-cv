@@ -4,7 +4,7 @@ One use case, two commands, one `__call__` with a `match` — deliberately not t
 The two paths differ in exactly one step (where the text comes from) and agree on five: resolve the
 session, check it has not expired, check the per-session cap, save, publish. Splitting them would
 duplicate all five, and *a check duplicated in every caller is a check one caller eventually
-forgets* — the argument `GetBaseCvForSession`'s docstring already makes. A `match` over a union of
+forgets* — the argument `GetBaseCv`'s docstring already makes. A `match` over a union of
 frozen dataclasses expresses "one intent, two shapes of input" exactly, and it is this codebase's
 first structural pattern match (Constitution §2).
 """
@@ -14,9 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import assert_never
 
-from tailorcraft.domain.identity.errors import GuestSessionExpired
-from tailorcraft.domain.identity.ports import GuestSessionRepository
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.application.identity.resolve_owner import resolve_owner
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.ports import GuestSessionRepository, UserRepository
 from tailorcraft.domain.posting.errors import TooManyJobPostings
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
@@ -40,7 +40,9 @@ class PasteJobPostingCommand:
     have been enforced and this use case never re-checks them.
     """
 
-    guest_session_id: GuestSessionId
+    # Who the posting will belong to — a creating command keeps the word "owner" (2.2's
+    # `UploadBaseCvCommand` precedent); resolved by the use case before anything is written.
+    owner: Owner
     text: JobPostingText
 
 
@@ -53,7 +55,8 @@ class FetchJobPostingCommand:
     no such value exists.
     """
 
-    guest_session_id: GuestSessionId
+    # See `PasteJobPostingCommand.owner`.
+    owner: Owner
     url: SourceUrl
 
 
@@ -79,24 +82,25 @@ class CaptureJobPostingResult:
 
 
 class CaptureJobPosting:
-    """Capture one job posting for a guest session, from pasted text or from a fetched URL.
+    """Capture one job posting for its owner — a guest session or, since slice 2.3, a signed-in
+    user — from pasted text or from a fetched URL.
 
-    Flow (technical-plan.md, "Flow"):
+    Flow (technical-plan.md, "Flow"; slice 2.3 §2):
 
-    1. ``session = await sessions.get(cmd.guest_session_id)`` — raises `GuestSessionNotFound`.
-    2. ``if session.is_expired(clock.now()): raise GuestSessionExpired``.
-    3. ``if await postings.count_for_session(session.id) >= max_per_session: raise
-       TooManyJobPostings`` — a **cross-aggregate policy**, deliberately not an invariant of
-       `JobPosting`: the rule spans every posting a session owns, a fact no single instance has
-       access to. Soft cap; concurrent requests may overshoot by the number in flight, accepted and
-       documented rather than locked, exactly as 1.1's `TooManyBaseCvs` is.
-    4. ``posting_id = postings.next_identity()``.
-    5. ``match cmd:`` — the pasted arm builds from `cmd.text`; the fetched arm awaits
+    1. ``owner = await resolve_owner(sessions, users, clock, cmd.owner)`` — raises
+       `GuestSessionNotFound` / `GuestSessionExpired` for a guest, `UserNotFound` for a user.
+    2. ``match owner`` picks the cap: `max_per_session` for a guest, `max_per_user` for a user;
+       at or over it raises `TooManyJobPostings` — a **cross-aggregate policy**, deliberately not an
+       invariant of `JobPosting`: the rule spans every posting an owner has, a fact no single
+       instance has access to. Soft cap; concurrent requests may overshoot by the number in flight,
+       accepted and documented rather than locked, exactly as 1.1's `TooManyBaseCvs` is.
+    3. ``posting_id = postings.next_identity()``.
+    4. ``match cmd:`` — the pasted arm builds from `cmd.text`; the fetched arm awaits
        ``fetcher.fetch(cmd.url)`` first. **`JobPostingFetchFailed` is NOT caught here** — see the
        comment at that line in `__call__`.
-    6. ``await postings.add(posting)``.
-    7. ``await events.publish(*posting.release_events())`` — after the save, never before.
-    8. Return `CaptureJobPostingResult`.
+    5. ``await postings.add(posting)``.
+    6. ``await events.publish(*posting.release_events())`` — after the save, never before.
+    7. Return `CaptureJobPostingResult`.
 
     **Note an absence, so it does not read as an oversight.** `UploadBaseCv`'s step 5 writes a file
     *before* the row exists and carries a long comment about the crash window it chose (ADR-0006
@@ -109,29 +113,40 @@ class CaptureJobPosting:
         self,
         postings: JobPostingRepository,
         sessions: GuestSessionRepository,
+        users: UserRepository,
         fetcher: JobPostingFetcherPort,
         events: EventPublisherPort,
         clock: Clock,
         max_per_session: int = 10,
+        max_per_user: int = 500,
     ) -> None:
         self._postings = postings
         self._sessions = sessions
+        self._users = users
         self._fetcher = fetcher
         self._events = events
         self._clock = clock
         self._max_per_session = max_per_session
+        self._max_per_user = max_per_user
 
     async def __call__(self, cmd: CaptureJobPostingCommand) -> CaptureJobPostingResult:
-        session = await self._sessions.get(cmd.guest_session_id)
-        if session.is_expired(self._clock.now()):
-            raise GuestSessionExpired(str(session.id))
+        # `GuestSessionNotFound` / `GuestSessionExpired` for a guest; `UserNotFound` for a user.
+        owner = await resolve_owner(self._sessions, self._users, self._clock, cmd.owner)
 
         # Cross-aggregate policy, deliberately not an invariant of `JobPosting`: the rule spans
-        # every posting a session owns, a fact no single instance has access to. A soft cap —
+        # every posting an owner has, a fact no single instance has access to. A soft cap —
         # concurrent requests can overshoot it by the number in flight, which is accepted and
-        # documented rather than locked, exactly as `TooManyBaseCvs` is (P-32).
-        if await self._postings.count_for_session(session.id) >= self._max_per_session:
-            raise TooManyJobPostings(str(session.id))
+        # documented rather than locked, exactly as `TooManyBaseCvs` is (P-32). The cap is chosen by
+        # variant (`max_per_session` / `max_per_user`).
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                if await self._postings.count_for_owner(owner) >= self._max_per_session:
+                    raise TooManyJobPostings(str(guest_session_id))
+            case UserOwner(user_id=user_id):
+                if await self._postings.count_for_owner(owner) >= self._max_per_user:
+                    raise TooManyJobPostings(str(user_id))
+            case _:
+                assert_never(owner)
 
         posting_id = self._postings.next_identity()
         created_at = self._clock.now()
@@ -142,7 +157,7 @@ class CaptureJobPosting:
             case PasteJobPostingCommand():
                 posting = JobPosting.from_pasted_text(
                     id=posting_id,
-                    guest_session_id=session.id,
+                    owner=owner,
                     text=cmd.text,
                     created_at=created_at,
                 )
@@ -165,7 +180,7 @@ class CaptureJobPosting:
                 fetched = await self._fetcher.fetch(cmd.url)
                 posting = JobPosting.from_fetched_url(
                     id=posting_id,
-                    guest_session_id=session.id,
+                    owner=owner,
                     url=cmd.url,
                     fetched=fetched,
                     created_at=created_at,

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import (
     ExportFormatNotInline,
     TailoringRunNotExportable,
@@ -19,7 +19,7 @@ from tailorcraft.domain.export.errors import (
 from tailorcraft.domain.export.events import DocumentRenderedInline
 from tailorcraft.domain.export.ports import DocumentRendererPort
 from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.value_objects import (
@@ -46,7 +46,8 @@ class RenderDocumentInlineCommand:
     future non-HTTP caller cannot route around.
     """
 
-    guest_session_id: GuestSessionId
+    # Who is asking (slice 2.3, §0.3); authorized by `GetTailoringRun`, never compared here.
+    requester: Owner
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat
@@ -85,14 +86,14 @@ class RenderDocumentInline:
     A row here would be a record of a `GET` — a fact nobody reads, on a table the 24-hour purge
     then has to carry.
 
-    It composes `GetTailoringRunForSession` for the same reason `RequestExport` does: the
+    It composes `GetTailoringRun` for the same reason `RequestExport` does: the
     authorization rule and the 404 collapse are that use case's, inherited rather than written a
     fifth time. This is the *third* entry point onto a `TailoringRun` in this slice alone, which is
     the argument for centralizing the check making itself.
 
     Flow (technical-plan.md, "Application layer" §3; T7 implements it):
 
-    1. ``run = await get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)`` —
+    1. ``run = await get_tailoring_run(cmd.tailoring_run_id, cmd.requester)`` —
        `GuestSessionExpired` (X-2), `TailoringRunNotFound` for both "absent" and "not mine" (X-3).
     2. ``if run.status is not TailoringRunStatus.SUCCEEDED: raise TailoringRunNotExportable(
        run.status)`` (X-4). The aggregate's own status, as in `RequestExport` step 2.
@@ -133,7 +134,7 @@ class RenderDocumentInline:
 
     def __init__(
         self,
-        get_tailoring_run: GetTailoringRunForSession,
+        get_tailoring_run: GetTailoringRun,
         renderer: DocumentRendererPort,
         events: EventPublisherPort,
         clock: Clock,
@@ -153,7 +154,7 @@ class RenderDocumentInline:
     async def __call__(self, cmd: RenderDocumentInlineCommand) -> RenderedInlineDocument:
         # Step 1. The authorization rule and the 404 collapse are the composed read's, inherited
         # rather than written a fifth time (X-2, X-3).
-        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)
+        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.requester)
 
         # Step 2. The aggregate's own status, as in `RequestExport` step 2 (X-4).
         documents = run.current_documents

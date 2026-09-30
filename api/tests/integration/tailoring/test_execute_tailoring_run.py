@@ -173,7 +173,7 @@ def _extracted_base_cv(session_id: GuestSessionId) -> BaseCv:
 def _job_posting(session_id: GuestSessionId) -> JobPosting:
     return JobPosting.from_pasted_text(
         id=JobPostingId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         text=_posting_text(),
         created_at=_A_CLOCK_INSTANT,
     )
@@ -188,7 +188,7 @@ def _queued_run(
 ) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=base_cv_id,
         job_posting_id=job_posting_id,
         requested_at=at.now(),
@@ -570,7 +570,7 @@ async def test_two_concurrent_deliveries_the_loser_is_skipped_with_one_llm_call(
     def _independently_loaded_copy() -> TailoringRun:
         return TailoringRun.request(
             id=run_id,
-            guest_session_id=session_id,
+            owner=GuestOwner(session_id),
             base_cv_id=cv.id,
             job_posting_id=posting.id,
             requested_at=requested_at,

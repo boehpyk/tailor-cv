@@ -31,7 +31,7 @@ from tailorcraft.application.export.request_export import (
     RequestExportCommand,
     RequestExportResult,
 )
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import (
     ExportFormatNotQueued,
     TailoringRunNotExportable,
@@ -45,6 +45,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobStatus,
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.errors import TailoringRunNotFound, TailoringRunNotOwnedBySession
 from tailorcraft.domain.tailoring.value_objects import (
@@ -58,6 +59,7 @@ from tests.integration.fakes import (
     FakeExportJobRepository,
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -72,7 +74,7 @@ def _use_case(
     *,
     max_per_session: int = 40,
 ) -> RequestExport:
-    get_tailoring_run = GetTailoringRunForSession(runs, sessions, clock)
+    get_tailoring_run = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     return RequestExport(jobs, get_tailoring_run, events, clock, max_per_session=max_per_session)
 
 
@@ -91,7 +93,7 @@ async def test_happy_path_creates_a_queued_job_and_publishes_export_requested(
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -101,7 +103,7 @@ async def test_happy_path_creates_a_queued_job_and_publishes_export_requested(
 
     assert result.created is True
     assert result.export_job.status is ExportJobStatus.QUEUED
-    assert result.export_job.guest_session_id == session.id
+    assert result.export_job.owner == GuestOwner(session.id)
     assert result.export_job.tailoring_run_id == run.id
     assert result.export_job.document is TailoredDocumentKind.CV
     assert result.export_job.format is ExportFormat.PDF
@@ -112,7 +114,7 @@ async def test_happy_path_creates_a_queued_job_and_publishes_export_requested(
     published = [e for e in events.published if isinstance(e, ExportRequested)]
     assert len(published) == 1
     assert published[0].export_job_id == result.export_job.id
-    assert published[0].guest_session_id == session.id
+    assert published[0].owner == GuestOwner(session.id)
     assert published[0].tailoring_run_id == run.id
     assert published[0].document is TailoredDocumentKind.CV
     assert published[0].format is ExportFormat.PDF
@@ -133,7 +135,7 @@ async def test_expired_guest_session_raises_guest_session_expired(clock: FixedCl
     stale_clock = FixedClock(clock.now() + timedelta(hours=2))
     use_case = _use_case(jobs, runs, sessions, events, stale_clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -152,7 +154,7 @@ async def test_unknown_guest_session_raises_guest_session_not_found(clock: Fixed
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=GuestSessionId(value=uuid4()),
+        requester=GuestOwner(GuestSessionId(value=uuid4())),
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -183,7 +185,7 @@ async def test_run_owned_by_a_different_session_raises_tailoring_run_not_found_c
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=stranger.id,
+        requester=GuestOwner(stranger.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -204,7 +206,7 @@ async def test_nonexistent_run_raises_tailoring_run_not_found(clock: FixedClock)
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -231,7 +233,7 @@ async def test_queued_run_raises_tailoring_run_not_exportable_carrying_its_statu
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -254,7 +256,7 @@ async def test_failed_run_raises_tailoring_run_not_exportable(clock: FixedClock)
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -284,7 +286,7 @@ async def test_inline_format_raises_export_format_not_queued(clock: FixedClock) 
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.MD,
@@ -312,7 +314,7 @@ async def test_existing_non_terminal_job_at_the_current_version_is_returned_unch
     await runs.add(run)
     existing = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -325,7 +327,7 @@ async def test_existing_non_terminal_job_at_the_current_version_is_returned_unch
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -352,7 +354,7 @@ async def test_existing_ready_job_at_the_current_version_is_returned_unchanged(
     await runs.add(run)
     existing = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -365,7 +367,7 @@ async def test_existing_ready_job_at_the_current_version_is_returned_unchanged(
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -390,7 +392,7 @@ async def test_failed_latest_job_for_the_key_is_superseded_by_a_new_job(clock: F
     await runs.add(run)
     stale = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -403,7 +405,7 @@ async def test_failed_latest_job_for_the_key_is_superseded_by_a_new_job(clock: F
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -428,7 +430,7 @@ async def test_latest_job_requested_for_a_stale_run_version_is_superseded_by_a_n
     await runs.add(run)
     stale = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -441,7 +443,7 @@ async def test_latest_job_requested_for_a_stale_run_version_is_superseded_by_a_n
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -471,7 +473,7 @@ async def test_session_at_the_cap_raises_too_many_export_jobs(clock: FixedClock)
     for _ in range(40):
         other = ExportJob.request(
             id=jobs.next_identity(),
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,
@@ -482,7 +484,7 @@ async def test_session_at_the_cap_raises_too_many_export_jobs(clock: FixedClock)
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock, max_per_session=40)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -508,7 +510,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
     await runs.add(run)
     existing = ExportJob.request(
         id=jobs.next_identity(),
-        guest_session_id=session.id,
+        owner=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
@@ -519,7 +521,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
     for _ in range(39):
         other = ExportJob.request(
             id=jobs.next_identity(),
-            guest_session_id=session.id,
+            owner=GuestOwner(session.id),
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,
@@ -531,7 +533,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
     events = RecordingEventPublisher()
     use_case = _use_case(jobs, runs, sessions, events, clock, max_per_session=40)
     cmd = RequestExportCommand(
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,

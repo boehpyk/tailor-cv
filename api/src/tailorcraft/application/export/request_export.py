@@ -11,13 +11,14 @@ same contrast one context over, and for the same reason.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import assert_never
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import TailoringRunNotExportable, TooManyExportJobs
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.value_objects import (
@@ -37,7 +38,7 @@ class RequestExportCommand:
     free to disagree with it, and it would let a caller pin a job to a version that was never
     current.
 
-    `guest_session_id` and `tailoring_run_id` are typed value objects rather than bare `UUID`s for
+    `requester` and `tailoring_run_id` are typed value objects rather than bare `UUID`s for
     `RequestTailoringRunCommand`'s reason: two UUIDs of two different things, and a transposition
     would otherwise be a silent lookup of the wrong row.
 
@@ -48,7 +49,9 @@ class RequestExportCommand:
     `ExportFormat`, and the aggregate's refusal is the one that cannot be routed around.
     """
 
-    guest_session_id: GuestSessionId
+    # Who is asking (slice 2.3, §0.3). Not called `owner`: the job's owner is taken from the *run*
+    # (ADR-0016 amendment (a)), and this command only says who presented a credential.
+    requester: Owner
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat
@@ -79,14 +82,14 @@ class RequestExport:
     """Record a visitor's request to export one document of one run into one queued format, or hand
     back the job that is already doing exactly that.
 
-    **It takes the read *use case* `GetTailoringRunForSession`, not `TailoringRunRepository`, and
+    **It takes the read *use case* `GetTailoringRun`, not `TailoringRunRepository`, and
     that is the load-bearing choice here.** This is the fourth time this codebase makes it — 1.3
-    made it twice (`GetBaseCvForSession`, `GetJobPostingForSession`) and 1.4 made it once
+    made it twice (`GetBaseCv`, `GetJobPosting`) and 1.4 made it once
     (`ReviseTailoredDocument`) — so it is a convention now rather than a judgement call, but the
     reason is worth restating because it is the whole argument for the shape:
 
         The read use case carries the authorization rule — *what authorizes access is the link*,
-        `run.guest_session_id == the resolved session id` (ADR-0008) — **and** the 404 collapse
+        `run.owner == GuestOwner(the resolved session id)` (ADR-0008) — **and** the 404 collapse
         that makes "not mine" indistinguishable from "does not exist" (X-13, AC-14). A use case
         that never sees a run repository cannot forget either of them.
 
@@ -113,7 +116,7 @@ class RequestExport:
 
     Flow (technical-plan.md, "Application layer" §1; T7 implements it):
 
-    1. ``run = await get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)`` — resolves the
+    1. ``run = await get_tailoring_run(cmd.tailoring_run_id, cmd.requester)`` — resolves the
        session and raises `GuestSessionNotFound` / `GuestSessionExpired` (X-12) and
        `TailoringRunNotFound` (X-13), the latter for both "absent" and "not mine".
     2. ``if run.status is not TailoringRunStatus.SUCCEEDED: raise TailoringRunNotExportable(
@@ -123,7 +126,7 @@ class RequestExport:
     3. ``existing = await jobs.find_latest_for_key(run.id, cmd.document, cmd.format)``. If
        `existing` is not `None`, is not `failed`, and ``existing.was_requested_for(run.version)``:
        return ``RequestExportResult(existing, created=False)`` — 200, no row, no task (X-16).
-    4. ``if await jobs.count_for_session(cmd.guest_session_id) >= max_per_session: raise
+    4. ``if await jobs.count_for_session(sid) >= max_per_session`` (guest) … ``: raise
        TooManyExportJobs(...)`` (X-18).
     5. ``job = ExportJob.request(id=jobs.next_identity(), ..., run_version=run.version,
        requested_at=clock.now())`` — `ExportFormatNotQueued` propagates from here (X-15) and
@@ -163,21 +166,23 @@ class RequestExport:
     def __init__(
         self,
         jobs: ExportJobRepository,
-        get_tailoring_run: GetTailoringRunForSession,
+        get_tailoring_run: GetTailoringRun,
         events: EventPublisherPort,
         clock: Clock,
         max_per_session: int = 40,
+        max_per_user_run: int = 20,
     ) -> None:
         self._jobs = jobs
         self._get_tailoring_run = get_tailoring_run
         self._events = events
         self._clock = clock
         self._max_per_session = max_per_session
+        self._max_per_user_run = max_per_user_run
 
     async def __call__(self, cmd: RequestExportCommand) -> RequestExportResult:
         # Step 1. The composed read carries the authorization rule and the 404 collapse; this use
         # case never sees a run repository, so it cannot forget either (see the class docstring).
-        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.guest_session_id)
+        run = await self._get_tailoring_run(cmd.tailoring_run_id, cmd.requester)
 
         # Step 2. The aggregate's own status, not `current_documents is not None`: equivalent, but
         # this one says what it means and is the value the error carries to the client (X-14).
@@ -203,14 +208,29 @@ class RequestExport:
         # would mean a repository call in a constructor (ADR-0014 §4). It runs *after* step 3 on
         # purpose: a visitor at the cap who asks again for a job that already exists is handed that
         # job, rather than a 409 that would be true and useless (X-18).
-        if await self._jobs.count_for_session(cmd.guest_session_id) >= self._max_per_session:
-            raise TooManyExportJobs(str(cmd.guest_session_id))
+        # The cap is chosen by variant (ADR-0016 amendment (b)): 40 per guest session, 20 per run for
+        # a user. The guest cap stays `count_for_session`: it spans every run in the session.
+        # Matched on the **run's** owner, which `GetTailoringRun` has just proven equal to the
+        # resolved requester — the job will take that owner too (step 5), so the cap and the row
+        # agree on whose job this is.
+        match run.owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                if await self._jobs.count_for_session(guest_session_id) >= self._max_per_session:
+                    raise TooManyExportJobs(str(guest_session_id))
+            case UserOwner():
+                if await self._jobs.count_for_run(run.id) >= self._max_per_user_run:
+                    raise TooManyExportJobs(str(run.id))
+            case _:
+                assert_never(run.owner)
 
         # Step 5. `ExportFormatNotQueued` propagates from here (X-15) — the second lock behind the
         # boundary's literal type. `run_version` is read off the run, never taken from the caller.
         job = ExportJob.request(
             id=self._jobs.next_identity(),
-            guest_session_id=cmd.guest_session_id,
+            # From the run, never from the command (ADR-0016 amendment (a)): *a job's owner is its
+            # run's owner* is a cross-aggregate invariant no `ExportJob` can see, so it is kept here,
+            # and the ownership graph cannot cross owners (ADR-0022).
+            owner=run.owner,
             tailoring_run_id=run.id,
             document=cmd.document,
             format=cmd.format,

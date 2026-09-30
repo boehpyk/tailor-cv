@@ -1,4 +1,5 @@
 import { request } from './client';
+import { authOptionFor } from './target';
 
 import type {
   NewTailoringRun,
@@ -7,6 +8,7 @@ import type {
   TailoringRun,
   TailoringRunListResponse,
 } from '@/features/tailoring/types';
+import type { ApiTarget } from './target';
 
 /**
  * The tailoring-run endpoints. All four are plain JSON; the only change `client.ts` ever needed
@@ -18,6 +20,13 @@ import type {
  * already own, so a request without a valid session has nothing to tailor and nothing to edit.
  * Each function throws that 401 as an `ApiError` like any other failure; what it *means* for the
  * UI is decided one layer up.
+ *
+ * **Slice 2.3: three of the four serve both scopes.** The run, its creation and its revision take an
+ * `ApiTarget` — the guest routes with the cookie, or their `/api/me/` twins with the bearer (plan
+ * §0.2, §0.9) — because the bodies and the answers are the same and two copies would drift. For an
+ * account the 401s are `invalid_access_token` / `not_signed_in`, and the client's refresh-and-retry
+ * handles the first. The *list* stays guest-only: the account's runs are its history, read as pages
+ * (`api/history.ts`), a different shape on purpose.
  */
 
 /**
@@ -37,8 +46,13 @@ export function fetchTailoringRuns(signal?: AbortSignal): Promise<TailoringRunLi
  * only 4xx is 404 `tailoring_run_not_found` (identical for "does not exist" and "not yours") and the
  * session's 401.
  */
-export function fetchTailoringRun(id: string, signal?: AbortSignal): Promise<TailoringRun> {
-  return request<TailoringRun>(`/api/tailoring-runs/${encodeURIComponent(id)}`, {
+export function fetchTailoringRun(
+  target: ApiTarget,
+  id: string,
+  signal?: AbortSignal,
+): Promise<TailoringRun> {
+  return request<TailoringRun>(`${target.tailoringRunsPath}/${encodeURIComponent(id)}`, {
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -55,12 +69,14 @@ export function fetchTailoringRun(id: string, signal?: AbortSignal): Promise<Tai
  * `service_unavailable`.
  */
 export function createTailoringRun(
+  target: ApiTarget,
   input: NewTailoringRun,
   signal?: AbortSignal,
 ): Promise<TailoringRun> {
-  return request<TailoringRun>('/api/tailoring-runs', {
+  return request<TailoringRun>(target.tailoringRunsPath, {
     method: 'POST',
     body: input,
+    ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });
 }
@@ -87,16 +103,18 @@ export function createTailoringRun(
  * in the URL, not in a log line, not in an error thrown from here.
  */
 export function reviseTailoredDocument(
+  target: ApiTarget,
   runId: string,
   kind: TailoredDocumentKind,
   body: ReviseDocumentBody,
   signal?: AbortSignal,
 ): Promise<TailoringRun> {
   return request<TailoringRun>(
-    `/api/tailoring-runs/${encodeURIComponent(runId)}/documents/${kind}`,
+    `${target.tailoringRunsPath}/${encodeURIComponent(runId)}/documents/${kind}`,
     {
       method: 'PUT',
       body,
+      ...authOptionFor(target),
       ...(signal ? { signal } : {}),
     },
   );

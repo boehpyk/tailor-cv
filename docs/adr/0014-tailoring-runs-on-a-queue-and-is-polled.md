@@ -273,7 +273,7 @@ as a value object, which is the ordinary relationship between a language and a m
   for a guarantee the session FK already gives — and it makes two bounded contexts one schema. If
   Phase 2 ever lets a user delete a single base CV while keeping the session, the answer is a
   nullable reference plus a "the source CV was deleted" state, not a cascade that silently erases
-  history.
+  history. *(Resolved in the 2026-09-26 Amendment below: a dangling reference plus a derived state.)*
 
 ## Consequences
 
@@ -417,3 +417,64 @@ contradicts AC-12, and ADR-0004's promise that a failed run is a recorded state.
 stopped, readiness reported `ready: true`. A dead beat shows only as missing `tailoring.stale_runs_swept` log
 lines, which are logged every tick, including ticks that sweep nothing. A scheduler heartbeat belongs to slice
 1.6, where a dead beat would also become a retention failure.
+
+## Amendment: 2026-09-26, from the plan of slice 2.3 (`tailoring-application-history`)
+
+Slice 2.3 makes a run ownable by a user and lets that user keep it as history (ADR-0023). The day
+this ADR's Alternatives anticipated has come: a user can delete a single base CV — a saved one (2.2)
+— while runs made from it survive. This amendment adds a failure reason, resolves that alternative,
+and records how §3 and §4 read now that a run has one of two owners. Everything else stands.
+
+**(a) `base_cv_deleted` is the tenth failure reason.** A user-owned run is requested; the user deletes
+its saved CV in another tab; the worker then reaches the step that loads the CV and finds nothing.
+Until 2.3 that branch returned `MISSING` with the comment *"effectively unreachable"* — and left the
+run `running`, for the stale sweep to mark `abandoned` five minutes later, which lies about why. It
+now records **`failed` / `base_cv_deleted`**, from `running` (the status the previous step just
+saved), **before the paid call**.
+
+- **It has no exception subclass**, like `not_queued` and `abandoned`: nothing raises it; our
+  orchestration records it. The asymmetry with the LLM's own reasons is the one §2 already draws.
+- **It is not retryable.** *Try again* would 404 on the same CV. The boundary's `retryable`
+  derivation says `false`, and the UI offers no retry.
+- **Idempotency is unchanged.** It is recorded through `mark_failed`, so a redelivery after it finds
+  a decided run and is refused, by the same transition table as every other outcome.
+- **A missing *posting* stays `MISSING`, and stays unreachable.** A user-owned posting is deleted only
+  by history-entry deletion, which requires that no other run references it, or by account erasure,
+  which takes the run too. The code comment is rewritten to say that instead of *"the only way is the
+  guest purge"*.
+- **The two-version window:** a 2.2 process loading a run that a 2.3 worker has just failed with the
+  new reason would raise on the enum. That needs a user to delete a saved CV *and* a 2.2 process to
+  read that run within the seconds both versions run — and 2.2 has no route that reads a user-owned
+  run. Stated, not closed. The migration's downgrade refuses while any run holds the value.
+
+**(b) The *"nullable reference plus state"* alternative is resolved as a dangling reference plus a
+derived state.** Neither half was taken literally:
+
+- **The reference dangles; it is not nullable.** `tailoring_run.base_cv_id` stays `NOT NULL`, with
+  **no foreign key** — the Alternatives' reasoning against cross-context FKs is unchanged. A deleted
+  CV leaves the id in place as history (*"made from that"*), exactly like ADR-0022's
+  `copied_from_base_cv_id`. An `ON DELETE SET NULL` FK was weighed and rejected: it is the
+  cross-context FK this ADR declined, it weakens the run's invariant that it always has a base CV id,
+  it makes one CV deletion a write to up to 500 runs, and it destroys a harmless id for no gain.
+- **The state is derived; it is not stored.** *"CV deleted"* is computed at read time by the history
+  read model's `LEFT JOIN` on `intake_base_cv` (ADR-0024). There is no flag column to keep in step,
+  and no write to any run when a CV is deleted.
+- **It is not a run status, and not a failure reason.** A *succeeded* run whose CV was deleted
+  afterwards is still succeeded, and still holds its documents; re-open and re-export work.
+  `base_cv_deleted` in (a) is the different case of a CV deleted *before* the worker read it.
+
+Refusing the CV's deletion while a run references it, and cascading the deletion to the runs, were
+both rejected in ADR-0023: the first makes a user's right to delete their CV hostage to their history;
+the second is the silent erasure this ADR's Alternatives already refused.
+
+**(c) §3 and §4 read per owner.**
+
+- **§4: at most one active run per owner**, soft, in the use case, with the same 409 and the same
+  body. The per-owner count caps are 20 runs per guest session (unchanged) and 500 per user, chosen by
+  a `match` on the owner — a statement about an owner's set of runs, so still not an invariant of the
+  aggregate.
+- **§3: the account's `POST` mints nothing.** The account route is bearer-only and never reads or
+  sets the guest cookie; a user's run references a saved CV and an account posting, both of which
+  exist only under the user. The guest route's rule is unchanged.
+- **The rate limit is keyed on the user** (plus the client IP, failing closed, as 1.3's is) on the
+  account route, since a user has no session to key on.

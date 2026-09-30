@@ -42,6 +42,7 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoredCv,
     TailoredDocumentKind,
     TailoredDocuments,
+    TailoringFailureReason,
 )
 
 # --- TailoredCv / CoverLetter: shared rules, different bounds -------------------------------------
@@ -458,6 +459,37 @@ def test_tailored_documents_cannot_be_constructed_with_only_one_document() -> No
 def test_tailored_document_kind_values_are_the_url_path_segments() -> None:
     assert TailoredDocumentKind.CV.value == "cv"
     assert TailoredDocumentKind.COVER_LETTER.value == "cover_letter"
+
+
+# --- TailoringFailureReason: a closed set (2.3's AC-4) -----------------------------------------------
+#
+# No existing test pinned this enum's member count before slice 2.3 — this is a NEW closure test,
+# not an amendment of one. Asserted as an exact set of values, the same "equality over the whole set"
+# form `tests/unit/posting/test_events.py`'s AC-19 test uses and for the identical reason: a
+# disjointness check against nine names we thought of today would pass forever as long as an
+# eleventh value is spelled differently from all nine, while an equality check fails on *any*
+# deviation from exactly these ten, including the one nobody predicted. Green on arrival — `StrEnum`
+# has nothing to validate in a body, so there is no `NotImplementedError` here to fail against; what
+# this guards is a *future* edit that adds an eleventh value, or a twelfth, without updating this
+# line to match.
+
+
+def test_tailoring_failure_reason_is_closed_at_exactly_ten_values() -> None:
+    assert {reason.value for reason in TailoringFailureReason} == {
+        # The nine values 1.3 and 1.4 shipped with.
+        "llm_unavailable",
+        "llm_rate_limited",
+        "llm_refused",
+        "llm_timed_out",
+        "llm_output_invalid",
+        "inputs_too_large",
+        "llm_error",
+        "not_queued",
+        "abandoned",
+        # 2.3's tenth (technical-plan.md's "TailoringFailureReason — the tenth value").
+        "base_cv_deleted",
+    }
+    assert len(TailoringFailureReason) == 10
 
 
 # --- Value semantics: compare by value, frozen ------------------------------------------------------

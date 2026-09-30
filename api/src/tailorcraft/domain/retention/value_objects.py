@@ -347,13 +347,67 @@ class AccountErasureReport:
     base_cvs: int
     files_unlinked: int
     unlink_failures: tuple[str, ...]
+    # Slice 2.3 (AC-15): the account's history is erased with it. `files` is every key the erasure
+    # tried to unlink — saved-CV files **and** derived export files — so `files_unlinked` and
+    # `unlink_failures` can be read against it. No defaults, like every other field here.
+    tailoring_runs: int
+    job_postings: int
+    export_jobs: int
+    files: int
 
 
 @dataclass(frozen=True, slots=True)
 class AccountCounts:
     """What erasing one account *would* delete, for `erase-account --dry-run` (AC-31): the saved
-    base CVs, the stored files they name, and the logins. Counts only."""
+    base CVs, the stored files, and the logins — and since slice 2.3 (AC-36) the tailoring runs, the
+    job postings and the export jobs. Counts only.
+
+    `files` is **widened in meaning, not added**: since 2.3 it counts saved-CV files and the
+    account's derived export files together (AC-15), exactly as `AccountDataPort.files_of_account`
+    will return both.
+    """
 
     base_cvs: int
     files: int
     logins: int
+    tailoring_runs: int
+    job_postings: int
+    export_jobs: int
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.3 — deleting one history entry (technical plan §0.6).
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DeletedHistoryEntry:
+    """What `HistoryEntryDataPort.delete_history_entry` removed, committed, in one transaction: the
+    run, its export jobs and — if no other run references it — its posting.
+
+    `export_files` is what the use case must unlink next, and it is the same set the `DELETE … RETURNING`
+    removed: each key is **derived** from a deleted job's `(id, format)`, never read from its
+    `file_key` column, so a `rendering` or `failed` job's already-written bytes are not missed (the
+    purge's rule, ADR-0018 decision 3). A tuple of `FileRef`s, never paths or names.
+    """
+
+    export_files: tuple[FileRef, ...]
+    export_jobs: int
+    posting_deleted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryEntryErasureReport:
+    """What erasing one history entry did (AC-14): counts, and the exception **type names** of the
+    unlinks the store refused.
+
+    `AccountErasureReport`'s rules, reused: nothing that can carry a key, a path, a filename or a
+    message; failures returned rather than logged, because the use case does not log and the entry
+    point turns each into one line. The rows are committed before any unlink is tried, so a failure
+    here is an orphan for the operator's sweep, never a reason to fail the deletion.
+    """
+
+    export_jobs: int
+    files_unlinked: int
+    unlink_failures: tuple[str, ...]
+    posting_deleted: bool

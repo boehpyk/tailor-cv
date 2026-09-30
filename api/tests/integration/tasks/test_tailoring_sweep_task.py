@@ -24,10 +24,13 @@ Celery task that bridges into async application code with `asyncio.run(_sweep())
    session — the identical technique `test_tailoring_task.py`'s `_bind_task_to_this_sessions_worker`
    uses, one layer down.
 
-Every run built below needs no real `BaseCv` or `JobPosting`: unlike `ExecuteTailoringRun`,
-`AbandonStaleTailoringRuns` never looks either up (its own class docstring, and the mapping module's
-own note that `base_cv_id`/`job_posting_id` carry no foreign key) — a random UUID is exactly as good
-as a real one for every test here.
+Every run built below needs no real `BaseCv`: unlike `ExecuteTailoringRun`,
+`AbandonStaleTailoringRuns` never looks it up (its own class docstring, and the mapping module's own
+note that `base_cv_id` carries no foreign key) — a random UUID is exactly as good as a real one.
+**A `JobPosting` is a different story since 2.3 /verify (reviewer MINOR #1)**: `job_posting_id` also
+carries no FK, but `SqlAlchemyTailoringRunRepository.add` now takes it `FOR KEY SHARE` and, through
+the request route's composition root, refuses a run whose posting does not exist — so `_running_run`
+below persists a real one, even though nothing in this file's own code path ever reads it back.
 """
 
 from __future__ import annotations
@@ -54,9 +57,11 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
-from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
@@ -65,19 +70,25 @@ from tailorcraft.domain.tailoring.value_objects import (
 )
 from tailorcraft.infrastructure.clock import FixedClock
 
-# Importing these two mapping modules is what runs `mapper_registry.map_imperatively(...)` for
-# `GuestSession` and `TailoringRun` as an import side effect — collection order alone cannot be
-# trusted to do this first when this file is run alone (`make test file=...`), and each
+# Importing these three mapping modules is what runs `mapper_registry.map_imperatively(...)` for
+# `GuestSession`, `JobPosting` and `TailoringRun` as an import side effect — collection order alone
+# cannot be trusted to do this first when this file is run alone (`make test file=...`), and each
 # `repositories.*` import below fails at ITS OWN top level otherwise (`test_tailoring_task.py`'s
 # identical comment names the exact `AttributeError`).
 from tailorcraft.infrastructure.persistence.mapping.identity.guest_session import (
     guest_session_table,
+)
+from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import (
+    job_posting_table,  # noqa: F401
 )
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,  # noqa: F401
 )
 from tailorcraft.infrastructure.persistence.repositories.identity.guest_session import (
     SqlAlchemyGuestSessionRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
+    SqlAlchemyJobPostingRepository,
 )
 from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
     SqlAlchemyTailoringRunRepository,
@@ -115,7 +126,8 @@ def _real_now() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
-def _running_run(
+async def _running_run(
+    session: AsyncSession,
     runs: SqlAlchemyTailoringRunRepository,
     owner_id: GuestSessionId,
     *,
@@ -123,12 +135,26 @@ def _running_run(
     started_at_seconds_ago: int,
     now: datetime,
 ) -> TailoringRun:
+    """`base_cv_id` stays a random id — `AbandonStaleTailoringRuns` never looks it up (its own
+    class docstring, and the mapping module's own note that it carries no FK). `job_posting_id`
+    needs a real backing row now, though, since 2.3 /verify (reviewer MINOR #1):
+    `SqlAlchemyTailoringRunRepository.add` takes it `FOR KEY SHARE` and, through the request
+    route's composition root, refuses a run whose posting does not exist — a fact this file's own
+    module docstring was wrong to generalise to both ids."""
     run = TailoringRun.request(
         id=runs.next_identity(),
-        guest_session_id=owner_id,
+        owner=GuestOwner(owner_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=now - timedelta(seconds=requested_at_seconds_ago),
+    )
+    await SqlAlchemyJobPostingRepository(session).add(
+        JobPosting.from_pasted_text(
+            id=run.job_posting_id,
+            owner=GuestOwner(owner_id),
+            text=JobPostingText("posting " * 40),
+            created_at=now,
+        )
     )
     run.mark_started(now - timedelta(seconds=started_at_seconds_ago))
     return run
@@ -204,11 +230,11 @@ async def test_a_stale_running_run_is_abandoned_and_a_fresh_one_is_untouched(
     owner = await _persist_owner(session, clock, token_hash="30" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     now = _real_now()
-    stale = _running_run(
-        runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=400, now=now
+    stale = await _running_run(
+        session, runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=400, now=now
     )
-    fresh = _running_run(
-        runs, owner.id, requested_at_seconds_ago=10, started_at_seconds_ago=5, now=now
+    fresh = await _running_run(
+        session, runs, owner.id, requested_at_seconds_ago=10, started_at_seconds_ago=5, now=now
     )
     await runs.add(stale)
     await runs.add(fresh)
@@ -265,11 +291,11 @@ async def test_a_real_database_failure_on_a_later_run_leaves_an_earlier_run_dura
     owner = await _persist_owner(session, clock, token_hash="31" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     now = _real_now()
-    earlier = _running_run(
-        runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=900, now=now
+    earlier = await _running_run(
+        session, runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=900, now=now
     )
-    later = _running_run(
-        runs, owner.id, requested_at_seconds_ago=800, started_at_seconds_ago=700, now=now
+    later = await _running_run(
+        session, runs, owner.id, requested_at_seconds_ago=800, started_at_seconds_ago=700, now=now
     )
     # Captured now, as plain values — not read off `earlier`/`later` after the failure below, which
     # leaves `session` needing a rollback and its objects expired. Accessing an expired attribute
@@ -363,11 +389,11 @@ async def test_a_version_conflict_on_the_earlier_run_does_not_crash_the_sweep_on
     owner = await _persist_owner(session, clock, token_hash="34" * 32)
     runs = SqlAlchemyTailoringRunRepository(session)
     now = _real_now()
-    earlier = _running_run(
-        runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=900, now=now
+    earlier = await _running_run(
+        session, runs, owner.id, requested_at_seconds_ago=1_000, started_at_seconds_ago=900, now=now
     )
-    later = _running_run(
-        runs, owner.id, requested_at_seconds_ago=800, started_at_seconds_ago=700, now=now
+    later = await _running_run(
+        session, runs, owner.id, requested_at_seconds_ago=800, started_at_seconds_ago=700, now=now
     )
     earlier_id = earlier.id
     later_id = later.id
@@ -531,7 +557,8 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
             async with AsyncSession(seeding_engine, expire_on_commit=False) as seeding_session:
                 owner = await _persist_owner(seeding_session, clock, token_hash="32" * 32)
                 runs = SqlAlchemyTailoringRunRepository(seeding_session)
-                stale = _running_run(
+                stale = await _running_run(
+                    seeding_session,
                     runs,
                     owner.id,
                     requested_at_seconds_ago=1_000,

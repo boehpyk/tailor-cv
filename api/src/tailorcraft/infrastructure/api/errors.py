@@ -66,12 +66,13 @@ from tailorcraft.domain.posting.errors import (
     TooManyJobPostings,
 )
 from tailorcraft.domain.posting.value_objects import FetchFailureReason
-from tailorcraft.domain.retention.errors import AccountNotFound
+from tailorcraft.domain.retention.errors import AccountNotFound, HistoryEntryInProgress
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
     BaseCvNotReadyForTailoring,
     EmptyTailoredDocument,
+    InvalidHistoryCursor,
     InvalidTailoredDocument,
     TailoredDocumentTooLong,
     TailoredDocumentTooShort,
@@ -310,7 +311,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     # router constructs those value objects from the client's text, so they are mapped below.)
 
     if isinstance(exc, TailoringRunNotFound):
-        # G-29: also what `GetTailoringRunForSession` raises (`from TailoringRunNotOwnedBySession`)
+        # G-29: also what `GetTailoringRun` raises (`from TailoringRunNotOwnedBySession`)
         # for a run that exists but belongs to someone else. The two are indistinguishable on the
         # wire on purpose — a 403 would confirm that a guessed id is real.
         return HTTPException(
@@ -473,6 +474,32 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         # `expected_version`.
         return _document_version_conflict(current_version=None)
 
+    # -- history (slice 2.3, technical plan §3 `errors.py`) ---------------------------------------
+    if isinstance(exc, HistoryEntryInProgress):
+        # H-42. 409, the `tailoring_run_not_editable` reasoning: a well-formed request for a run the
+        # caller owns, refused because of the run's *state*. Nothing was deleted. The body carries
+        # `status` so the client can say "still being prepared" rather than "something went wrong".
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_run_in_progress",
+                "message": "This run is still being prepared. Delete it once it has finished.",
+                "status": exc.status,
+            },
+        )
+
+    if isinstance(exc, InvalidHistoryCursor):
+        # H-26. One code for every refused cursor — bad base64, bad shape, naive or fractional time,
+        # bad UUID all reach the domain value object or the codec as this. A fixed sentence: the
+        # cursor itself is never echoed and never logged.
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_cursor",
+                "message": "That page link is not valid. Start again from the first page.",
+            },
+        )
+
     # -- export (slice 1.5, ADR-0016 / ADR-0017) ------------------------------------------------
     # Again a branch in the SAME function, for the reason this module's docstring gives: `deps.py`
     # and all four routers share one mapping, and one mapping is what keeps four 401s from becoming
@@ -516,6 +543,58 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         return _export_error_to_http(exc)
 
     raise exc
+
+
+def account_error_to_http_exception(
+    exc: DomainError, *, max_job_postings_per_user: int
+) -> HTTPException:
+    """The `/api/me/` routes' translation (slice 2.3): the shared mapping, except that the three
+    caps speak to a signed-in user rather than to a 24-hour session.
+
+    **Same codes, different sentences** — a client branches on `code`, and the guest sentences ("…
+    for this session. Start a new session.") would be wrong advice to someone whose data is kept
+    until they delete it. The account's fix is always the same: delete older history.
+
+    - H-10: `too_many_job_postings` names the cap. `TooManyJobPostings` carries no number, so the
+      caller passes the setting it was checked against.
+    - H-17: `too_many_tailoring_runs` names the cap (the error carries it) and points at history.
+    - H-37: `too_many_export_jobs`, a per-run cap: still no number (X-18's reason), and the two ways
+      out — re-tailor, or the inline formats that make no job.
+    """
+    if isinstance(exc, TooManyJobPostings):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_job_postings",
+                "message": (
+                    f"You have reached the limit of {max_job_postings_per_user} saved job "
+                    "postings. Delete older entries in your history to make room."
+                ),
+            },
+        )
+    if isinstance(exc, TooManyTailoringRuns):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_tailoring_runs",
+                "message": (
+                    f"You have reached the limit of {exc.limit} tailoring runs. "
+                    "Delete older entries in your history to make room."
+                ),
+            },
+        )
+    if isinstance(exc, TooManyExportJobs):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_export_jobs",
+                "message": (
+                    "This entry has been exported many times. Delete it and tailor again, or "
+                    "download it as Markdown or plain text."
+                ),
+            },
+        )
+    return domain_error_to_http_exception(exc)
 
 
 def _identity_error_to_http(exc: DomainError) -> HTTPException:

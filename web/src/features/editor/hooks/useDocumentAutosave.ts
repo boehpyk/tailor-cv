@@ -8,7 +8,7 @@ import {
   tailoringRunQueryKey,
   tailoringRunQueryOptions,
 } from '@/features/tailoring/hooks/useTailoringRun';
-import { tailoringRunsQueryKey } from '@/features/tailoring/hooks/useTailoringRuns';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import { sameView, step, viewOf } from '../autosaveMachine';
 import { documentProblemCopy } from '../saveState';
@@ -286,24 +286,29 @@ export function useDocumentAutosave(
 ): SaveState {
   const queryClient = useQueryClient();
   const textField = textFieldOf(kind);
+  // Where this run lives (slice 2.3): its path, credential and cache key come from the route's scope
+  // — a guest's `PUT /api/tailoring-runs/…` with the cookie, or the account's `PUT /api/me/…` with
+  // the bearer (AC-46). Never "is someone signed in now?": an open guest run keeps saving as a guest.
+  const map = useScopeMap();
 
-  useQuery({ ...tailoringRunQueryOptions(runId), enabled: false });
+  useQuery({ ...tailoringRunQueryOptions(runId, map), enabled: false });
 
   const { mutate } = useMutation({
     scope: { id: `revise:${runId}` },
     mutationFn: ({ content }: { readonly content: string }) => {
-      const run = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId));
+      const run = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId, map));
       if (run === undefined) {
         // Unreachable while this hook's own observer is mounted; a plain failure rather than a
         // request with a guessed version, which the server would rightly refuse.
         return Promise.reject(new Error('useDocumentAutosave: the run is not in the cache.'));
       }
-      return reviseTailoredDocument(runId, kind, { content, expected_version: run.version });
+      return reviseTailoredDocument(map, runId, kind, { content, expected_version: run.version });
     },
     retry: (failureCount, error) => isTransient(error) && failureCount < MAX_TRANSIENT_RETRIES,
     onSuccess: (run) => {
-      queryClient.setQueryData(tailoringRunQueryKey(runId), run);
-      void queryClient.invalidateQueries({ queryKey: tailoringRunsQueryKey });
+      queryClient.setQueryData(tailoringRunQueryKey(runId, map), run);
+      // The scope's run list: 1.3's guest list, or the account's history (its `edited` badge).
+      void queryClient.invalidateQueries({ queryKey: map.runListKey });
       // A save moved the run's `version`, which is what every export job's `current` is compared
       // against on the server (AC-41). Without this line a PDF rendered a minute ago keeps offering
       // *Download PDF* for a document the user has since edited — the file is real, it is simply of
@@ -311,7 +316,7 @@ export function useDocumentAutosave(
       // reason `useCreateJobPosting` gives: `current` is the server's comparison, not ours to
       // recompute here. Harmless when nothing has been exported — an invalidation with no observer
       // fetches nothing.
-      void queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(runId) });
+      void queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(runId, map) });
       // `store` is the `const` below; this callback runs when an answer arrives, long after the
       // render that declared both — and a `PUT` can only have been sent through the store.
       store.dispatch({ type: 'landed200', textNow: () => handle.serialize() });
@@ -331,7 +336,7 @@ export function useDocumentAutosave(
     },
     refetch: () =>
       queryClient
-        .query({ ...tailoringRunQueryOptions(runId), staleTime: 0 })
+        .query({ ...tailoringRunQueryOptions(runId, map), staleTime: 0 })
         .then((server) => server[textField]),
   };
   const collaborators = useRef(latest);
@@ -407,13 +412,13 @@ export function useDocumentAutosave(
   }, [handle, store]);
 
   const loadLatest = useCallback(() => {
-    const server = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId));
+    const server = queryClient.getQueryData<TailoringRun>(tailoringRunQueryKey(runId, map));
     if (server === undefined) {
       return;
     }
     handle.reseed(server[textField] ?? '');
     store.dispatch({ type: 'loadLatest', text: handle.serialize() });
-  }, [handle, queryClient, runId, textField, store]);
+  }, [handle, queryClient, runId, map, textField, store]);
 
   const keepMine = useCallback(() => {
     store.dispatch({ type: 'keepMine', text: handle.serialize() });

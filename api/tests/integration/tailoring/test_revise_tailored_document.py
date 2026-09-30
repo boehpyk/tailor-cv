@@ -31,7 +31,7 @@ from uuid import uuid4
 
 import pytest
 
-from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRunForSession
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import (
     ReviseCoverLetterCommand,
     ReviseCvCommand,
@@ -39,6 +39,7 @@ from tailorcraft.application.tailoring.revise_tailored_document import (
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -68,6 +69,7 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeTailoringRunRepository,
+    FakeUserRepository,
     RecordingEventPublisher,
     create_active_session,
 )
@@ -111,7 +113,7 @@ def _succeeded_run(*, session_id: GuestSessionId) -> TailoringRun:
     *now* always satisfies TR-4's `at >= completed_at`."""
     run = TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=_CLOCK_NOW - timedelta(minutes=15),
@@ -124,7 +126,7 @@ def _succeeded_run(*, session_id: GuestSessionId) -> TailoringRun:
 def _queued_run(*, session_id: GuestSessionId) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=session_id,
+        owner=GuestOwner(session_id),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=_CLOCK_NOW - timedelta(minutes=5),
@@ -149,7 +151,7 @@ def _use_case(
     events: EventPublisherPort,
     clock: FixedClock,
 ) -> ReviseTailoredDocument:
-    get_run = GetTailoringRunForSession(runs, sessions, clock)
+    get_run = GetTailoringRun(runs, sessions, FakeUserRepository(), clock)
     return ReviseTailoredDocument(runs, get_run, events, clock)
 
 
@@ -193,7 +195,7 @@ async def test_revising_the_cv_bumps_the_version_and_publishes_after_the_save(
 
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         content=new_cv,
         expected_version=original_version,
     )
@@ -240,7 +242,7 @@ async def test_revising_the_cover_letter_bumps_the_version_and_publishes_after_t
 
     cmd = ReviseCoverLetterCommand(
         tailoring_run_id=run.id,
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         content=new_letter,
         expected_version=original_version,
     )
@@ -289,7 +291,7 @@ async def test_expired_guest_session_raises_guest_session_expired_and_writes_not
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=expired.id,
+        requester=GuestOwner(expired.id),
         content=_revised_cv(),
         expected_version=run.version,
     )
@@ -313,7 +315,7 @@ async def test_unknown_guest_session_raises_guest_session_not_found_and_writes_n
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=unknown_session_id,
+        requester=GuestOwner(unknown_session_id),
         content=_revised_cv(),
         expected_version=run.version,
     )
@@ -338,7 +340,7 @@ async def test_unknown_run_id_raises_tailoring_run_not_found_and_writes_nothing(
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=TailoringRunId(value=uuid4()),
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         content=_revised_cv(),
         expected_version=1,
     )
@@ -363,7 +365,7 @@ async def test_run_owned_by_another_session_raises_tailoring_run_not_found_and_w
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=caller_session.id,
+        requester=GuestOwner(caller_session.id),
         content=_revised_cv(),
         expected_version=run.version,
     )
@@ -405,7 +407,7 @@ async def test_revising_a_run_that_is_not_succeeded_raises_not_editable_and_writ
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         content=_revised_cv(),
         expected_version=original_version,
     )
@@ -439,7 +441,7 @@ async def test_stale_expected_version_raises_version_conflict_carrying_both_numb
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         content=_revised_cv(),
         expected_version=stale_expected_version,
     )
@@ -479,7 +481,7 @@ async def test_concurrent_modification_on_save_propagates_and_writes_nothing(
     use_case = _use_case(runs, sessions, events, clock)
     cmd = ReviseCvCommand(
         tailoring_run_id=run.id,
-        guest_session_id=session.id,
+        requester=GuestOwner(session.id),
         content=_revised_cv(),
         expected_version=run.version,
     )

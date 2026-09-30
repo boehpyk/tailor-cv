@@ -21,7 +21,14 @@ import { ApiError } from '@/api/client';
  * a proxy's HTML error page that would not parse. "We couldn't reach TailorCraft" is the honest
  * summary of all of those.
  */
-export function rejectionMessage(error: Error): string {
+/**
+ * Whose words a message is in (slice 2.3): a few sentences name the guest session, which an
+ * account does not have. Defaulted to `'guest'`, so every caller that predates the scope reads
+ * exactly what it did.
+ */
+export type CopyScope = 'guest' | 'account';
+
+export function rejectionMessage(error: Error, scope: CopyScope = 'guest'): string {
   if (!(error instanceof ApiError)) {
     return "We couldn't reach TailorCraft. Check your connection, then try again.";
   }
@@ -41,7 +48,9 @@ export function rejectionMessage(error: Error): string {
     case 'tailoring_already_running':
       return 'You already have a tailoring run in progress.';
     case 'too_many_tailoring_runs':
-      return "You've reached the limit for this session.";
+      return scope === 'account'
+        ? "You've reached the limit on tailoring runs for your account."
+        : "You've reached the limit for this session.";
     case 'rate_limited':
       // G-11 asks for "try again in N minutes". N lives in the `Retry-After` header, which
       // `ApiError` does not carry, and the server's `message` (which may contain it) is not ours to
@@ -95,11 +104,16 @@ export interface RunReadErrorCopy {
  * says so and offers "Check again" — a free read — rather than anything that reads like "this
  * failed", which is what sends a user to pay for a second run.
  */
-export function runReadErrorCopy(error: Error): RunReadErrorCopy {
+export function runReadErrorCopy(error: Error, scope: CopyScope = 'guest'): RunReadErrorCopy {
   if (error instanceof ApiError && error.status >= 400 && error.status < 500) {
     switch (error.code) {
       case 'tailoring_run_not_found':
-        return { message: "We couldn't find that run.", canCheckAgain: false };
+        // An account's 404 is "not yours, or deleted" said in the history's own terms (AC-46).
+        return {
+          message:
+            scope === 'account' ? "This isn't in your history" : "We couldn't find that run.",
+          canCheckAgain: false,
+        };
       case 'guest_session_expired':
         return { message: 'Your session has expired. Upload your CV again.', canCheckAgain: false };
       default:

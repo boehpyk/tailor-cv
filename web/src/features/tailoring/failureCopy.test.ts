@@ -28,6 +28,8 @@ const ALL_FAILURE_REASONS: readonly TailoringFailureReason[] = [
   'llm_error',
   'not_queued',
   'abandoned',
+  // Slice 2.3 (ADR-0014 amendment (a)): the tenth reason, a saved CV deleted before the worker read it.
+  'base_cv_deleted',
 ];
 
 describe('failureCopyFor', () => {

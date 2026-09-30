@@ -25,6 +25,9 @@ from tailorcraft.infrastructure.api.routers import (
     export,
     health,
     intake,
+    me_export_jobs,
+    me_job_postings,
+    me_tailoring_runs,
     posting,
     saved_base_cvs,
     tailoring,
@@ -239,6 +242,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(intake.router)
     # `/api/me/base-cvs` (slice 2.2) shares no prefix with any other router, so its position is free.
     app.include_router(saved_base_cvs.router)
+    # The three slice-2.3 account routers (`/api/me/job-postings`, `/api/me/tailoring-runs`,
+    # `/api/me/export-jobs`) share no prefix with each other or with any guest router, so their
+    # position is free too. `me_tailoring_runs` carries the run's download and export routes itself,
+    # so no `/api/me` router overlaps another the way `export` overlaps `tailoring` below.
+    app.include_router(me_job_postings.router)
+    app.include_router(me_tailoring_runs.router)
+    app.include_router(me_export_jobs.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

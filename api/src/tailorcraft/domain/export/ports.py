@@ -175,6 +175,16 @@ class ExportJobRepository(Protocol):
         """
         ...
 
+    async def count_for_run(self, run_id: TailoringRunId) -> int:
+        """How many export jobs `run_id` has, for a user-owned run's `TooManyExportJobs` check
+        (slice 2.3, ADR-0016 amendment (b): 20 per run for a user, where a guest is capped per
+        session by `count_for_session`). `COUNT(*)`, for the reason `count_for_session` gives.
+
+        Keyed on the run and not on the owner, for the reason `list_for_run` gives: the caller has
+        already authorized the run, and a job's owner is its run's owner by construction.
+        """
+        ...
+
     async def list_stale_rendering(
         self, started_before: datetime, limit: int
     ) -> Sequence[ExportJob]:

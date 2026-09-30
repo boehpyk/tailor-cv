@@ -10,9 +10,15 @@ aggregate carries a comment saying so.
 `TailoringRun` composes `RecordsEvents`, which gives every instance a `_recorded_events` buffer
 (`domain/shared/events.py`). That attribute is deliberately **absent** from both the table and
 `properties=`: it is not a persisted fact about the run, it is an in-memory outbox that the use case
-drains via `release_events()` before the transaction commits. Naming only the twenty-one mapped
-attributes below (sixteen from 1.3, five from 1.4's revision and version — ADR-0015) is what keeps
-SQLAlchemy from ever trying to instrument it.
+drains via `release_events()` before the transaction commits. Naming only the twenty-two mapped
+attributes below (sixteen from 1.3, five from 1.4's revision and version — ADR-0015, one from 2.3's
+user owner) is what keeps SQLAlchemy from ever trying to instrument it.
+
+**Slice 2.3 (ADR-0023): one aggregate, two owner shapes, one table** — `intake_base_cv`'s 2.2 shape
+(ADR-0022), copied rather than shared. The domain's owner is `GuestOwner | UserOwner`; the table
+stores two nullable owner columns and `ck_tailoring_run_exactly_one_owner` restores "exactly one".
+`TailoringRun.owner` / `_assign_owner` are the translation, and this module only maps the two
+private attributes they read and write.
 
 **Never `class TailoringRun(Base)`, never `mapped_column` on the domain class.** That is the
 tutorial path and it ends the design: the aggregate would import SQLAlchemy and `domain/` would stop
@@ -47,8 +53,9 @@ from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.infrastructure.persistence.mapping.identity.guest_session import (
     guest_session_table,
 )
+from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.persistence.registry import mapper_registry, metadata
-from tailorcraft.infrastructure.persistence.types.identity import GuestSessionIdType
+from tailorcraft.infrastructure.persistence.types.identity import GuestSessionIdType, UserIdType
 from tailorcraft.infrastructure.persistence.types.intake import BaseCvIdType
 from tailorcraft.infrastructure.persistence.types.posting import JobPostingIdType
 from tailorcraft.infrastructure.persistence.types.tailoring import (
@@ -76,46 +83,84 @@ tailoring_run_table = Table(
     # `identity_guest_session.expires_at < now()`.
     #
     # Indexed because this one column serves four readers: the `GET /api/tailoring-runs` list query,
-    # `count_for_session`, `find_active_for_session`, and the cascade itself. The naming convention
-    # in `registry.py` renders it as `ix_tailoring_run_guest_session_id`. It exists before the purge
-    # needs it, so the first purge run is not also the first sequential scan of a growing table.
+    # `count_for_owner` and `find_active_for_owner` for a guest, and the cascade itself. The naming
+    # convention in `registry.py` renders it as `ix_tailoring_run_guest_session_id`. It exists before
+    # the purge needs it, so the first purge run is not also the first sequential scan of a growing
+    # table.
     #
     # **No partial index on the active statuses**, and the absence is a decision rather than an
-    # oversight: `find_active_for_session` filters `guest_session_id = ? AND status IN ('queued',
-    # 'running')`, and with at most twenty runs per session this index plus a filter is free. A
-    # partial index is the change to make if a session ever holds thousands of runs.
+    # oversight: `find_active_for_owner` filters `guest_session_id = ? AND status IN ('queued',
+    # 'running')` for a guest, and with at most twenty runs per session this index plus a filter is
+    # free. A partial index is the change to make if a session ever holds thousands of runs.
+    #
+    # **Nullable since 2.3** (ADR-0023), and that is what spares a signed-in user's history from the
+    # purge *by schema* rather than by a `WHERE`: a user-owned run has `guest_session_id IS NULL`, so
+    # the cascade from `identity_guest_session` has no path to it and the purge's `IN (…)` never
+    # matches it. "Exactly one owner" moved from this `NOT NULL` to
+    # `ck_tailoring_run_exactly_one_owner` below.
     Column(
         "guest_session_id",
         GuestSessionIdType,
         ForeignKey(guest_session_table.c.id, ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     ),
+    # The user half of the owner (2.3). `ON DELETE CASCADE` so erasing an account takes its whole
+    # history in the one `DELETE FROM identity_user` (`SqlAlchemyAccountData.delete_account`); the
+    # export files that history rendered are collected beforehand, derived from their jobs' ids,
+    # under the user-row lock (AC-15, AC-37). A single run goes by its history entry's deletion
+    # (`SqlAlchemyHistoryEntryData`, technical plan §0.6), never by a cascade from anything else.
+    #
+    # The FK's name, `fk_tailoring_run_user_id_identity_user`, is load-bearing:
+    # `SqlAlchemyTailoringRunRepository.add` recognises a request racing an account erasure by it and
+    # answers `UserNotFound` (H-53). No single-column index: the composite
+    # `ix_tailoring_run_user_id_requested_at` below leads with it.
+    Column(
+        "user_id",
+        UserIdType,
+        ForeignKey(user_table.c.id, ondelete="CASCADE"),
+        nullable=True,
+    ),
     # **No foreign key on either of the next two columns, deliberately.** A reader who has just seen
-    # `guest_session_id` carry one is owed the reason, and there are two.
+    # the two owner columns carry one each is owed the reason, and there are two.
     #
     # First: an aggregate references another aggregate **by identity**, not by a database
     # relationship. `intake` and `posting` are separate bounded contexts; a cross-context FK fuses
     # their tables into one schema and quietly forbids them from having independent lifecycles
     # later.
     #
-    # Second, and this is the load-bearing one: **it would buy nothing.** All three tables already
-    # cascade from `identity_guest_session`, so a run cannot outlive its inputs in practice — the
-    # session's deletion takes all three in one statement. An FK here would add a write-time check
-    # and a second cascade path for a guarantee the session FK already gives.
+    # Second: **for a guest it would buy nothing.** All three guest tables cascade from
+    # `identity_guest_session`, so a guest run cannot outlive its inputs in practice — the session's
+    # deletion takes all three in one statement. An FK here would add a write-time check and a
+    # second cascade path for a guarantee the session FK already gives. For a user the account's
+    # erasure takes all three the same way, through `identity_user`.
     #
-    # The alternative (add both FKs for referential integrity) is recorded as considered. The
-    # trigger to revisit it: a user deletes a base CV that a surviving run references. The answer
-    # then is a **nullable reference plus a "the source CV was deleted" state**, not a cascade that
-    # silently erases the history of what was produced and what it cost.
+    # **The trigger this comment named in 1.3 fired in 2.3, and the answer was the one it predicted
+    # — minus the nullable.** A user-owned run references a saved CV directly, and a user may delete
+    # that CV while the run survives in their history (technical plan §0.4, option (a); ADR-0023).
+    # The decision:
     #
-    # **Slice 2.2 lets a user delete a single saved CV, and the trigger still does not fire** (AC-19).
-    # A saved CV is user-owned and every run is guest-owned, and no ownership graph crosses owners:
-    # a run requested with a saved CV's id is 404, and a saved CV reaches tailoring only as a
-    # *working copy* — a guest-owned row with its own id and file (ADR-0022). So every `base_cv_id`
-    # here still names a CV in the run's own session, and still dies with it. **The trigger is
-    # 2.3's**: when runs become ownable by a user, a user-owned run will reference a saved CV
-    # directly, and deleting that CV is the moment this column needs the nullable-plus-state answer.
+    # - **The reference dangles, on purpose, and the column stays `NOT NULL`.** `base_cv_id` is
+    #   history — "this was made from that" — exactly like `intake_base_cv.copied_from_base_cv_id`,
+    #   and TR-1 ("a run always has a base CV id") stands. Deleting a CV writes nothing here.
+    # - **"CV deleted" is derived, never stored**: the history read model's `LEFT JOIN
+    #   intake_base_cv … AND c.user_id = r.user_id` finds no row (`SqlAlchemyTailoringHistoryQuery`,
+    #   ADR-0024). A stored flag would be a second copy of a fact the join already knows.
+    # - **The one reachable failure is recorded, not hidden**: a run still `queued` when its CV goes
+    #   is failed `base_cv_deleted` by the worker, before the paid call (`ExecuteTailoringRun`).
+    #
+    # Rejected, and why, so nobody re-litigates them from this comment: `ON DELETE SET NULL`
+    # (a cross-context FK ADR-0014 declined; a CV deletion writing to up to 500 runs; an id destroyed
+    # for no gain), refusing the CV's deletion (a user's right to delete their CV held hostage to
+    # their history), and a cascade (silently erasing paid-for documents the user may still be
+    # sending).
+    #
+    # `job_posting_id` does **not** dangle — an invariant, not a hope. A user-owned posting is
+    # deleted only with the account (which takes the run) or by history-entry deletion, which keeps a
+    # posting any run references. With no FK, concurrency is covered by two row locks (2.3 /verify,
+    # reviewer MINOR #1): `SqlAlchemyTailoringRunRepository.add` takes the posting `FOR KEY SHARE`
+    # after its `INSERT` and refuses `JobPostingNotFound` if it is gone, and
+    # `SqlAlchemyHistoryEntryData` takes it `FOR UPDATE` before a separate `DELETE … NOT EXISTS`.
     #
     # They still use the typed decorators rather than a bare `postgresql.UUID`, so a loaded run
     # hands back a `BaseCvId` and a `JobPostingId` — with four UUID columns in one table, the types
@@ -269,7 +314,7 @@ tailoring_run_table = Table(
     ),
     # **A partial index for the stale-run sweep (G-25'), and it contradicts the "no partial index"
     # note on `guest_session_id` above on purpose.** The two queries differ in what bounds them.
-    # `find_active_for_session` is bounded by its session: twenty runs at most, found through
+    # `find_active_for_owner` is bounded by its owner: twenty runs at most for a guest, found through
     # `ix_tailoring_run_guest_session_id`, then filtered. `list_stale_running` names no session.
     # Without this index it has only the table to scan, and it runs **every minute, forever**,
     # against a table that keeps every run ever made, document bodies included.
@@ -298,6 +343,31 @@ tailoring_run_table = Table(
         "started_at",
         postgresql_where=text("status = 'running'"),
     ),
+    # The second lock on TR-1's owner half ("exactly one owner"), behind
+    # `TailoringRun._assign_owner`: `num_nonnulls` refuses two owners and none in one expression.
+    # `ck_tailoring_run_exactly_one_owner`, 2.2's shape exactly. **It is also the purge's lock**
+    # (AC-21): the cascade from `identity_guest_session` can reach only a row whose
+    # `guest_session_id` is set, and this CHECK is what forbids a row that is both a guest's and a
+    # user's.
+    CheckConstraint("num_nonnulls(guest_session_id, user_id) = 1", name="exactly_one_owner"),
+    # **The history keyset index (ADR-0024, AC-56).** `page_for_user` is `WHERE user_id = :u AND
+    # (requested_at, id) < (:at, :id) ORDER BY requested_at DESC, id DESC LIMIT size + 1`; with this
+    # index that is a range scan that stops after `size + 1` entries, whatever the history's length —
+    # without it, a sort of the user's whole history per page. `id` is in the key because the `Clock`
+    # is whole-second and two runs in one second are ordinary: the tiebreak must be in the index, or
+    # the row comparison cannot be an index condition. Its leading column also serves
+    # `count_for_owner` and `find_active_for_owner` for a user (500 runs at most, filtered), account
+    # erasure, and the cascade from `identity_user`.
+    #
+    # Named explicitly and with `text()` columns: the `ix` convention cannot name an expression
+    # column. (Plan §5 expected autogenerate to mangle the `DESC`; measured against Alembic 1.19.1 it
+    # rendered `literal_column('… DESC')` correctly — `03494836ce30`'s docstring has the review.)
+    Index(
+        "ix_tailoring_run_user_id_requested_at",
+        "user_id",
+        text("requested_at DESC"),
+        text("id DESC"),
+    ),
 )
 
 mapper_registry.map_imperatively(
@@ -305,7 +375,11 @@ mapper_registry.map_imperatively(
     tailoring_run_table,
     properties={
         "_id": tailoring_run_table.c.id,
-        "_guest_session_id": tailoring_run_table.c.guest_session_id,
+        # The two halves of the owner (ADR-0022): two attributes, one fact.
+        # `TailoringRun._assign_owner` is their only writer and `TailoringRun.owner` their only
+        # reader — see the class comment there.
+        "_owner_guest_session_id": tailoring_run_table.c.guest_session_id,
+        "_owner_user_id": tailoring_run_table.c.user_id,
         "_base_cv_id": tailoring_run_table.c.base_cv_id,
         "_job_posting_id": tailoring_run_table.c.job_posting_id,
         "_status": tailoring_run_table.c.status,

@@ -42,6 +42,12 @@ const FAILURE_COPY: Readonly<Record<TailoringFailureReason, FailureCopy>> = {
   llm_error: { headline: 'Something went wrong generating your documents.', hint: null },
   not_queued: { headline: 'That run never reached a worker.', hint: null },
   abandoned: { headline: 'That run was interrupted.', hint: null },
+  // H-22 (slice 2.3). Not retryable — the API says so in `retryable` — so the hint names the thing
+  // that *will* work (another CV), never "try again".
+  base_cv_deleted: {
+    headline: 'The CV this was using was deleted before tailoring started.',
+    hint: 'Choose another CV and tailor again.',
+  },
 };
 
 /**

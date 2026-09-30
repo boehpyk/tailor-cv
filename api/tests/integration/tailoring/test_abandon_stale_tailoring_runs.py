@@ -48,6 +48,7 @@ from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import (
     AbandonStaleTailoringRuns,
     AbandonStaleTailoringRunsResult,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -82,7 +83,7 @@ def _a_session_id() -> GuestSessionId:
 def _requested_run(*, at: datetime) -> TailoringRun:
     return TailoringRun.request(
         id=TailoringRunId(value=uuid4()),
-        guest_session_id=_a_session_id(),
+        owner=GuestOwner(_a_session_id()),
         base_cv_id=BaseCvId(value=uuid4()),
         job_posting_id=JobPostingId(value=uuid4()),
         requested_at=at,

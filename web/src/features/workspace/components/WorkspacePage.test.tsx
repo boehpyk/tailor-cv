@@ -1,7 +1,8 @@
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
+import { __resetForTests, authStore } from '@/features/auth/authStore';
 import { renderWithRouter } from '@/test/render';
 import {
   countCallsTo,
@@ -26,6 +27,13 @@ import {
  * anything, and the latest-run card never actually says what the run is doing. None of these are
  * `ImportError`s — `WorkspacePage` renders today, just not correctly yet.
  */
+
+// T29: `/` is gated on the auth state (AC-38). Every test here is about the guest workspace, so the
+// store is settled `anonymous` before each one instead of left `booting`.
+beforeEach(() => {
+  __resetForTests();
+  authStore.signOut('expired');
+});
 
 const BASE_CV = makeExtractedCv();
 const JOB_POSTING = makePostingSummary();

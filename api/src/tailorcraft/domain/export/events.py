@@ -35,7 +35,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
 )
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 
@@ -45,8 +45,10 @@ class ExportRequested(DomainEvent):
     """A visitor asked for one of a run's documents as a file: a job now exists, `queued`, and a
     task is about to be published for it.
 
-    Payload: `export_job_id`, `guest_session_id`, `tailoring_run_id`, `document`, `format`,
-    `run_version` (+ inherited `occurred_at`). **Deliberately absent: the text.** The document this
+    Payload: `export_job_id`, `owner`, `tailoring_run_id`, `document`, `format`, `run_version`
+    (+ inherited `occurred_at`). `owner` replaced 1.5's `guest_session_id` in slice 2.3 (ADR-0022):
+    still an id, wrapped in its variant, rendered by `LoggingEventPublisher` as `owner_kind` +
+    `owner_id`. **Deliberately absent: the text.** The document this
     job will render is reachable from `tailoring_run_id` and `document` by anyone with database
     access and a reason, which is the right bar; it does not belong in a log line, and it is not
     even copied onto the job row (a third copy of a CV is a third thing for 1.6 to purge).
@@ -57,7 +59,7 @@ class ExportRequested(DomainEvent):
     """
 
     export_job_id: ExportJobId
-    guest_session_id: GuestSessionId
+    owner: Owner
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat

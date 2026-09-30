@@ -16,6 +16,7 @@ import dataclasses
 from datetime import UTC, datetime
 from uuid import UUID
 
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.posting.events import JobPostingCaptured
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -63,7 +64,7 @@ def test_from_pasted_text_records_exactly_one_job_posting_captured() -> None:
     """
     posting = JobPosting.from_pasted_text(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         text=_posting_text(),
         created_at=_CREATED_AT,
     )
@@ -74,7 +75,7 @@ def test_from_pasted_text_records_exactly_one_job_posting_captured() -> None:
     event = events[0]
     assert isinstance(event, JobPostingCaptured)
     assert event.job_posting_id == _POSTING_ID
-    assert event.guest_session_id == _SESSION_ID
+    assert event.owner == GuestOwner(_SESSION_ID)
     assert event.source is PostingSource.PASTED
     assert event.character_count == 174
     assert event.occurred_at == _CREATED_AT
@@ -91,7 +92,7 @@ def test_from_fetched_url_records_exactly_one_job_posting_captured() -> None:
     """
     posting = JobPosting.from_fetched_url(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         url=_URL,
         fetched=FetchedPosting(text=_posting_text(), title=_TITLE),
         created_at=_CREATED_AT,
@@ -115,7 +116,7 @@ def test_release_events_empties_the_buffer() -> None:
     publishing the same fact twice (`RecordsEvents.release_events`)."""
     posting = JobPosting.from_pasted_text(
         id=_POSTING_ID,
-        guest_session_id=_SESSION_ID,
+        owner=GuestOwner(_SESSION_ID),
         text=_posting_text(),
         created_at=_CREATED_AT,
     )
@@ -160,7 +161,7 @@ def test_job_posting_captured_field_set_is_exactly_the_five_agreed_fields() -> N
 
     assert field_names == {
         "job_posting_id",
-        "guest_session_id",
+        "owner",
         "source",
         "character_count",
         "occurred_at",

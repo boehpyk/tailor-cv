@@ -50,6 +50,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportJobId,
     ExportJobStatus,
 )
+from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredCv, TailoredDocumentKind
@@ -90,7 +91,7 @@ def _a_queued_job(
     assert run.completed_at is not None
     return ExportJob.request(
         id=ExportJobId(value=uuid4()),
-        guest_session_id=run.guest_session_id,
+        owner=run.owner,
         tailoring_run_id=run.id,
         document=document,
         format=format,
@@ -106,7 +107,7 @@ def _running_run_with_same_id(succeeded: TailoringRun) -> TailoringRun:
     """
     run = TailoringRun.request(
         id=succeeded.id,
-        guest_session_id=succeeded.guest_session_id,
+        owner=succeeded.owner,
         base_cv_id=succeeded.base_cv_id,
         job_posting_id=succeeded.job_posting_id,
         requested_at=succeeded.requested_at,
@@ -460,7 +461,7 @@ async def test_two_concurrent_deliveries_the_loser_is_skipped_with_one_render_ca
         assert run.completed_at is not None
         return ExportJob.request(
             id=job_id,
-            guest_session_id=session_id,
+            owner=GuestOwner(session_id),
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,

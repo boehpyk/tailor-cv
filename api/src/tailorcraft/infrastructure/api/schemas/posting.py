@@ -101,7 +101,11 @@ class JobPostingResponse(BaseModel):
     character_count: int
     text: str
     created_at: datetime
-    expires_at: datetime
+    # **`null` since slice 2.3 (OQ-8) means "kept until you delete it"**: an account row has no
+    # retention clock. A guest route always sets it (AC-34); an `/api/me/` route always sends `null`.
+    # One schema for both owners rather than an account twin, because the React components are shared
+    # (plan §0.9) and `expires_at` is a fact about the owner's retention, not about the row.
+    expires_at: datetime | None
 
 
 class JobPostingSummary(BaseModel):
@@ -125,7 +129,11 @@ class JobPostingSummary(BaseModel):
     character_count: int
     preview: str
     created_at: datetime
-    expires_at: datetime
+    # **`null` since slice 2.3 (OQ-8) means "kept until you delete it"**: an account row has no
+    # retention clock. A guest route always sets it (AC-34); an `/api/me/` route always sends `null`.
+    # One schema for both owners rather than an account twin, because the React components are shared
+    # (plan §0.9) and `expires_at` is a fact about the owner's retention, not about the row.
+    expires_at: datetime | None
 
 
 class JobPostingListResponse(BaseModel):

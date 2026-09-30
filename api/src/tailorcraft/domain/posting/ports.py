@@ -20,7 +20,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import FetchedPosting, JobPostingId, SourceUrl
 
@@ -62,12 +63,19 @@ class JobPostingRepository(Protocol):
         session owns none — never an error; "you have captured nothing yet" is an ordinary answer."""
         ...
 
-    async def count_for_session(self, sid: GuestSessionId) -> int:
-        """How many postings `sid` owns, for the `TooManyJobPostings` check (P-32).
+    async def count_for_owner(self, owner: Owner) -> int:
+        """How many postings `owner` owns, for the `TooManyJobPostings` check — either variant
+        (slice 2.3). The cap is the use case's choice by variant; this answers only the count, with
+        `COUNT(*)` for the reason `count_for_session` gives."""
+        ...
 
-        A separate method rather than `len(await list_for_session(sid))` so the SQL adapter can
-        answer with `COUNT(*)` instead of materializing every row — including every row's full
-        posting text — just to measure how many there are.
+    async def list_recent_for_user(self, user_id: UserId, limit: int) -> Sequence[JobPosting]:
+        """`user_id`'s most recent postings, newest first, at most `limit` of them (the caller
+        keeps `limit` ≤ 20), for the signed-in workspace's "recent postings" list. An empty
+        sequence when the user has none — never an error.
+
+        Returns aggregates rather than a read model because the router maps them to 1.2's existing
+        posting summary, and `limit` bounds how many texts are loaded to do it.
         """
         ...
 

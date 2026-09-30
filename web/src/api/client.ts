@@ -175,11 +175,16 @@ interface RequestOptions {
  * retry with the token that refresh produced rather than rotate the cookie again. The store's
  * single-flight covers the ones that overlap the refresh; this comparison covers the ones that land
  * after it finished.
+ *
+ * **Generic over what "one attempt" is** (slice 2.3). `sendOnce` is a JSON request for `request`
+ * and a bytes request for `requestBlob` — an account's export download is a bearer request whose
+ * success is a `Blob` (AC-47), and a second hand-written copy of this retry for bytes is exactly how
+ * the two paths would come to disagree about when to refresh.
  */
-async function requestWithAuth<T>(path: string, options: RequestOptions): Promise<T> {
+async function requestWithAuth<T>(sendOnce: (bearer: string | null) => Promise<T>): Promise<T> {
   const sentToken = await authStore.accessTokenForRequest();
   try {
-    return await sendWithBearer<T>(path, options, sentToken);
+    return await sendWithBearer(sendOnce, sentToken);
   } catch (error) {
     // No token sent means nothing to refresh: `accessTokenForRequest` already gave the store its
     // chance, and the server's answer is the truthful one to surface.
@@ -200,12 +205,12 @@ async function requestWithAuth<T>(path: string, options: RequestOptions): Promis
       // already said so to React. The original refusal is the honest answer to this request.
       throw error;
     }
-    return sendWithBearer<T>(path, options, retryToken);
+    return sendWithBearer(sendOnce, retryToken);
   }
 }
 
 /**
- * `send`, plus the one answer to a bearer request that is about the **login** rather than the
+ * One attempt, plus the one answer to a bearer request that is about the **login** rather than the
  * request: 401 `not_signed_in` means the token verified but the user behind it no longer exists
  * (/verify round 1, finding 2). Refreshing cannot fix that, and neither can asking again, so the
  * store is told — `SIGNED_OUT` reason `expired`, which sends `RequireAuth` to `/login` — instead of
@@ -216,12 +221,11 @@ async function requestWithAuth<T>(path: string, options: RequestOptions): Promis
  * cannot end a newer one.
  */
 async function sendWithBearer<T>(
-  path: string,
-  options: RequestOptions,
+  sendOnce: (bearer: string | null) => Promise<T>,
   bearer: string | null,
 ): Promise<T> {
   try {
-    return await send<T>(path, options, bearer);
+    return await sendOnce(bearer);
   } catch (error) {
     if (bearer !== null && error instanceof ApiError && error.code === 'not_signed_in') {
       authStore.signOutIfHolding(bearer);
@@ -240,13 +244,16 @@ async function sendWithBearer<T>(
  */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   if (options.auth === 'required') {
-    return requestWithAuth<T>(path, options);
+    return requestWithAuth((bearer) => send<T>(path, options, bearer));
   }
   return send<T>(path, options, null);
 }
 
 /** Headers for one request: JSON's `Content-Type` when there is a JSON body, and the bearer. */
-function headersFor(options: RequestOptions, bearer: string | null): Record<string, string> {
+function headersFor(
+  options: Pick<RequestOptions, 'body'>,
+  bearer: string | null,
+): Record<string, string> {
   const headers: Record<string, string> = {};
   // A multipart upload (`FormData`) must NOT get a hand-set `Content-Type` — this looks wrong until
   // you know why. `multipart/form-data` requires a `boundary` parameter that only the browser's own
@@ -294,6 +301,13 @@ async function send<T>(path: string, options: RequestOptions, bearer: string | n
 /** What a blob request may carry. A download is a `GET` with no body — there is nothing else. */
 interface BlobRequestOptions {
   readonly signal?: AbortSignal;
+  /**
+   * `'required'` makes the download **bearer-authenticated**, with `request`'s exact semantics —
+   * the same one refresh and one retry on 401 `invalid_access_token` (slice 2.3, AC-47: an
+   * account's export lives under `/api/me/` and answers to the bearer alone). Absent for every
+   * guest download, which is authorized by the `tc_guest` cookie and carries no `Authorization`.
+   */
+  readonly auth?: 'required';
 }
 
 /**
@@ -324,11 +338,25 @@ interface BlobRequestOptions {
  * replacing the server's status with a `SyntaxError`.
  */
 export async function requestBlob(path: string, options: BlobRequestOptions = {}): Promise<Blob> {
+  if (options.auth === 'required') {
+    return requestWithAuth((bearer) => sendBlob(path, options, bearer));
+  }
+  return sendBlob(path, options, null);
+}
+
+/** One blob `fetch`. `bearer` is `null` for every download not `auth: 'required'`. */
+async function sendBlob(
+  path: string,
+  options: BlobRequestOptions,
+  bearer: string | null,
+): Promise<Blob> {
+  const headers = headersFor({}, bearer);
   // `credentials: 'include'` for `request`'s reason: the refresh token is an HttpOnly cookie
-  // (ADR-0008), and the guest session that authorizes this download is a cookie too.
+  // (ADR-0008), and the guest session that authorizes a guest download is a cookie too.
   const response = await fetch(path, {
     method: 'GET',
     credentials: 'include',
+    ...(Object.keys(headers).length === 0 ? {} : { headers }),
     ...(options.signal ? { signal: options.signal } : {}),
   });
 

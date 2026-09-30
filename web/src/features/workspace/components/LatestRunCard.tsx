@@ -1,5 +1,7 @@
 import { Link } from 'react-router';
 
+import { runLink } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { failureCopyFor } from '@/features/tailoring/failureCopy';
 
 import type { TailoringRunSummary } from '@/features/tailoring/types';
@@ -7,9 +9,12 @@ import type { TailoringRunSummary } from '@/features/tailoring/types';
 export interface LatestRunCardProps {
   /**
    * The session's newest run from the list (`latestTailoringRun(items)`), or `null` for a session
-   * with none. The summary is enough: the card links to `/runs/{id}` and never shows a document.
+   * with none. The summary is enough: the card links to the run and never shows a document.
+   *
+   * Only three facts are read, so an account's `HistoryEntry` (`useLatestAccountRun`) fits as well
+   * as a guest's summary (slice 2.3) — the card needs neither shape whole.
    */
-  readonly run: TailoringRunSummary | null;
+  readonly run: Pick<TailoringRunSummary, 'id' | 'status' | 'failure_reason'> | null;
 }
 
 const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
@@ -32,6 +37,8 @@ const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
  * box at all.
  */
 export function LatestRunCard({ run }: LatestRunCardProps): React.JSX.Element | null {
+  // Where the run lives: `/runs/{id}` for a guest, `/history/{id}` for an account (AC-41).
+  const map = useScopeMap();
   if (run === null) {
     return null;
   }
@@ -45,7 +52,7 @@ export function LatestRunCard({ run }: LatestRunCardProps): React.JSX.Element | 
           className="flex items-baseline justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
         >
           <p className="text-sm text-slate-800">Your tailoring run is in progress.</p>
-          <Link to={`/runs/${run.id}`} className={LINK_CLASS}>
+          <Link to={runLink(map, run.id)} className={LINK_CLASS}>
             View
           </Link>
         </section>
@@ -57,7 +64,7 @@ export function LatestRunCard({ run }: LatestRunCardProps): React.JSX.Element | 
           className="rounded-md border border-slate-200 bg-white px-3 py-2"
         >
           <p className="text-sm">
-            <Link to={`/runs/${run.id}`} className={LINK_CLASS}>
+            <Link to={runLink(map, run.id)} className={LINK_CLASS}>
               Open your tailored documents
             </Link>
           </p>
