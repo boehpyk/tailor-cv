@@ -87,7 +87,8 @@ export const NOT_DELETED_NOTE = 'Not deleted — try again';
  * (AC-47).
  */
 export function confirmDeleteMessage(name: string): string {
-  return `Delete ${name}? This removes the file and the text we read from it. This can't be undone. Working copies already in a workspace are not affected.`;
+  // The last sentence is slice 2.3's (AC-45, OQ-2): deleting a saved CV leaves history intact.
+  return `Delete ${name}? This removes the file and the text we read from it. This can't be undone. Working copies already in a workspace are not affected. Tailored applications you made from it stay in your history until you delete them.`;
 }
 
 // --- The workspace picker (AC-38, AC-39, AC-45) ---------------------------------------------------
@@ -111,6 +112,19 @@ export const COPY_SOURCE_DELETED_NOTE = 'That saved CV was deleted, so there is 
 /** AC-45 — the picker's retention statement. Verbatim; pinned. */
 export const PICKER_RETENTION_NOTICE =
   "Using a saved CV puts a copy in this browser's workspace. The copy, and anything you tailor from it, is deleted after 24 hours. Tailored documents aren't saved to your account yet.";
+
+// --- The account workspace's picker, `mode: 'select'` (slice 2.3, AC-39) ---------------------------
+
+export const SELECT_PICKER_LEGEND = 'Your base CV';
+/** AC-39's empty state, beside the upload control. Verbatim; pinned. */
+export const SELECT_PICKER_EMPTY_NOTE = 'Upload your CV to get started';
+/**
+ * The account upload control's line in the **workspace**. `SAVED_CV_RETENTION_NOTICE` is right on
+ * `/account` but names "24 hours" to deny it, and account scope must not mention the guest window at
+ * all (AC-49) — the workspace's own sentence already says what is kept.
+ */
+export const WORKSPACE_UPLOAD_NOTICE =
+  'A CV you upload here is saved to your account, and stays until you delete it.';
 
 // --- The working copy in the workspace (AC-41) ----------------------------------------------------
 

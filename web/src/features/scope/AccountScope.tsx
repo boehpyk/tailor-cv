@@ -2,6 +2,12 @@ import { useCurrentUser } from '@/features/auth/hooks/useCurrentUser';
 
 import { WorkspaceScopeProvider } from './WorkspaceScope';
 
+/** While `/me` answers who is signed in — normally never seen: login and the boot seed it. */
+const ACCOUNT_LOADING_NOTE = 'Loading your account…';
+/** AC-52: `/me` failed. An error with Retry, never an endless loading line. */
+const ACCOUNT_LOAD_ERROR_NOTE = "Couldn't load your account.";
+const ACCOUNT_RETRY_LABEL = 'Retry';
+
 import type { ReactNode } from 'react';
 
 export interface AccountScopeProps {
@@ -23,16 +29,33 @@ export interface AccountScopeProps {
  * unknown the scope cannot be built; if `/me` fails, that is an error state with Retry — never an
  * endless loading line (AC-52).
  *
- * SKELETON (T29): the three states are distinguishable stubs; T31 gives them their copy.
+ * The Retry re-asks `/me` (`refetch`), which is the one thing that can change the answer.
  */
 export function AccountScope({ children }: AccountScopeProps): React.JSX.Element {
   const currentUser = useCurrentUser();
 
-  if (currentUser.isError) {
-    return <p role="alert">AccountScope: /me failed (skeleton)</p>;
-  }
   if (currentUser.data === undefined) {
-    return <p role="status">AccountScope: loading the account (skeleton)</p>;
+    if (currentUser.isError) {
+      return (
+        <div role="alert" className="mb-10 space-y-3">
+          <p className="text-slate-700">{ACCOUNT_LOAD_ERROR_NOTE}</p>
+          <button
+            type="button"
+            onClick={() => {
+              void currentUser.refetch();
+            }}
+            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+          >
+            {ACCOUNT_RETRY_LABEL}
+          </button>
+        </div>
+      );
+    }
+    return (
+      <p role="status" className="mb-10 text-slate-600">
+        {ACCOUNT_LOADING_NOTE}
+      </p>
+    );
   }
   const userId = currentUser.data.id;
   return (

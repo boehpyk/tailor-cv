@@ -1,5 +1,7 @@
 import { runReadErrorCopy } from './apiErrorCopy';
 
+import type { CopyScope } from './apiErrorCopy';
+
 import type { PreviewDocument } from './components/TailoredDocumentsPreview';
 import type { TailoringFailureReason, TailoringRun, TailoringRunSummary } from './types';
 
@@ -47,12 +49,13 @@ export function viewOfWatchedRun(
   run: TailoringRun | undefined,
   runError: Error | null,
   summary: TailoringRunSummary | null,
+  scope: CopyScope = 'guest',
 ): RunView {
   if (runId === null) {
     return { kind: 'none' };
   }
   if (runError !== null) {
-    return { kind: 'unreadable', ...runReadErrorCopy(runError) };
+    return { kind: 'unreadable', ...runReadErrorCopy(runError, scope) };
   }
 
   const known = run ?? (summary?.id === runId ? summary : undefined);

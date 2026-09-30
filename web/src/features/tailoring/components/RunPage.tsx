@@ -2,6 +2,8 @@ import { Link, useNavigate, useParams } from 'react-router';
 
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
 import { ExportBar } from '@/features/export/components/ExportBar';
+import { runLink } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { ProgressStepper } from '@/features/workspace/components/ProgressStepper';
 import { progressOfRun } from '@/features/workspace/progress';
 
@@ -29,12 +31,22 @@ const HOME_LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2
  * blocker in `DocumentWorkspace` asks first (E-32, AC-34) — that is the workspace's lock, not
  * this link's, and nothing here needs to know about it.
  */
-function BackToWorkspace(): React.JSX.Element {
+/**
+ * Where "back" goes: the workspace for a guest's run, the history for an account's — the page a
+ * user came from to open it (slice 2.3, AC-46's 404 link).
+ */
+function BackLink({ scope }: { readonly scope: 'guest' | 'account' }): React.JSX.Element {
   return (
     <p className="text-sm">
-      <Link to="/" className={HOME_LINK_CLASS}>
-        Back to the workspace
-      </Link>
+      {scope === 'account' ? (
+        <Link to="/history" className={HOME_LINK_CLASS}>
+          Back to your history
+        </Link>
+      ) : (
+        <Link to="/" className={HOME_LINK_CLASS}>
+          Back to the workspace
+        </Link>
+      )}
     </p>
   );
 }
@@ -93,19 +105,23 @@ export function RunPage(): React.JSX.Element {
   const navigate = useNavigate();
   const watched = useTailoringRun(runId);
   const create = useCreateTailoringRun();
+  // The route's scope (slice 2.3): which words the page uses and where its links go. The hooks
+  // above already read and write in it.
+  const map = useScopeMap();
 
   if (runId === null || documentSegment === null) {
     return <NotFoundPage />;
   }
 
-  const view = viewOfWatchedRun(runId, watched.data, watched.error, null);
+  const view = viewOfWatchedRun(runId, watched.data, watched.error, null, map.kind);
 
   function retry(run: TailoringRun): void {
     create.mutate(
       { base_cv_id: run.base_cv_id, job_posting_id: run.job_posting_id },
       {
         onSuccess: (created) => {
-          void navigate(`/runs/${created.id}`);
+          // A retry lands where the run it retries lives: `/history/{new}` for an account (AC-46).
+          void navigate(runLink(map, created.id));
         },
       },
     );
@@ -144,7 +160,7 @@ export function RunPage(): React.JSX.Element {
               {watched.isFetching ? 'Checking…' : 'Check again'}
             </button>
           ) : (
-            <BackToWorkspace />
+            <BackLink scope={map.kind} />
           )}
         </div>
       )}
@@ -179,18 +195,18 @@ export function RunPage(): React.JSX.Element {
 
       {rejection !== null && (
         <TailoringRejectionNotice
-          message={rejectionMessage(rejection)}
+          message={rejectionMessage(rejection, map.kind)}
           onViewActiveRun={
             activeRunId === null
               ? null
               : () => {
-                  void navigate(`/runs/${activeRunId}`);
+                  void navigate(runLink(map, activeRunId));
                 }
           }
         />
       )}
 
-      {(view.kind === 'failed' || view.kind === 'succeeded') && <BackToWorkspace />}
+      {(view.kind === 'failed' || view.kind === 'succeeded') && <BackLink scope={map.kind} />}
     </section>
   );
 }

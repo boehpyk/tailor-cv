@@ -2,7 +2,6 @@ import { useId, useState } from 'react';
 
 import { useDeleteSavedBaseCv } from '../hooks/useDeleteSavedBaseCv';
 import { useSavedBaseCvs } from '../hooks/useSavedBaseCvs';
-import { useUploadSavedBaseCv } from '../hooks/useUploadSavedBaseCv';
 import {
   ALREADY_DELETED_NOTE,
   RETRY_LABEL,
@@ -11,15 +10,13 @@ import {
   SAVED_CVS_LOADING_NOTE,
   SAVED_CVS_LOAD_ERROR_NOTE,
   SAVED_CV_RETENTION_NOTICE,
-  UPLOAD_SAVED_CV_LABEL,
-  UPLOAD_SAVED_CV_PENDING_LABEL,
   deleteSavedCvErrorCopy,
-  uploadSavedCvErrorCopy,
 } from '../savedCvsCopy';
 
 import { ConfirmDeleteDialog } from './ConfirmDeleteDialog';
 import { RenameLabelForm } from './RenameLabelForm';
 import { SavedBaseCvRow } from './SavedBaseCvRow';
+import { SavedCvUploadControl } from './SavedCvUploadControl';
 
 import type { SavedBaseCv } from '../types';
 
@@ -147,57 +144,7 @@ function SavedBaseCvsBody(): React.JSX.Element {
         />
       )}
 
-      <SavedCvUploadControl />
-    </div>
-  );
-}
-
-/**
- * The account upload: a labelled file input, AC-44's retention notice before anything is chosen,
- * the pending line while the request (which includes the extraction) is out, and the refusal in its
- * own words. No client-side size or format check: every refusal has copy, and the only rule that
- * could be mirrored here without a round trip — the cap — must not be (AC-35).
- */
-function SavedCvUploadControl(): React.JSX.Element {
-  const upload = useUploadSavedBaseCv();
-  const inputId = useId();
-  const errorId = useId();
-  const error = upload.error;
-
-  function handleChange(event: React.ChangeEvent<HTMLInputElement>): void {
-    const file = event.target.files?.[0];
-    // Reset, so choosing the same file again after a refusal fires another change.
-    event.target.value = '';
-    if (file !== undefined) {
-      upload.mutate(file);
-    }
-  }
-
-  return (
-    <div className="space-y-2 rounded-lg border border-dashed border-slate-300 p-4">
-      <label htmlFor={inputId} className="block text-sm font-medium text-slate-700">
-        {UPLOAD_SAVED_CV_LABEL}
-      </label>
-      <p className="text-sm text-slate-500">{SAVED_CV_RETENTION_NOTICE}</p>
-      <input
-        id={inputId}
-        type="file"
-        accept=".pdf,.docx,.txt"
-        disabled={upload.isPending}
-        onChange={handleChange}
-        aria-describedby={error === null ? undefined : errorId}
-        className="block text-sm"
-      />
-      {upload.isPending && (
-        <p role="status" className="text-sm font-medium text-slate-500">
-          {UPLOAD_SAVED_CV_PENDING_LABEL}
-        </p>
-      )}
-      {error !== null && (
-        <p id={errorId} role="alert" className="text-sm text-red-700">
-          {uploadSavedCvErrorCopy(error)}
-        </p>
-      )}
+      <SavedCvUploadControl notice={SAVED_CV_RETENTION_NOTICE} />
     </div>
   );
 }

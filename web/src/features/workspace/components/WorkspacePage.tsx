@@ -4,6 +4,7 @@ import { AccountScope } from '@/features/scope/AccountScope';
 
 import { AccountWorkspace } from './AccountWorkspace';
 import { GuestWorkspace } from './GuestWorkspace';
+import { GATE_BOOTING_NOTE, GATE_RETRY_LABEL, GATE_UNAVAILABLE_NOTE } from '../workspaceCopy';
 
 /**
  * The `/` route — **the workspace follows the auth state** (slice 2.3, AC-38, ADR-0023):
@@ -25,9 +26,6 @@ import { GuestWorkspace } from './GuestWorkspace';
  *
  * The account-deleted notice (2.2's AC-40) sits above every state: it is about what just happened,
  * not about who is signed in now.
- *
- * SKELETON (T29): the four branches are real; `booting` and `unavailable` render distinguishable
- * stubs, and T31 gives them their copy.
  */
 export function WorkspacePage(): React.JSX.Element {
   return (
@@ -43,9 +41,24 @@ function WorkspaceGate(): React.JSX.Element {
 
   switch (auth.status) {
     case 'booting':
-      return <p role="status">WorkspacePage: booting (skeleton)</p>;
+      return (
+        <p role="status" className="mb-10 text-slate-600">
+          {GATE_BOOTING_NOTE}
+        </p>
+      );
     case 'unavailable':
-      return <p role="alert">WorkspacePage: unavailable (skeleton)</p>;
+      return (
+        <div role="alert" className="mb-10 space-y-3">
+          <p className="text-slate-700">{GATE_UNAVAILABLE_NOTE}</p>
+          <button
+            type="button"
+            onClick={auth.retry}
+            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+          >
+            {GATE_RETRY_LABEL}
+          </button>
+        </div>
+      );
     case 'anonymous':
       return <GuestWorkspace />;
     case 'authenticated':

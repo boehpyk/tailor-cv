@@ -1,5 +1,8 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
+import { ApiError } from '@/api/client';
+import { deleteHistoryEntry } from '@/api/history';
+
 import { deleteHistoryEntryMutationKey, historyRootKey } from './historyKeys';
 
 import type { UseMutationResult } from '@tanstack/react-query';
@@ -14,11 +17,15 @@ export type DeleteHistoryEntryOutcome = 'deleted' | 'already_gone';
 /**
  * Delete one history entry (AC-45): `deleteHistoryEntry(id)` under
  * `deleteHistoryEntryMutationKey`, a 404 folded to `'already_gone'`, then the history root
- * invalidated. **No optimistic removal** — an irreversible action shows what the server did, not
- * what we hoped (2.2's rule). A caller guards a same-tick double click with
- * `queryClient.isMutating({ mutationKey })` (H-58), never `isPending`.
+ * invalidated — every page and the workspace's latest-run card.
  *
- * SKELETON (T29): the real key, types and invalidation; the request is not made. T31 implements it.
+ * **No optimistic removal** — an irreversible action shows what the server did, not what we hoped
+ * (2.2's rule). The invalidation is *returned* from `onSuccess`, so the mutation stays pending until
+ * the list has been read again: the row says "Deleting…" until the re-read drops it, and never
+ * flickers back to an idle row in between.
+ *
+ * A caller guards a same-tick double click with `queryClient.isMutating({ mutationKey })` (H-58),
+ * never `isPending`, which updates a notify later.
  */
 export function useDeleteHistoryEntry(
   userId: string,
@@ -26,8 +33,21 @@ export function useDeleteHistoryEntry(
   const queryClient = useQueryClient();
   return useMutation({
     mutationKey: deleteHistoryEntryMutationKey,
-    mutationFn: (): Promise<DeleteHistoryEntryOutcome> =>
-      Promise.reject(new Error('useDeleteHistoryEntry: not implemented (T31)')),
+    mutationFn: async (id: string): Promise<DeleteHistoryEntryOutcome> => {
+      try {
+        await deleteHistoryEntry(id);
+        return 'deleted';
+      } catch (error) {
+        if (
+          error instanceof ApiError &&
+          error.status === 404 &&
+          error.code === 'tailoring_run_not_found'
+        ) {
+          return 'already_gone';
+        }
+        throw error;
+      }
+    },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: historyRootKey(userId) }),
   });
 }

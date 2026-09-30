@@ -13,6 +13,9 @@ import {
   PICKER_LEGEND,
   PICKER_RETENTION_NOTICE,
   PICKER_UNAVAILABLE_NOTE,
+  SELECT_PICKER_EMPTY_NOTE,
+  SELECT_PICKER_LEGEND,
+  WORKSPACE_UPLOAD_NOTICE,
   RETRY_LABEL,
   SAVED_CVS_LOADING_NOTE,
   SAVED_CVS_LOAD_ERROR_NOTE,
@@ -21,6 +24,9 @@ import {
   USE_THIS_CV_PENDING_LABEL,
   copySavedCvErrorCopy,
 } from '../savedCvsCopy';
+import { effectiveSelection } from '../selection';
+
+import { SavedCvUploadControl } from './SavedCvUploadControl';
 
 import type { SavedBaseCv } from '../types';
 
@@ -71,34 +77,136 @@ export function SavedBaseCvPicker(props: SavedBaseCvPickerProps = {}): React.JSX
         </div>
       );
     case 'authenticated':
-      return props.mode === 'select' ? <SelectPicker /> : <AuthenticatedPicker />;
+      return props.mode === 'select' ? (
+        <SelectPicker chosenId={props.chosenId} onChoose={props.onChoose} />
+      ) : (
+        <AuthenticatedPicker />
+      );
   }
 }
 
 /**
- * `mode: 'select'` (AC-39): 2.2's list states and radiogroup, preselected only when exactly one CV
- * is `extracted`, `extraction_failed` CVs listed and disabled with their reason, an inline *Upload a
- * CV to your account*, and an empty state that offers the upload — with no *Use this CV* button and
- * no copy.
+ * `mode: 'select'` (AC-39): 2.2's list states and radiogroup — preselected only when exactly one CV
+ * is `extracted`, `extraction_failed` CVs listed and disabled with their reason — an inline *Upload a
+ * CV to your account* (2.2's hook and copy), and an empty state that offers the upload. No *Use this
+ * CV* and no copy: the selection **is** the run's base CV, referenced directly (plan §0.1).
  *
- * SKELETON (T29): a distinguishable stub; T31 builds it.
+ * Controlled: the workspace owns `chosenId` and launches with the same `effectiveSelection`, so the
+ * checked radio and the CV a run uses cannot differ.
  */
-function SelectPicker(): React.JSX.Element {
-  return <p>SavedBaseCvPicker select mode (skeleton)</p>;
+function SelectPicker({
+  chosenId,
+  onChoose,
+}: {
+  readonly chosenId: string | null;
+  readonly onChoose: (id: string) => void;
+}): React.JSX.Element {
+  const list = useSavedBaseCvs();
+
+  function body(): React.JSX.Element {
+    if (list.isPending) {
+      return (
+        <p role="status" className="text-sm text-slate-500">
+          {SAVED_CVS_LOADING_NOTE}
+        </p>
+      );
+    }
+    if (list.isError) {
+      return (
+        <div role="alert" className="space-y-2">
+          <p className="text-sm text-slate-700">{SAVED_CVS_LOAD_ERROR_NOTE}</p>
+          <button
+            type="button"
+            onClick={() => {
+              void list.refetch();
+            }}
+            className={buttonClass}
+          >
+            {RETRY_LABEL}
+          </button>
+        </div>
+      );
+    }
+    const items = list.data.items;
+    if (items.length === 0) {
+      return <p className="text-sm text-slate-600">{SELECT_PICKER_EMPTY_NOTE}</p>;
+    }
+    return (
+      <SavedCvRadioGroup
+        legend={SELECT_PICKER_LEGEND}
+        items={items}
+        selectedId={effectiveSelection(items, chosenId)}
+        onChoose={onChoose}
+      />
+    );
+  }
+
+  return (
+    <div className="mb-6 space-y-3">
+      {body()}
+      {/* The upload stays available in every settled state — beside the list, or as the empty
+          state's one action. Hidden while the list loads or failed: nothing to add it beside. */}
+      {list.isSuccess && <SavedCvUploadControl notice={WORKSPACE_UPLOAD_NOTICE} />}
+    </div>
+  );
 }
 
 /**
- * Which CV the button would copy: the user's choice if it is still in the list and copyable, else
- * the only CV when there is exactly one (AC-38), else none. Derived on every render from the id in
- * `useState` and the query's `items`, so a CV deleted in another tab can never stay selected.
+ * The saved CVs as a `radiogroup` with a `legend`, in the server's order (newest first) — shared by
+ * both modes. A CV that is not `extracted` is listed but disabled, with its reason as the radio's
+ * description. Each name is user text, rendered as text.
  */
-function effectiveSelection(items: readonly SavedBaseCv[], chosenId: string | null): string | null {
-  const copyable = items.filter((cv) => cv.status === 'extracted');
-  if (chosenId !== null && copyable.some((cv) => cv.id === chosenId)) {
-    return chosenId;
-  }
-  const [only] = items;
-  return items.length === 1 && only?.status === 'extracted' ? only.id : null;
+function SavedCvRadioGroup({
+  legend,
+  items,
+  selectedId,
+  onChoose,
+}: {
+  readonly legend: string;
+  readonly items: readonly SavedBaseCv[];
+  readonly selectedId: string | null;
+  readonly onChoose: (id: string) => void;
+}): React.JSX.Element {
+  const legendId = useId();
+  const radioName = useId();
+  return (
+    <fieldset role="radiogroup" aria-labelledby={legendId} className="space-y-2">
+      <legend id={legendId} className="mb-2 text-sm font-medium text-slate-900">
+        {legend}
+      </legend>
+      {items.map((cv) => {
+        const usable = cv.status === 'extracted';
+        const reasonId = `${radioName}-${cv.id}-reason`;
+        return (
+          <div key={cv.id} className="flex items-start gap-2">
+            <input
+              id={`${radioName}-${cv.id}`}
+              type="radio"
+              name={radioName}
+              value={cv.id}
+              checked={selectedId === cv.id}
+              disabled={!usable}
+              aria-describedby={usable ? undefined : reasonId}
+              onChange={() => {
+                onChoose(cv.id);
+              }}
+              className="mt-1"
+            />
+            <label htmlFor={`${radioName}-${cv.id}`} className="text-sm">
+              <span className={usable ? 'text-slate-900' : 'text-slate-400'}>
+                {cv.label ?? cv.original_filename}
+              </span>
+              {!usable && (
+                <span id={reasonId} className="block text-slate-500">
+                  {cv.failure_message ?? SAVED_CV_STATUS_LABELS[cv.status]}
+                </span>
+              )}
+            </label>
+          </div>
+        );
+      })}
+    </fieldset>
+  );
 }
 
 /**
@@ -115,9 +223,7 @@ function AuthenticatedPicker(): React.JSX.Element {
   const copy = useCopySavedBaseCv();
   const queryClient = useQueryClient();
   const [chosenId, setChosenId] = useState<string | null>(null);
-  const legendId = useId();
   const errorId = useId();
-  const radioName = useId();
 
   function body(): React.JSX.Element {
     if (list.isPending) {
@@ -170,42 +276,12 @@ function AuthenticatedPicker(): React.JSX.Element {
 
     return (
       <div className="space-y-3">
-        <fieldset role="radiogroup" aria-labelledby={legendId} className="space-y-2">
-          <legend id={legendId} className="mb-2 text-sm font-medium text-slate-900">
-            {PICKER_LEGEND}
-          </legend>
-          {items.map((cv) => {
-            const copyable = cv.status === 'extracted';
-            const reasonId = `${radioName}-${cv.id}-reason`;
-            return (
-              <div key={cv.id} className="flex items-start gap-2">
-                <input
-                  id={`${radioName}-${cv.id}`}
-                  type="radio"
-                  name={radioName}
-                  value={cv.id}
-                  checked={selectedId === cv.id}
-                  disabled={!copyable}
-                  aria-describedby={copyable ? undefined : reasonId}
-                  onChange={() => {
-                    setChosenId(cv.id);
-                  }}
-                  className="mt-1"
-                />
-                <label htmlFor={`${radioName}-${cv.id}`} className="text-sm">
-                  <span className={copyable ? 'text-slate-900' : 'text-slate-400'}>
-                    {cv.label ?? cv.original_filename}
-                  </span>
-                  {!copyable && (
-                    <span id={reasonId} className="block text-slate-500">
-                      {cv.failure_message ?? SAVED_CV_STATUS_LABELS[cv.status]}
-                    </span>
-                  )}
-                </label>
-              </div>
-            );
-          })}
-        </fieldset>
+        <SavedCvRadioGroup
+          legend={PICKER_LEGEND}
+          items={items}
+          selectedId={selectedId}
+          onChoose={setChosenId}
+        />
         <p className="text-sm text-slate-500">{PICKER_RETENTION_NOTICE}</p>
         <button
           type="button"

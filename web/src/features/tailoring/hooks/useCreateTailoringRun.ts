@@ -1,9 +1,22 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { createTailoringRun } from '@/api/tailoringRuns';
+import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import type { NewTailoringRun, TailoringRun } from '../types';
+import type { ScopeMap } from '@/features/scope/scopeMap';
+
+/**
+ * The launch's mutation key in a scope (slice 2.3). A caller guards a same-tick double click with
+ * `queryClient.isMutating({ mutationKey })`, which `mutate()` updates synchronously — `isPending`
+ * only updates on the next notify, so two clicks in one tick would both read `false` (H-58).
+ */
+export function createTailoringRunMutationKey(
+  map: Pick<ScopeMap, 'keyRoot'> = GUEST_SCOPE_MAP,
+): readonly unknown[] {
+  return [...map.keyRoot, 'tailoring', 'createTailoringRun'];
+}
 
 /**
  * Request a tailoring run and refresh the list.
@@ -36,6 +49,7 @@ export function useCreateTailoringRun(): ReturnType<
   const map = useScopeMap();
 
   return useMutation({
+    mutationKey: createTailoringRunMutationKey(map),
     mutationFn: (input: NewTailoringRun) => createTailoringRun(map, input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: map.runListKey }),
   });

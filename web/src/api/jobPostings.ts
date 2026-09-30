@@ -22,9 +22,9 @@ export function fetchJobPostings(
   target: ApiTarget,
   signal?: AbortSignal,
 ): Promise<JobPostingListResponse> {
-  // For an account this is `GET /api/me/job-postings` with the server's default `limit` of 1 — the
-  // newest posting, which is exactly what the workspace reads from the guest's full list too.
-  return request<JobPostingListResponse>(target.jobPostingsPath, {
+  // For an account this is `GET /api/me/job-postings?limit=1` — the newest posting, which is
+  // exactly what the workspace reads from the guest's full list too (AC-40).
+  return request<JobPostingListResponse>(target.latestJobPostingsPath, {
     ...authOptionFor(target),
     ...(signal ? { signal } : {}),
   });

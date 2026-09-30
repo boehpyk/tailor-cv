@@ -1,3 +1,12 @@
+import { ConfirmDeleteDialog } from '@/components/ui/ConfirmDeleteDialog';
+
+import {
+  DELETE_ENTRY_CANCEL_LABEL,
+  DELETE_ENTRY_CONFIRM_LABEL,
+  DELETE_ENTRY_DIALOG_TITLE,
+  DELETE_ENTRY_MESSAGE,
+} from '../historyCopy';
+
 export interface DeleteHistoryEntryDialogProps {
   readonly onConfirm: () => void;
   /** Escape and Cancel both land here; focus then returns to the row's Delete. */
@@ -6,24 +15,22 @@ export interface DeleteHistoryEntryDialogProps {
 
 /**
  * The history-entry delete confirmation (AC-45): the shared `components/ui/ConfirmDeleteDialog`
- * (`role="alertdialog"`, focus in, trapped, Escape cancels, focus returned) saying
- * `DELETE_ENTRY_MESSAGE` — what goes with the entry, and that it cannot be undone.
- *
- * SKELETON (T29): a distinguishable stub; T31 renders the shared dialog.
+ * (`role="alertdialog"`, focus in on Cancel, trapped, Escape cancels, focus returned to the
+ * control that opened it) saying `DELETE_ENTRY_MESSAGE` — what goes with the entry, and that it
+ * cannot be undone. Presentational: the page's `onConfirm` deletes.
  */
 export function DeleteHistoryEntryDialog({
   onConfirm,
   onCancel,
 }: DeleteHistoryEntryDialogProps): React.JSX.Element {
   return (
-    <div>
-      DeleteHistoryEntryDialog (skeleton)
-      <button type="button" onClick={onCancel}>
-        cancel (skeleton)
-      </button>
-      <button type="button" onClick={onConfirm}>
-        confirm (skeleton)
-      </button>
-    </div>
+    <ConfirmDeleteDialog
+      title={DELETE_ENTRY_DIALOG_TITLE}
+      message={DELETE_ENTRY_MESSAGE}
+      confirmLabel={DELETE_ENTRY_CONFIRM_LABEL}
+      cancelLabel={DELETE_ENTRY_CANCEL_LABEL}
+      onConfirm={onConfirm}
+      onCancel={onCancel}
+    />
   );
 }

@@ -6,7 +6,6 @@ import { useBaseCvs } from '@/features/intake/hooks/useBaseCvs';
 import { uploadBaseCvMutationKey } from '@/features/intake/hooks/useUploadBaseCv';
 import { latestBaseCv } from '@/features/intake/latestBaseCv';
 import { JobPostingPanel } from '@/features/posting/components/JobPostingPanel';
-import { SavedBaseCvPicker } from '@/features/savedCvs/components/SavedBaseCvPicker';
 import { createJobPostingMutationKey } from '@/features/posting/hooks/useCreateJobPosting';
 import { useJobPostings } from '@/features/posting/hooks/useJobPostings';
 import { latestPosting } from '@/features/posting/latestPosting';
@@ -67,10 +66,6 @@ function Shell({
             <h2 id="base-cv-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
               Your base CV
             </h2>
-            {/* Slice 2.2 (AC-38): above the dropzone, which stays — a signed-in user can still
-                upload a one-off CV to the workspace. Renders nothing for a guest. Here in the
-                shell rather than in each branch, so it keeps its state as the lists load. */}
-            <SavedBaseCvPicker />
             {baseCvPanel}
           </section>
         }

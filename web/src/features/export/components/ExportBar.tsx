@@ -41,6 +41,7 @@ import {
   EXPORT_LIST_ERROR_NOTE,
   EXPORT_LIST_LOADING_NOTE,
   EXPORT_PRIVACY_NOTE,
+  ACCOUNT_EXPORT_PRIVACY_NOTE,
   downloadFilenameFor,
   exportGateReasonFor,
 } from '../exportCopy';
@@ -415,7 +416,9 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         </div>
       )}
 
-      <p className="text-xs text-slate-500">{EXPORT_PRIVACY_NOTE}</p>
+      <p className="text-xs text-slate-500">
+        {map.kind === 'account' ? ACCOUNT_EXPORT_PRIVACY_NOTE : EXPORT_PRIVACY_NOTE}
+      </p>
     </section>
   );
 }

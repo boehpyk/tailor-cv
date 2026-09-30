@@ -71,9 +71,11 @@ export function JobPostingCard({ posting, onReplace }: JobPostingCardProps): Rea
 
       <p className="text-sm text-slate-600">{posting.preview}</p>
 
-      {/* `null` is an account's posting (slice 2.3): there is no date to state. Its own sentence
-          ("Saved with your history", AC-40) is chosen by scope in T32; until then, no line. */}
-      {posting.expires_at !== null && (
+      {/* `null` is an account's posting (slice 2.3, AC-40): kept with the history, no date to
+          state. Read from the row, which is the server's statement of whose retention applies. */}
+      {posting.expires_at === null ? (
+        <p className="text-xs text-slate-500">Saved with your history</p>
+      ) : (
         <p className="text-xs text-slate-500">
           Stored until {formatStoredUntil(posting.expires_at)}
         </p>

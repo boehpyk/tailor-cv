@@ -21,6 +21,12 @@ export interface ApiTarget {
   /** The posting collection. */
   readonly jobPostingsPath: string;
   /**
+   * The list the workspace reads its posting from — the newest is the one it shows. A guest's is
+   * 1.2's whole list (a 24-hour workspace holds a handful); an account's asks for exactly one
+   * (`?limit=1`, AC-40), because an account's postings accumulate with its history.
+   */
+  readonly latestJobPostingsPath: string;
+  /**
    * `'required'` for account data — every request carries the bearer; `null` for a guest's — no
    * request carries one, and the `tc_guest` cookie authorizes it.
    */
@@ -32,6 +38,7 @@ export const GUEST_API_TARGET: ApiTarget = {
   tailoringRunsPath: '/api/tailoring-runs',
   exportJobsPath: '/api/export-jobs',
   jobPostingsPath: '/api/job-postings',
+  latestJobPostingsPath: '/api/job-postings',
   auth: null,
 };
 
@@ -43,6 +50,7 @@ export const ACCOUNT_API_TARGET: ApiTarget = {
   tailoringRunsPath: '/api/me/tailoring-runs',
   exportJobsPath: '/api/me/export-jobs',
   jobPostingsPath: '/api/me/job-postings',
+  latestJobPostingsPath: '/api/me/job-postings?limit=1',
   auth: 'required',
 };
 

@@ -72,6 +72,13 @@ const EXPORT_FORMAT_NOUNS: Record<ExportFormat, string> = {
 export const EXPORT_PRIVACY_NOTE =
   'Your files are made on our server, kept for 24 hours, and never sent anywhere else.';
 
+/**
+ * The same clause set for an account's run (slice 2.3, AC-49): the files live with their history
+ * entry and go when it is deleted (ADR-0016 amendment (c)) — never "24 hours" in account scope.
+ */
+export const ACCOUNT_EXPORT_PRIVACY_NOTE =
+  'Your files are made on our server, kept with your history until you delete it, and never sent anywhere else.';
+
 /** AC-43's loading line, on the bar and not on each control (see `ExportBar`'s docstring). */
 export const EXPORT_LIST_LOADING_NOTE = 'Checking your downloads…';
 
