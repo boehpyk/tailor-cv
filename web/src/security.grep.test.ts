@@ -255,3 +255,40 @@ describe('AC-47: features/savedCvs/ never renders raw HTML or reaches into brows
     expect(findNonCommentOccurrences('indexedDB', lines)).toEqual([]);
   });
 });
+
+/**
+ * Slice 2.3 (T35, AC-50): the three folders 2.3 added — history, the workspace scope, and the
+ * workspace (which now holds the account workspace) — get the same two guarantees as
+ * `features/savedCvs/`: no raw HTML, and no document, posting or token in browser storage. Each
+ * folder is checked on its own, with a positive control that the scan actually read files there, so
+ * a renamed folder cannot make the absence assertions pass by scanning nothing.
+ */
+const SLICE_2_3_DIRECTORIES = ['history', 'scope', 'workspace'] as const;
+
+function collectFeatureLines(feature: string): SourceLine[] {
+  const pattern = new RegExp(`[\\\\/]features[\\\\/]${feature}[\\\\/]`);
+  return collectSourceLines(SRC_ROOT).filter(
+    (line) => pattern.test(line.path) && !isTestFile(line.path),
+  );
+}
+
+describe.each(SLICE_2_3_DIRECTORIES)(
+  'AC-50: features/%s/ never renders raw HTML or reaches into browser storage',
+  (feature) => {
+    it('the scan reads production files in this folder (positive control)', () => {
+      expect(new Set(collectFeatureLines(feature).map((line) => line.path)).size).toBeGreaterThan(
+        0,
+      );
+    });
+
+    it.each([
+      'dangerouslySetInnerHTML',
+      'localStorage',
+      'sessionStorage',
+      'indexedDB',
+      'document.cookie',
+    ])('%s never appears in its production code', (needle) => {
+      expect(findNonCommentOccurrences(needle, collectFeatureLines(feature))).toEqual([]);
+    });
+  },
+);
