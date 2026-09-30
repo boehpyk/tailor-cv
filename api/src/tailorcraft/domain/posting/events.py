@@ -38,9 +38,9 @@ class JobPostingCaptured(DomainEvent):
     Payload: `job_posting_id`, `owner`, `source`, `character_count` (+ inherited `occurred_at`).
     `owner` replaced 1.2's `guest_session_id` in slice 2.3: a posting now belongs to a guest session
     or a user (ADR-0022), and the owner is an id wrapped in its variant — still ids only, rendered
-    by `LoggingEventPublisher` as `owner_kind` + `owner_id`. **Deliberately absent: the text, the URL and the title.** `character_count`
-    exists on `JobPostingText` for precisely this reason — so that a subscriber reporting on how
-    much text there is never needs to hold the text.
+    by `LoggingEventPublisher` as `owner_kind` + `owner_id`. **Deliberately absent: the text, the
+    URL and the title.** `character_count` exists on `JobPostingText` for precisely this reason — so
+    that a subscriber reporting on how much text there is never needs to hold the text.
 
     **One event, not two.** `JobPostingPasted` and `JobPostingFetched` would be the obvious pair,
     and they would be a mistake: every future subscriber — 1.3's tailoring trigger first — would

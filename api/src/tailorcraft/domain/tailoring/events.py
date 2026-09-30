@@ -60,10 +60,11 @@ class TailoringRunRequested(DomainEvent):
 
     Payload: `tailoring_run_id`, `owner`, `base_cv_id`, `job_posting_id` (+ inherited
     `occurred_at`). `owner` replaced 1.3's `guest_session_id` in slice 2.3 (ADR-0022): still an id,
-    wrapped in its variant, rendered by `LoggingEventPublisher` as `owner_kind` + `owner_id`. **Deliberately absent: everything textual.** The four ids are the whole fact —
-    what was asked for, on whose behalf, from which two inputs. The CV's filename, the posting's URL
-    and the posting's title are all reachable from those ids by anyone with database access and a
-    reason, which is the right bar; none of them belongs in a log line (the same call 1.1 made about
+    wrapped in its variant, rendered by `LoggingEventPublisher` as `owner_kind` + `owner_id`.
+    **Deliberately absent: everything textual.** The four ids are the whole fact — what was asked
+    for, on whose behalf, from which two inputs. The CV's filename, the posting's URL and the
+    posting's title are all reachable from those ids by anyone with database access and a reason,
+    which is the right bar; none of them belongs in a log line (the same call 1.1 made about
     `BaseCvUploaded` and 1.2 made about `JobPostingCaptured`).
     """
 

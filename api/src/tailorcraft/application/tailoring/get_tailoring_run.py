@@ -6,19 +6,20 @@ so one use case serves the guest workspace and a signed-in user's.
 A use case rather than `runs.get(id)` called straight from a router, **because it carries the
 authorization rule** (ADR-0008, ADR-0010):
 
-    What authorizes access to a tailoring run is **the link** — `run.owner == GuestOwner(the
-    resolved session id)` — checked here, on every read. Owning a session id is not authority over an
-    object that references it: a guest session is not a login, and the id itself proves nothing
-    about which rows it may see.
+    What authorizes access to a tailoring run is **the link** — `run.owner == the resolved
+    requester`, a `GuestOwner` or a `UserOwner` — checked here, on every read. Owning a session id
+    is not authority over an object that references it: a guest session is not a login, and the id
+    itself proves nothing about which rows it may see.
 
 The check lives here rather than in a router so that a **second entry point** cannot reach a
-`TailoringRun` without it. This slice already has two — the HTTP polling endpoint and, in 1.5, the
-export path — and a check duplicated in every caller is a check one caller eventually forgets.
+`TailoringRun` without it. There are several — the guest and `/api/me/` polling endpoints, the
+export path, history re-open and deletion — and a check duplicated in every caller is a check one
+caller eventually forgets.
 
-The session is resolved by the shared `resolve_active_guest_session`
-(`application/identity/resolve_guest_session.py`), the same helper the `intake` and `posting` read
-use cases call: session resolution is not re-implemented per context, so an expiry rule that changes
-changes in one place.
+The requester is resolved by the shared `resolve_owner` (`application/identity/resolve_owner.py`)
+for both variants — an active guest session or an existing user — the same helper the `intake` and
+`posting` read use cases call: resolution is not re-implemented per context, so an expiry or
+existence rule that changes changes in one place.
 """
 
 from __future__ import annotations
