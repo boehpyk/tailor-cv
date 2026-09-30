@@ -542,37 +542,64 @@ async def test_ac33_two_concurrent_deletes_are_one_204_and_one_404(
 # The invariant both tests check is the same one either way: once both requests have committed, no
 # `tailoring_run` row may reference a `posting_job_posting` row that does not exist, and neither
 # request may answer 5xx.
+#
+# **The decided fix is lock-based, infra-only** (owner decision, /verify round 1): the run-insert
+# path takes `SELECT … FROM posting_job_posting WHERE id = :p FOR KEY SHARE` before its `INSERT` (no
+# row → 404 `job_posting_not_found`, no run); the history-delete adapter takes `SELECT … FOR UPDATE`
+# on the posting row, then issues the posting `DELETE … WHERE NOT EXISTS (run)` as a *separate*
+# statement so it reads a fresh snapshot once it has the lock. Under that fix, direction (i)'s A
+# **blocks** on B's `FOR KEY SHARE` until B commits or rolls back — so a test that makes B wait for
+# A's whole request to *finish* before B is allowed to proceed would deadlock the two coroutines
+# against each other. The test below waits for either outcome — A finishes on its own (today's
+# unfixed code, which never takes a lock) or A is observed blocked on a lock (the fixed code) —
+# whichever comes first, so it stays valid staging for both.
 
 
 async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference(
     concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine, clock: FixedClock
 ) -> None:
     """Direction (i), insert-first: B's `INSERT` (uncommitted, inside its SAVEPOINT) lands before
-    A's `DELETE …/tailoring-runs/{R1}` commits and removes P.
+    A's `DELETE …/tailoring-runs/{R1}` reaches the posting.
 
     This needs **real concurrency**, not H-33's single-coroutine technique: B's transaction has to
-    stay open across the whole of A's request (A's own commit has to land while B is paused), so
-    two `asyncio` tasks trade control through two `Event`s, each awaited under `asyncio.wait_for` —
-    a hang here is a bug in the test, not a legitimate outcome, and must fail loudly rather than
-    hang the suite.
+    stay open while A's request is in flight, so two `asyncio` tasks trade control through `Event`s,
+    each awaited under `asyncio.wait_for` — a hang here is a bug in the test, not a legitimate
+    outcome, and must fail loudly rather than hang the suite.
 
     `SqlAlchemyTailoringRunRepository.add` is the pause point: by the time it is called, B's
     `RequestTailoringRun` use case has already authorized P through `GetJobPosting` (2.3's shared
-    ownership check) and is about to flush the new run's `INSERT`. The wrapper lets the real `add`
-    run — so the `INSERT` really is flushed, uncommitted, inside its own SAVEPOINT — then signals A
-    and blocks until A's whole request (a real, separate connection, a real commit) has finished.
+    ownership check) and is about to flush the new run's `INSERT` (and, once the decided fix lands,
+    the `SELECT … FOR KEY SHARE` that precedes it — the same infra method). The wrapper lets the
+    real `add` run — so the row really is locked and the `INSERT` really is flushed, uncommitted,
+    inside its own SAVEPOINT — then signals A.
+
+    **B is released the moment A has either finished or is observably blocked, never only on "A
+    finished".** Today's unfixed adapter takes no lock at all, so A's whole request — a real,
+    separate connection, a real commit — completes in milliseconds; B is released as soon as that
+    happens. The fixed adapter's `SELECT … FOR UPDATE` on the posting row conflicts with B's
+    (fixed-code) `FOR KEY SHARE` and blocks until B commits or rolls back — so under the fix, A
+    *never* finishes before B is released, and this test polls `pg_stat_activity` on a third,
+    separate connection for a backend of this database waiting on a lock, and releases B on that
+    signal instead. `asyncio.wait(..., return_when=FIRST_COMPLETED)` races the two conditions — "A
+    finished" vs. "A is blocked" — under one outer `asyncio.wait_for` so a design mistake in this
+    test (neither ever becomes true) fails on a timeout rather than hanging the suite. Whichever one
+    actually fired is recorded in `order`, so the test also documents which of the two adapters it
+    ran against.
 
     Recorded, never forced: this is the direction the reviewer's report says is reachable **today**,
-    and the assertion that must be observed red is the last one — no dangling reference — which
-    today's `NOT EXISTS` cannot honour because it never sees B's uncommitted row.
+    and the assertion that must be observed red is on the posting's survival — P must still exist,
+    and no `tailoring_run` row may reference a posting that does not — which today's `NOT EXISTS`
+    cannot honour because it never sees B's uncommitted row and never takes a lock that would make it
+    wait to find out.
     """
     account, entry = await _seed_committed(concurrent_app, settings, engine, clock)
     queue = FakeTailoringQueue()
     concurrent_app.dependency_overrides[get_tailoring_queue] = lambda: queue
 
-    b_inserted_uncommitted = asyncio.Event()
-    a_committed = asyncio.Event()
     order: list[str] = []
+    b_inserted_uncommitted = asyncio.Event()
+    a_finished = asyncio.Event()
+    b_may_proceed = asyncio.Event()
     original_add = SqlAlchemyTailoringRunRepository.add
 
     async def _pause_after_uncommitted_insert(
@@ -581,7 +608,7 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
         await original_add(self, run)
         order.append("b_inserted_uncommitted")
         b_inserted_uncommitted.set()
-        await asyncio.wait_for(a_committed.wait(), timeout=5)
+        await asyncio.wait_for(b_may_proceed.wait(), timeout=5)
 
     async def _run_b() -> Response:
         async with new_client(concurrent_app) as client_b:
@@ -596,32 +623,80 @@ async def test_reviewer_minor1_insert_first_leaves_no_dangling_posting_reference
 
     async def _run_a() -> Response:
         await asyncio.wait_for(b_inserted_uncommitted.wait(), timeout=5)
+        order.append("a_delete_issued")
         async with new_client(concurrent_app) as client_a:
             response = await client_a.delete(entry.run_url, headers=account.headers)
-        async with engine.connect() as separate:
-            still_there = await separate.execute(
-                text("SELECT count(*) FROM posting_job_posting WHERE id = :id"),
-                {"id": entry.posting_id.value},
-            )
-            order.append(
-                "a_deleted_posting_committed" if still_there.scalar_one() == 0 else "a_left_posting"
-            )
-        a_committed.set()
+        a_finished.set()
         return response
+
+    async def _a_is_blocked_on_a_lock() -> bool:
+        """Polls a THIRD, separate connection — never A's or B's own — for a backend of this
+        database whose `wait_event_type` is `Lock`: the fixed adapter's `SELECT … FOR UPDATE`,
+        parked behind B's (fixed-code) `FOR KEY SHARE`. Today's unfixed adapter never produces this,
+        so this only ever returns against the fixed code, and `_wait_for_a_blocked_or_finished`'s
+        sibling task is what makes the test terminate against today's."""
+        while True:
+            async with engine.connect() as probe:
+                blocked = await probe.execute(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                        "AND state = 'active'"
+                    )
+                )
+                if blocked.scalar_one() > 0:
+                    return True
+            await asyncio.sleep(0.02)
+
+    async def _wait_for_a_blocked_or_finished() -> None:
+        blocked_task = asyncio.ensure_future(_a_is_blocked_on_a_lock())
+        finished_task = asyncio.ensure_future(a_finished.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {blocked_task, finished_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in (blocked_task, finished_task):
+                if not task.done():
+                    task.cancel()
+        order.append(
+            "a_observed_blocked_on_lock" if blocked_task in done else "a_finished_unblocked"
+        )
 
     try:
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(SqlAlchemyTailoringRunRepository, "add", _pause_after_uncommitted_insert)
+            task_b = asyncio.ensure_future(_run_b())
+            task_a = asyncio.ensure_future(_run_a())
+            await asyncio.wait_for(b_inserted_uncommitted.wait(), timeout=5)
+            await asyncio.wait_for(_wait_for_a_blocked_or_finished(), timeout=5)
+            b_may_proceed.set()
             response_b, response_a = await asyncio.wait_for(
-                asyncio.gather(_run_b(), _run_a()), timeout=10
+                asyncio.gather(task_b, task_a), timeout=10
             )
 
-        assert order == ["b_inserted_uncommitted", "a_deleted_posting_committed"], (
-            "A's delete-and-commit must land on a separate connection while B's insert is still "
-            f"open and uncommitted, but the observed order was {order!r}"
+        assert order[0] == "b_inserted_uncommitted", order
+        assert "a_delete_issued" in order, (
+            "A's DELETE must have been issued while B's insert was still open and uncommitted, but "
+            f"the observed order was {order!r}"
+        )
+        assert order.index("a_delete_issued") > order.index("b_inserted_uncommitted"), order
+        assert len({"a_observed_blocked_on_lock", "a_finished_unblocked"} & set(order)) == 1, (
+            f"exactly one of the two ways A can stop waiting must have fired: {order!r}"
         )
         assert response_a.status_code == 204, response_a.text
         assert response_b.status_code < 500, response_b.text
+
+        async with engine.connect() as reader:
+            posting_still_exists = await reader.execute(
+                text("SELECT count(*) FROM posting_job_posting WHERE id = :id"),
+                {"id": entry.posting_id.value},
+            )
+        assert posting_still_exists.scalar_one() == 1, (
+            "the posting must survive: a run either already referenced it (committed while its "
+            "deletion was in flight) or authorization for a new one was in progress against it, and "
+            "either way it is not this request's to remove"
+        )
 
         if response_b.status_code == 202:
             run2_id = UUID(response_b.json()["id"])
