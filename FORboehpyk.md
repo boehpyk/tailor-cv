@@ -3878,3 +3878,333 @@ the cycle removes it unless someone does.
 - **Re-armed, with a number:** production's retired-refresh-hash table held **0 rows** on
   2026-09-26. The sweep waits for 100 k rows or 2.3.
 - **Still owed by the owner:** Phase 1's gate (OQ-7).
+
+---
+
+# Slice 2.3 — history, or: the workspace that follows you home
+
+First, a postscript to 2.2's "what's next": it shipped. It was verified on 2026-09-26, merged as
+PR #14 (`4c18557`) and released. A read-only look at the box four days later found the api, the
+worker and beat all running that exact commit.
+
+Until now, a signed-in user was a guest who happened to have a locker. Their saved CVs survived,
+but everything they *did* with one — the job posting, the tailoring run, the two documents they
+edited for an hour, the PDF — lived in the guest workspace and died 24 hours later, like everyone
+else's. Slice 2.3 changes that. Signed in, **your tailoring is yours**. There's a History page
+listing every run, newest first. You can re-open any of them, edit, re-export, or delete an entry.
+And delete your account, and all of it goes.
+
+It ships as `feature/tailoring-application-history`: **2689 backend and 839 frontend tests**, two
+new ADRs (0023 and 0024), four amended ones (0006, 0014, 0016, 0022), one migration, twelve new
+routes, and a React surface that turned out to be the most interesting design in the slice. It is
+**implemented, not verified**. `/verify` is next.
+
+## Born with its final owner
+
+2.2 left an awkward seam. A signed-in user reused a saved CV by making a **copy** into the guest
+workspace, because the guest workspace was the only one there was. 2.3 had to decide where a
+signed-in user's work lives now, and there were two broad shapes.
+
+One: keep working as a guest, then **move** the work into the account afterwards (a "save to
+history" button, or a background transfer). That means every run starts life owned by one party
+and ends it owned by another, and every row in between has to be re-pointed, with its files, in the
+right order, without the purge catching it half-moved. That's a removal van with the doors open.
+
+Two: **the workspace follows the credential.** Signed in, the posting, the run and its exports are
+created *user-owned* from their first `INSERT`, and the run points straight at the saved CV. No
+copy, no move, nothing re-pointed. This is what ADR-0023 chose, and the payoff is that 2.2's big
+rule, *an ownership graph never crosses owners*, holds without any machinery at all. A user's run
+references a user's CV, which references a user. Everything in the chain has the same owner and
+the same lifetime. The one thing that crosses owners in the codebase is still 2.2's copy route, and
+the frontend no longer even calls it. Slice 2.4 decides whether it gets a new caller or goes.
+
+The database side is 2.2's owner shape, applied to three more tables: two nullable owner columns
+and a `CHECK (num_nonnulls(guest_session_id, user_id) = 1)` on the posting, the run and the export
+job. An export job's owner is always its run's, stamped when the job is created, so a PDF can never
+belong to someone other than the document it was rendered from.
+
+## Twelve routes, one body each
+
+The account needed its own doors: twelve routes under `/api/me/` that answer to the login token
+alone (post a job description, start a run, list history, re-open, edit, delete, export, download
+and so on). Every one of them has a guest twin that already worked.
+
+The tempting shortcut is to copy each guest handler and change the credential line. Two copies of
+the same logic is a promise that one day they'll differ, and the one that's wrong will be the one
+nobody is looking at. So before any account route existed, a refactor moved each guest handler's
+body into a shared module (`_tailoring_handlers.py` and friends). It takes an already-resolved
+**requester**, the rate-limit principal, and the URL prefix for `Location` headers. The guest route
+became "resolve the cookie, call the body". The account route is "resolve the token, call the
+same body". The proof that the refactor changed nothing was that **all 2490 existing backend tests
+passed with no test file touched.**
+
+One small line in every account response says a lot about the privacy posture:
+`Cache-Control: no-store`. A run holds a CV. A shared computer's browser cache is not where it
+should end up.
+
+## One hook set, two workspaces
+
+The frontend had the same problem in a sharper form. Every hook that talked to the server —
+fetch a run, autosave an edit, poll an export, list postings — had the guest's paths and the
+guest's credential baked in. The account workspace needs the same hooks with different addresses,
+a different credential and a separate cache.
+
+The obvious way is an `if` in every hook: *is someone signed in? then `/api/me/…` with the bearer,
+else `/api/…` with the cookie.* That's the conflation 2.1 spent a whole section refusing. It asks
+"who is the user?" everywhere, and it gives the wrong answer on the one page where the answer is
+subtle. A signed-in person viewing a guest run in an old tab is still looking at a guest run.
+
+So the frontend got its own **port**, the same idea as the backend's hexagon, one size smaller.
+`features/scope/` defines a `WorkspaceScope` that is either `guest` or `account(userId)`, and a
+pure function, `scopeMap(scope)`, that returns everything a hook needs *together*: the paths, the
+credential, and the root of the cache keys. The **route** decides the scope (the History pages
+wrap themselves in an account scope), and every hook just asks `useScopeMap()`. No hook knows who
+is signed in. Paths and credential come as one bundle, so a caller can't pick the account path and
+the guest credential by mistake.
+
+Think of a hotel keycard. The door lock doesn't know who you are. It knows which rooms the card in
+front of it opens. Swap the card and the same door hardware serves a different guest. The hooks
+are the door hardware; the scope is the card.
+
+The proof, again, was an unedited suite. Threading the scope through every hook changed **zero**
+existing tests: **749 of 749** guest Vitest tests passed as they were, because with no scope
+provider the default is the guest map, and a guest's cache key is byte-for-byte what it was
+before. And account keys live under `['auth', 'account', userId]`, *inside* 2.1's `['auth']`
+prefix, so the sign-out that already clears `['auth']` drops a user's whole history from memory
+without learning anything new.
+
+## Pages with a bookmark, not a page number
+
+History is a list that grows forever, so it's paged: twenty at a time, and a **Load more** button.
+The textbook way to page is `OFFSET`: "skip the first 380 rows, give me 20". It's wrong here, in
+two ways.
+
+It's **slow in the wrong place**. To skip 380 rows the database has to find them first and throw
+them away, so page 20 costs more than page 1, and page 200 costs more again.
+
+It's also **wrong under change**, which matters more. You're on page 2 and a run finishes in
+another tab: every row shifts down by one, and "skip 20" now shows you one row you've already seen.
+Delete an entry instead, and every row shifts up, and one you never saw falls through the gap.
+
+**Keyset pagination** fixes both. Instead of "skip N", the cursor says *"continue after this exact
+row"*: the `(requested_at, id)` of the last entry you were shown. The next page is "rows strictly
+older than that, newest first, twenty of them", which is a walk along an index starting from a
+known spot. It's a bookmark instead of a page number. Tearing out chapter three doesn't move your
+bookmark. The `id` in the pair matters: two runs requested in the same second would otherwise have
+the same position, and a page boundary between them could repeat one or skip one. The id breaks
+the tie.
+
+The numbers are the argument. With 500 runs of maximum-length documents, the first page took
+**6.3 ms** at p95 and the *twentieth* took **6.0 ms**. Depth costs nothing. `EXPLAIN` shows an
+index scan on `ix_tailoring_run_user_id_requested_at` for both, and no scan of the table.
+
+The cursor handed to the browser is just `base64url("<epoch>.<uuid>")`, **unsigned**, on purpose.
+The query takes only the signed-in user's id as its owner, so a forged cursor can only move you
+around your own history. There's nothing to protect by signing it.
+
+The query also taught a lesson about **where a read model lives** (ADR-0024). Each history row
+needs the run's status, the posting's title and the saved CV's label: three tables from three
+contexts. A repository is the persistence of *one* aggregate, so it's the wrong home. Instead
+there's a **query port** in the domain (`TailoringHistoryQuery`), and one hand-written SQL
+statement behind it that names every column, computes a 140-character posting preview *in SQL*,
+and never selects a document body. A page of twenty titles doesn't drag megabytes of CVs through
+Python to show them.
+
+## A reference to something that might be gone
+
+2.2 let you delete a saved CV. 2.3 has runs that point at saved CVs. What happens to history when
+you delete the CV a run was made from?
+
+The owner's answer (OQ-2): **history stays.** The run you made in March is still yours after you
+tidy up your CVs in June. So `tailoring_run.base_cv_id` became a **dangling reference**: it keeps
+the old id and has no foreign key, so deleting the CV neither cascades into history nor is blocked
+by it. The history query LEFT JOINs the CV, and when nothing comes back the row reads **"CV
+deleted"**. That state is **derived at read time**, never stored. A stored "deleted" flag is a
+second copy of a fact, and a second copy can disagree with the first. A join that finds nothing
+can't.
+
+The join has one subtlety worth the sentence. The owner is part of the **join condition**, not
+just the `WHERE`, so a CV only lends its label to a run owned by the same person. Without that, a
+dangling id could, in principle, borrow someone else's CV name.
+
+There's a timing edge too. You click **Tailor**, the run is queued, and in the next second you
+delete the CV in another tab. The worker picks the run up and finds no CV. That's now a tenth
+failure reason, **`base_cv_deleted`**, recorded **before the paid Gemini call**, so the accident
+costs nothing. It isn't retryable, because trying again would fail the same way, and the UI
+shows no **Try again** button.
+
+## `RETURNING`: what I deleted *is* what I must clean up
+
+Deleting a history entry follows the order 1.6 and 2.2 already use: rows first, committed, then
+files. The new part is how the adapter knows *which* files.
+
+The naive version is two steps: `SELECT` the export files belonging to this run, then `DELETE` the
+rows. Between those two statements the world can change. An export finishes rendering and gets a
+file, or a second delete races the first. Now "the files I looked up" and "the rows I deleted" are
+two different sets, and whatever sits in the difference is either a file orphaned on disk or,
+worse, a file unlinked from under a row that still exists.
+
+PostgreSQL's `DELETE … RETURNING` removes the gap. The delete itself hands back the rows it just
+removed, file keys included. **What I deleted and what I must unlink are one set, by
+construction**, not two queries that usually agree. It's the difference between a clerk writing
+down which boxes to throw out and then throwing some boxes out, and a shredder that prints a
+receipt of exactly what went through it.
+
+The rest follows the house style. A run that's still `queued` or `running` can't be deleted out
+from under its worker (409). The posting goes too, but only if no other run still references it.
+Unlink failures are *returned* from the use case, never logged from the application layer, and
+the router turns each one into a warning line. A file that didn't unlink is an orphan with no row,
+exactly what the orphan sweep exists for. Account erasure grew the same way: it now takes the
+runs, postings, exports and their derived file keys, and 2.2's row lock on the user now also
+makes a racing run or export insert wait and then fail cleanly. That was proven the 2.2 way, with
+two real connections and the loser observed blocked.
+
+## War stories
+
+### A plan whose order could never be green
+
+The task list said: migrate at T13, retire 2.2's tripwire test at T18. The tripwire's whole job
+was to say "`guest_session_id` is `NOT NULL`; if that changes, stop and prove the purge still
+spares registered users". T13's migration makes the column nullable. So T13's commit had to go red,
+and no ordering of the tasks as written could keep every commit green.
+
+The fix was to retire the tripwire **in the migration's own commit**, because that's the commit
+that fires it by design, and to generalize rather than delete. AC-2's schema test now asserts
+"nullable *and* protected by `ck_<table>_exactly_one_owner`" on all four owned tables. The proof
+the tripwire asked for (a registered user's history survives a purge and a sweep, each observed red
+under a named mutation) landed right after the adapters, with nothing in between.
+
+A sibling of the same problem: the plan put the mapping (T12) before the migration (T13). A mapped
+column the table doesn't have yet breaks **every** load of that table, so T13 was committed first.
+**A task list's order is a claim that every prefix is green.** When it isn't, reorder on purpose and
+say so in the commit body.
+
+### The gate that checked more than the commit
+
+The pre-commit hook runs the whole suite, which is exactly right, but it runs it on the **working
+tree**, not on what's staged. Commit three tasks' worth of work one commit at a time from a dirty
+tree, and the first commit's gate passes on code that commit doesn't contain. The history then has
+a commit that was never actually green on its own.
+
+The discipline: stash everything that isn't in this commit (`git stash push --keep-index
+--include-untracked`), commit, pop. Then each hook sees exactly its commit. And a script doing this
+must pop the stash **even when the commit fails**, or the next step starts from a tree with half
+the work missing and nobody notices.
+
+### The seeds that vanished with the error
+
+Twenty-five API tests asserted things like "the refused delete left 3 rows in place" and read
+**0**. The code was fine. The seeds weren't. They were written through the real repositories on the
+test's session with a `flush` and no `commit`, and the test app joins that session with
+`create_savepoint`, which rolls back when a request fails. So a request that was *supposed* to be
+refused took the seed rows with it on the way out, and "nothing was deleted" became "nothing was
+ever there". Guest tests never met this, because their inputs arrive through routes that commit.
+Seeds commit now. Within the test that just releases a savepoint, and the outer rollback still
+cleans up.
+
+### The race that was staged too early
+
+The spec said: if you're editing a run and the entry is deleted in another tab, your next save
+gets a 409 with `current_version: null` ("this is gone"). The first test deleted the run, *then*
+sent the edit, and got a 404. That's correct, and it isn't the race: the edit's fresh read simply
+found nothing. The interesting moment is the delete landing **between the edit's read and its
+write**. You can't get there by arranging things before the request. The test now wraps the
+repository's `save` so that, at exactly that point, a separate connection commits the `DELETE`,
+and then the real save runs. It also asserts the delete really happened mid-request, so the test
+can't quietly go back to testing the easy case. **Stage a race at the moment the spec names, not
+at the moment that's convenient to set up.**
+
+### The import the layers allowed and the boundaries didn't
+
+The first skeleton of `HistoryEntryInProgress` took a `TailoringRunStatus`. `domain/retention`
+importing `domain/tailoring` is legal to import-linter, since both are domain. But retention's own
+allowlist test exists precisely to say *retention reaches other contexts' rows through its own
+ports, never their types*, and it caught it. The status now travels as a plain string, and the
+delete port takes a bare UUID rather than `TailoringRunId`. Layers aren't the only boundary. **A
+bounded context is a boundary too, and it needs its own test.**
+
+### Base64 that accepts anything
+
+The history cursor is base64url. Python's `base64.urlsafe_b64decode` has a trap: it **silently
+discards** characters outside its alphabet, so `"not-base64!!"` decodes to something instead of
+failing. The decoder uses `b64decode(s, altchars=b"-_", validate=True)`. For the same reason the
+seconds part is checked as digits only, because `int()` cheerfully accepts `" +1_000 "`. Any
+failure is one `invalid_cursor` 422 that never echoes what you sent.
+
+### The tab that went to the wrong house
+
+On a re-opened history run, clicking the **Cover letter** tab jumped to `/runs/…`, the *guest*
+route, where the run doesn't exist for a guest. `DocumentTabs` and the editor's "you have unsaved
+changes" guard both built their paths by hand as `/runs/${id}/…`. It's the scope idea's own lesson,
+met from the other side: **any path built by hand is a path that ignores the scope.** Links now
+come from `runLink(scope)`, and the test that pins it was checked the usual way. Re-hardcode the
+path, watch it go red, restore.
+
+### The bug that wouldn't come back
+
+2.2's manual pass left a note: typing into `/register` while the page is still checking your login
+could get wiped by a re-mount. 2.3 planned a red test for it first. It **wouldn't go red**, not in
+jsdom and not under React's `StrictMode` with the real route table. Reading the code said why: no
+page has a "still checking" branch to re-mount *from*, and none of them had changed since. So the
+test was committed as a regression guard, and the commit says plainly **"no recorded red"**. The
+real-browser attempt moves to `/verify`. A RED you can't reproduce is recorded as exactly that.
+Forcing it, by changing the code until the test fails, would be manufacturing evidence.
+
+### Smaller ones
+
+- **A migration's lock staging was a story, not a fact.** The migration adds each constraint `NOT
+  VALID` and then `VALIDATE`s it, the textbook way to avoid a long lock. But Alembic runs a whole
+  revision in **one transaction**, and a lock taken by the first statement is held until the
+  commit. So the careful staging releases nothing mid-revision. It's harmless today, because
+  production's three tables held **0 rows** when read over SSH (read-only). If they ever grow, the
+  revision gets split and gets a `lock_timeout`.
+- **The test the plan leaned on didn't exist.** The plan said "extend the port-binding coverage
+  test". There wasn't one. Now there is: every domain `Protocol` is discovered automatically and
+  must be bound by the API or the worker, or exempted by name.
+- **Skeleton leftovers.** A constructor argument nobody read and a pair of superseded repository
+  methods were removed in their own commits once the real ones landed. Scaffolding again, the same
+  moral as 2.2's `/verify`: it needs a removal date.
+- **Interruptions were cheap.** The agents doing the work hit usage limits several times mid-task.
+  Every resume started with `git status`, and because the tree was clean and each task was one
+  small commit, "where was I?" always had a one-line answer. Small commits aren't only for
+  reviewers.
+
+## The numbers
+
+Every budget was met with room to spare. Re-opening a run: **11.4 ms** (budget 100). Deleting an
+entry with 20 export files: **13.4 ms** (250). Deleting an account holding 500 runs and 1,005 files:
+**280 ms** (2,000). Most of that is argon2 and the database, since the 1,005 unlinks alone take
+13.6 ms. Starting a run: **51.7 ms** (300), and queued → running in **83.4 ms** (2 s).
+
+The one that matters most, on the production image: a purge of 100 expired guests *beside* 100
+users holding 4,000 export files, with every file aged past the sweep's floor so the sweep has to
+**consider** each one. The purge took **1.52 s** and deleted **zero** user rows. The orphan sweep
+took **1.16 s**, looked at all 4,100 user files, found every one referenced by a row, and reclaimed
+**zero**.
+
+One observation, not a miss. At page 20 the posting join read all 500 of the user's postings to
+keep 20. That's cheap at today's cap of 500, and it's written down for the day the cap rises.
+
+## The common thread, a twelfth time
+
+2.2's thread was *when two things have different lifetimes, don't let them share*. 2.3 is its
+mirror: **when two things have the same lifetime, let them be one thing.** A signed-in user's run
+and their CV share an owner, so the run points at the CV with no copy. The deleted rows and the
+files to unlink are the same set, so one statement produces both. The guest route and its account
+twin do the same job, so they share one body. The two workspaces do the same things at different
+addresses, so they share one set of hooks and differ only in the card they're handed. Every time,
+the design removed a *second copy* that could have drifted, and the tests that proved it were the
+old ones, passing unedited.
+
+## What's next
+
+- **`/verify`**: the review, the suite green twice, and a manual walk on the dev stack with real
+  Gemini. That includes AC-59 (the 15-second budget re-measured on the account path) and AC-51's
+  real-browser attempt.
+- **Then the PR and the release.** The migration runs as written at production's 0 rows, and the
+  release script needs no change.
+- **Re-armed, with a number:** the retired-refresh-hash table held **0 rows** on 2026-09-30, so the
+  sweep now waits for 100 k rows or slice 2.5. The uploads volume held **0 files**, the baseline
+  for the 5 GB / 200 MB-per-user trigger on pruning old export files.
+- **2.4** decides the copy route's fate and builds the claim flow.
+- **Still owed by the owner:** Phase 1's gate (OQ-7).
