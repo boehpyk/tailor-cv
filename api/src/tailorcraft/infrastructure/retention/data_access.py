@@ -96,15 +96,21 @@ class CommittingExpiredGuestDataAdapter:
         and the deletes that follow each commit on their own."""
         return await self._inner.list_expired(as_of, limit)
 
-    async def delete_session(self, session_id: GuestSessionId) -> None:
-        """The inner SAVEPOINT, **then commit** — the whole reason this class exists.
+    async def delete_session(self, session_id: GuestSessionId) -> bool:
+        """The inner SAVEPOINT, **then commit** — the whole reason this class exists — and the inner
+        answer passed through unchanged.
 
         The commit is what the file unlink that follows it in `PurgeExpiredGuestSessions` is allowed
         to rely on. It is also what bounds a failure: a run that dies after this returns leaves this
         session gone and every later candidate untouched, and the next tick lists only the rest.
+
+        **Commit whatever the answer** (ADR-0018 amendment (a)). `False` — a claim or a concurrent
+        purge got there first — wrote nothing, so the commit only ends the transaction; `True` is
+        only worth acting on once it is durable, which is why the boolean is returned *after* it.
         """
-        await self._inner.delete_session(session_id)
+        deleted = await self._inner.delete_session(session_id)
         await self._session.commit()
+        return deleted
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         """A read, so **no commit** — and the one read whose *failure* is load-bearing. It must

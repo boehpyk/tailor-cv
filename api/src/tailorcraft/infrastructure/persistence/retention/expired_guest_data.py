@@ -245,18 +245,29 @@ class SqlAlchemyExpiredGuestData:
             for row in candidates
         )
 
-    async def delete_session(self, session_id: GuestSessionId) -> None:
-        """`DELETE FROM identity_guest_session WHERE id = :id`, inside a SAVEPOINT.
+    async def delete_session(self, session_id: GuestSessionId) -> bool:
+        """`DELETE FROM identity_guest_session WHERE id = :id`, inside a SAVEPOINT; `True` iff **this**
+        `DELETE` removed the row (`rowcount > 0`).
 
         **One statement.** The four child tables — `intake_base_cv`, `posting_job_posting`,
         `tailoring_run`, `export_job` — go by their `ON DELETE CASCADE` foreign keys, which is why
         this slice adds no per-context delete and why AC-2 proves the cascades rather than trusting
         the comments that promised them.
 
-        **Deleting an already-deleted session affects zero rows and is not an error** (AC-15, R-19).
-        No `rowcount` is read, and none is returned: "how many rows went" is a question about the
-        cascade, and the cascade is the database's mechanism rather than this port's promise. That
-        silence is half of what makes the purge safe to retry, to redeliver and to run twice at once.
+        **Deleting an already-deleted session affects zero rows and is not an error** (AC-15, R-19);
+        it returns `False`. That is half of what makes the purge safe to retry, to redeliver and to
+        run twice at once — and the loser of two concurrent purges now skips the session instead of
+        reporting it twice.
+
+        **The boolean is not a count, and it is about the session row alone** (ADR-0018 amendment
+        (a), slice 2.4). `rowcount` here counts rows of `identity_guest_session` matched by the
+        `WHERE`, never the cascade's children, which stay the database's mechanism rather than this
+        port's promise. It answers one question: did a guest-work claim commit first? A claim locks
+        the session row `FOR UPDATE`, re-keys its children to a user and deletes the row in one
+        transaction, so if it won, this `DELETE` (which waits on that lock and then re-checks the
+        row) finds nothing and returns `False` — and the file keys `list_expired` collected without
+        a lock now belong to a registered user and must not be unlinked. If this `DELETE` won, it
+        holds the row lock, and no claim can commit after it. **Unlink only what you deleted.**
 
         **Why the SAVEPOINT, and why this method takes one id rather than a batch.** A failed flush
         rolls back to the nearest transaction boundary, and at the *root* boundary SQLAlchemy
@@ -276,9 +287,14 @@ class SqlAlchemyExpiredGuestData:
         for an object this class does not know about.
         """
         async with self._session.begin_nested():
-            await self._session.execute(
+            # The connection, not `AsyncSession.execute`: only `Connection.execute` is typed to
+            # return a `CursorResult`, which is what carries `rowcount` (as in `account_data.py`).
+            # Same transaction, same SAVEPOINT — the session hands back the connection it is on.
+            connection = await self._session.connection()
+            result = await connection.execute(
                 guest_session_table.delete().where(guest_session_table.c.id == session_id)
             )
+        return result.rowcount > 0
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         """Of these storage keys, the subset a live row still points at — one statement, always.

@@ -147,14 +147,16 @@ class _RecordingExpiredGuestDataPort:
         self.list_expired_calls.append((as_of, limit))
         return list(self.candidates[:limit])
 
-    async def delete_session(self, session_id: GuestSessionId) -> None:
+    async def delete_session(self, session_id: GuestSessionId) -> bool:
         if self.fail_on is not None and session_id == self.fail_on:
             self.log.entries.append(("delete_session_failed", session_id))
             raise RuntimeError(
                 "a lock timeout, a serialization failure, or an unpredicted constraint"
             )
+        present = any(c.session_id == session_id for c in self.candidates)
         self.candidates = [c for c in self.candidates if c.session_id != session_id]
         self.log.entries.append(("delete_session", session_id))
+        return present  # True iff this call removed the row; False if it was already gone
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         raise NotImplementedError(

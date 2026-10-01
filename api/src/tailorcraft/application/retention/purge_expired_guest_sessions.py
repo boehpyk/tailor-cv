@@ -258,6 +258,7 @@ class PurgeExpiredGuestSessions:
             return PurgeReport(
                 examined=len(candidates),
                 sessions_deleted=0,
+                sessions_skipped=0,
                 sessions_failed=0,
                 # A dry run performs no `DELETE` and no unlink, so there is nothing that could have
                 # refused one. Empty tuples rather than `None`: "no failures" and "we did not look"
@@ -355,6 +356,9 @@ class PurgeExpiredGuestSessions:
         return PurgeReport(
             examined=len(candidates),
             sessions_deleted=sessions_deleted,
+            # Always 0 until T10: the loop still ignores `delete_session`'s answer (slice 2.4's
+            # T8 changes the port's type only; T10 makes the use case act on it).
+            sessions_skipped=0,
             sessions_failed=len(session_purge_failures),
             session_purge_failures=tuple(session_purge_failures),
             files_unlinked=files_unlinked,
