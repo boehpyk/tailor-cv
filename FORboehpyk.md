@@ -4302,7 +4302,8 @@ they were looking at opens again at `/history/<the same id>`, edits and PDF incl
 
 It ships as `feature/workspace-registration-cta`: **2816 backend and 929 frontend tests**, one
 new ADR (0025), five amended ones (0006, 0008, 0010, 0018, 0022), one new route, one route
-**removed**, and **no migration at all**. It is **implemented, not verified**. `/verify` is next.
+**removed**, and **no migration at all**. `/verify` passed on its **first round** on 2026-10-01, and
+it is open as PR #16.
 
 ## Why it asks first
 
@@ -4578,13 +4579,55 @@ not a list it wrote down earlier. The version number guards only what it was bum
 feature stops being *created* before it stops being *read*. In each case the design asks the system
 what is true *now*, at the moment it acts, instead of relying on a belief from a moment ago.
 
+## `/verify`: one round, for the first time in a while
+
+1.4 took four rounds, 1.5 four, 1.6 three, 2.3 three. 2.4 took **one**: zero CRITICAL, zero MAJOR,
+and the suite green three times in a row (2,816 backend, 929 frontend). That isn't luck. Every race
+the plan named had already been staged on two real database connections during `/implement`, and
+every "this is safe" claim had been mutation-proven: break it on purpose, watch the test go red,
+put it back. The reviewer had little left to find because the slice had already gone looking for
+its own bugs.
+
+What it did find was paperwork, and paperwork matters:
+
+- **Four spec rows disagreed with the code, and the code was right each time.** The retired route
+  answers 405, not 404, because its path still matches another route and the web framework rejects
+  the method before any handler runs. A "version bump" mutation loses the paid result as
+  `TailoringRunConcurrentlyModified`, not `SKIPPED`. The failure reason on the wire is
+  `llm_timed_out`. And `no-store` is set on every response the claim *handler* builds; the two it
+  doesn't build carry no account data. The owner amended the spec each time, **on purpose and in
+  writing**. The rule from 1.5 still holds: when the spec and the code disagree, decide which one
+  wins. Don't write a test that quietly agrees with whichever came out.
+- **A recorded red in the wrong drawer.** T32's proof of failure had been pasted under T13 in the
+  task list, and T32 itself said `<paste>`. The real one was in the commit body all along. The
+  task list is a summary; **the commit history is the record**, and the audit reads the history.
+- **A comment with the wrong reason.** The client said a working copy isn't claimed "because the
+  user already owns its source". The real reason is that it's a copy of a CV *some account* keeps,
+  possibly **someone else's** on a shared computer. A comment that gives a harmless reason for a
+  safety rule invites someone to "simplify" the rule away.
+
+Then came the manual walk, with **real Gemini, real money, two runs**. Before uploading anything I
+made a CV with nonsense marker words for the name, the address and the body text, and a filename
+containing `MARKFILENAME`. I used a marker email too. Then I recorded every log line from all four
+containers. Guest upload, paste, tailor, edit, PDF. The CTA stayed hidden while the run worked and
+appeared when it succeeded. *Create an account* brought me straight back to the same run. The
+offer named `MARKFILENAME-cv.docx`, and *Keep* turned `/runs/<id>` into `/history/<id>`. The PDF
+downloaded afterwards hashed **identical** to the file before the claim: same inode, same `0600`.
+Nothing on disk moved, just as the design promised. *Not now* sent nothing, and the offer came back
+on the next visit. A second tab, left on the old guest page, said *"it's in your history"*. Deleting
+the account took every row and every file. Then I grepped **1,797 log lines for every marker: zero
+hits.** The claim's own log line *was* there both times, which proves the grep was looking at live
+logs and not an empty file.
+
+**Lesson:** a privacy check that finds nothing proves something only if it could have found
+something. Plant the marker, and make sure the log you search actually received something during
+the run.
+
 ## What's next
 
-- **`/verify` (T39)**: the reviewer, the suite green twice, and a manual walk on `:8080` from guest
-  tailoring through the CTA, the offer, *Keep*, history, sign-out, *Not now*, a second claim and
-  account deletion, with the live logs grepped for every piece of PII. Five spec amendments wait
-  there (AC-24's `no-store` on the dependency's 401/503, AC-33's 405, AC-18's exception, AC-34's
-  wire value, the CLI loop that stops after a skip-only batch).
+- **The CLI's early stop**: the purge loop ends on a batch that only *skipped* sessions. It's safe
+  (nothing is wrongly deleted, and the backlog stays visible on `/health/ready`), and it's a
+  one-line fix (`deleted + skipped == 0`) the next time that file is touched.
 - **The contraction** of `copied_from_base_cv_id` and its readers: at the next `intake_base_cv`
   migration after 2.4's release + 24 h. Baseline 0 rows.
 - **OQ-12, `__Host-tc_guest`**: a session-fixation exposure from sibling subdomains that has been
@@ -4592,4 +4635,4 @@ what is true *now*, at the moment it acts, instead of relying on a belief from a
   accepts user content, or Phase 3.
 - **2.5** brings an email channel, and with it registration that stops revealing which emails exist.
 - **Still owed by the owner:** Phase 1's gate (OQ-7), and now Phase 2's: *a guest → registered
-  upgrade loses nothing* has its proof (AC-34) waiting for `/verify`.
+  upgrade loses nothing* is proven (AC-34, and the manual walk), ready to be recorded.

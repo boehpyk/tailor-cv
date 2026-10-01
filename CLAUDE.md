@@ -26,8 +26,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (deploy run 36265111930; the box's api/worker/beat all read `4c18557` on 2026-09-30). **Slice 2.3
 > `tailoring-application-history` was verified (three review rounds plus a real-browser pass and
 > one real-Gemini run, 2026-09-30), merged as PR #15 (`0b01537`) and released the same day**
-> (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was implemented on 2026-10-01
-> (T1–T38) and is awaiting `/verify`.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was implemented and verified
+> on 2026-10-01 (reviewer PASS in round 1, plus a real-Gemini manual pass) and is open as PR #16.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -225,7 +225,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   in `test_me_history_delete.py` has no timeout, and eleven seed comments still say the refusal
 >   is "through the request route's composition root".
 >
-> - **2.4 `workspace-registration-cta`** (branch, **implemented 2026-10-01, awaiting `/verify`**) —
+> - **2.4 `workspace-registration-cta`** (PR #16, **verified 2026-10-01**, awaiting merge) —
 >   a guest who tailored and then registers or signs in **keeps the work** (**ADR-0025**), by an
 >   explicit offer that names it (*Keep them in my account* / *Not now*) and never automatically: a
 >   guest cookie identifies a browser, not a person. `POST /api/me/guest-work/claim`, no body: the
@@ -256,11 +256,23 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   the production image, a purge of 100 sessions beside 100 claimed users' 4 100 files **1.59 s**
 >   (10 s), deleting 0 user rows or files, and the sweep reclaiming **0 of 4 100**. **AC-49 holds**:
 >   `git diff main --stat` over `infrastructure/llm` and `execute_tailoring_run.py` is empty.
->   **T36 found the release order wrong** (R-7; Infrastructure footguns). Carried to `/verify`:
->   AC-24's `no-store` is missing on the dependency's 401 and the app's 503; AC-33 says 404, the
->   code answers 405; AC-18's outcome is `TailoringRunConcurrentlyModified`, not `SKIPPED`; AC-34's
->   wire value is `llm_timed_out`; the CLI loop stops on `sessions_deleted == 0`, so a batch that
->   only skipped ends the run early (safe); OQ-12 (`__Host-tc_guest`) is recorded, not fixed.
+>   **T36 found the release order wrong** (R-7; Infrastructure footguns).
+>   **`/verify` passed in one round** (0 CRITICAL, 0 MAJOR; `make check` green three times). The
+>   owner amended four spec rows to the shipped behaviour: AC-24's `no-store` covers the responses
+>   the **handler** builds (the dependency's 401 and the app's 503 carry no account data; a
+>   `/api/me/*` middleware is the fix if ever wanted); AC-33 is **405** with an `Allow` header
+>   without `POST`; AC-18's outcome is `TailoringRunConcurrentlyModified`; AC-34's wire value is
+>   `llm_timed_out`. The manual pass on `:8080` with real Gemini walked CTA → register → offer →
+>   Keep → `/history/{id}/cv` (the edit kept, run `version` unchanged, the PDF re-downloaded
+>   byte-identical by sha256 and inode) → *Not now* → second claim → the other tab's history link →
+>   account deletion (every row and file gone); 1 797 log lines, zero PII markers, both
+>   `identity.guest_work_claimed` lines captured and neither carrying a session id. **Carried:** the
+>   purge CLI stops on `sessions_deleted == 0`, so a batch that only skipped ends a run early (safe;
+>   `deleted + skipped == 0` next time `purge_command.py` is touched); OQ-12 (`__Host-tc_guest`) is
+>   recorded, not fixed; a guest refetch after claiming a run still *in flight* is untested (none on
+>   a succeeded run). **From 2.5, a value object's skeleton gets a no-op `__post_init__`**, so a
+>   "refused" test goes red on `DID NOT RAISE` rather than on the skeleton's `NotImplementedError`
+>   (T5's red was the latter, accepted on 2.3's precedent).
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
