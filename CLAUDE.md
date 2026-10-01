@@ -18,14 +18,16 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: seven slices shipped; slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> **Status: nine slices shipped (1.1–1.6, 2.1–2.3); slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
 > rounds plus a manual `:8080` pass, 2026-09-26), merged as PR #14 (`4c18557`) and released**
 > (deploy run 36265111930; the box's api/worker/beat all read `4c18557` on 2026-09-30). **Slice 2.3
 > `tailoring-application-history` was verified (three review rounds plus a real-browser pass and
-> one real-Gemini run, 2026-09-30) and is awaiting its PR.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> one real-Gemini run, 2026-09-30), merged as PR #15 (`0b01537`) and released the same day**
+> (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was implemented on 2026-10-01
+> (T1–T38) and is awaiting `/verify`.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -112,7 +114,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (**ADR-0022**). **Reuse is a working copy** (`BaseCv.copy_from`: new id, new file, the source's
 >   extraction, no re-extract), so no ownership graph crosses owners and the purge can never unlink
 >   a saved CV's bytes; `copied_from_base_cv_id` is provenance with **no FK** (2.4's claim will read
->   it). The copy route is the first **transfer route** (ADR-0008 (f), Architecture). Deleting a CV
+>   it). The copy route is the first **transfer route** (ADR-0008 (f), Architecture; **retired in
+>   2.4**). Deleting a CV
 >   and erasing an account both go **rows committed, then files** (ADR-0006 amendment); erasure
 >   holds `FOR UPDATE` on the user row so a racing upload cannot be cascaded away with its file
 >   uncollected — AC-32 proves it with two real connections, the loser blocked and then refused
@@ -155,7 +158,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   were amended to what the code does on purpose. The manual pass found nothing; one observation
 >   for 2.3: typing into `/register` while the boot refresh is in flight can be wiped by a remount.
 >
-> - **2.3 `tailoring-application-history`** (branch, **implemented and verified 2026-09-30**)
+> - **2.3 `tailoring-application-history`** (PR #15, `0b01537`, **verified, merged, released 2026-09-30**)
 >   — a signed-in user's tailoring becomes **account data** (**ADR-0023**): the workspace follows the
 >   credential, so signed in, the posting, the run and its exports are **born user-owned** and the
 >   run references the saved CV directly. Every row has its final owner from its first `INSERT`, no
@@ -221,6 +224,43 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   concurrent-delete test now really stages the overlap. Carried to the PR: the cleanup `gather`
 >   in `test_me_history_delete.py` has no timeout, and eleven seed comments still say the refusal
 >   is "through the request route's composition root".
+>
+> - **2.4 `workspace-registration-cta`** (branch, **implemented 2026-10-01, awaiting `/verify`**) —
+>   a guest who tailored and then registers or signs in **keeps the work** (**ADR-0025**), by an
+>   explicit offer that names it (*Keep them in my account* / *Not now*) and never automatically: a
+>   guest cookie identifies a browser, not a person. `POST /api/me/guest-work/claim`, no body: the
+>   bearer is a dependency, `tc_guest` is read **in the handler body**, nothing is ever minted
+>   (ADR-0008 (g)). **One transaction**: the session row `FOR UPDATE`; four `UPDATE`s, each setting
+>   both owner columns in one statement (`intake_base_cv` minus working copies, `posting_job_posting`,
+>   `tailoring_run`, `export_job`); the working copies `DELETE … RETURNING file_key`; the session's
+>   `DELETE`; one commit; then the dropped copies' files. No row is copied, no id changes, no file
+>   moves (keys derive from ids), so a claimed run is in history at its original `requested_at` and
+>   `/runs/{id}` becomes `/history/{id}`. 200 with five counts, **200 with zeros** when there is
+>   nothing to claim (the session row is the idempotency key, and the claim consumes it); the cookie
+>   is cleared iff one was presented; 10/h per user (`GUEST_WORK_CLAIM_RATE_LIMIT_PER_HOUR`, in-code
+>   default, fails open). Caps bound creation, not transfer. In-flight work moves as it is, because
+>   **the claim never bumps `version`**. That is mutation-proven (T23): with `version + 1` added, a run
+>   claimed during its LLM call loses its paid result (`TailoringRunConcurrentlyModified`). **The
+>   purge changed for the first time since 1.6** (ADR-0018 (a)): `delete_session -> bool`, and a
+>   session whose `DELETE` removed nothing is counted `sessions_skipped` with **none of its files
+>   unlinked**, since they may be a user's now. A guest write landing after a claim is 401
+>   `guest_session_expired` (four `add`s translate the guest FK). Every race in ADR-0025's lock table
+>   is staged on real connections, with the overlap proven from `pg_stat_activity`. **The copy route
+>   is retired** (it now answers 405, because the path still matches `/api/base-cvs/{id}`); its
+>   readers (`copied_from_base_cv_id`, `origin`, the badge) stay until the contraction trigger in the
+>   roadmap (T37 read **0** such rows in production). React: `features/claim/`, a registration CTA on
+>   a succeeded guest run, and the offer on `/` and on the guest run page (Keep →
+>   `/history/:id/:document`, same id). No migration, container, queue or volume.
+>   **2816 backend and 929 frontend tests.** Measured (T35): a claim at every guest cap (5 CVs, 10
+>   postings, 20 runs, 40 exports) p95 **11.1 ms** (budget 300); an empty one p95 **9.3 ms** (50); on
+>   the production image, a purge of 100 sessions beside 100 claimed users' 4 100 files **1.59 s**
+>   (10 s), deleting 0 user rows or files, and the sweep reclaiming **0 of 4 100**. **AC-49 holds**:
+>   `git diff main --stat` over `infrastructure/llm` and `execute_tailoring_run.py` is empty.
+>   **T36 found the release order wrong** (R-7; Infrastructure footguns). Carried to `/verify`:
+>   AC-24's `no-store` is missing on the dependency's 401 and the app's 503; AC-33 says 404, the
+>   code answers 405; AC-18's outcome is `TailoringRunConcurrentlyModified`, not `SKIPPED`; AC-34's
+>   wire value is `llm_timed_out`; the CLI loop stops on `sessions_deleted == 0`, so a batch that
+>   only skipped ends the run early (safe); OQ-12 (`__Host-tc_guest`) is recorded, not fixed.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -541,14 +581,16 @@ JSON with the fields we need" are different claims, and the gap between them is 
 lives.
 
 **One credential per route — except a named transfer route**
-([ADR-0008](./docs/adr/0008-auth-jwt-access-plus-refresh-cookie.md) amendment (f)). A route answers
-to the bearer **or** the guest cookie. A transfer route carries data between the two principals: it
-reads both, and **each authorizes only its own half** (the bearer the source, the cookie the
-destination) — nothing ever asks "a user *or* a guest?". The source is authorized **first**, and
-`resolve_or_start_guest_session` is called **in the handler body** after it, never as a `Depends`
-(a sibling dependency runs even on a 422), so a 401/404/422 mints nothing. The dependency walker
-cannot see a call inside a body, so an **AST scan** of `routers/*.py` pins the exception set to
-exactly `{POST /api/base-cvs/copies}`; 2.4's claim will be the second, added to that set on purpose.
+([ADR-0008](./docs/adr/0008-auth-jwt-access-plus-refresh-cookie.md) amendments (f), (g)). A route
+answers to the bearer **or** the guest cookie. A transfer route carries data between the two
+principals: it reads both, and **each authorizes only its own half** — nothing ever asks "a user
+*or* a guest?". The one there is, 2.4's `POST /api/me/guest-work/claim`, takes the bearer as a
+dependency (the destination, authorized first) and reads `tc_guest` **in the handler body** (the
+source): never through `require_guest_session`, whose 401 would break the claim's idempotency, and
+never through `resolve_or_start_guest_session` — **a transfer route never mints**. The dependency
+walker cannot see a call inside a body, so an **AST scan** of `routers/*.py` pins the exception set
+to exactly `{POST /api/me/guest-work/claim}`. 2.2's copy route, the first member, was retired in 2.4
+(ADR-0022 (d)); a new member is added to that set on purpose, never by drift.
 
 **Background work** ([ADR-0005](./docs/adr/0005-celery-redis-for-exports-and-purges.md)): TXT and
 Markdown render inline (they are string manipulation); **PDF and DOCX go to a Celery worker**. The
@@ -594,6 +636,9 @@ make check.static        # every gate EXCEPT pytest/vitest — the RED commit of
 make purge.dry                                     # report only; deletes nothing
 make purge limit=50                                # a small, explicit bite (one batch, not a loop)
 make purge                                         # a full run — loops batches until empty
+# Each batch line reads `examined, deleted, skipped, failed`. `skipped` (2.4) is a session already
+# gone when its DELETE ran (a user claimed it, or another run took it): its files are left alone on
+# purpose. It should read about 0, and nothing needs doing when it doesn't.
 curl -s localhost:8080/health/ready | jq .jobs.guest_purge   # the backlog — the signal to trust
 
 # Orphans: files with no row (the crash window's survivors). Operator-run only, never on beat.
@@ -797,6 +842,29 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   (`tests/integration/test_port_bindings.py`, 2.3's T23b). The Protocols are discovered, not
   listed. The plan had assumed this test already existed, and it did not. **Check that a gate
   exists before the plan leans on it.**
+- **A rule over "every table that has X" is a test that discovers the tables from the catalogue**
+  (2.4). The claim must re-key every table with a `guest_session_id`; a forgotten fifth table would
+  be cascade-deleted with the session, silently. The test reads `information_schema.columns`, so a
+  new guest-owned table the claim misses fails by name instead of losing data.
+- **Widening a port's return from `None` silently breaks every monkeypatched stub of it** (2.4).
+  `delete_session` began returning `bool`; four 1.6 stubs still delegated and dropped the answer, so a
+  really-deleted session read as `sessions_skipped` and the CLI's loop stopped early. mypy cannot see
+  through `monkeypatch`. When a return type gains meaning, grep for every stub and fake of that method
+  and correct them in their own commit, before the GREEN that reads the value.
+- **A fake needs the isolation of the thing it fakes** (2.4, `ed66fbe`). A fake server that scoped
+  two `/api/me/` lists by bearer and answered the third to anyone made "B never sees A's claimed
+  data" fail against a correct client. Check the fake before the code.
+- **A Core `UPDATE` does not touch the identity map** (2.4, `d37481f`). Through the shared-session
+  `app` fixture, a test still holding a seeded aggregate read its pre-claim `GuestOwner` after the
+  claim re-keyed the row with Core, because `select()` on a map hit keeps loaded attributes: a 404
+  against a correct handler. `session.expire_all()` after the write, with a comment naming the
+  harness. Production has a session per request.
+- **Re-seed before you remove.** Tests that use the thing being retired only as a seed
+  (`BaseCv.copy_from`) are re-seeded first, in their own commit (`b197d18`), so the removal commit
+  deletes only that thing's own tests.
+- **A cast that is unnecessary before a type narrows and necessary after** gets a one-line,
+  commented `eslint-disable` in the commit before the narrowing, removed in the commit after it
+  (`5a546fb`, `a763ffb`). Each commit stays honest and green.
 - **A RED that cannot be reproduced is recorded as such, never forced.** 2.2's "`/register` typing
   wiped during the boot refresh" had no `booting` branch to remount in the current code. AC-51 was
   committed as a regression guard **with no recorded red** (`2c01310`), and the real-browser
@@ -826,8 +894,13 @@ a hurry. Constitution §8 applies to every slice:
   never touched by that job, and the test proving it is written in the same slice as the job.
 - **A guest session is not a weak login.** Owning a session id is not authority over an object that
   references it — check the link, in the use case, every time.
-- **Reuse across owners is a copy, never a shared reference** (ADR-0022): a guest-owned row that
-  pointed at a saved CV's file would let the 24-hour purge unlink a registered user's bytes.
+- **An ownership graph never crosses owners** (ADR-0022): a guest-owned row that pointed at a saved
+  CV's file would let the 24-hour purge unlink a registered user's bytes. Since 2.4 an owner changes
+  only through the claim (ADR-0025), which re-keys a session's **whole** graph in one transaction
+  and never claims a working copy (a copy of a CV some account keeps, possibly another person's).
+- **Guest work moves into an account only by an explicit offer that names it.** On a shared
+  computer, the previous visitor's CV is in the browser for up to 24 hours; an automatic claim on
+  login would file a stranger's CV in this account, kept until deleted.
 
 ## Infrastructure footguns (baked-in guards)
 
@@ -874,8 +947,15 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
 - **Every container running application code appears in the deploy's `pull` list and in the
   image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
   neither and ran a stale image for four releases; the only symptom was behaviour not matching the
-  source. The worker and beat are also **stopped across the migration window**, not merely restarted
-  after it.
+  source. The worker and beat are also **stopped before the new API starts and through the
+  migration window**, not merely restarted after it. Until 2.4 the script started the new `api`
+  first and stopped them second, so for a few seconds an old worker and beat ran beside a new API.
+  For 2.4 that meant a 2.3 purge (which unlinks without asking whether its `DELETE` removed the row)
+  could run beside a claim. T36 found it by reading `deploy.yml` against the plan's claim, and
+  `a9c9ea9` moved the stop first. Every doc had said "stopped for the migration window", which was
+  true and hid the order. **Confirm a release-order claim by reading the script, every slice that
+  relies on it.** A run uses the workflow from its own commit, so the fix takes effect with 2.4's
+  own release.
 - **`env_file:` outranks the image's `ENV`, so the root `.env` decides `APP_ENV` on a real box.**
   `.env.example` therefore defaults to `APP_ENV=production` (the safe value) and
   `docker-compose.dev.yml` pins `APP_ENV: dev` in `environment:` (which outranks `env_file:`), so
@@ -1092,6 +1172,10 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
 - **FastAPI 0.141 no longer flattens `app.routes` on `include_router`.** The real `APIRoute`s sit
   behind `_IncludedRouter.original_router.routes`, so a walker over `app.routes` finds nothing and
   passes vacuously. Descend, duck-typed (the class is private).
+- **A removed route answers 405, not 404, when its path still matches another route.**
+  `POST /api/base-cvs/copies` matches `/api/base-cvs/{base_cv_id}` (GET, PATCH, DELETE), so Starlette
+  refuses the method before any handler runs. Assert what the removal protects (405, and an `Allow`
+  header without the method), not a 404 that only extra code could produce.
 - **Two access tokens minted in the same second for one user are byte-identical** — no `jti`, and
   `iat`/`exp` are whole seconds. Never key anything (a cache, a denylist, a test's "it changed") on
   token identity.
