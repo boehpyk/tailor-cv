@@ -317,19 +317,6 @@ def _router_module_names() -> list[str]:
     ]
 
 
-def test_ac24_the_ast_scan_actually_finds_the_copy_routes_direct_call() -> None:
-    """The AST scan's own positive control (CLAUDE.md: a skeleton satisfies every absence
-    assertion — pair it with a discriminating positive). Proves the scan can see *something* before
-    the exception-set test below trusts it to see nothing extra."""
-    touching = _guest_touching_functions("tailorcraft.infrastructure.api.routers.intake")
-    assert "copy_saved_base_cv" in touching, (
-        f"the AST scan found no direct guest-cookie call in routers/intake.py's copy_saved_base_cv "
-        f"— it found: {touching!r}. Either the scan is broken, or the handler no longer calls "
-        f"resolve_or_start_guest_session/read_guest_token directly, which AC-24's own contract "
-        f"requires (§0.3's ordering: the guest session must be resolved from inside the body)."
-    )
-
-
 def test_the_transitive_closure_catches_a_helper_indirected_guest_touching_call() -> None:
     """The walker's own positive control (CLAUDE.md: a skeleton satisfies every absence assertion —
     pair it with a discriminating positive), for the *fix* rather than for the AST scan itself.
@@ -369,14 +356,13 @@ def test_the_transitive_closure_catches_a_helper_indirected_guest_touching_call(
     assert "unrelated" not in touching
 
 
-def test_ac24_ac32_transfer_route_exception_set_is_exactly_the_two_transfer_routes(
+def test_ac32_transfer_route_exception_set_is_exactly_the_claim_route(
     app: FastAPI,
 ) -> None:
-    """AC-24 (2.2), amended by AC-32 (2.4: the claim is the reverse transfer route). The set of
-    routes that depend on `require_user` **and** touch `tc_guest` — via
-    `require_guest_session`/`resolve_or_start_guest_session` in the dependency graph, **or** a
-    direct call the AST scan finds — must be exactly `{POST /api/base-cvs/copies,
-    POST /api/me/guest-work/claim}` (the copy leaves the set in the slice's removal task).
+    """AC-24 (2.2), narrowed by AC-32 (2.4: the copy route is retired, the claim is the one
+    transfer route left). The set of routes that depend on `require_user` **and** touch `tc_guest` —
+    via `require_guest_session`/`resolve_or_start_guest_session` in the dependency graph, **or** a
+    direct call the AST scan finds — must be exactly `{POST /api/me/guest-work/claim}`.
     A route added with both, by either mechanism, turns this red."""
     api_routes = list(_iter_api_routes(app.routes))
     assert len(api_routes) > 5, "the walker found suspiciously few routes — is it even recursing?"
@@ -392,7 +378,7 @@ def test_ac24_ac32_transfer_route_exception_set_is_exactly_the_two_transfer_rout
             for method in sorted(route.methods or ()):
                 violations.add(f"{method} {route.path}")
 
-    assert violations == {"POST /api/base-cvs/copies", "POST /api/me/guest-work/claim"}, (
+    assert violations == {"POST /api/me/guest-work/claim"}, (
         f"the set of routes reading both credentials must be exactly the named transfer route "
         f"(ADR-0008 (f)); found: {sorted(violations)}"
     )
