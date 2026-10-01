@@ -95,3 +95,13 @@ def set_guest_cookie(response: Response, token: str, settings: Settings) -> None
         samesite="lax",
         secure=settings.is_production,
     )
+
+
+def clear_guest_cookie(response: Response, settings: Settings) -> None:
+    """Clear the `tc_guest` cookie on a response — after a claim consumed its session (slice 2.4,
+    ADR-0010: invalidate the guest token at the same moment its work leaves it).
+
+    The deletion must name **the same** `path`, `httponly`, `samesite` and `secure` as
+    `set_guest_cookie`: a browser keeps a cookie whose deletion names different attributes.
+    """
+    raise NotImplementedError
