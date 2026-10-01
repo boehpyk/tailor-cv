@@ -292,3 +292,38 @@ describe.each(SLICE_2_3_DIRECTORIES)(
     });
   },
 );
+
+/**
+ * Slice 2.4 (T34, AC-45): `features/claim/` gets the same two guarantees as the folders above —
+ * no raw HTML and no browser storage (the claim moves a stranger's CV names and counts; none of it
+ * belongs in `localStorage`) — checked on its own with a positive control that the scan read files
+ * there, and a discrimination control proving the needle search finds a hit at all.
+ *
+ * Mutation (restored byte-exact): `window.localStorage.setItem('k', 'v')` added to
+ * `features/claim/components/GuestWorkOffer.tsx` → the `localStorage` case went red listing that
+ * line; likewise `dangerouslySetInnerHTML` in `RegistrationCta.tsx`. Both green on restore.
+ */
+describe('AC-45: features/claim/ never renders raw HTML or reaches into browser storage', () => {
+  it('the scan reads production files in this folder (positive control)', () => {
+    expect(new Set(collectFeatureLines('claim').map((line) => line.path)).size).toBeGreaterThan(0);
+  });
+
+  it('the search finds a hit when one exists (discrimination control)', () => {
+    const planted: SourceLine[] = [
+      { path: 'features/claim/x.tsx', lineNumber: 1, text: "localStorage.setItem('a', 'b');" },
+      { path: 'features/claim/x.tsx', lineNumber: 2, text: '// localStorage is only a comment' },
+    ];
+
+    expect(findNonCommentOccurrences('localStorage', planted)).toHaveLength(1);
+  });
+
+  it.each([
+    'dangerouslySetInnerHTML',
+    'localStorage',
+    'sessionStorage',
+    'indexedDB',
+    'document.cookie',
+  ])('%s never appears in its production code', (needle) => {
+    expect(findNonCommentOccurrences(needle, collectFeatureLines('claim'))).toEqual([]);
+  });
+});
