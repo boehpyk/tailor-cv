@@ -63,7 +63,7 @@ function Section({
  * - **Base CV** — the saved-CV picker in `mode: 'select'`. The user's choice is form state
  *   (`useState`, an id), and the CV a run uses is `effectiveSelection(list, choice)` — the same rule
  *   the picker draws with, so the checked radio and the launched CV cannot differ. The saved CV is
- *   referenced **directly**: no working copy, so no request to `/api/base-cvs/copies` (AC-39).
+ *   referenced **directly**: nothing is copied (AC-39; the copy route itself is gone since 2.4).
  * - **Posting** — 1.2's panel, unchanged, in the account scope: `/api/me/job-postings?limit=1`
  *   and its create with the bearer (AC-40). Its card reads *Saved with your history*.
  * - **Launch** — `POST /api/me/tailoring-runs`, guarded against a same-tick double click by the

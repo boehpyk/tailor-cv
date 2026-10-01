@@ -4,7 +4,7 @@ import { jsonResponse } from '@/test/fixtures';
 
 import { __resetForTests, authStore } from '@/features/auth/authStore';
 
-import { copySavedBaseCv, fetchBaseCvs, uploadBaseCv } from './baseCvs';
+import { fetchBaseCvs, uploadBaseCv } from './baseCvs';
 import { deleteAccount } from './auth';
 import {
   deleteSavedBaseCv,
@@ -125,31 +125,6 @@ describe('AC-43: every /api/me/* call, and the copy, carry the bearer', () => {
 
     const [, init] = fetchMock.mock.calls[0] ?? [];
     expect(authHeaderOf(init)).toBe('Bearer token-abc');
-  });
-
-  it('copySavedBaseCv (the transfer route) sends Authorization: Bearer <token> AND credentials: include', async () => {
-    authStore.setAuthenticated(TOKEN_RESPONSE);
-    const fetchMock = stubFetch(() =>
-      jsonResponse(201, {
-        id: 'guest-cv-1',
-        original_filename: 'a.pdf',
-        content_type: 'application/pdf',
-        size_bytes: 10,
-        status: 'extracted',
-        character_count: 1,
-        failure_reason: null,
-        failure_message: null,
-        uploaded_at: '2026-09-25T10:00:00Z',
-        expires_at: '2026-09-26T10:00:00Z',
-        origin: 'copied_from_saved',
-      }),
-    );
-
-    await copySavedBaseCv('saved-cv-1');
-
-    const [, init] = fetchMock.mock.calls[0] ?? [];
-    expect(authHeaderOf(init)).toBe('Bearer token-abc');
-    expect(init?.credentials).toBe('include');
   });
 });
 
