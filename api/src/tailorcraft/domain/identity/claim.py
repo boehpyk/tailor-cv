@@ -38,7 +38,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.files import FileRef
+
+
+def _refuse_negative_counts(owner: str, counts: dict[str, int]) -> None:
+    """Refuse any count below zero, naming the field (a count is never data, so naming it is safe)."""
+    for name, value in counts.items():
+        if value < 0:
+            raise InvariantViolated(f"{owner}.{name} must not be negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +66,20 @@ class ClaimedGuestWork:
     files_to_unlink: tuple[FileRef, ...]
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        _refuse_negative_counts(
+            "ClaimedGuestWork",
+            {
+                "base_cvs": self.base_cvs,
+                "job_postings": self.job_postings,
+                "tailoring_runs": self.tailoring_runs,
+                "export_jobs": self.export_jobs,
+                "working_copies_dropped": self.working_copies_dropped,
+            },
+        )
+        if len(self.files_to_unlink) > self.working_copies_dropped:
+            raise InvariantViolated(
+                "ClaimedGuestWork cannot carry more files to unlink than working copies it dropped"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,19 +99,56 @@ class GuestWorkClaimReport:
     unlink_failures: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        raise NotImplementedError
+        _refuse_negative_counts(
+            "GuestWorkClaimReport",
+            {
+                "base_cvs": self.base_cvs,
+                "job_postings": self.job_postings,
+                "tailoring_runs": self.tailoring_runs,
+                "export_jobs": self.export_jobs,
+                "working_copies_dropped": self.working_copies_dropped,
+                "files_unlinked": self.files_unlinked,
+            },
+        )
 
     @classmethod
     def nothing(cls) -> GuestWorkClaimReport:
         """The report of a claim with no guest session to take from: every count zero."""
-        raise NotImplementedError
+        return cls(
+            base_cvs=0,
+            job_postings=0,
+            tailoring_runs=0,
+            export_jobs=0,
+            working_copies_dropped=0,
+            files_unlinked=0,
+            unlink_failures=(),
+        )
 
     @classmethod
     def of(cls, claimed: ClaimedGuestWork, failures: Sequence[str]) -> GuestWorkClaimReport:
-        """The report of a transfer whose file unlinks were tried, `failures` being their type names."""
-        raise NotImplementedError
+        """The report of a transfer whose file unlinks were tried, `failures` being their type names.
+
+        Every key in `claimed.files_to_unlink` was tried once, so what did not fail was unlinked:
+        `files_unlinked + len(unlink_failures) == len(files_to_unlink)`. More failures than keys
+        would make `files_unlinked` negative, which `__post_init__` refuses — a caller cannot report
+        failures for files it was never handed.
+        """
+        failed = tuple(failures)
+        return cls(
+            base_cvs=claimed.base_cvs,
+            job_postings=claimed.job_postings,
+            tailoring_runs=claimed.tailoring_runs,
+            export_jobs=claimed.export_jobs,
+            working_copies_dropped=claimed.working_copies_dropped,
+            files_unlinked=len(claimed.files_to_unlink) - len(failed),
+            unlink_failures=failed,
+        )
 
     @property
     def claimed_anything(self) -> bool:
-        """Whether any of the four row counts is above zero (dropped working copies do not count)."""
-        raise NotImplementedError
+        """Whether any of the four row counts is above zero (dropped working copies do not count).
+
+        A dropped working copy is discarded, not claimed (ADR-0022 amendment (d)), so a claim that
+        only dropped copies must not be announced as having moved work.
+        """
+        return (self.base_cvs + self.job_postings + self.tailoring_runs + self.export_jobs) > 0
