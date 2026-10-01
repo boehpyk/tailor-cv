@@ -117,14 +117,18 @@ jobs:
             mv "$dump.part" "$dump"
             ls -1t backups/pre-deploy_*.dump | tail -n +11 | xargs -r rm --
 
+            # Stopped before the new API starts and kept stopped through the migration: these are
+            # the two processes that keep executing application code, so an old worker or beat must
+            # never run beside a new API (2.4's R-7: a 2.3 purge unlinks a session's files without
+            # the "did my DELETE remove the row?" check a claim relies on) nor while the schema
+            # changes underneath them. Celery finishes the task in flight on SIGTERM; queued work
+            # waits in Redis.
+            docker compose stop worker beat
+
             # Publish the new frontend bundle, then bring up the API.
             docker compose up -d web
             docker compose up -d api nginx
 
-            # Stopped for the migration window rather than restarted after it: these are the two
-            # processes that keep executing application code while the schema changes underneath
-            # them. Celery finishes the task in flight on SIGTERM; queued work waits in Redis.
-            docker compose stop worker beat
             docker compose exec -T api alembic upgrade head
             # Started last, on the new image, against the migrated schema.
             docker compose up -d worker beat
