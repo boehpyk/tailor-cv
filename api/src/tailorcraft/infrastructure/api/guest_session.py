@@ -103,5 +103,12 @@ def clear_guest_cookie(response: Response, settings: Settings) -> None:
 
     The deletion must name **the same** `path`, `httponly`, `samesite` and `secure` as
     `set_guest_cookie`: a browser keeps a cookie whose deletion names different attributes.
+    Starlette's `delete_cookie` sends an empty value with `Max-Age=0` (and a past `Expires`).
     """
-    raise NotImplementedError
+    response.delete_cookie(
+        key=COOKIE_NAME,
+        path="/",
+        httponly=True,
+        samesite="lax",
+        secure=settings.is_production,
+    )
