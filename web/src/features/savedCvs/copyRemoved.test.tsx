@@ -89,9 +89,6 @@ afterEach(() => {
 // The union no longer admits 'copy' after T33, and a test must not fail to *compile* to prove it:
 // the value is built through a cast so the same file runs before and after.
 const MODES: readonly (readonly [string, SavedBaseCvPickerProps])[] = [
-  // Redundant while the union still admits no props, required once T33 makes `mode` mandatory; the
-  // rule can only see one side of that, so it is silenced for this line only.
-  // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
   ['no props (the former default)', {} as unknown as SavedBaseCvPickerProps],
   [
     "mode: 'copy' (the former explicit mode)",
