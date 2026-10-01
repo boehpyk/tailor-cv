@@ -41,7 +41,7 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
-from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.errors import GuestSessionNotFound, UserNotFound
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 from tailorcraft.infrastructure.identifiers import uuid7
@@ -89,6 +89,11 @@ _EXPORT_JOB_STARTED_AT: InstrumentedAttribute[datetime | None] = cast(
 # Recognised by name, never by message (`violated_constraint`). Renaming the FK in
 # `mapping/export/export_job.py` is a breaking change to `add` below.
 _USER_FK: Final = "fk_export_job_user_id_identity_user"
+# The guest twin (slice 2.4, AC-12): a claim that commits between a guest write's session lookup and
+# its `INSERT` deletes the session row, and this FK refuses. That refusal *is* "the session is gone"
+# — the same fact the cookie resolver reports — so it becomes the same error and the same 401
+# `guest_session_expired`. Name checked against `registry.py`'s convention and `pg_constraint`.
+_GUEST_FK: Final = "fk_export_job_guest_session_id_identity_guest_session"
 
 
 class SqlAlchemyExportJobRepository:
@@ -127,8 +132,9 @@ class SqlAlchemyExportJobRepository:
         complete (AC-37): no job, and so no file, can land after the keys were read.
 
         **Inside a SAVEPOINT**, so a refused flush expires only this pending job and not the run
-        `RequestExport` loaded beside it (the 1.4 lesson). Any other refusal propagates
-        untranslated.
+        `RequestExport` loaded beside it (the 1.4 lesson). The guest FK refusing (a claim deleted the
+        session row first, slice 2.4, AC-12) is "the session is gone", `GuestSessionNotFound`. Any
+        other refusal propagates untranslated.
         """
         # Read before the flush: after a nested rollback the pending job is expunged.
         job_id = job.id
@@ -139,6 +145,12 @@ class SqlAlchemyExportJobRepository:
         except IntegrityError as exc:
             if violated_constraint(exc) == _USER_FK:
                 raise UserNotFound(f"the owner of {job_id!r} no longer exists") from None
+            if violated_constraint(exc) == _GUEST_FK:
+                # `from None`: the chain is already reduced to identifiers, and the frame holds
+                # the aggregate (Constitution §8). AC-12, slice 2.4.
+                raise GuestSessionNotFound(
+                    f"the guest session owning {job_id!r} no longer exists"
+                ) from None
             raise
 
     async def save(self, job: ExportJob) -> None:

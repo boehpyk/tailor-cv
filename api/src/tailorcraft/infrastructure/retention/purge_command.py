@@ -265,6 +265,7 @@ async def _purge_dry_run(settings: Settings, *, limit: int | None) -> int:
     log.info(
         EVENT_PURGE_COMPLETED,
         sessions_deleted=report.sessions_deleted,
+        sessions_skipped=report.sessions_skipped,
         sessions_failed=report.sessions_failed,
         files_unlinked=report.files_unlinked,
         files_failed=report.files_failed,
@@ -298,6 +299,7 @@ class _Totals:
     batches: int = 0
     examined: int = 0
     sessions_deleted: int = 0
+    sessions_skipped: int = 0
     sessions_failed: int = 0
     files_unlinked: int = 0
     files_failed: int = 0
@@ -306,6 +308,7 @@ class _Totals:
         self.batches += 1
         self.examined += report.examined
         self.sessions_deleted += report.sessions_deleted
+        self.sessions_skipped += report.sessions_skipped
         self.sessions_failed += report.sessions_failed
         self.files_unlinked += report.files_unlinked
         self.files_failed += report.files_failed
@@ -619,8 +622,8 @@ def _print_batch_line(batch: int, report: PurgeReport) -> None:
     """One line per batch, so a long `make purge` shows progress rather than a silent terminal."""
     print(
         f"  batch {batch}: examined {report.examined}, deleted {report.sessions_deleted}, "
-        f"failed {report.sessions_failed}; keys removed {report.files_unlinked}, "
-        f"key failures {report.files_failed}"
+        f"skipped {report.sessions_skipped}, failed {report.sessions_failed}; "
+        f"keys removed {report.files_unlinked}, key failures {report.files_failed}"
     )
 
 
@@ -630,6 +633,8 @@ def _print_purge_report(run: _PurgeRun, *, duration_ms: int) -> None:
     totals = run.totals
     print()
     print(_row("sessions deleted", f"{totals.sessions_deleted} of {run.overdue_before}"))
+    if totals.sessions_skipped:
+        print(_row("sessions skipped", totals.sessions_skipped))
     if totals.sessions_failed:
         print(_row("sessions failed", totals.sessions_failed))
     print(_row("keys removed", totals.files_unlinked))
@@ -643,6 +648,14 @@ def _print_purge_report(run: _PurgeRun, *, duration_ms: int) -> None:
         print("  Some sessions could not be deleted and were left in place; the run continued past")
         print("  them by design. They are still counted in `overdue now` and the next run retries")
         print("  them. A count that never falls is the signal to investigate.")
+    if totals.sessions_skipped:
+        # ADR-0018 amendment (a): a skip is not a failure. The row was already gone when this run's
+        # `DELETE` reached it — a user claimed the session, or a concurrent run took it — so its
+        # files were left alone on purpose. It should read about zero; it is printed so the race
+        # is visible when it happens, not because anything needs doing.
+        print()
+        print("  Some sessions were already gone when this run reached them (claimed by a user, or")
+        print("  taken by another run); their files were left in place on purpose. Nothing to do.")
 
 
 def _print_orphan_report(
@@ -700,7 +713,8 @@ def _of_limit(limit: int | None) -> str:
 
 
 def _log_purge_line(run: _PurgeRun, *, dry_run: bool, duration_ms: int) -> None:
-    """AC-21's line, with the task's eight fields — every one a count, a duration or a flag.
+    """AC-21's line, with the task's eight fields plus `sessions_skipped` (ADR-0018 amendment (a)) —
+    every one a count, a duration or a flag.
 
     `duration_ms` is the **command's**, measured with a monotonic clock, not one batch's
     `PurgeReport.duration_ms`: this entry point can run several batches, and quoting one of them as
@@ -709,6 +723,7 @@ def _log_purge_line(run: _PurgeRun, *, dry_run: bool, duration_ms: int) -> None:
     log.info(
         EVENT_PURGE_COMPLETED,
         sessions_deleted=run.totals.sessions_deleted,
+        sessions_skipped=run.totals.sessions_skipped,
         sessions_failed=run.totals.sessions_failed,
         files_unlinked=run.totals.files_unlinked,
         files_failed=run.totals.files_failed,

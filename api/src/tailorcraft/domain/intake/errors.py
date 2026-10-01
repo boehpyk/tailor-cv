@@ -9,7 +9,7 @@ for the status-code mapping).
 
 from __future__ import annotations
 
-from tailorcraft.domain.intake.value_objects import BaseCvStatus, ExtractionFailureReason
+from tailorcraft.domain.intake.value_objects import ExtractionFailureReason
 from tailorcraft.domain.shared.errors import DomainError
 
 
@@ -160,29 +160,6 @@ class TooManySavedBaseCvs(DomainError):
     `TooManyBaseCvs`'s sibling for the other owner, and a use-case check for the same reason: the rule
     spans every `BaseCv` a user owns, which no single `BaseCv` can see. Soft, like 1.1's F-23 cap —
     a concurrent upload can overshoot it by one, and that is accepted rather than locked.
-    """
-
-
-class SavedBaseCvNotCopyable(DomainError):
-    """A saved base CV cannot be copied into the workspace because its extraction has not succeeded
-    (`uploaded` or `extraction_failed`) — a working copy is only ever `EXTRACTED`, since the copy
-    never re-runs the extractor (AC-9, I-8).
-
-    Carries the source's status: the one fact the caller needs to say *why*, and a closed enum, so
-    there is nowhere in it for text from the document to travel.
-    """
-
-    def __init__(self, status: BaseCvStatus) -> None:
-        super().__init__(status.value)
-        self.status = status
-
-
-class SavedBaseCvFileMissing(DomainError):
-    """The saved base CV's row exists but its stored file does not (S-32).
-
-    Distinct from `BaseCvNotFound` on purpose: after `StoredFileMissing` the use case re-reads the
-    row, and a row that is still there while its bytes are gone is a bug somewhere — worth its own
-    answer ("delete it and upload it again") rather than a 404 that says it never existed.
     """
 
 

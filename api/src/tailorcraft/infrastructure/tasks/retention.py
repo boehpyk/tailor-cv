@@ -191,7 +191,9 @@ async def _purge() -> None:
             for file_failure in report.file_unlink_failures:
                 log.warning(_EVENT_FILE_UNLINK_FAILED, error_type=file_failure.error_type)
 
-            # AC-21's eight fields, every one of them a count, a duration or a flag.
+            # AC-21's eight fields plus `sessions_skipped` (ADR-0018 amendment (a), slice 2.4: the
+            # sessions whose `DELETE` found the row already gone — claimed or taken by another run —
+            # and whose keys were therefore not unlinked). Every one a count, a duration or a flag.
             #
             # `dry_run` is read off the report rather than written as `False`, although this entry
             # point can never dry-run: the field says what the *report* is a record of, and a line
@@ -206,6 +208,7 @@ async def _purge() -> None:
             log.info(
                 _EVENT_COMPLETED,
                 sessions_deleted=report.sessions_deleted,
+                sessions_skipped=report.sessions_skipped,
                 sessions_failed=report.sessions_failed,
                 files_unlinked=report.files_unlinked,
                 files_failed=report.files_failed,

@@ -125,6 +125,10 @@ class _RecordingExpiredGuestDataPort:
     failure can land on the *middle* of a longer batch (mirroring `_ConflictingSaveRepository` in
     the export/tailoring sibling files).
 
+    `already_gone` (slice 2.4, AC-4) names sessions whose row a *concurrent* actor — the guest-work
+    claim — removed between the listing and this call: `delete_session` then removes nothing and
+    answers `False`, by the port's contract, exactly as the real `DELETE ... rowcount == 0` does.
+
     `list_error`, given an exception, makes `list_expired` raise it instead of returning anything —
     R-15's vehicle, since the five-step flow's per-item `try`/`except`es both live inside the loop
     that comes *after* this call.
@@ -133,6 +137,7 @@ class _RecordingExpiredGuestDataPort:
     candidates: list[ExpiringGuestSession]
     log: _SharedLog
     fail_on: GuestSessionId | None = None
+    already_gone: frozenset[GuestSessionId] = field(default_factory=frozenset)
     list_error: Exception | None = None
     list_expired_calls: list[tuple[datetime, int]] = field(default_factory=list)
 
@@ -147,14 +152,18 @@ class _RecordingExpiredGuestDataPort:
         self.list_expired_calls.append((as_of, limit))
         return list(self.candidates[:limit])
 
-    async def delete_session(self, session_id: GuestSessionId) -> None:
+    async def delete_session(self, session_id: GuestSessionId) -> bool:
         if self.fail_on is not None and session_id == self.fail_on:
             self.log.entries.append(("delete_session_failed", session_id))
             raise RuntimeError(
                 "a lock timeout, a serialization failure, or an unpredicted constraint"
             )
+        present = session_id not in self.already_gone and any(
+            c.session_id == session_id for c in self.candidates
+        )
         self.candidates = [c for c in self.candidates if c.session_id != session_id]
         self.log.entries.append(("delete_session", session_id))
+        return present  # True iff this call removed the row; False if it was already gone
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         raise NotImplementedError(
@@ -458,3 +467,77 @@ async def test_an_unexpected_exception_while_listing_propagates_out_of_call(
     with pytest.raises(RuntimeError) as exc_info:
         await use_case()
     assert type(exc_info.value) is RuntimeError
+
+
+# --- 9. Slice 2.4 AC-4: the purge unlinks only what it deleted ------------------------------------
+
+
+async def test_a_session_whose_delete_reports_false_has_its_files_kept_and_is_counted_skipped(
+    clock: FixedClock,
+) -> None:
+    """AC-4. Three sessions; the **middle** one's row was removed by someone else (the claim) so
+    `delete_session` answers `False`. Its keys now belong to a *user-owned* row and must never reach
+    `files.delete`; the neighbours' keys do (the discriminating positive: a use case that simply
+    stopped unlinking would pass the absence assertion alone). `sessions_deleted` counts only the
+    `True`s and `sessions_skipped` the `False`; the report's arithmetic (deleted + skipped + failed
+    == examined) is checked on the same report.
+    """
+    log = _SharedLog()
+    file_first, file_middle, file_last = _a_file_ref(), _a_file_ref(), _a_file_ref()
+    first = _expiring_session(expires_at=_an_instant(0), files=(file_first,))
+    middle = _expiring_session(expires_at=_an_instant(1), files=(file_middle,))
+    last = _expiring_session(expires_at=_an_instant(2), files=(file_last,))
+    data = _RecordingExpiredGuestDataPort(
+        candidates=[first, middle, last],
+        log=log,
+        already_gone=frozenset({middle.session_id}),
+    )
+    files = _RecordingFileStorePort(log=log)
+    use_case = _use_case(data, files, clock)
+
+    report = await use_case()
+
+    assert ("delete", file_first) in log.entries
+    assert ("delete", file_last) in log.entries
+    assert ("delete", file_middle) not in log.entries
+    assert log.entries == [
+        ("delete_session", first.session_id),
+        ("delete", file_first),
+        ("delete_session", middle.session_id),
+        ("delete_session", last.session_id),
+        ("delete", file_last),
+    ]
+    assert report.examined == 3
+    assert report.sessions_deleted == 2
+    assert report.sessions_skipped == 1
+    assert report.sessions_failed == 0
+    assert report.files_unlinked == 2
+    assert report.files_failed == 0
+    assert report.sessions_deleted + report.sessions_skipped + report.sessions_failed == (
+        report.examined
+    )
+
+
+async def test_a_batch_where_every_delete_reports_false_unlinks_nothing_and_counts_all_skipped(
+    clock: FixedClock,
+) -> None:
+    """AC-4, the boundary: every session was claimed away. Nothing is unlinked at all, none counts
+    as deleted, all count as skipped. The previous test is the discriminating positive (it shows unlinking
+    still happens for a `True`)."""
+    log = _SharedLog()
+    a = _expiring_session(expires_at=_an_instant(0), files=(_a_file_ref(), _a_file_ref()))
+    b = _expiring_session(expires_at=_an_instant(1), files=(_a_file_ref(),))
+    data = _RecordingExpiredGuestDataPort(
+        candidates=[a, b], log=log, already_gone=frozenset({a.session_id, b.session_id})
+    )
+    files = _RecordingFileStorePort(log=log)
+    use_case = _use_case(data, files, clock)
+
+    report = await use_case()
+
+    assert [entry[0] for entry in log.entries] == ["delete_session", "delete_session"]
+    assert report.examined == 2
+    assert report.sessions_deleted == 0
+    assert report.sessions_skipped == 2
+    assert report.sessions_failed == 0
+    assert report.files_unlinked == 0

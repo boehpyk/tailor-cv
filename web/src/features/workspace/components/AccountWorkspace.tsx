@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
+import { GuestWorkOffer } from '@/features/claim/components/GuestWorkOffer';
 import { JobPostingPanel } from '@/features/posting/components/JobPostingPanel';
 import { useJobPostings } from '@/features/posting/hooks/useJobPostings';
 import { latestPosting } from '@/features/posting/latestPosting';
@@ -21,7 +22,6 @@ import {
 import { checkBaseCv, checkJobPosting, launchInput } from '@/features/tailoring/launchReadiness';
 import { isActiveTailoringRunStatus } from '@/features/tailoring/types';
 
-import { GuestWorkNotice } from './GuestWorkNotice';
 import { LatestRunCard } from './LatestRunCard';
 import { ACCOUNT_PROMISE, LATEST_RUN_ERROR_NOTE, RETRY_LABEL } from '../workspaceCopy';
 
@@ -63,13 +63,15 @@ function Section({
  * - **Base CV** — the saved-CV picker in `mode: 'select'`. The user's choice is form state
  *   (`useState`, an id), and the CV a run uses is `effectiveSelection(list, choice)` — the same rule
  *   the picker draws with, so the checked radio and the launched CV cannot differ. The saved CV is
- *   referenced **directly**: no working copy, so no request to `/api/base-cvs/copies` (AC-39).
+ *   referenced **directly**: nothing is copied (AC-39; the copy route itself is gone since 2.4).
  * - **Posting** — 1.2's panel, unchanged, in the account scope: `/api/me/job-postings?limit=1`
  *   and its create with the bearer (AC-40). Its card reads *Saved with your history*.
  * - **Launch** — `POST /api/me/tailoring-runs`, guarded against a same-tick double click by the
  *   mutation cache (H-58), then `/history/{id}` (AC-41). The latest-run card reads
  *   `useLatestAccountRun`; a 409 `tailoring_already_running` links to the active run.
- * - **Guest work** in this browser is named, not hidden (`GuestWorkNotice`, AC-42).
+ * - **Guest work** in this browser is offered, not hidden (`GuestWorkOffer`, slice 2.4's AC-37,
+ *   amending 2.3's AC-42 notice): *Keep them in my account* moves it here, and the claim's own
+ *   invalidations re-read the picker, the posting and the latest run.
  *
  * Every list here is server state in TanStack Query — the picker and this component share
  * `useSavedBaseCvs`, and the panel and this component share `useJobPostings`: one cache, one
@@ -118,7 +120,7 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
     <>
       <p className="mb-6 text-sm text-slate-700">{ACCOUNT_PROMISE}</p>
 
-      <GuestWorkNotice />
+      <GuestWorkOffer userId={userId} />
 
       <Section id="account-base-cv-heading" title="Your base CV">
         <SavedBaseCvPicker mode="select" chosenId={chosenId} onChoose={setChosenId} />

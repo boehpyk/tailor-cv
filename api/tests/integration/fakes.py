@@ -60,7 +60,7 @@ Used by:
   `FixedClock` itself does not track — what T13's "one `clock.now()` per use-case call" assertion
   needs.
 - `tests/integration/intake/{test_upload_base_cv,test_list_saved_base_cvs,test_rename_saved_base_cv,
-  test_delete_saved_base_cv,test_copy_saved_base_cv}.py`, `tests/integration/retention/
+  test_delete_saved_base_cv}.py`, `tests/integration/retention/
   test_erase_account.py`, `tests/integration/identity/{test_resolve_existing_user,
   test_delete_own_account}.py` (T9, slice 2.2 — AC-7…AC-12). `FakeBaseCvRepository.list_for_user`/
   `count_for_user`/`save_label`/`remove` and `FakeUserRepository` already existed (T7/T13); this
@@ -95,6 +95,7 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
+from tailorcraft.domain.identity.claim import ClaimedGuestWork
 from tailorcraft.domain.identity.errors import (
     AccessTokenInvalid,
     EmailAlreadyRegistered,
@@ -532,8 +533,8 @@ class InMemoryFileStore:
     **T9 additions (slice 2.2), backward-compatible with every existing caller:**
 
     - `get` on a missing key now raises `StoredFileMissing` rather than a bare `KeyError` —
-      `CopySavedBaseCvToWorkspace`'s S-32/S-33 re-read branch (AC-9) needs the real port's documented
-      exception, and no existing test relies on the old `KeyError` (every prior caller always `put`s
+      the real port's documented exception is the one a missing key raises, and no existing test
+      relies on the old `KeyError` (every prior caller always `put`s
       before it `get`s the same key).
     - `delete_calls` records every `FileRef` handed to `delete`, in order — `DeleteSavedBaseCv`'s
       AC-10 needs to prove `delete` is the *last* thing that happens, never `delete_partial`.
@@ -1345,3 +1346,40 @@ async def create_active_session(
     )
     await sessions.add(session)
     return session
+
+
+class RecordingGuestWorkClaim:
+    """Recording `GuestWorkClaimPort` (slice 2.4, T13). `calls` is the ordered log of what the use
+    case did to the port: `("lock_session", token_hash)` and `("transfer", session_id, user_id)`.
+    A test can share `order` with a recording file store to prove `transfer` comes before every
+    unlink. `lock_session` answers `session` (None = no such row); `transfer` answers `claimed`, or
+    raises `transfer_error` (the user erased between the use case's read and the re-key)."""
+
+    def __init__(
+        self,
+        session: GuestSession | None,
+        claimed: ClaimedGuestWork | None = None,
+        *,
+        transfer_error: Exception | None = None,
+        order: list[str] | None = None,
+    ) -> None:
+        self._session = session
+        self._claimed = claimed
+        self._transfer_error = transfer_error
+        self._order = order
+        self.calls: list[tuple[object, ...]] = []
+
+    async def lock_session(self, token_hash: str) -> GuestSession | None:
+        self.calls.append(("lock_session", token_hash))
+        if self._order is not None:
+            self._order.append("lock_session")
+        return self._session
+
+    async def transfer(self, session_id: GuestSessionId, user_id: UserId) -> ClaimedGuestWork:
+        self.calls.append(("transfer", session_id, user_id))
+        if self._order is not None:
+            self._order.append("transfer")
+        if self._transfer_error is not None:
+            raise self._transfer_error
+        assert self._claimed is not None, "this double was built without a transfer outcome"
+        return self._claimed

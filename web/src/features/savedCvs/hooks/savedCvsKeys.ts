@@ -31,9 +31,3 @@ export function savedBaseCvsQueryKey(
 export const uploadSavedBaseCvMutationKey = ['auth', 'uploadSavedBaseCv'] as const;
 export const renameSavedBaseCvMutationKey = ['auth', 'renameSavedBaseCv'] as const;
 export const deleteSavedBaseCvMutationKey = ['auth', 'deleteSavedBaseCv'] as const;
-/**
- * Under `intake`, not `auth`: the copy's *result* is a guest `BaseCv` in this browser's workspace,
- * and what it invalidates is `['intake', 'baseCvs']`. It is also the key the Use-this-CV button's
- * same-tick double-click guard reads (`queryClient.isMutating({ mutationKey })`, AC-39).
- */
-export const copySavedBaseCvMutationKey = ['intake', 'copySavedBaseCv'] as const;

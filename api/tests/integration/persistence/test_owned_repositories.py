@@ -5,9 +5,9 @@ T17, written after; AC-16's mapping half, H-53).
   emptied (`expunge_all`), read back — `owner` rebuilt as the same variant, the raw row holding
   exactly one owner column and `NULL` in the other, timestamps equal to the whole-second instants
   they were written with.
-- **`add` translates only the user FK**: a `UserOwner` whose account is gone raises `UserNotFound`
-  (the erasure race's shape, H-53); a `GuestOwner` whose session is gone is **not** translated —
-  it stays an `IntegrityError` naming the guest FK. The refusal is contained in a SAVEPOINT: an
+- **`add` translates both owner FKs** (the guest half since 2.4's AC-12): a `UserOwner` whose
+  account is gone raises `UserNotFound` (the erasure race's shape, H-53); a `GuestOwner` whose
+  session is gone raises `GuestSessionNotFound` — on all four owned tables. The refusal is contained in a SAVEPOINT: an
   aggregate the session had already loaded is not expired by it (the 1.4 lesson).
 - **The owner-keyed reads**: `count_for_owner` isolated per owner and per variant;
   `find_active_for_owner` newest-first and tolerant of two active runs; `list_recent_for_user`
@@ -24,11 +24,10 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import Table, inspect, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.export.value_objects import ExportFormat
-from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.errors import GuestSessionNotFound, UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
@@ -37,14 +36,17 @@ from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId, TailoringRunStatus
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identifiers import uuid7
-from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
+from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
 from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
     SqlAlchemyExportJobRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
+    SqlAlchemyBaseCvRepository,
 )
 from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
     SqlAlchemyJobPostingRepository,
@@ -59,6 +61,7 @@ from tests.integration.owners import (
     queued_run,
     running_run,
     succeeded_run,
+    uploaded_cv,
 )
 from tests.integration.persistence.owner_rows import persist_guest, persist_user
 
@@ -185,6 +188,10 @@ async def _add_run(session: AsyncSession, owner: Owner, clock: FixedClock) -> No
     await SqlAlchemyTailoringRunRepository(session).add(queued_run(owner, clock.now()))
 
 
+async def _add_cv(session: AsyncSession, owner: Owner, clock: FixedClock) -> None:
+    await SqlAlchemyBaseCvRepository(session).add(uploaded_cv(owner, clock.now()))
+
+
 async def _add_job(session: AsyncSession, owner: Owner, clock: FixedClock) -> None:
     run = succeeded_run(owner, clock.now())
     await SqlAlchemyExportJobRepository(session).add(queued_export(owner, run, clock.now()))
@@ -195,11 +202,17 @@ _MAPPED: dict[str, Table] = {
     "posting_job_posting": job_posting_table,
     "tailoring_run": tailoring_run_table,
     "export_job": export_job_table,
+    "intake_base_cv": base_cv_table,
 }
 _ADDERS = [
     pytest.param(_add_posting, "posting_job_posting", id="posting"),
     pytest.param(_add_run, "tailoring_run", id="run"),
     pytest.param(_add_job, "export_job", id="export"),
+]
+# AC-12 names four guest adders; the user-FK test above stays on the three it was written for.
+_GUEST_ADDERS = [
+    pytest.param(_add_cv, "intake_base_cv", id="base_cv"),
+    *_ADDERS,
 ]
 
 
@@ -218,18 +231,43 @@ async def test_add_for_an_erased_user_raises_user_not_found(
     assert landed.all() == []
 
 
-@pytest.mark.parametrize(("add", "table"), _ADDERS)
-async def test_add_for_a_vanished_guest_session_is_not_translated(
+async def _attempt(
+    add: _Adder, session: AsyncSession, owner: Owner, clock: FixedClock
+) -> BaseException | None:
+    """Run the add and hand back what escaped it, so the assertion — not the harness — is what
+    fails when the wrong thing (or nothing) is raised."""
+    try:
+        await add(session, owner, clock)
+    except Exception as exc:  # inspect whichever one escaped
+        return exc
+    return None
+
+
+@pytest.mark.parametrize(("add", "table"), _GUEST_ADDERS)
+async def test_add_for_a_vanished_guest_session_raises_guest_session_not_found(
     session: AsyncSession, clock: FixedClock, add: _Adder, table: str
 ) -> None:
-    """Only the user FK means "the account is gone"; a missing guest session is some other bug and
-    must surface as the untranslated `IntegrityError`, named by its own constraint."""
-    with pytest.raises(IntegrityError) as exc_info:
-        await add(session, _gone_guest(), clock)
+    """AC-12 (slice 2.4, ADR-0025's guest-write race, AC-17): the guest FK is now translated, as the
+    user FK always was. **This deliberately reverses 2.3's
+    `test_add_for_a_vanished_guest_session_is_not_translated`**, which asserted the untranslated
+    `IntegrityError`; AC-12 changes that meaning on purpose, because a purge can now delete a
+    session between a guest write's resolve and its insert, and the route must answer the same
+    401 it gives a vanished session — not a 500.
 
-    assert (
-        violated_constraint(exc_info.value) == f"fk_{table}_guest_session_id_identity_guest_session"
+    "Any other integrity error is unchanged" is carried by the sibling erased-user test above (the
+    user FK still translates to `UserNotFound`, not to this) and by the existing untranslated
+    refusals (`uq_intake_base_cv_file_key`, CHECKs) in `test_base_cv_repository.py`."""
+    gone = _gone_guest()
+
+    escaped = await _attempt(add, session, gone, clock)
+
+    assert type(escaped) is GuestSessionNotFound, f"escaped: {escaped!r}"
+    assert escaped.__cause__ is None
+    mapped = _MAPPED[table]
+    landed = await session.execute(
+        select(mapped.c.id).where(mapped.c.guest_session_id == gone.guest_session_id)
     )
+    assert landed.all() == []
 
 
 async def test_a_refused_add_does_not_expire_what_the_session_already_loaded(

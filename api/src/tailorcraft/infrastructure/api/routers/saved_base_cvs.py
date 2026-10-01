@@ -7,7 +7,8 @@ until T19 passes without an edit to it).
 
 **One credential: the bearer** (`require_user`). A `tc_guest` cookie riding along changes nothing
 (AC-21), and nothing in this module reads it — the one route that answers to both credentials is the
-copy, `POST /api/base-cvs/copies` in `routers/intake.py` (ADR-0008 (f), AC-24).
+claim, `POST /api/me/guest-work/claim` in `routers/me_guest_work.py` (ADR-0008 (g)). 2.2's copy
+route was retired in 2.4 (ADR-0022 amendment (d)).
 
 **Why `/api/me/…`** (technical plan §4): the path says whose resource it is. `/api/base-cvs` stays "this
 browser's workspace"; `/api/me/base-cvs` is "my account's CVs". Two resources, two owners, two

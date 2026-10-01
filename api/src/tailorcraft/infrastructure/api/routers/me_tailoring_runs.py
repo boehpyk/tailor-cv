@@ -13,7 +13,8 @@ entry) because the guest list is 1.3's, for a 24-hour workspace.
 
 **One credential: the bearer** (`require_user`); a `tc_guest` cookie is ignored and nothing here reads
 it. There is no transfer route: an account run's inputs are all account data (plan §0.1(a)), so the
-AST scan's exception set stays `{POST /api/base-cvs/copies}` (AC-25). A guest-owned id is a 404 here,
+AST scan's exception set gains nothing here; since 2.4 it is exactly
+`{POST /api/me/guest-work/claim}` (AC-25). A guest-owned id is a 404 here,
 byte-identical to one that does not exist, as a user-owned id is on every guest route.
 
 **Why this router also carries the run's download and export routes**, where the guest surface

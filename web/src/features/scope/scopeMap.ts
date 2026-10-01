@@ -66,6 +66,39 @@ export const GUEST_SCOPE_MAP: ScopeMap = {
   linkPrefix: '/runs',
 };
 
+/**
+ * **Every root a guest query key starts with** (slice 2.4, technical plan §0.11).
+ *
+ * An account's keys share one root (`accountKeyRoot`), so "forget this user's data" is one
+ * `removeQueries`. A guest's have none: `GUEST_SCOPE_MAP.keyRoot` is empty so that every guest key
+ * stayed byte-for-byte what 1.1–1.5 wrote (R-2). The claim is the first thing that must forget a
+ * guest's data wholesale — after it, every guest list is about a session that no longer exists — so
+ * the roots are written down here, once, next to the map that decided they would have no prefix:
+ *
+ * - `['intake']` — `['intake', 'baseCvs']`
+ * - `['posting']` — `['posting', 'jobPostings']`
+ * - `['tailoring']` — `['tailoring', 'tailoringRuns']`, `['tailoring', 'tailoringRun', id]`
+ * - `['export']` — `['export', 'exportJobs', runId]`
+ *
+ * A fifth guest feature with its own first segment must be added here, or a claim leaves its cache
+ * behind; a test pins that every guest key builder's first element is in this list (AC-45). Mutation
+ * keys share these roots and are untouched by `removeQueries`, which reads the query cache only.
+ */
+export const GUEST_QUERY_ROOTS: readonly (readonly [string])[] = [
+  ['intake'],
+  ['posting'],
+  ['tailoring'],
+  ['export'],
+];
+
+/**
+ * Where an account's runs live in the app, independent of *which* account: `/history/{id}`. The
+ * account branch of `scopeMap` spreads it, and a link to the account's copy of a run built where no
+ * user id is to hand yet (a guest run page whose session ended, slice 2.4's AC-41) passes it to
+ * `runLink` directly — the prefix is still written down once.
+ */
+export const ACCOUNT_RUN_LINKS: Pick<ScopeMap, 'linkPrefix'> = { linkPrefix: '/history' };
+
 /** The account's key root — `['auth', 'account', userId]`, under 2.1's auth prefix (AC-43). */
 export function accountKeyRoot(userId: string): readonly string[] {
   return [...authQueryKeyPrefix, 'account', userId];
@@ -86,14 +119,18 @@ export function scopeMap(scope: WorkspaceScope): ScopeMap {
         ...ACCOUNT_API_TARGET,
         keyRoot,
         runListKey: [...keyRoot, 'history'],
-        linkPrefix: '/history',
+        ...ACCOUNT_RUN_LINKS,
       };
     }
   }
 }
 
 /** The app path of a run, or of one of its documents, in a scope. */
-export function runLink(map: ScopeMap, runId: string, document?: string): string {
+export function runLink(
+  map: Pick<ScopeMap, 'linkPrefix'>,
+  runId: string,
+  document?: string,
+): string {
   const base = `${map.linkPrefix}/${encodeURIComponent(runId)}`;
   return document === undefined ? base : `${base}/${document}`;
 }

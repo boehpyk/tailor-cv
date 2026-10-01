@@ -11,7 +11,7 @@ it).
 **Hardened at `/verify` round 1, now that GREEN has landed for every route this flow drives.** The
 file's first cut was deliberately written "soft" — every step ran only `if _ok(previous)`, and every
 AC-50 assertion sat inside `if fake_llm_request is not None:` — because at the time it was written
-`upload_saved_base_cv`, `rename_saved_base_cv`, `copy_saved_base_cv` and `delete_account` were still
+`upload_saved_base_cv`, `rename_saved_base_cv` and `delete_account` were still
 `NotImplementedError` bodies, and the whole point of that file was to keep planting every later
 marker "worth exercising for real the moment each skeleton goes GREEN" without needing an edit once
 it did. It did; this is that edit. Every step below now asserts its own exact status code, in the
@@ -76,10 +76,10 @@ from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
+from tests.integration.working_copy_support import seed_working_copy
 
 REGISTER_URL = "/api/auth/register"
 ME_BASE_CVS_URL = "/api/me/base-cvs"
-COPIES_URL = "/api/base-cvs/copies"
 DELETE_ACCOUNT_URL = "/api/auth/delete-account"
 JOB_POSTINGS_URL = "/api/job-postings"
 TAILORING_RUNS_URL = "/api/tailoring-runs"
@@ -126,28 +126,11 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
     settings: Settings,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """AC-49. Drives register -> upload to account -> list -> rename -> copy -> a tailoring run on
-    the copy (fake LLM, AC-50) -> delete the saved CV -> delete the account -> a second marker user's
-    registration. Then: no marker anywhere in `caplog`, in any response body outside its one
+    """AC-49. Drives register -> upload to account -> list -> rename -> a guest upload -> a tailoring
+    run on it (fake LLM, AC-50) -> delete the saved CV -> delete the account -> a second marker
+    user's registration. Then: no marker anywhere in `caplog`, in any response body outside its one
     legitimate channel, in any Redis key — and, per step, at least one captured line names the id
     that step's own contract says gets logged.
-
-    **Mutation, observed red 2026-09-26 and reverted byte-exact.** In
-    `routers/intake.py::copy_saved_base_cv`, inserted `raise HTTPException(409, detail={"error":
-    {"code": "too_many_base_cvs", "message": "mutation"}})` as the first statement of the function
-    body, before the real flow runs. Re-run:
-    ```
-    >       assert copied.status_code == 201, copied.text
-    E       assert 409 == 201
-    E        +  where 409 = <Response [409 Conflict]>.status_code
-    FAILED tests/api/test_saved_base_cv_privacy_markers.py::test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_every_id
-    1 failed, 1 deselected in 0.72s
-    ```
-    (The same run's captured output also confirms the upload step's own positive-control assertion
-    works for the right reason: `BaseCvUploaded`'s `domain_event` line, carrying `base_cv_id`, is
-    genuinely present before the mutated line is ever reached.) Source restored byte-exact
-    (`git diff --stat api/src` empty); re-run green alone and the full module green twice in a row
-    afterward.
     """
     marker_email = _marker_email("email")
     marker_filename = _marker("original-filename") + ".txt"
@@ -213,22 +196,25 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
         responses.append(renamed)
         assert renamed.status_code == 200, renamed.text
 
-        # --- copy into the workspace ------------------------------------------------------------------
-        _mark("copy")
-        copied = await client.post(
-            COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer(token)
+        # --- the guest workspace takes the same text through the guest route ---------------------------
+        # 2.2's copy route is retired (2.4, AC-33), so the guest side of the AC-50 proof is an ordinary
+        # guest upload of the same body. The bearer is never sent: the guest route reads the cookie.
+        _mark("guest_upload")
+        guest_uploaded = await client.post(
+            "/api/base-cvs",
+            files={"file": (marker_filename, marker_cv_text.encode(), "text/plain")},
         )
-        responses.append(copied)
-        assert copied.status_code == 201, copied.text
-        working_copy_id = str(copied.json()["id"])
-        ids["working_copy_id"] = working_copy_id
-        copy_lines = _lines_since("copy")
-        assert any(working_copy_id in r.getMessage() for r in copy_lines), (
-            "the copy records BaseCvCopied (AC-3) — no captured line names the working copy's "
+        responses.append(guest_uploaded)
+        assert guest_uploaded.status_code == 201, guest_uploaded.text
+        guest_cv_id = str(guest_uploaded.json()["id"])
+        ids["guest_cv_id"] = guest_cv_id
+        guest_upload_lines = _lines_since("guest_upload")
+        assert any(guest_cv_id in r.getMessage() for r in guest_upload_lines), (
+            "the guest upload records BaseCvUploaded — no captured line names the guest CV's "
             f"base_cv_id. Captured:\n{caplog.text}"
         )
 
-        # --- a tailoring run on the working copy, fake LLM (AC-50) --------------------------------------
+        # --- a tailoring run on the guest CV, fake LLM (AC-50) --------------------------------------
         posting = await client.post(
             JOB_POSTINGS_URL, json={"source": "pasted", "text": marker_posting_text}
         )
@@ -236,15 +222,13 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
         assert posting.status_code == 201, posting.text
 
         cv_sent, posting_sent = await _tailor(
-            client, app, session, settings, working_copy_id, str(posting.json()["id"])
+            client, app, session, settings, guest_cv_id, str(posting.json()["id"])
         )
         assert marker_email not in cv_sent.value
         assert ids["user_id"] not in cv_sent.value
         assert saved_cv_id not in cv_sent.value
         assert marker_label not in cv_sent.value
-        assert marker_cv_text in cv_sent.value, (
-            "the working copy's own text IS the legitimate channel"
-        )
+        assert marker_cv_text in cv_sent.value, "the guest CV's own text IS the legitimate channel"
         assert marker_email not in posting_sent.value
         assert ids["user_id"] not in posting_sent.value
 
@@ -496,17 +480,11 @@ async def test_purge_and_orphan_sweep_over_a_saved_cv_and_its_working_copy_never
     )
     await committed_session.commit()
 
-    working_copy_id = cvs.next_identity()
-    working_copy_ref = FileRef.for_base_cv(working_copy_id, CvContentType.PDF)
-    working_copy = BaseCv.copy_from(
-        saved_cv,
-        id=working_copy_id,
-        into=GuestOwner(expired_session_id),
-        file=working_copy_ref,
-        at=now,
+    working_copy = await seed_working_copy(
+        committed_session, GuestOwner(expired_session_id), now, copied_from=saved_cv.id
     )
+    working_copy_ref = working_copy.file
     working_copy_bytes_marker = _sweep_marker("WORKINGCOPYBYTES")
-    await cvs.add(working_copy)
     await committed_session.commit()
     await files.put(working_copy_ref, f"{working_copy_bytes_marker}\ncopy bytes".encode())
 

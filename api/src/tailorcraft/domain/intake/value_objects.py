@@ -246,6 +246,13 @@ class BaseCvOrigin(StrEnum):
     **Derived, never stored.** `BaseCv.origin` is `COPIED_FROM_SAVED` iff `copied_from is not None`;
     a stored copy of that fact would be a second representation that can disagree with the first.
     The wire's `origin` field reads this.
+
+    **Nothing creates a `COPIED_FROM_SAVED` CV since slice 2.4** (the copy route was removed,
+    ADR-0022 amendment (d)); this enum stays only to read rows made before. **Contraction
+    trigger** (technical plan §0.9): the first slice that migrates `intake_base_cv` after 2.4's
+    release + 24 h — or any time after, on a production read showing zero rows with
+    `copied_from_base_cv_id IS NOT NULL` — drops it with `BaseCv.copied_from`, `BaseCv.origin` and
+    the column, in one contract migration.
     """
 
     UPLOADED = "uploaded"

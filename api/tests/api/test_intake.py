@@ -64,7 +64,6 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from pypdf import PdfWriter
-from sqlalchemy import text as sql_text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.types import Message, Scope
@@ -1545,19 +1544,11 @@ def test_failure_message_is_textually_distinct_for_every_extraction_failure_reas
 
 
 # ---------------------------------------------------------------------------------------------
-# Slice 2.2 (intake-saved-base-cvs, T19) — AC-20's `origin` key, AC-23's guest-route/bearer
-# isolation, AC-28's transfer-route contract (`POST /api/base-cvs/copies`), and its S-25...S-38.
-#
-# **This block is still the RED half of a red-first cycle.** `copy_saved_base_cv` (routers/intake.py)
-# raises `NotImplementedError`; every assertion below is written against
-# `docs/specs/intake-saved-base-cvs/feature-spec.md` and `technical-plan.md`, never against that
-# handler's body. `BaseCvResponse` does not carry `origin` yet either (T18's skeleton note) — the
-# very first test in this block reds on a missing key, not on a 500, which is why it is written
-# first: it is the discriminating proof that nobody quietly added `origin` to make this block pass
-# for the wrong reason.
+# Slice 2.2 (intake-saved-base-cvs, T19) — AC-20's `origin` key and AC-23's guest-route/bearer
+# isolation. (2.2's transfer route `POST /api/base-cvs/copies` was retired in 2.4, AC-33; its tests
+# went with it and `test_copy_route_retired.py` pins the retirement.)
 # ---------------------------------------------------------------------------------------------
 
-COPIES_URL = "/api/base-cvs/copies"
 ME_BASE_CVS_URL = "/api/me/base-cvs"
 REGISTER_URL = "/api/auth/register"
 
@@ -1602,17 +1593,6 @@ async def _upload_extracted_saved_cv_2_2(client: AsyncClient, token: str) -> str
     body = response.json()
     assert body["status"] == "extracted", body
     return str(body["id"])
-
-
-def _base_cv_key_2_2(cv_id: str, extension: str = "txt") -> str:
-    """The storage key `FileRef.for_base_cv` derives from an id — via the real function, so this
-    cannot drift from ADR-0011's own sharding rule."""
-    content_type = {
-        "txt": CvContentType.TXT,
-        "pdf": CvContentType.PDF,
-        "docx": CvContentType.DOCX,
-    }[extension]
-    return FileRef.for_base_cv(BaseCvId(UUID(cv_id)), content_type).key
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1699,163 +1679,12 @@ async def test_list_base_cvs_never_lists_a_user_owned_row(
 
 
 # ---------------------------------------------------------------------------------------------
-# AC-28 / AC-9 — the transfer route's happy path and its own key set
+# T30b-C — a saved CV over the extracted-character cap fails as `text_too_long`: the saved-CV
+# response carries the new reason and the spec sentence.
 # ---------------------------------------------------------------------------------------------
 
 
-async def test_copy_succeeds_with_the_guest_shape_and_copied_from_saved_origin(
-    client: AsyncClient, settings: Settings
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert set(body) == {
-        "id",
-        "original_filename",
-        "content_type",
-        "size_bytes",
-        "status",
-        "character_count",
-        "failure_reason",
-        "failure_message",
-        "uploaded_at",
-        "expires_at",
-        "origin",
-    }
-    assert body["id"] != saved_cv_id, "the copy is a new BaseCv with its own id (AC-3/AC-17)"
-    assert body["status"] == "extracted"
-    assert body["origin"] == "copied_from_saved"
-    assert body["failure_reason"] is None
-    assert body["expires_at"] is not None
-    assert _guest_cookie_header(response) is not None
-    assert response.headers.get("cache-control") == "no-store", (
-        "AC-51: the copy's 201 is a `/api/me`-adjacent response about a saved CV and must carry "
-        "the same no-store guarantee as every other route this slice touches"
-    )
-
-
-# ---------------------------------------------------------------------------------------------
-# S-25 — no / invalid bearer: 401, no guest session minted, no cookie set
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_without_a_bearer_is_401_and_mints_no_guest_session(client: AsyncClient) -> None:
-    response = await client.post(COPIES_URL, json={"saved_base_cv_id": str(uuid4())})
-
-    assert response.status_code == 401, response.text
-    assert _error_code(response) == "invalid_access_token"
-    assert _guest_cookie_header(response) is None
-
-
-async def test_copy_with_a_forged_bearer_is_401_and_mints_no_guest_session(
-    client: AsyncClient,
-) -> None:
-    response = await client.post(
-        COPIES_URL,
-        json={"saved_base_cv_id": str(uuid4())},
-        headers={"Authorization": "Bearer not-a-real-token"},
-    )
-
-    assert response.status_code == 401, response.text
-    assert _error_code(response) == "invalid_access_token"
-    assert _guest_cookie_header(response) is None
-
-
-# ---------------------------------------------------------------------------------------------
-# S-26 — a malformed body: 422, no guest session minted
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_with_a_malformed_body_is_422_and_mints_no_guest_session(
-    client: AsyncClient, settings: Settings
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": "not-a-uuid"}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 422, response.text
-    assert _guest_cookie_header(response) is None
-
-
-# ---------------------------------------------------------------------------------------------
-# S-27 — the source is not the bearer's, or does not exist: 404, no guest session minted
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_of_another_users_saved_cv_is_404_and_mints_no_guest_session(
-    client: AsyncClient, app: FastAPI, settings: Settings
-) -> None:
-    token_a, _ = await _register_2_2(client, settings)
-    async with _new_client(app) as client_b:
-        token_b, _ = await _register_2_2(client_b, settings)
-        cv_b_id = await _upload_extracted_saved_cv_2_2(client_b, token_b)
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": cv_b_id}, headers=_bearer_2_2(token_a)
-    )
-
-    assert response.status_code == 404, response.text
-    assert _error_code(response) == "base_cv_not_found"
-    assert _guest_cookie_header(response) is None
-
-
-async def test_copy_of_a_nonexistent_id_is_404_byte_identical_to_another_users(
-    client: AsyncClient, app: FastAPI, settings: Settings
-) -> None:
-    token_a, _ = await _register_2_2(client, settings)
-    async with _new_client(app) as client_b:
-        token_b, _ = await _register_2_2(client_b, settings)
-        cv_b_id = await _upload_extracted_saved_cv_2_2(client_b, token_b)
-
-    on_foreign = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": cv_b_id}, headers=_bearer_2_2(token_a)
-    )
-    on_nonexistent = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": str(uuid4())}, headers=_bearer_2_2(token_a)
-    )
-
-    assert on_foreign.json() == on_nonexistent.json()
-
-
-# ---------------------------------------------------------------------------------------------
-# S-28 — the source's extraction never succeeded: 409 base_cv_not_extracted
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_of_a_saved_cv_whose_extraction_failed_is_409(
-    client: AsyncClient, settings: Settings
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    failed = await _upload_saved_2_2(
-        client, token, filename="tiny.txt", data=_read_fixture("tiny.txt")
-    )
-    assert failed.status_code == 201, failed.text
-    assert failed.json()["status"] == "extraction_failed"
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": failed.json()["id"]}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 409, response.text
-    assert _error_code(response) == "base_cv_not_extracted"
-
-
-# ---------------------------------------------------------------------------------------------
-# T30b-C — a saved CV that failed as `text_too_long` is exactly as uncopyable as any other failed
-# extraction (S-28's rule does not special-case a reason): the saved-CV response carries the new
-# reason and the spec sentence, and a copy of it is still 409 `base_cv_not_extracted`.
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_saved_cv_over_the_character_cap_is_text_too_long_and_uncopyable(
+async def test_saved_cv_over_the_character_cap_is_text_too_long(
     client: AsyncClient, app: FastAPI, settings: Settings
 ) -> None:
     _override_settings(app, settings, max_extracted_characters=_T30B_C_SMALL_CAP)
@@ -1871,203 +1700,3 @@ async def test_saved_cv_over_the_character_cap_is_text_too_long_and_uncopyable(
     assert saved_body["status"] == "extraction_failed"
     assert saved_body["failure_reason"] == "text_too_long"
     assert saved_body["failure_message"] == _spec_text_too_long_message(_T30B_C_SMALL_CAP)
-
-    copy_response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_body["id"]}, headers=_bearer_2_2(token)
-    )
-
-    assert copy_response.status_code == 409, copy_response.text
-    assert _error_code(copy_response) == "base_cv_not_extracted"
-
-
-# ---------------------------------------------------------------------------------------------
-# S-29 — a missing/expired tc_guest is forgiven: a fresh session is minted
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_with_an_unknown_guest_cookie_mints_a_fresh_session(
-    client: AsyncClient, settings: Settings
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-    client.cookies.set(COOKIE_NAME, "a-token-that-was-never-minted-by-this-server")
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 201, response.text
-    assert _guest_cookie_header(response) is not None
-
-
-# ---------------------------------------------------------------------------------------------
-# S-30 — the guest destination is at its cap: 409 too_many_base_cvs
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_at_the_guest_cap_is_409_too_many_base_cvs(
-    client: AsyncClient, app: FastAPI, settings: Settings
-) -> None:
-    _override_settings(app, settings, max_base_cvs_per_session=1)
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-    filler = await client.post(
-        "/api/base-cvs", files=_file_part("filler.txt", _read_fixture("sample.txt"), "text/plain")
-    )
-    assert filler.status_code == 201, filler.text  # this client's tc_guest now owns 1 workspace CV
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 409, response.text
-    assert _error_code(response) == "too_many_base_cvs"
-
-
-# ---------------------------------------------------------------------------------------------
-# S-31 — the upload limiter's session/ip scopes, and Redis fails open
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_rate_limited_by_session_scope_returns_429(
-    client: AsyncClient, app: FastAPI, settings: Settings
-) -> None:
-    """S-31. `upload_rate_limit_per_hour=1` set *before* two account uploads trips the account
-    upload's own `user` scope on the second upload — a different bucket from the copy route's, even
-    though both read the same setting (plan §4) — so the source CV must be uploaded first, under the
-    unmodified default limit, and only the copy calls themselves run under the lowered cap. Two
-    copies of the *same* source rather than two distinct sources: a copy is not idempotent (S-36),
-    so this still exercises the limiter and not a dedupe rule."""
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-
-    _override_settings(app, settings, upload_rate_limit_per_hour=1)
-
-    first = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-    second = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert first.status_code == 201, first.text
-    assert second.status_code == 429, second.text
-    assert _error_code(second) == "rate_limited"
-
-
-async def test_copy_redis_unavailable_fails_open(
-    client: AsyncClient, app: FastAPI, settings: Settings
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-    _override_settings(app, settings, redis_url="redis://127.0.0.1:1/0")
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 201, response.text
-
-
-# ---------------------------------------------------------------------------------------------
-# S-32 — the source's row exists, its file does not: 410 saved_base_cv_file_gone
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_when_the_source_file_is_missing_on_disk_is_410(
-    client: AsyncClient, settings: Settings, caplog: pytest.LogCaptureFixture
-) -> None:
-    token, user_id = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-    (settings.upload_dir / _base_cv_key_2_2(saved_cv_id)).unlink()
-
-    with caplog.at_level(logging.WARNING):
-        response = await client.post(
-            COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-        )
-
-    assert response.status_code == 410, response.text
-    assert _error_code(response) == "saved_base_cv_file_gone"
-
-    warnings = [r for r in caplog.records if "intake.saved_base_cv_file_missing" in r.getMessage()]
-    assert warnings, f"expected a warning line, captured:\n{caplog.text}"
-    message = warnings[0].getMessage()
-    assert warnings[0].levelname == "WARNING"
-    assert saved_cv_id in message
-    assert user_id in message
-
-
-# ---------------------------------------------------------------------------------------------
-# S-33 — the source is deleted between the load and the read: 404, never 410
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_when_the_source_row_vanishes_between_load_and_read_is_404(
-    client: AsyncClient, settings: Settings, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The race S-33 names, made deterministic: the source's bytes are read through a wrapper that
-    deletes the row for real (on the request's own connection, visible to its own later reads) and
-    then reports the exact failure a genuinely concurrent delete would leave behind
-    (`StoredFileMissing`) — never a mocked outcome of the use case's own branching."""
-    from tailorcraft.domain.shared.files import StoredFileMissing
-    from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
-
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-
-    async def _delete_row_then_report_missing(self: LocalFileStore, ref: FileRef) -> bytes:
-        await session.execute(
-            sql_text("DELETE FROM intake_base_cv WHERE id = :id"), {"id": UUID(saved_cv_id)}
-        )
-        raise StoredFileMissing("simulated concurrent delete (S-33)")
-
-    monkeypatch.setattr(LocalFileStore, "get", _delete_row_then_report_missing)
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 404, response.text
-    assert _error_code(response) == "base_cv_not_found"
-
-
-# ---------------------------------------------------------------------------------------------
-# S-34 / S-35 — the destination write fails; the commit fails after the copy's file write
-# ---------------------------------------------------------------------------------------------
-
-
-async def test_copy_storage_write_failure_is_503_storage_unavailable(
-    client: AsyncClient, app: FastAPI, settings: Settings, tmp_path: Path
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-
-    blocking_file = tmp_path / "not_a_directory_2_2"
-    blocking_file.write_bytes(b"x")
-    _override_settings(app, settings, upload_dir=blocking_file)
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 503, response.text
-    assert _error_code(response) == "storage_unavailable"
-
-
-async def test_copy_commit_failure_after_the_file_write_is_503(
-    client: AsyncClient, settings: Settings, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
-
-    async def _raise_operational_error() -> None:
-        raise OperationalError("simulated commit failure (S-35)", {}, Exception("connection lost"))
-
-    monkeypatch.setattr(session, "commit", _raise_operational_error)
-
-    response = await client.post(
-        COPIES_URL, json={"saved_base_cv_id": saved_cv_id}, headers=_bearer_2_2(token)
-    )
-
-    assert response.status_code == 503, response.text
-    assert _error_code(response) == "service_unavailable"

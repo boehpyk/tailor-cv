@@ -32,7 +32,7 @@ export const NETWORK_FAILURE_NOTE = "Couldn't reach TailorCraft.";
 export const UNKNOWN_FAILURE_NOTE = 'Something went wrong. Try again.';
 
 /**
- * AC-39 (and every other account call): a 401 that survived the client's one refresh-and-retry.
+ * Every account call: a 401 that survived the client's one refresh-and-retry.
  * The second clause is the one that matters — signing out never deletes anything.
  */
 export const SIGNED_OUT_NOTE =
@@ -91,27 +91,11 @@ export function confirmDeleteMessage(name: string): string {
   return `Delete ${name}? This removes the file and the text we read from it. This can't be undone. Working copies already in a workspace are not affected. Tailored applications you made from it stay in your history until you delete them.`;
 }
 
-// --- The workspace picker (AC-38, AC-39, AC-45) ---------------------------------------------------
+// --- The workspace picker's auth gate (AC-38) -----------------------------------------------------
 
-export const PICKER_LEGEND = 'Use a saved CV';
 /** AC-38: the auth store is `unavailable` — we do not know who this is, so we cannot list anything. */
 export const PICKER_UNAVAILABLE_NOTE =
   "Couldn't check your account, so saved CVs aren't available right now";
-/**
- * AC-38's empty state is one sentence in two parts: `PICKER_EMPTY_NOTE` as text, then
- * `PICKER_EMPTY_ACTION` as the link to `/account`. Joined by a space they read exactly as the spec
- * quotes: "You have no saved CVs. Add one on your account page".
- */
-export const PICKER_EMPTY_NOTE = 'You have no saved CVs.';
-export const PICKER_EMPTY_ACTION = 'Add one on your account page';
-export const USE_THIS_CV_LABEL = 'Use this CV';
-export const USE_THIS_CV_PENDING_LABEL = 'Putting a copy in your workspace…';
-/** AC-39: a 404 on copy — the saved CV went away; the list is refetched and this is said. */
-export const COPY_SOURCE_DELETED_NOTE = 'That saved CV was deleted, so there is nothing to copy.';
-
-/** AC-45 — the picker's retention statement. Verbatim; pinned. */
-export const PICKER_RETENTION_NOTICE =
-  "Using a saved CV puts a copy in this browser's workspace. The copy, and anything you tailor from it, is deleted after 24 hours. Tailored documents aren't saved to your account yet.";
 
 // --- The account workspace's picker, `mode: 'select'` (slice 2.3, AC-39) ---------------------------
 
@@ -233,36 +217,6 @@ export function deleteSavedCvErrorCopy(error: Error): string {
     return SIGNED_OUT_NOTE;
   }
   return NOT_DELETED_NOTE;
-}
-
-/** AC-39: "Use this CV" refused — every code in the copy route's contract (AC-28), distinctly. */
-export function copySavedCvErrorCopy(error: Error): string {
-  if (!(error instanceof ApiError)) {
-    return NETWORK_FAILURE_NOTE;
-  }
-  if (isSignedOut(error)) {
-    return SIGNED_OUT_NOTE;
-  }
-  switch (error.code) {
-    case 'base_cv_not_found':
-      return COPY_SOURCE_DELETED_NOTE;
-    case 'base_cv_not_extracted':
-      return "We couldn't read that CV, so it can't be used. Choose another, or upload it again on your account page.";
-    case 'too_many_base_cvs':
-      return 'This workspace already holds as many CVs as it can. Its CVs are deleted after 24 hours.';
-    case 'saved_base_cv_file_gone':
-      return 'The file for this saved CV is missing. Delete it on your account page and upload it again.';
-    case 'validation_error':
-      return 'Choose a saved CV, then try again.';
-    case 'rate_limited':
-      return `Too many CVs added in a short time. ${tryAgainIn(error.retryAfterSeconds)}`;
-    case 'storage_unavailable':
-      return "We couldn't store the copy right now. Nothing was added — try again in a moment.";
-    case 'service_unavailable':
-      return 'Using a saved CV is unavailable right now. Nothing was added — try again in a moment.';
-    default:
-      return UNKNOWN_FAILURE_NOTE;
-  }
 }
 
 /**

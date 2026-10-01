@@ -77,14 +77,28 @@ class ExpiredGuestDataPort(Protocol):
         """
         ...
 
-    async def delete_session(self, session_id: GuestSessionId) -> None:
-        """Delete one guest session and everything the cascade takes with it.
+    async def delete_session(self, session_id: GuestSessionId) -> bool:
+        """Delete one guest session and everything the cascade takes with it; return `True` iff
+        **this call's** `DELETE` removed the session row.
 
-        **Returns nothing.** "How many rows went" is a question about the cascade, and the cascade is
-        the database's mechanism rather than this port's promise; a count here would be a number the
-        domain could only misuse. Deleting an already-deleted session is a **no-op, not an error**
-        (AC-15, R-19) — which is half of what makes the purge safe to retry, redeliver and run twice
-        concurrently.
+        **The answer is not a count, and that is why this reverses the old contract** (ADR-0018
+        amendment (a), slice 2.4). The method used to return nothing, on the argument that "how many
+        rows went" is a question about the cascade — the database's mechanism, not this port's
+        promise — and a number the domain could only misuse. That argument still holds against a
+        count; it never covered this. Since 2.4 a guest session can be **claimed**: its rows re-keyed
+        to a user and the session row deleted, in one transaction. If a claim commits between
+        `list_expired` (which collected this session's file keys, without a lock) and this call, the
+        cascade here takes nothing, the rows are a user's now, and unlinking the collected keys would
+        delete a registered user's files. Because the claim deletes the session row itself, *"my
+        `DELETE` removed the row"* holds exactly when no claim committed first — and none can commit
+        after, since the claim locks the row `FOR UPDATE` before re-keying and this `DELETE` holds it.
+        So the boolean is the one fact that says whether the keys the caller holds still belong to
+        what it deleted: **unlink only what you deleted.**
+
+        Deleting an already-deleted session is still a **no-op, not an error** (AC-15, R-19) — it now
+        also says so, by returning `False`. That is half of what makes the purge safe to retry,
+        redeliver and run twice concurrently, and it means the loser of two concurrent purges skips
+        the session rather than reporting it a second time.
 
         The adapter contains each delete in a SAVEPOINT and commits per session. That is not a
         detail the port states — it may not — but it is the reason this method takes one id and not

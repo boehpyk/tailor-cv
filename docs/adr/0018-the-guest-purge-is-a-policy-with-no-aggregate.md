@@ -135,7 +135,8 @@ the entry point already is.
   deferred item tracks it, and the slice is not complete until the flip has happened.
 - **Two concurrent purges are safe and may double-count.** The lock is advisory, so the loser's
   `DELETE` affects zero rows and its unlinks are `missing_ok`. Both runs exit 0; their reported counts
-  may overlap. Accepted, and the reason the lock is not a correctness mechanism.
+  may overlap. Accepted, and the reason the lock is not a correctness mechanism. *(Tightened by the
+  amendment below: only the run whose `DELETE` removed a session reports it.)*
 - **`files_unlinked` means *keys we asked the store to remove*, not *files that existed*.**
   `FileStorePort.delete` is `missing_ok` by contract, so the number cannot carry the stronger claim.
   Named here so nobody reads it as the stronger one.
@@ -146,3 +147,45 @@ the entry point already is.
 - **`StartGuestSession` still takes `retention_hours: int`** while the purge takes a
   `RetentionWindow`. One promise, two types, for one more slice. The obvious follow-up is to give
   `identity` the value object too; it was not done here because this slice touches enough.
+
+## Amendment: 2026-10-01, from the plan of slice 2.4 (`workspace-registration-cta`)
+
+Slice 2.4 adds the claim (ADR-0025): a guest session's rows are re-keyed to a user, and the session row
+is deleted, in one transaction. It is the first thing in this codebase that changes a row's owner after
+creation, and it breaks an assumption decision 3 rested on without saying so. Decisions 1–9 stand.
+
+**(a) `delete_session` returns whether it deleted the session, and the purge unlinks a session's keys
+only when it did.**
+
+- **The race.** Per session the purge reads the session's file keys (decision 3, no lock), deletes the
+  session (one committed `DELETE`; the cascade), then unlinks the keys. Until 2.4 the keys could not
+  stop being the session's between the read and the delete, because rows never changed owner. If a
+  claim of that session commits in between, the purge's `DELETE` finds nothing to cascade — the rows
+  are a user's now — and the purge would then **unlink files a user owns**: rows pointing at nothing,
+  the outcome ADR-0006 §2 chose its crash window to avoid. The window is narrow (the purge selects
+  `expires_at <= now`, the claim `expires_at > now`, so a claim must straddle the expiry instant), but
+  a timing argument is not a lock.
+- **The fix is one boolean.** `ExpiredGuestDataPort.delete_session` returns `True` iff **this call's**
+  `DELETE` removed the row, and `PurgeExpiredGuestSessions` skips the unlinks of a session whose
+  delete returned `False`. Because the claim deletes the session row in its own transaction, *"my
+  `DELETE` removed the session"* holds exactly when no claim of it committed first; and a claim cannot
+  commit afterwards, because it locks the session row `FOR UPDATE` before re-keying anything and the
+  purge's `DELETE` holds that row. **Unlink only what you deleted**: the rows deleted and the files
+  unlinked are one set, which is 2.3's `DELETE … RETURNING` lesson (ADR-0023 decision 5) one level up.
+- **The port's old contract is reversed on purpose.** Its docstring said the method *returns nothing*,
+  because a count of deleted rows would be a number the domain could only misuse. This is not a count:
+  it is the one fact that tells the use case whether the keys it holds still belong to what it
+  deleted. Deleting an already-deleted session stays a no-op, not an error; it now also says so.
+- **Decision 3 stands.** Keys are still collected before the delete, and export keys still derived.
+  The new rule is what makes that order safe once a row can change owner between the two steps.
+  Re-collecting the keys under a lock inside `delete_session` was considered: correct too, but it moves
+  the key collection and its derivation rule into the delete path and changes the port more. A refusal
+  margin before expiry on the claim side was rejected as a timer standing in for a lock.
+- **`PurgeReport` gains `sessions_skipped`**, counted when a delete returned `False`, so an operator
+  can see the race happen; it should read approximately zero. It also tightens the Consequence on
+  concurrent purges: the loser of two concurrent purges now skips the session rather than reporting it
+  a second time.
+- **The two-version deploy window.** A 2.3 worker's purge ignores the return value (its port returns
+  nothing), so an old purge running beside a new API would be the unguarded one. The release stops
+  `worker` and `beat` across the deploy and starts them on the new image, so that window is zero by
+  the release order; 2.4 confirms this in the release script rather than assuming it.

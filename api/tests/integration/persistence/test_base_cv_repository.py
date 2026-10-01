@@ -59,6 +59,7 @@ from tailorcraft.infrastructure.persistence.repositories.identity.user import (
 from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
     SqlAlchemyBaseCvRepository,
 )
+from tests.integration.working_copy_support import seed_working_copy
 
 _PASSWORD_HASH = PasswordHash("$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA")
 
@@ -454,7 +455,7 @@ async def test_round_trip_of_a_user_owned_cv_with_no_label_reloads_label_as_none
 async def test_round_trip_of_a_working_copy_preserves_its_copied_from_column(
     session: AsyncSession, clock: FixedClock
 ) -> None:
-    """`copied_from_base_cv_id` (I-8): a working copy — guest-owned, built via `BaseCv.copy_from` —
+    """`copied_from_base_cv_id` (I-8): a working copy — guest-owned, seeded by `seed_working_copy` —
     reloads with `copied_from` equal to its saved source's id, as a `BaseCvId`, not a bare UUID."""
     user_id = await _persist_user(session, clock, email="copy-source@example.com")
     cvs = SqlAlchemyBaseCvRepository(session)
@@ -463,15 +464,9 @@ async def test_round_trip_of_a_working_copy_preserves_its_copied_from_column(
     await cvs.add(source)
 
     guest = await _persist_owner(session, clock, token_hash="5e" * 32)
-    copy_id = cvs.next_identity()
-    copy = BaseCv.copy_from(
-        source=source,
-        id=copy_id,
-        into=GuestOwner(guest.id),
-        file=FileRef.for_base_cv(copy_id, source.content_type),
-        at=clock.now(),
+    copy = await seed_working_copy(
+        session, GuestOwner(guest.id), clock.now(), copied_from=source.id
     )
-    await cvs.add(copy)
 
     session.expunge_all()
     reloaded = await cvs.get(copy.id)

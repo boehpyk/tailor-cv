@@ -33,6 +33,7 @@ from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
+from tailorcraft.application.identity.claim_guest_work import ClaimGuestWork
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
 from tailorcraft.application.identity.get_current_user import GetCurrentUser
 from tailorcraft.application.identity.log_in import LogIn
@@ -40,7 +41,6 @@ from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
 from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
-from tailorcraft.application.intake.copy_saved_base_cv import CopySavedBaseCvToWorkspace
 from tailorcraft.application.intake.delete_saved_base_cv import DeleteSavedBaseCv
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
@@ -69,6 +69,7 @@ from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
     FailedLoginObserver,
     GuestSessionRepository,
+    GuestWorkClaimPort,
     LoginRepository,
     PasswordHasherPort,
     UserRepository,
@@ -108,6 +109,7 @@ from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
+from tailorcraft.infrastructure.identity.claim_access import CommittingGuestWorkClaim
 from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
 from tailorcraft.infrastructure.identity.reuse_alert import ReuseAlertingEventPublisher
 from tailorcraft.infrastructure.intake.committing import CommittingBaseCvRemoval
@@ -1240,9 +1242,10 @@ GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]
 
 # ---------------------------------------------------------------------------------------------
 # Saved base CVs and account erasure — slice 2.2 (T18). Every route below answers to
-# `require_user`; the one transfer route (`POST /api/base-cvs/copies`, ADR-0008 (f)) also reaches
-# the guest session, **in its handler body**, never through a `Depends` here — so no provider in
-# this block depends on `require_guest_session` or `resolve_or_start_guest_session` (AC-24).
+# `require_user`, and no provider in this block depends on `require_guest_session` or
+# `resolve_or_start_guest_session` (AC-24). 2.2's transfer route (`POST /api/base-cvs/copies`) was
+# retired in 2.4 (ADR-0022 amendment (d)); the one transfer route is now the claim,
+# `POST /api/me/guest-work/claim` (ADR-0008 (g)), which reads `tc_guest` in its handler body.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1279,31 +1282,6 @@ def get_delete_saved_base_cv(
 
 
 DeleteSavedBaseCvDep = Annotated[DeleteSavedBaseCv, Depends(get_delete_saved_base_cv)]
-
-
-def get_copy_saved_base_cv(
-    cvs: BaseCvRepositoryDep,
-    users: UserRepositoryDep,
-    sessions: GuestSessionRepositoryDep,
-    files: FileStoreDep,
-    events: EventPublisherDep,
-    clock: ClockDep,
-    settings: SettingsDep,
-) -> CopySavedBaseCvToWorkspace:
-    """**No extractor** — the use case's constructor does not take one (AC-9: a copy never
-    re-extracts). The cap is the *guest* cap: a working copy is guest data."""
-    return CopySavedBaseCvToWorkspace(
-        cvs,
-        users,
-        sessions,
-        files,
-        events,
-        clock,
-        max_per_session=settings.max_base_cvs_per_session,
-    )
-
-
-CopySavedBaseCvDep = Annotated[CopySavedBaseCvToWorkspace, Depends(get_copy_saved_base_cv)]
 
 
 def get_account_data(session: SessionDep) -> AccountDataPort:
@@ -1400,3 +1378,55 @@ def get_list_recent_job_postings(
 ListRecentJobPostingsDep = Annotated[
     ListRecentJobPostingsForUser, Depends(get_list_recent_job_postings)
 ]
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.4 — a guest's work claimed into an account (ADR-0025, technical plan §3 "Wiring").
+# Deferred imports throughout, for the mapper-configuration reason `get_base_cv_repository` documents.
+# --------------------------------------------------------------------------------------------------
+
+
+def get_guest_work_claim(session: SessionDep) -> GuestWorkClaimPort:
+    """Binds `GuestWorkClaimPort` -> `CommittingGuestWorkClaim(SqlAlchemyGuestWorkClaim)`
+    (ADR-0025): `transfer` commits before `ClaimGuestWork` unlinks a dropped working copy's file —
+    `get_account_data`'s rule, "rows first, committed, then files" — and the commit is what releases
+    the session row's `FOR UPDATE` to a waiting purge or second claim."""
+    from tailorcraft.infrastructure.persistence.identity.guest_work_claim import (
+        SqlAlchemyGuestWorkClaim,
+    )
+
+    return CommittingGuestWorkClaim(SqlAlchemyGuestWorkClaim(session), session)
+
+
+GuestWorkClaimDep = Annotated[GuestWorkClaimPort, Depends(get_guest_work_claim)]
+
+
+def get_claim_guest_work(
+    users: UserRepositoryDep,
+    claims: GuestWorkClaimDep,
+    files: FileStoreDep,
+    clock: ClockDep,
+) -> ClaimGuestWork:
+    return ClaimGuestWork(users, claims, files, clock)
+
+
+ClaimGuestWorkDep = Annotated[ClaimGuestWork, Depends(get_claim_guest_work)]
+
+
+def get_claim_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds claims per signed-in user (slice 2.4, OQ-11). **Fails open** — `fail_open=True`.
+
+    The rule from 1.1 (OQ-7), once more: *fail open when the cost is ours and bounded; fail closed
+    when the cost is money or somebody else's infrastructure.* A claim is a handful of `UPDATE`s and
+    one `DELETE` on our own database, bounded by what one 24-hour guest session can hold, and Redis
+    being down must not stop someone who just registered from keeping what they made. It exists to
+    bound repeated claims pushing an account past its caps (plan §0.8, R-4) — not to protect money,
+    which is why it fails open where `get_login_ip_rate_limiter` fails closed.
+
+    User scope only: the route answers to the bearer, so the user id is the principal. The router
+    keys it with `guest_work_claim_rate_limit_per_hour` (10/h by default).
+    """
+    return RedisFixedWindowRateLimiter(redis, namespace="identity:guest-work-claim", fail_open=True)
+
+
+ClaimRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_claim_rate_limiter)]

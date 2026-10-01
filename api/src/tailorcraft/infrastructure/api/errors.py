@@ -51,8 +51,6 @@ from tailorcraft.domain.intake.errors import (
     BaseCvNotFound,
     InvalidFilename,
     InvalidLabel,
-    SavedBaseCvFileMissing,
-    SavedBaseCvNotCopyable,
     TooManyBaseCvs,
     TooManySavedBaseCvs,
 )
@@ -121,9 +119,8 @@ BASE_CV_NOT_EXTRACTED_DETAIL = {
     "code": "base_cv_not_extracted",
     "message": "We couldn't read that CV, so there's nothing to tailor. Upload a different file.",
 }
-"""409 for a CV whose text was never extracted: 1.3's `BaseCvNotReadyForTailoring` (G-8), and since
-slice 2.2 `SavedBaseCvNotCopyable` (S-28) — "1.3's code and copy", so one constant, not two strings
-that happen to agree today."""
+"""409 for a CV whose text was never extracted: 1.3's `BaseCvNotReadyForTailoring` (G-8). Slice 2.2's
+`SavedBaseCvNotCopyable` (S-28) shared it until 2.4 retired the copy route (ADR-0022 amendment (d))."""
 
 ORIGIN_NOT_ALLOWED_DETAIL = {
     "code": "origin_not_allowed",
@@ -213,9 +210,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     #   translated in that handler, not here: login keeps its 401 `invalid_credentials`, and one
     #   error type must not get two global meanings (technical plan §3 `errors.py`).
     # - `UserNotFound` is already 2.1's 401 `not_signed_in`, above.
-    if isinstance(
-        exc, TooManySavedBaseCvs | SavedBaseCvNotCopyable | SavedBaseCvFileMissing | InvalidLabel
-    ):
+    if isinstance(exc, TooManySavedBaseCvs | InvalidLabel):
         return _saved_base_cv_error_to_http(exc)
 
     if isinstance(exc, AccountNotFound):
@@ -696,24 +691,6 @@ def _saved_base_cv_error_to_http(exc: DomainError) -> HTTPException:
             detail={
                 "code": "too_many_saved_base_cvs",
                 "message": "You've reached the limit of saved CVs. Delete one to upload another.",
-            },
-        )
-
-    if isinstance(exc, SavedBaseCvNotCopyable):
-        # S-28. `exc.status` (`uploaded` or `extraction_failed`) is not read: the client's action is
-        # the same for both, and it already knows the status from the list.
-        return HTTPException(status.HTTP_409_CONFLICT, detail=BASE_CV_NOT_EXTRACTED_DETAIL)
-
-    if isinstance(exc, SavedBaseCvFileMissing):
-        # S-32. 410, not 404: the saved CV is right there in the user's list — it is its *file* that
-        # is gone, and the only action that helps is to delete it and upload it again.
-        return HTTPException(
-            status.HTTP_410_GONE,
-            detail={
-                "code": "saved_base_cv_file_gone",
-                "message": (
-                    "The file for this saved CV is missing. Delete it and upload it again."
-                ),
             },
         )
 

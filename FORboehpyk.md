@@ -4281,3 +4281,358 @@ old ones, passing unedited.
 - **2.4** decides the copy route's fate and builds the claim flow. When it inserts runs, the posting
   lock is already there for it, because it can't be turned off.
 - **Still owed by the owner:** Phase 1's gate (OQ-7).
+
+---
+
+# Slice 2.4 — the claim, or: changing the name on the door
+
+First, a postscript to 2.3's "what's next": it shipped. `/verify` passed on 2026-09-30, it merged as
+PR #15 (`0b01537`) and it was released the same evening.
+
+Here is the moment this whole phase was built for. A visitor drops in a CV and a job ad, gets a
+tailored CV and a cover letter, spends twenty minutes polishing them, downloads a PDF and thinks
+*"this is good, I should make an account"*. Before 2.4, making that account did nothing for the
+twenty minutes. The work stayed in the guest workspace, and 24 hours later the purge did its job
+and deleted it. The product punished the exact person it most wanted to keep.
+
+Slice 2.4 fixes that. A guest run that succeeded now shows a small invitation to create an account.
+After registering or signing in, the user sees their guest work **named** ("*cv-2026.pdf* and 2
+tailored applications") and chooses **Keep them in my account** or **Not now**. Keep, and the run
+they were looking at opens again at `/history/<the same id>`, edits and PDF included.
+
+It ships as `feature/workspace-registration-cta`: **2816 backend and 929 frontend tests**, one
+new ADR (0025), five amended ones (0006, 0008, 0010, 0018, 0022), one new route, one route
+**removed**, and **no migration at all**. `/verify` passed on its **first round** on 2026-10-01, and
+it is open as PR #16.
+
+## Why it asks first
+
+The obvious design is automatic: you log in, and whatever is in your browser joins your account.
+It's one fewer click, and it's wrong. A guest cookie identifies a **browser**, not a person.
+
+Picture the library computer. Someone tailors their CV on it at 10:00 and walks off without closing
+anything. You sit down at 11:00, sign in to check your own account, and an automatic claim quietly
+files a stranger's CV, with their name, phone number and work history, into **your** account,
+where it is "kept until you delete it". Nobody did anything wrong, and a pile of someone else's PII
+now lives forever in the wrong place.
+
+So the claim is an **explicit offer that names what it would move**. The offer is also where the
+privacy promise changes, out loud: guest work lives 24 hours, account work stays until you delete
+it, and the user reads that *before* the click, not in a policy page after it. *Not now* leaves the
+work under the 24-hour promise it was made under.
+
+## Changing the name on the door, not moving the furniture
+
+When you buy a house, nobody carries the furniture out and back in. The deed changes hands, and
+everything in the house is suddenly yours where it stands. The claim works the same way.
+
+Since 2.2 every owned table (CVs, postings, runs, exports) has two owner columns and a check that
+exactly one of them is set. A claim is therefore one `UPDATE` per table:
+`SET guest_session_id = NULL, user_id = :me WHERE guest_session_id = :session`. One statement sets
+both columns, so no row is ever ownerless or owned twice, not even for a microsecond inside the
+transaction. **No row is copied, no id changes and no file moves.** A file's storage key is derived
+from the row's id, and the id didn't change, so the PDF on disk is already the right PDF. That's
+why a claimed run can appear in history at its original time, with the same link.
+
+The whole thing is **one transaction**, in this order: lock the guest session row, re-key the four
+tables, drop any working copies (below), **delete the session row**, commit. Then, and only then,
+touch the disk.
+
+Deleting the session inside the same transaction does two jobs at once:
+
+- **The old cookie dies at the same instant the work moves.** ADR-0010 demanded this back in 2.1: if
+  the guest token survived the claim, anyone holding a copy of that cookie could keep reading what
+  is now account data. After the commit the cookie names a row that doesn't exist, so it
+  authenticates nothing. The response clears it too, but correctness doesn't depend on the browser
+  obeying.
+- **It makes the claim safely repeatable.** If the response is lost on a bad train Wi-Fi and the
+  client retries, the second claim finds no session and answers **200 with zeros**. "Already
+  claimed" and "never existed" look the same, on purpose: telling them apart would require keeping
+  a record that pairs a browser session with an account, and that pairing is exactly the record
+  this product chooses not to keep. The log line has the user id and five counts, and never the
+  session id.
+
+One more rule: **the claim route never creates a guest session.** It reads the cookie by hand in the
+handler body, so a request with no cookie, or a bad bearer, mints nothing on its way to a 401. It's
+now the codebase's only *transfer route* (a route that reads both credentials), and an AST scan
+pins that set to exactly this one route.
+
+Two smaller decisions are worth noticing:
+
+- **Caps bound creation, not transfer.** A user with five saved CVs who tailors once as a guest
+  and claims ends up with six. Refusing the claim would make them delete a CV they want in order to
+  keep one they just made. So the account sits above the cap, and the *next* upload says "you're
+  at the limit". Every cap in the product lives where things are *created*, and a claim creates
+  nothing.
+- **Working copies are never claimed.** A working copy (2.2's "use my saved CV as a guest") is by
+  definition a copy of a CV some account already keeps, and possibly *someone else's* account,
+  from earlier in that same library chair. It's deleted with the session and its file unlinked
+  after the commit. If that unlink fails, the file has no row, and the orphan sweep reclaims it
+  like any other.
+
+## The purge learns to ask "did I actually delete that?"
+
+The purge from 1.6 works in three steps: list the expired guest sessions **and their file keys**,
+delete each session's rows, then unlink those files. Collecting the keys first is deliberate,
+because once the rows are gone the keys are unrecoverable.
+
+Until 2.4 nothing could change *whose* those files were between step 1 and step 3. Now a claim can.
+Picture the bin lorry. In the morning the crew writes down which houses have bins out. Between the
+morning list and the afternoon pickup, someone **buys** number 12. If the crew goes by the morning
+list, they empty the new owner's house.
+
+The fix is one honest question. `delete_session` used to return nothing; now it returns **whether
+this call's `DELETE` removed the row**. If it didn't (a claim got there first, or another purge
+did), the purge counts the session as **`sessions_skipped`** and **unlinks none of its files**.
+Those keys are no longer ours to touch. *Unlink only what you deleted.* It's the same idea as 2.3's
+`DELETE … RETURNING`, the shredder that prints a receipt: the deletion itself tells you what you're
+allowed to clean up, instead of a list you made earlier and hope is still true.
+
+The report gained an invariant to match: `deleted + skipped + failed == examined`, checked in the
+value object's constructor, so a report that loses a session can't be built. In practice `skipped`
+should read about zero. It's printed so the race is visible on the rare day it happens, not
+because anyone has to act on it.
+
+## The version number we didn't bump
+
+Since 1.4 every run carries a `version` number for optimistic concurrency. A save says "update this
+run **where version is still 7**", and if someone else saved in the meantime the save finds zero rows
+and knows it lost.
+
+Now imagine a guest clicks *Tailor*, the worker picks up the run and sends it to Gemini, and while
+the model is thinking (six seconds or so) the guest registers and claims. The run's owner changes
+under the worker's feet. The tempting instinct is "the row changed, so bump its version, for
+safety". Then the model answers, the worker saves "where version is still 7", finds version 8, and
+**throws away a result we already paid for**. The user's run fails for no reason they could ever
+understand.
+
+The claim deliberately leaves `version` alone, and that's safe for three reasons. The worker never
+checks *who* owns the run (it loads by id). It never writes an owner column (SQLAlchemy only writes
+the attributes it changed). And the claim never bumps `version`, so the worker's save still
+matches. The run finishes, succeeded and user-owned, and shows up in history.
+
+"Never bump it" is the kind of rule someone "fixes" in two years, so it's **mutation-proven**. The
+test stages the claim *inside* the fake LLM call and reads the run from a third connection at that
+instant to prove it really was `running`. Then we added `version = version + 1` to the claim's
+`UPDATE` by hand and ran it. Red: the worker raised `TailoringRunConcurrentlyModified`. (The spec had
+guessed the outcome would be a quiet `SKIPPED`; it's actually louder than that, and the discrepancy
+is carried to `/verify` rather than papered over.) Then the source was restored byte-for-byte. The
+lesson in the ADR is one sentence: **a version column guards what it is bumped for, and nothing
+else.**
+
+## Expand → contract, for a behaviour
+
+Database people know the expand → contract pattern for schema changes. You add the new column,
+migrate the readers, and only drop the old column once nothing reads it, because during a deploy
+two versions of the app run side by side.
+
+2.4 did the same thing to a **feature**. 2.2's copy route (copy a saved CV into the guest workspace)
+lost its last caller in 2.3, when signed-in users got their own workspace. A route that reads two
+credentials and has no user is pure attack surface. So 2.4 removed everything that **creates** a
+working copy: the route, the use case, `BaseCv.copy_from`, its event, its errors, the client's copy
+mode. It kept everything that **reads** one: the `copied_from_base_cv_id` column, `BaseCv.origin`,
+the *Working copy* badge, and the claim's "skip working copies" clause. Working copies made before
+the release can still exist for up to 24 hours, and the code must still understand them.
+
+It's how a country retires a banknote. First it stops printing it, and for a while shops still
+accept it. Only once none are left in circulation does it stop being legal tender. The contraction
+has a written trigger: the first slice that migrates `intake_base_cv` after 2.4's release plus 24
+hours drops the column and every reader in one go. And it has a baseline: on 2026-10-01 a read-only
+query against production found **0** rows with `copied_from_base_cv_id` set. The banknote never
+really circulated.
+
+## Races, staged on real connections
+
+ADR-0025 has a table with one row per thing that can collide with a claim: the purge, account
+erasure, a guest upload landing mid-claim, a second claim, the worker, the orphan sweep. Each row
+says who waits, who wins and what the loser sees. A table like that is a claim about the database,
+so each row became a test that **stages the race at the moment it names**, on separate real
+connections. Each test then proves the overlap from `pg_stat_activity`, by seeing the other backend
+actually waiting on a lock. A request that is waiting on a lock is a different thing from a request
+that simply hasn't been scheduled yet, and only the first one tests the race.
+
+One race needed new code. A guest tab uploads a CV just after another tab claimed the session. The
+`INSERT`'s foreign key now points at a session row that no longer exists. Before 2.4 that was a 503
+("something broke"). Now the four guest `add`s recognise that specific constraint and answer
+**401 `guest_session_expired`**, and the client's copy for a signed-in user says the work is in
+their history, with a link.
+
+## War stories
+
+### The 404 that was a stale memory
+
+A test claimed a guest's run, then asked the account route for it, and got **404**, against a
+handler that was correct. The cause was the test harness, not the code. The test app serves every
+request on the test's one database session, and the test was still holding the run it had seeded.
+SQLAlchemy keeps one copy of each loaded object per session (the *identity map*), and the claim
+re-keys rows with plain Core `UPDATE`s, which don't touch objects already in memory. So the
+ownership check read the run from memory, where it was still guest-owned, and correctly said
+"not yours".
+
+Production never sees this, because there every request has its own session. The fix was one
+`session.expire_all()` in the test after the claim, with a comment naming the harness as the cause.
+The handler stayed as it was. **When a correct handler fails a test, check whether the test is
+looking at the database or at its own memory of it.**
+
+### The route that wouldn't 404
+
+The spec said that once the copy route is removed, `POST /api/base-cvs/copies` answers **404**. It
+answers **405 Method Not Allowed**. The path still matches the surviving `/api/base-cvs/{id}` route
+(which takes GET, PATCH and DELETE, with `copies` read as an id), so the framework refuses the
+*method* before any handler runs. Getting a 404 would mean writing production code whose only job
+is to disguise an honest answer. The test asserts what the removal actually protects instead: 405,
+and an `Allow` header that doesn't offer POST. The spec is amended at `/verify`. **The spec decides
+the intent, and the framework decides the status code.**
+
+### The stubs that still said `None`
+
+`delete_session` started returning a boolean. Four tests from 1.6 had monkeypatched it with little
+wrappers that called the real method and **threw its answer away**, because in 1.6 there was no
+answer to keep. Once the purge started reading the answer, those wrappers returned `None` and the
+purge treated it as "I didn't delete anything", so a session that really was deleted got counted as
+skipped and the CLI's batch loop stopped early. mypy couldn't help, because a monkeypatch is
+invisible to it. The wrappers were fixed in their own commit, *before* the GREEN that started
+reading the value, so the GREEN commit edited no test. **When a method's return value gains a
+meaning, every stand-in for that method has to learn it too, and nothing will tell you which ones
+those are except a grep.**
+
+### The fake that leaked
+
+A frontend test checked the scenario from the library computer: A claims and signs out, B signs in,
+and B must never see A's data. It failed. The client was fine. The **fake server** scoped two of its
+account lists by who was asking and answered the third (job postings) to anyone. B's own request got
+A's posting from the fake. **A fake needs the same isolation as the thing it pretends to be**,
+otherwise it reports leaks that it caused itself.
+
+### The cast ESLint hated, then needed
+
+One test file needed a TypeScript cast that was unnecessary *before* a later commit made some props
+required and necessary *after* it. The linter rejects the cast in the first commit and the compiler
+demands it in the second, and every commit must be green. The honest move was a one-line,
+commented `eslint-disable` in the first commit, removed in the commit right after the narrowing.
+It's a little ugly, and it keeps each commit true.
+
+### The deploy that did what it said, in the wrong order
+
+The plan relied on one fact: during a release, an old worker and beat never run beside a new API.
+Otherwise a 2.3 purge (which unlinks without asking whether its delete removed the row) could run
+next to a 2.4 claim, and that is precisely the bin-lorry race. Every doc said the worker and beat
+were "stopped for the migration window", and that was true. The release task (T36) was asked to
+**confirm** the fact rather than assume it, so someone actually read `deploy.yml`. It started the
+new API **first** and stopped the worker **second**. For a few seconds, old and new ran side by
+side.
+
+The odds were tiny (beat ticks hourly, and production held zero guest sessions), but timing is
+not a lock. The stop now comes first. One subtlety: a GitHub Actions run uses the workflow file
+**from its own commit**, so this fix protects 2.4's own release and not any earlier one. **"Confirm
+the deploy does X" means reading the script, every time**. A sentence in a doc can be true and still
+hide the order.
+
+### The test that finds the tables by itself
+
+The claim must re-key *every* table that has a `guest_session_id`. If a future slice adds a fifth
+guest-owned table and forgets the claim, that table's rows get cascade-deleted with the session,
+silently, which is the worst kind of data loss. So one test doesn't list the four tables. It asks
+`information_schema` which tables have that column and checks that the claim re-keys each one. A
+fifth table turns it red **by name**. When a rule says "every X", let the test discover the Xs.
+
+### Re-seed before you remove
+
+Five tests used `BaseCv.copy_from` only to *create* a working copy for some other purpose. Deleting
+`copy_from` would have broken them for reasons unrelated to what they test. So a commit first
+switched them to a small seeding helper (a normal upload, then the provenance column set in SQL),
+and only then did the removal commit delete the copy feature, along with the tests about the copy
+itself and nothing else.
+
+### Trust the tree, not the last words
+
+Two of the agents doing the work hit usage limits mid-task. One skipped a task entirely and
+committed the next; another wrote nothing at all. Separately, an orchestration step's `git stash
+push`, a failed commit and a `pop` re-applied an **older** stash entry. Each time the recovery was
+the same: read `git log`, `git status`, `git stash list` and the diff, and believe those over
+anyone's summary of what happened, including the agent's own report. Small commits made each
+recovery a one-line question.
+
+## The numbers
+
+- **The claim**, at every guest cap at once (5 CVs, 10 postings, 20 runs, 40 exports with files):
+  p50 **10.5 ms**, p95 **11.1 ms** over 50 runs, against a 300 ms budget. A claim with nothing to
+  claim: p95 **9.3 ms** (budget 50). Re-keying beats copying by a mile, because nothing on disk
+  moves.
+- **The purge**, on the production image, with 100 expired guests *beside* 100 users who had
+  claimed their work (4,100 files): **1.59 s** wall clock (budget 10 s). It deleted **0** user rows
+  and kept **4,100 of 4,100** user files. The orphan sweep took **1.43 s** and reclaimed **0 of
+  4,100**.
+- **The LLM path didn't change**: the diff of the Gemini adapter and the worker's use case against
+  `main` is empty, so 2.3's measurement of 6.6 s end-to-end still stands and no paid re-measure was
+  owed.
+- **Production, read-only, 2026-10-01**: 0 guest sessions, 0 guest-owned rows, 0 working copies.
+  The claim will meet its first real guest after the release.
+
+## The common thread, a thirteenth time
+
+2.3 said *when two things share a lifetime, let them be one thing*. 2.4 adds the last piece: **when
+ownership changes, change the name, not the thing.** The claim moves no row, no id and no file,
+only the owner column, in one transaction, with the guest key destroyed in the same breath. The
+purge follows the same idea from the other side: it trusts the fact its own `DELETE` hands back,
+not a list it wrote down earlier. The version number guards only what it was bumped for. A retired
+feature stops being *created* before it stops being *read*. In each case the design asks the system
+what is true *now*, at the moment it acts, instead of relying on a belief from a moment ago.
+
+## `/verify`: one round, for the first time in a while
+
+1.4 took four rounds, 1.5 four, 1.6 three, 2.3 three. 2.4 took **one**: zero CRITICAL, zero MAJOR,
+and the suite green three times in a row (2,816 backend, 929 frontend). That isn't luck. Every race
+the plan named had already been staged on two real database connections during `/implement`, and
+every "this is safe" claim had been mutation-proven: break it on purpose, watch the test go red,
+put it back. The reviewer had little left to find because the slice had already gone looking for
+its own bugs.
+
+What it did find was paperwork, and paperwork matters:
+
+- **Four spec rows disagreed with the code, and the code was right each time.** The retired route
+  answers 405, not 404, because its path still matches another route and the web framework rejects
+  the method before any handler runs. A "version bump" mutation loses the paid result as
+  `TailoringRunConcurrentlyModified`, not `SKIPPED`. The failure reason on the wire is
+  `llm_timed_out`. And `no-store` is set on every response the claim *handler* builds; the two it
+  doesn't build carry no account data. The owner amended the spec each time, **on purpose and in
+  writing**. The rule from 1.5 still holds: when the spec and the code disagree, decide which one
+  wins. Don't write a test that quietly agrees with whichever came out.
+- **A recorded red in the wrong drawer.** T32's proof of failure had been pasted under T13 in the
+  task list, and T32 itself said `<paste>`. The real one was in the commit body all along. The
+  task list is a summary; **the commit history is the record**, and the audit reads the history.
+- **A comment with the wrong reason.** The client said a working copy isn't claimed "because the
+  user already owns its source". The real reason is that it's a copy of a CV *some account* keeps,
+  possibly **someone else's** on a shared computer. A comment that gives a harmless reason for a
+  safety rule invites someone to "simplify" the rule away.
+
+Then came the manual walk, with **real Gemini, real money, two runs**. Before uploading anything I
+made a CV with nonsense marker words for the name, the address and the body text, and a filename
+containing `MARKFILENAME`. I used a marker email too. Then I recorded every log line from all four
+containers. Guest upload, paste, tailor, edit, PDF. The CTA stayed hidden while the run worked and
+appeared when it succeeded. *Create an account* brought me straight back to the same run. The
+offer named `MARKFILENAME-cv.docx`, and *Keep* turned `/runs/<id>` into `/history/<id>`. The PDF
+downloaded afterwards hashed **identical** to the file before the claim: same inode, same `0600`.
+Nothing on disk moved, just as the design promised. *Not now* sent nothing, and the offer came back
+on the next visit. A second tab, left on the old guest page, said *"it's in your history"*. Deleting
+the account took every row and every file. Then I grepped **1,797 log lines for every marker: zero
+hits.** The claim's own log line *was* there both times, which proves the grep was looking at live
+logs and not an empty file.
+
+**Lesson:** a privacy check that finds nothing proves something only if it could have found
+something. Plant the marker, and make sure the log you search actually received something during
+the run.
+
+## What's next
+
+- **The CLI's early stop**: the purge loop ends on a batch that only *skipped* sessions. It's safe
+  (nothing is wrongly deleted, and the backlog stays visible on `/health/ready`), and it's a
+  one-line fix (`deleted + skipped == 0`) the next time that file is touched.
+- **The contraction** of `copied_from_base_cv_id` and its readers: at the next `intake_base_cv`
+  migration after 2.4's release + 24 h. Baseline 0 rows.
+- **OQ-12, `__Host-tc_guest`**: a session-fixation exposure from sibling subdomains that has been
+  there since 1.1. It was named in 2.4 and not fixed. Trigger: before any second app on the domain
+  accepts user content, or Phase 3.
+- **2.5** brings an email channel, and with it registration that stops revealing which emails exist.
+- **Still owed by the owner:** Phase 1's gate (OQ-7), and now Phase 2's: *a guest → registered
+  upgrade loses nothing* is proven (AC-34, and the manual walk), ready to be recorded.

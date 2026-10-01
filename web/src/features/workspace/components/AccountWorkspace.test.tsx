@@ -14,7 +14,7 @@ import {
   status,
   stubAccountFetch,
 } from '@/test/accountFetch';
-import { jsonResponse, makePostingSummary, makeRunSummary } from '@/test/fixtures';
+import { jsonResponse, makeExtractedCv, makePostingSummary, makeRunSummary } from '@/test/fixtures';
 import { renderWithRouter } from '@/test/render';
 
 import type { RouteHandler } from '@/test/accountFetch';
@@ -61,6 +61,8 @@ function workspace(overrides: Record<string, RouteHandler> = {}) {
     'GET /api/me/base-cvs': ok({ items: [makeSavedCv()] }),
     'GET /api/me/job-postings': ok({ items: [ACCOUNT_POSTING] }),
     'GET /api/me/tailoring-runs': ok({ items: [], next_cursor: null }),
+    // Slice 2.4: the offer also reads the guest CV list (without the bearer), beside the run list.
+    'GET /api/base-cvs': ok({ items: [] }),
     ...overrides,
   });
 }
@@ -312,10 +314,18 @@ describe('AccountWorkspace — launch (AC-41)', () => {
   });
 });
 
-// --- AC-42 / H-60: guest work is named, not hidden ---------------------------------------------------
+// --- AC-42 / H-60, amended by slice 2.4 (AC-37): guest work is OFFERED, not just named ------------------
+//
+// 2.3's `GuestWorkNotice` said "This browser has N run(s)… deleted within 24 hours" and linked to the
+// newest guest run, because signing in moved nothing. Slice 2.4 makes it an offer: a `role="region"`
+// naming the CVs and runs, with **Keep them in my account**. The three tests below are 2.3's three
+// notice tests, amended in T30's commit (not in T31's) to say the same things about the offer — the
+// guest list is still read WITHOUT the bearer (AC-42), an empty browser still says nothing, and a 401
+// from the guest list is still no offer and no refresh call (H-60). The "N run(s)" sentence and the
+// "Open the most recent one" link are gone with the notice (AC-37 specifies no link).
 
-describe('AccountWorkspace — guest work in this browser (AC-42)', () => {
-  it("names the browser's guest runs and links to the newest, fetched without the bearer", async () => {
+describe('AccountWorkspace — guest work in this browser (AC-42, amended: the offer, AC-37)', () => {
+  it("offers the browser's guest work, fetched without the bearer", async () => {
     const fetch = workspace({
       'GET /api/tailoring-runs': ok({
         items: [
@@ -327,30 +337,46 @@ describe('AccountWorkspace — guest work in this browser (AC-42)', () => {
 
     renderWithRouter('/');
 
+    const offer = await screen.findByRole('region', { name: 'Keep your work' });
+    expect(offer).toHaveTextContent('2 tailored applications');
     expect(
-      await screen.findByText(
-        "This browser has 2 tailoring run(s) from before you signed in. They aren't in your history and are deleted within 24 hours.",
-      ),
+      within(offer).getByRole('button', { name: 'Keep them in my account' }),
     ).toBeInTheDocument();
-    const links = screen.getAllByRole('link');
-    expect(links.some((link) => link.getAttribute('href')?.startsWith('/runs/guest-new'))).toBe(
-      true,
-    );
+    expect(screen.queryByText(/from before you signed in/)).not.toBeInTheDocument();
     const [guestList] = callsTo(fetch, 'GET', '/api/tailoring-runs');
     expect(guestList).toBeDefined();
     expect(guestList?.authorization).toBeNull();
   });
 
-  it('says nothing when the browser holds no guest runs', async () => {
-    workspace();
+  it('offers a guest CV even when the browser holds no guest run', async () => {
+    workspace({
+      'GET /api/base-cvs': ok({
+        items: [makeExtractedCv({ original_filename: 'guest-only.pdf' })],
+      }),
+    });
+
+    renderWithRouter('/');
+
+    expect(await screen.findByRole('region', { name: 'Keep your work' })).toHaveTextContent(
+      'guest-only.pdf',
+    );
+  });
+
+  it('says nothing when the browser holds no guest work', async () => {
+    const fetch = workspace();
 
     renderWithRouter('/');
     await ready();
+    await waitFor(() => {
+      expect(callsTo(fetch, 'GET', '/api/tailoring-runs').length).toBeGreaterThan(0);
+      expect(callsTo(fetch, 'GET', '/api/base-cvs').length).toBeGreaterThan(0);
+    });
 
+    expect(screen.queryByRole('region', { name: 'Keep your work' })).not.toBeInTheDocument();
     expect(screen.queryByText(/from before you signed in/)).not.toBeInTheDocument();
   });
 
-  it('H-60: a 401 from the guest list is no notice and no refresh call', async () => {
+  it('H-60: a 401 from the guest list is no offer and no refresh call', async () => {
     const fetch = workspace({
       'GET /api/tailoring-runs': status(401, 'guest_session_expired'),
     });
@@ -361,7 +387,7 @@ describe('AccountWorkspace — guest work in this browser (AC-42)', () => {
       expect(callsTo(fetch, 'GET', '/api/tailoring-runs').length).toBeGreaterThan(0);
     });
 
-    expect(screen.queryByText(/from before you signed in/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Keep your work' })).not.toBeInTheDocument();
     expect(callsTo(fetch, 'POST', '/api/auth/refresh')).toHaveLength(0);
   });
 });

@@ -242,10 +242,24 @@ class PurgeReport:
 
     `dry_run` is a field rather than something the caller remembers, so a report can never be read as
     a record of deletions that a dry run did not perform (R-13).
+
+    **`sessions_skipped`** (ADR-0018 amendment (a), slice 2.4) counts sessions whose
+    `delete_session` returned `False`: the row was already gone — claimed by a user between the read
+    and the delete, or taken by a concurrent purge — so their collected keys were **not** unlinked.
+    It exists so an operator can see the claim/purge race happen; it should read approximately zero.
+    Like every other count here it has **no default**, even though one would have spared the
+    construction sites an edit: a defaulted count is exactly the confident zero this docstring's
+    first paragraph refuses.
+
+    In a run that deleted, `sessions_deleted + sessions_skipped + sessions_failed == examined`:
+    every candidate examined ends in exactly one of the three. A dry run deletes nothing, so all
+    three are zero. `__post_init__` refuses any other shape, which is what makes a construction site
+    that forgets to count a skip (and so counts it nowhere) unconstructable.
     """
 
     examined: int
     sessions_deleted: int
+    sessions_skipped: int
     sessions_failed: int
     session_purge_failures: tuple[SessionPurgeFailure, ...]
     files_unlinked: int
@@ -276,6 +290,17 @@ class PurgeReport:
             raise InvariantViolated(
                 "files_failed must equal len(file_unlink_failures) "
                 f"({self.files_failed} != {len(self.file_unlink_failures)})"
+            )
+        if self.sessions_skipped < 0:
+            raise InvariantViolated(f"sessions_skipped must be >= 0 ({self.sessions_skipped})")
+        # The partition of `examined` (ADR-0018 amendment (a)). Checked after the two count/detail
+        # invariants above so that a report wrong in both ways names the more specific fault first.
+        accounted = self.sessions_deleted + self.sessions_skipped + self.sessions_failed
+        expected = 0 if self.dry_run else self.examined
+        if accounted != expected:
+            raise InvariantViolated(
+                "sessions_deleted + sessions_skipped + sessions_failed must equal "
+                f"{'0 in a dry run' if self.dry_run else 'examined'} ({accounted} != {expected})"
             )
 
 

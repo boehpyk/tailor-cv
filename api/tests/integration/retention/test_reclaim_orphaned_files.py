@@ -119,7 +119,7 @@ class _RecordingExpiredGuestDataPort:
     async def list_expired(self, as_of: datetime, limit: int) -> Sequence[ExpiringGuestSession]:
         raise AssertionError("not used by this sweep")
 
-    async def delete_session(self, session_id: GuestSessionId) -> None:
+    async def delete_session(self, session_id: GuestSessionId) -> bool:
         raise AssertionError("not used by this sweep")
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:

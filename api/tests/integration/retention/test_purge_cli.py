@@ -360,8 +360,9 @@ async def test_dry_run_performs_no_write_of_any_kind(
     delete_session_calls: list[GuestSessionId] = []
     file_delete_calls: list[FileRef] = []
 
-    async def _spy_delete_session(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> None:
+    async def _spy_delete_session(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> bool:
         delete_session_calls.append(sid)
+        return True
 
     async def _spy_file_delete(self: LocalFileStore, ref: FileRef) -> None:
         file_delete_calls.append(ref)
@@ -543,10 +544,10 @@ async def test_a_refused_delete_session_logs_the_session_failed_line_with_only_t
     marker = "MARKER-do-not-let-this-travel-into-a-log-record"
     original = SqlAlchemyExpiredGuestData.delete_session
 
-    async def _refuse(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> None:
+    async def _refuse(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> bool:
         if sid == session_id:
             raise RuntimeError(marker)
-        await original(self, sid)
+        return await original(self, sid)
 
     monkeypatch.setattr(SqlAlchemyExpiredGuestData, "delete_session", _refuse)
 
@@ -646,10 +647,10 @@ async def test_a_permanently_refused_session_is_logged_once_per_batch_it_reappea
 
     original = SqlAlchemyExpiredGuestData.delete_session
 
-    async def _refuse_one(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> None:
+    async def _refuse_one(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> bool:
         if sid == always_fails:
             raise RuntimeError("a lock timeout nobody predicted")
-        await original(self, sid)
+        return await original(self, sid)
 
     monkeypatch.setattr(SqlAlchemyExpiredGuestData, "delete_session", _refuse_one)
 

@@ -38,9 +38,10 @@ export type CvContentType =
 
 /**
  * How a guest `BaseCv` came to be in this workspace (slice 2.2, additive on the wire): uploaded
- * here, or a **working copy** of one of the signed-in user's saved CVs (`POST
- * /api/base-cvs/copies`). Derived by the server from the row, never stored as a column — the client
- * only reads it, to decide whether the base-CV card shows the Working copy badge (AC-41).
+ * here, or a **working copy** of one of the signed-in user's saved CVs. Slice 2.4 removed the route
+ * that made copies (AC-44), but copies made before it still exist and keep their label. Derived by
+ * the server from the row, never stored as a column — the client only reads it, to decide whether
+ * the base-CV card shows the Working copy badge (AC-41).
  */
 export type BaseCvOrigin = 'uploaded' | 'copied_from_saved';
 

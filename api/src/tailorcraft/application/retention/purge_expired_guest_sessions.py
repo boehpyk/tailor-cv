@@ -7,12 +7,6 @@ shared shape is not shared behaviour. What differs here is the only thing that m
 records a row; **this one deletes rows and unlinks files**, which is irreversible, so every choice
 below is made on the side whose loss is recoverable.
 
-**SKELETON step.** `__init__` is fully written and really stores its arguments, so `qa`'s T9 RED
-tests fail on their *assertions* rather than on a `TypeError` from the constructor or an
-`ImportError` from the module — an `ImportError` red proves a file is absent, not that the assertion
-discriminates (docs/sdlc.md §2). Only `__call__`'s body is deferred; its signature and return type
-are real, and T10 fills in the five steps its docstring specifies.
-
 **This layer does not log** — the house rule `application/export/render_export_job.py`'s module
 comment writes out in full. This context has no event to publish either (ADR-0018 decision 9: a
 `GuestDataPurged` payload would reach every listener and every log line, the one place Constitution
@@ -62,7 +56,7 @@ class PurgeExpiredGuestSessions:
     the composition root passes, not which code path runs — `--dry-run` and `--limit` are
     constructor arguments, so there is exactly one implementation of what a purge *is*.
 
-    Flow (technical plan §2, "Use case 1"; T10 implements it) — see `__call__`.
+    Flow (slice 1.6's technical plan §2, "Use case 1") — see `__call__`.
 
     **Rows first, committed, then files — per session, not per batch** (ADR-0006 §2, ADR-0018
     decision 2). The order is not a preference; it is a choice between two survivors. Unlink first
@@ -129,14 +123,20 @@ class PurgeExpiredGuestSessions:
     `sessions_failed`. A failure that is counted is not a failure that is swallowed. (And
     `except Exception` does not catch `asyncio.CancelledError`, so a cancelled purge still cancels.)
 
-    **Idempotency** (AC-15, R-19). Three separate facts make a retried tick, a redelivered message
-    and two concurrent runs all safe, and none of them is a lock:
+    **Idempotency** (AC-15, R-19). Four separate facts make a retried tick, a redelivered message,
+    two concurrent runs and a concurrent claim all safe, and none of them is a lock taken here:
 
     - a deleted session is no longer expired-and-present, so `list_expired` never returns it twice;
     - a second `DELETE` on an already-deleted session affects zero rows and is a **no-op, not an
       error**, by `ExpiredGuestDataPort.delete_session`'s contract;
     - `FileStorePort.delete` is `missing_ok` by contract, so an already-unlinked key is not an error
-      either.
+      either;
+    - **unlink only what you deleted** (ADR-0018 amendment (a), slice 2.4). `delete_session` answers
+      whether *this call's* `DELETE` removed the row, and a `False` means the file keys collected by
+      `list_expired` no longer belong to anything this run deleted: either another purge got there
+      first, or a claim re-keyed the session's rows to a registered user and deleted the session row
+      itself. In both cases the session is counted `sessions_skipped` and its files are left alone —
+      unlinking them in the second case would delete a registered user's files.
 
     The Redis lock in the composition root is an operational nicety on top of that, which is why it
     is allowed to **fail open** (ADR-0018 decision 6): the cost of an overlap is duplicated work on
@@ -167,7 +167,7 @@ class PurgeExpiredGuestSessions:
         self._dry_run = dry_run
 
     async def __call__(self) -> PurgeReport:
-        """Run one purge and report it in counts. T10 implements these five steps.
+        """Run one purge and report it in counts, in these five steps.
 
         1. ``now = self._clock.now()`` — **one instant for the whole run** (AC-6), never
            `datetime.now()`. The listing, every `expires_at` comparison and the instant the entry
@@ -199,7 +199,11 @@ class PurgeExpiredGuestSessions:
         4. Otherwise, **per candidate, in order** — the order matters twice over, once for the
            batch (oldest first) and once within each candidate (row, then its files):
 
-           - ``await self._data.delete_session(c.session_id)``. On failure: record a
+           - ``if not await self._data.delete_session(c.session_id)``: count it
+             `sessions_skipped`, **unlink none of its files**, and continue (ADR-0018 amendment
+             (a)) — this call removed no row, so the keys collected in step 2 are no longer ours to
+             unlink. A skipped session is neither deleted nor failed.
+           - If `delete_session` raises instead: record a
              `SessionPurgeFailure` (the id, and the exception's **class name** — never its message),
              **do not unlink that session's files**, and continue to the next candidate (R-3,
              AC-13). The entry point logs `retention.session_purge_failed` from that
@@ -258,6 +262,7 @@ class PurgeExpiredGuestSessions:
             return PurgeReport(
                 examined=len(candidates),
                 sessions_deleted=0,
+                sessions_skipped=0,
                 sessions_failed=0,
                 # A dry run performs no `DELETE` and no unlink, so there is nothing that could have
                 # refused one. Empty tuples rather than `None`: "no failures" and "we did not look"
@@ -272,6 +277,7 @@ class PurgeExpiredGuestSessions:
             )
 
         sessions_deleted = 0
+        sessions_skipped = 0
         files_unlinked = 0
         # The two failure counts are **derived from these lists** at the construction site below
         # rather than incremented alongside them. One fact held in two places is one fact that can
@@ -285,7 +291,7 @@ class PurgeExpiredGuestSessions:
         # the row before its files.
         for candidate in candidates:
             try:
-                await self._data.delete_session(candidate.session_id)
+                deleted = await self._data.delete_session(candidate.session_id)
             except Exception as exc:
                 # **This broad catch is not the `except Exception` floor R-15 forbids, and the two
                 # look identical enough that the difference has to be written down here rather than
@@ -325,6 +331,18 @@ class PurgeExpiredGuestSessions:
                 # prevent. The batch continues, because the next candidate is still overdue.
                 continue
 
+            if not deleted:
+                # **Unlink only what you deleted** (ADR-0018 amendment (a), AC-4). This call's
+                # `DELETE` removed no row: another purge deleted the session first, or a claim
+                # committed between `list_expired` and here — re-keying the session's rows to a
+                # registered user and deleting the session row itself. The keys in
+                # `candidate.files` were collected without a lock, so in the claim case they now
+                # name a user's files, and unlinking them would destroy account data. Neither
+                # deleted nor failed: nothing went wrong, there was simply nothing left for this
+                # run to purge.
+                sessions_skipped += 1
+                continue
+
             sessions_deleted += 1
 
             # Only now the files: this session's row is deleted and — by the committing adapter's
@@ -355,6 +373,7 @@ class PurgeExpiredGuestSessions:
         return PurgeReport(
             examined=len(candidates),
             sessions_deleted=sessions_deleted,
+            sessions_skipped=sessions_skipped,
             sessions_failed=len(session_purge_failures),
             session_purge_failures=tuple(session_purge_failures),
             files_unlinked=files_unlinked,

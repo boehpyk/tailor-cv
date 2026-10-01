@@ -8,8 +8,8 @@ which both `Location` and `file_url` are built (`/api/export-jobs` for a guest).
 (`routers/export.py`) is then only its decorators, its credential and a call. The contract each body
 implements is documented on the guest route.
 
-**Nothing here reads a credential**, so the AST scan's transfer-route set stays exactly
-`{POST /api/base-cvs/copies}` (AC-25).
+**Nothing here reads a credential**, so this module adds nothing to the AST scan's transfer-route
+set, which is exactly `{POST /api/me/guest-work/claim}` since 2.4 (AC-25).
 """
 
 from __future__ import annotations

@@ -1955,9 +1955,9 @@ async def test_delete_account_takes_every_row_and_file_it_owns_and_nothing_a_gue
     file) untouched — it is guest data, purged on its own clock, never by account deletion.
 
     Two saved CVs (real files) plus one refresh rotation (so a retired hash genuinely exists to
-    prove the cascade reaches it, not only the login row itself) plus one working copy made through
-    the real copy route (so the guest side of the proof is the product's own transfer route, not a
-    row inserted by hand)."""
+    prove the cascade reaches it, not only the login row itself) plus one guest working copy (a
+    guest upload whose `copied_from_base_cv_id` names the first saved CV: the shape the retired copy
+    route made, still present on the box until the purge takes it)."""
     _assert_test_database(settings)
     token, user_id = await _register_2_2(client, settings)
 
@@ -1969,13 +1969,18 @@ async def test_delete_account_takes_every_row_and_file_it_owns_and_nothing_a_gue
     first_cv_id = await _upload_saved_cv_2_2(client, token, filename="a.txt")
     second_cv_id = await _upload_saved_cv_2_2(client, token, filename="b.txt")
 
-    copied = await client.post(
-        "/api/base-cvs/copies",
-        json={"saved_base_cv_id": first_cv_id},
-        headers=_bearer_delacct(token),
+    # A guest working copy: an ordinary guest upload whose provenance column names the saved CV
+    # (the shape 2.2's retired copy route made; `copied_from_base_cv_id` carries no FK, ADR-0022).
+    uploaded = await client.post(
+        "/api/base-cvs", files={"file": ("copy.txt", b"working copy bytes " * 20, "text/plain")}
     )
-    assert copied.status_code == 201, copied.text
-    working_copy_id = copied.json()["id"]
+    assert uploaded.status_code == 201, uploaded.text
+    working_copy_id = uploaded.json()["id"]
+    await session.execute(
+        text("UPDATE intake_base_cv SET copied_from_base_cv_id = :src WHERE id = :id"),
+        {"src": UUID(first_cv_id), "id": UUID(working_copy_id)},
+    )
+    await session.commit()
 
     row = (
         await session.execute(
@@ -2499,25 +2504,3 @@ async def test_after_deletion_every_me_base_cvs_route_is_401_not_signed_in(
     for name, response in checks:
         assert response.status_code == 401, f"{name}: {response.text}"
         assert _error_code(response) == "not_signed_in", f"{name}: {response.text}"
-
-
-async def test_after_deletion_a_copy_with_the_old_token_is_401_and_mints_no_guest_session(
-    client: AsyncClient, settings: Settings
-) -> None:
-    token, _ = await _register_2_2(client, settings)
-    deleted = await client.post(
-        DELETE_ACCOUNT_URL,
-        json={"password": A_STRONG_PASSWORD},
-        headers=_delete_account_headers(settings, token),
-    )
-    assert deleted.status_code == 204, deleted.text
-
-    response = await client.post(
-        "/api/base-cvs/copies",
-        json={"saved_base_cv_id": str(uuid4())},
-        headers=_bearer_delacct(token),
-    )
-
-    assert response.status_code == 401, response.text
-    assert _error_code(response) == "not_signed_in"
-    assert _cookie_header_named(response, GUEST_COOKIE_NAME) is None

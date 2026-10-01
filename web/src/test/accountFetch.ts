@@ -196,5 +196,8 @@ export function signedInRoutes(user: User): Record<string, RouteHandler> {
   return {
     'GET /api/auth/me': ok(user),
     'GET /api/tailoring-runs': ok({ items: [] }),
+    // Slice 2.4: the claim offer reads the guest CV list beside the run list, on `/` and on a
+    // guest run page. Empty, so a test about something else sees no offer.
+    'GET /api/base-cvs': ok({ items: [] }),
   };
 }

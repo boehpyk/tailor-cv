@@ -29,7 +29,7 @@ from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.attributes import instance_state, set_committed_value
 from sqlalchemy.orm.util import identity_key
 
-from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.errors import GuestSessionNotFound, UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -63,6 +63,11 @@ _BASE_CV_UPLOADED_AT: InstrumentedAttribute[datetime] = cast(
 # Recognised by name, never by message (`violated_constraint`). Renaming the FK in
 # `mapping/intake/base_cv.py` is a breaking change to `add` below.
 _USER_FK: Final = "fk_intake_base_cv_user_id_identity_user"
+# The guest twin (slice 2.4, AC-12): a claim that commits between a guest write's session lookup and
+# its `INSERT` deletes the session row, and this FK refuses. That refusal *is* "the session is gone"
+# — the same fact the cookie resolver reports — so it becomes the same error and the same 401
+# `guest_session_expired`. Name checked against `registry.py`'s convention and `pg_constraint`.
+_GUEST_FK: Final = "fk_intake_base_cv_guest_session_id_identity_guest_session"
 
 
 def _owner_predicate(owner: Owner) -> ColumnElement[bool]:
@@ -122,8 +127,10 @@ class SqlAlchemyBaseCvRepository:
         flush at the root expires every instance in the session inside the flush (the 1.4 lesson),
         while a SAVEPOINT confines the rollback to this one pending `BaseCv`, and the route can still
         answer with a usable session. `add` goes *inside* the `async with`, since `begin_nested()`
-        flushes on entry. Any other refusal — the guest FK, `uq_intake_base_cv_file_key`, a CHECK —
-        is not "the user is gone" and propagates untranslated.
+        flushes on entry. The guest FK is the same shape for the other owner (slice 2.4, AC-12): a
+        claim that deleted the session row first makes it refuse, and that is "the session is gone",
+        `GuestSessionNotFound`. Any other refusal — `uq_intake_base_cv_file_key`, a CHECK —
+        propagates untranslated.
         """
         # Read before the flush: after a nested rollback the pending `cv` is expunged, and the
         # message below must not depend on whether its attributes survived that.
@@ -138,6 +145,12 @@ class SqlAlchemyBaseCvRepository:
                 # `from None`: the listener already reduced the chain to identifiers, and the frame
                 # holds `cv`, whose extracted text is a CV (Constitution §8).
                 raise UserNotFound(f"the owner of {cv_id!r} no longer exists") from None
+            if violated_constraint(exc) == _GUEST_FK:
+                # `from None`: the chain is already reduced to identifiers, and the frame holds
+                # the aggregate (Constitution §8). AC-12, slice 2.4.
+                raise GuestSessionNotFound(
+                    f"the guest session owning {cv_id!r} no longer exists"
+                ) from None
             raise
 
     async def get(self, cv_id: BaseCvId) -> BaseCv:

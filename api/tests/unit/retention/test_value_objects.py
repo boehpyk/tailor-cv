@@ -149,12 +149,16 @@ def test_purge_report_field_set_is_exactly_the_agreed_fields_with_no_defaults() 
     `session_purge_failures` and `file_unlink_failures` — see the amendment recorded under AC-4 in
     `feature-spec.md` for the full argument that AC-4's *intent* ("no field can carry text a user
     wrote, a filename, a storage key or a path") survives even though its original seven-field letter
-    did not."""
+    did not.
+
+    `sessions_skipped` (2.4, ADR-0018 amendment (a)) is the third count of a run's partition and,
+    like the rest, has no default."""
     fields = dataclasses.fields(PurgeReport)
 
     assert tuple(field.name for field in fields) == (
         "examined",
         "sessions_deleted",
+        "sessions_skipped",
         "sessions_failed",
         "session_purge_failures",
         "files_unlinked",
@@ -225,7 +229,8 @@ def test_purge_report_rejects_a_sessions_failed_count_that_disagrees_with_its_de
     with pytest.raises(InvariantViolated) as exc_info:
         PurgeReport(
             examined=1,
-            sessions_deleted=0,
+            sessions_deleted=1,
+            sessions_skipped=0,
             sessions_failed=0,  # disagrees with the one failure recorded below
             session_purge_failures=(SessionPurgeFailure(session_id=_SESSION_ID, error_type="X"),),
             files_unlinked=0,
@@ -247,6 +252,7 @@ def test_purge_report_rejects_a_files_failed_count_that_disagrees_with_its_detai
         PurgeReport(
             examined=1,
             sessions_deleted=1,
+            sessions_skipped=0,
             sessions_failed=0,
             session_purge_failures=(),
             files_unlinked=0,

@@ -15,7 +15,6 @@ from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.errors import ExtractionAlreadyDecided
 from tailorcraft.domain.intake.events import (
-    BaseCvCopied,
     BaseCvDeleted,
     BaseCvExtractionFailed,
     BaseCvTextExtracted,
@@ -66,9 +65,9 @@ class BaseCv(RecordsEvents):
       cannot hold an invalid one because the type that would carry it cannot exist.
     - **I-6** — Exactly one owner, `GuestOwner` or `UserOwner`: `_assign_owner` is the only writer.
     - **I-7** — Only a `UserOwner` CV has a label (`rename`).
-    - **I-8** — `copy_from` takes an `EXTRACTED`, `UserOwner`-owned source and gives the copy its
-      own id and file; the copy is `EXTRACTED` with an equal `ExtractedText`.
-    - **I-9** — A copy never mutates its source.
+    - **I-8**, **I-9** — retired with `copy_from` (slice 2.4, ADR-0022 amendment (d)): nothing
+      creates a working copy any more. Rows made by 2.2/2.3's copy route are still *read* — see
+      `copied_from`.
     - **I-10** — Only a `UserOwner` CV is deleted by a request (`delete`).
 
     **Deliberately not invariants of `BaseCv`:** the 10 MB upload size cap is a boundary/config rule
@@ -179,66 +178,6 @@ class BaseCv(RecordsEvents):
                 content_type=content_type,
                 size_bytes=size_bytes,
                 occurred_at=uploaded_at,
-            )
-        )
-        return cv
-
-    @classmethod
-    def copy_from(
-        cls,
-        source: BaseCv,
-        id: BaseCvId,
-        into: GuestOwner,
-        file: FileRef,
-        at: datetime,
-    ) -> BaseCv:
-        """Build a working copy of a saved base CV in a guest workspace (ADR-0022 §4, I-8, I-9).
-
-        The copy is `EXTRACTED` with an equal `ExtractedText` (no re-extraction), the source's
-        filename, content type and size, its own `id` and `file`, `copied_from = source.id`,
-        `uploaded_at = extracted_at = at` and no label; records `BaseCvCopied`. The source is never
-        mutated.
-
-        Raises `InvariantViolated` if the source is not `UserOwner`-owned or not `EXTRACTED`, if
-        `id == source.id`, or if `file == source.file`. `into` is typed `GuestOwner`, not `Owner`:
-        the only copy 2.2 has is the working copy, and the narrow type says so.
-        """
-        if not isinstance(source.owner, UserOwner):
-            raise InvariantViolated("only a saved (user-owned) base CV can be copied (I-8)")
-        # Read once into a local so the `None` check narrows the type the copy is built from; the
-        # status check alone would leave mypy (and a reader) trusting I-2 without seeing it hold.
-        text = source.extracted_text
-        if source.status is not BaseCvStatus.EXTRACTED or text is None:
-            raise InvariantViolated("only an extracted base CV can be copied (I-8)")
-        if id == source.id:
-            raise InvariantViolated("a copy needs its own id, not the source's (I-8)")
-        if file == source.file:
-            # Sharing the source's key would let the purge of the copy's guest session unlink the
-            # saved CV's bytes (ADR-0022 §2) — the copy owns its own file or it is not a copy.
-            raise InvariantViolated("a copy needs its own file, not the source's (I-8)")
-
-        # Every write below goes to `cv`; `source` is only read (I-9).
-        cv = cls()
-        cv._id = id
-        cv._assign_owner(into)
-        cv._original_filename = source.original_filename
-        cv._content_type = source.content_type
-        cv._size_bytes = source.size_bytes
-        cv._file = file
-        cv._status = BaseCvStatus.EXTRACTED
-        cv._extracted_text = text
-        cv._failure_reason = None
-        cv._uploaded_at = at
-        cv._extracted_at = at
-        cv._label = None
-        cv._copied_from = source.id
-
-        cv.record(
-            BaseCvCopied(
-                base_cv_id=id,
-                source_base_cv_id=source.id,
-                owner=into,
-                occurred_at=at,
             )
         )
         return cv
@@ -363,11 +302,23 @@ class BaseCv(RecordsEvents):
 
     @property
     def copied_from(self) -> BaseCvId | None:
+        """The saved base CV this working copy was copied from, or `None` for an upload.
+
+        **Read-only since slice 2.4** (ADR-0022 amendment (d)): `copy_from` is gone, so only the
+        mapping writes `_copied_from`, rebuilding a working copy that 2.2/2.3's copy route left in
+        the database. **Contraction trigger** (technical plan §0.9): the first slice that migrates
+        `intake_base_cv` after 2.4's release + 24 h — or any time after, on a production read
+        showing zero rows with `copied_from_base_cv_id IS NOT NULL` — drops this property, `origin`,
+        `BaseCvOrigin` and the column in one contract migration.
+        """
         return self._copied_from
 
     @property
     def origin(self) -> BaseCvOrigin:
-        """`COPIED_FROM_SAVED` iff `copied_from is not None` — derived, never stored."""
+        """`COPIED_FROM_SAVED` iff `copied_from is not None` — derived, never stored.
+
+        Kept only until the contraction named on `copied_from` (slice 2.4, technical plan §0.9).
+        """
         if self._copied_from is None:
             return BaseCvOrigin.UPLOADED
         return BaseCvOrigin.COPIED_FROM_SAVED

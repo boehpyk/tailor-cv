@@ -87,5 +87,34 @@ tell the user their work is gone by pretending it never existed.
 - Phase 2.4's claim flow re-keys guest work to a user **before** the session expires, and it must
   invalidate the guest token at the same moment. Otherwise a stale cookie keeps read access to work
   that now belongs to an account.
+  *(Discharged by the amendment below, slice 2.4.)*
 - If guest sessions ever need to be listed or revoked by an operator, the token hash is what they will
   have to work with — the raw token is genuinely gone. That is the intended trade.
+
+## Amendment: 2026-10-01, from the plan of slice 2.4 (`workspace-registration-cta`)
+
+Slice 2.4 builds the claim (ADR-0025). The five decisions above stand. This amendment records how the
+Consequence above was met, and a finding about decision 4 that the claim made visible.
+
+**(a) The token is invalidated at the claim, by deleting what it names.** The claim deletes the
+`identity_guest_session` row **in the same transaction** that re-keys the session's work to the user,
+and its response clears `tc_guest` with the same `Path`, `HttpOnly`, `SameSite` and `Secure` the
+cookie was set with (a browser keeps a cookie whose deletion names different attributes). A stale copy
+of the token — another tab, a retried request, a cookie the clear did not reach — hashes to nothing
+`find_by_token_hash` can find, so it authenticates nothing: the guest routes answer 401
+`guest_session_expired`, exactly as for an expired session. Expiring the row instead of deleting it was
+rejected (ADR-0025): it leaves a token that still resolves, and it takes away the fact the purge needs
+(ADR-0018's amendment). A later guest action in that browser starts a new, empty session under
+decision 5's rule, which is what *"you kept your work in your account"* should look like.
+
+**(b) Finding, recorded and not fixed: `tc_guest` carries no `__Host-` prefix.** Decision 4 makes the
+cookie host-only by omitting `Domain`, which keeps it from being *sent* to a sibling subdomain. It does
+not stop a sibling subdomain on the same registrable domain from *setting* a cookie of the same name
+with a parent `Domain`, and a browser then sends both. An XSS on any such sibling could therefore fix
+a guest session of its choosing on this site — session fixation on the guest workspace, present since
+slice 1.1. The claim does not widen it: the offer names the work it would move, so a user can decline
+work that is not theirs, and a claim ends the fixed session. The fix is the `__Host-` prefix, which
+browsers accept only with `Secure`, `Path=/` and no `Domain`. Because it requires `Secure`, it must be
+checked against the plain-HTTP development origin before it lands. **Decision (owner, 2026-10-01): not
+in slice 2.4.** Owner `api-dev`; **trigger:** before any second application on the same registrable
+domain accepts user content, or Phase 3, whichever comes first.

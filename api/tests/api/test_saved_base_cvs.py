@@ -291,8 +291,7 @@ async def test_delete_has_no_body(client: AsyncClient, settings: Settings) -> No
 async def test_cache_control_no_store_on_every_me_response(
     client: AsyncClient, settings: Settings
 ) -> None:
-    """AC-51. `POST /api/me/base-cvs` (201) joins `GET`/`PATCH` here — the copy route's own 201
-    (`POST /api/base-cvs/copies`) is a different router and is checked in `test_intake.py`."""
+    """AC-51. `POST /api/me/base-cvs` (201) joins `GET`/`PATCH` here."""
     token, _ = await _register(client, settings)
     cv_id = await _upload_extracted_saved_cv(client, token)
 

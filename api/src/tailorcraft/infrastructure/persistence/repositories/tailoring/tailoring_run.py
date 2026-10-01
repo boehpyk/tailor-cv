@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.orm.exc import StaleDataError
 
-from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.errors import GuestSessionNotFound, UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.errors import JobPostingNotFound
@@ -84,6 +84,11 @@ _ACTIVE_STATUSES = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
 # Recognised by name, never by message (`violated_constraint`). Renaming the FK in
 # `mapping/tailoring/tailoring_run.py` is a breaking change to `add` below.
 _USER_FK: Final = "fk_tailoring_run_user_id_identity_user"
+# The guest twin (slice 2.4, AC-12): a claim that commits between a guest write's session lookup and
+# its `INSERT` deletes the session row, and this FK refuses. That refusal *is* "the session is gone"
+# — the same fact the cookie resolver reports — so it becomes the same error and the same 401
+# `guest_session_expired`. Name checked against `registry.py`'s convention and `pg_constraint`.
+_GUEST_FK: Final = "fk_tailoring_run_guest_session_id_identity_guest_session"
 
 
 def _owned_by(owner: Owner) -> ColumnElement[bool]:
@@ -130,7 +135,9 @@ class SqlAlchemyTailoringRunRepository:
         erasure complete (AC-37): no run can land after the erasure collected its keys.
 
         **Inside a SAVEPOINT**, so a refused flush expires only this pending run and not every
-        instance in the session (the 1.4 lesson). Any other refusal propagates untranslated.
+        instance in the session (the 1.4 lesson). The guest FK refusing (a claim deleted the session
+        row first, slice 2.4, AC-12) is "the session is gone", `GuestSessionNotFound`. Any other
+        refusal propagates untranslated.
 
         **Then the run's posting is locked `FOR KEY SHARE`, and a vanished posting is
         `JobPostingNotFound`** (2.3 /verify, reviewer MINOR #1). A cross-table lock in a repository
@@ -188,6 +195,12 @@ class SqlAlchemyTailoringRunRepository:
                 # `from None`: the listener already reduced the chain to identifiers, and the frame
                 # holds `run` (Constitution §8, E-9).
                 raise UserNotFound(f"the owner of {run_id!r} no longer exists") from None
+            if violated_constraint(exc) == _GUEST_FK:
+                # `from None`: the chain is already reduced to identifiers, and the frame holds
+                # the aggregate (Constitution §8). AC-12, slice 2.4.
+                raise GuestSessionNotFound(
+                    f"the guest session owning {run_id!r} no longer exists"
+                ) from None
             raise
 
     async def save(self, run: TailoringRun) -> None:

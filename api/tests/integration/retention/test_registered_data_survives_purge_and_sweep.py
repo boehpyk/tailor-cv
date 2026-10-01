@@ -94,6 +94,7 @@ from tailorcraft.infrastructure.persistence.retention.expired_guest_data import 
 )
 from tailorcraft.infrastructure.retention.data_access import CommittingExpiredGuestDataAdapter
 from tailorcraft.infrastructure.settings import Settings
+from tests.integration.working_copy_support import seed_working_copy
 
 _PASSWORD_HASH = PasswordHash("$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA")
 _WINDOW_HOURS = 24
@@ -426,20 +427,19 @@ async def test_ac16_a_registered_users_saved_cvs_survive_the_orphan_sweep(
 async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_or_file(
     settings: Settings, session: AsyncSession, clock: FixedClock, tmp_path: Path
 ) -> None:
-    """AC-17, S-54. Copy a saved CV into a guest session via the real `BaseCv.copy_from` (I-8), then
+    """AC-17, S-54. Seed a working copy of a saved CV in a guest session (`seed_working_copy`), then
     expire that session and purge: the copy's row and file are gone, the saved CV's row and file are
     untouched, and the two `file_key`s were never equal.
 
     This is the **green, unmutated** proof — the primary claim AC-17 makes about the shipped code.
     The counterfactual immediately below (`test_ac17_mutation_...`) is what shows *why* the two keys
-    being distinct is load-bearing rather than incidental: it constructs the one scenario `BaseCv
-    .copy_from`'s own guard (`file == source.file -> InvariantViolated`) and `uq_intake_base_cv_
-    file_key` jointly make unreachable through ordinary code, and shows the purge would destroy the
+    being distinct is load-bearing rather than incidental: it constructs the one scenario the retired
+    copy's own guard (`file == source.file -> InvariantViolated`, 2.2) and `uq_intake_base_cv_
+    file_key` jointly made unreachable through ordinary code, and shows the purge would destroy the
     saved CV's bytes if it were ever reached.
     """
     _assert_test_database(settings)
     files = LocalFileStore(tmp_path)
-    cvs = SqlAlchemyBaseCvRepository(session)
 
     user_id = await _new_user(session, clock, email="ac17-source@example.com")
     source = await _saved_cv_with_file(
@@ -448,13 +448,10 @@ async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_o
     await session.flush()
 
     copy_session = await _insert_guest_session(session, expires_at=clock.now() + timedelta(hours=1))
-    copy_id = cvs.next_identity()
-    copy_ref = FileRef.for_base_cv(copy_id, source.content_type)
-    assert copy_ref != source.file, "test setup: FileRef.for_base_cv must derive distinct keys"
-    copy = BaseCv.copy_from(
-        source=source, id=copy_id, into=GuestOwner(copy_session), file=copy_ref, at=clock.now()
+    copy = await seed_working_copy(
+        session, GuestOwner(copy_session), clock.now(), copied_from=source.id
     )
-    await cvs.add(copy)
+    assert copy.file != source.file, "test setup: FileRef.for_base_cv must derive distinct keys"
     await files.put(copy.file, b"a working copy, its own bytes")
     await session.flush()
 
@@ -496,14 +493,11 @@ async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_o
 async def test_ac17_mutation_two_base_cvs_sharing_a_file_key_would_let_the_purge_unlink_the_saved_cvs_bytes(
     settings: Settings, session: AsyncSession, clock: FixedClock, tmp_path: Path
 ) -> None:
-    """AC-17's named mutation — "make the copy use `FileRef.for_base_cv(source.id, ...)`" — cannot be
-    reached through `BaseCv.copy_from` at all: that method's own guard refuses `file == source.file`
-    (I-8) before any row is built, so mutating the *use case* to hand it the source's `FileRef` would
-    just turn `CopySavedBaseCvToWorkspace` into a use case that always raises `InvariantViolated`, not
-    into one that creates the dangerous row — there is no version of "make the copy reuse the
-    source's key" reachable by editing application code alone. Reaching the scenario at all needs
-    **both** locks removed: `copy_from`'s guard (bypassed here by building the "copy" through the
-    plain `BaseCv.upload` constructor instead, which carries no such check) and
+    """AC-17's named mutation — "make the copy use `FileRef.for_base_cv(source.id, ...)`" — could not
+    be reached through 2.2's copy at all (the copy is retired in 2.4, AC-33; its guard refused
+    `file == source.file`, I-8, before any row was built), so the scenario is built directly. It needs
+    **both** locks removed: that guard (bypassed here by building the "copy" through the plain
+    `BaseCv.upload` constructor instead, which carries no such check) and
     `uq_intake_base_cv_file_key` (dropped for the width of this one test, inside its own rolled-back
     transaction — never committed, never touching `api/src`, and gone the instant this test's
     connection rolls back at teardown, same as everything else this suite does).
@@ -537,10 +531,8 @@ async def test_ac17_mutation_two_base_cvs_sharing_a_file_key_would_let_the_purge
         session, expires_at=clock.now() + timedelta(hours=1)
     )
     buggy_copy_id = cvs.next_identity()
-    # Bypasses `copy_from`'s I-8 guard entirely by never calling it: `BaseCv.upload` has no rule
-    # against reusing another row's file key, which is exactly why the guard has to live on
-    # `copy_from` and not on `upload` — the aggregate that should never share a key is the one this
-    # constructor is not aware of.
+    # `BaseCv.upload` has no rule against reusing another row's file key (the guard that once refused
+    # it lived on the retired `copy_from`), so the dangerous row is built through it directly.
     buggy_copy = BaseCv.upload(
         id=buggy_copy_id,
         owner=GuestOwner(buggy_session),
