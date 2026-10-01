@@ -736,6 +736,74 @@ async def test_export_job_format_check_constraint_forbids_an_inline_row(
     await rig.session.rollback()
 
 
+# --- AC-11 (slice 2.4): delete_session answers whether THIS delete removed the row ------------------
+#
+# Test-after, so the proof that these discriminate is a mutation, recorded here (T11, 2026-10-01):
+# with `SqlAlchemyExpiredGuestData.delete_session` mutated to return `True` unconditionally, the
+# three "gone" tests below went RED (`assert True is False`) and the "present" one stayed green;
+# with it mutated to return `False` unconditionally, every test here that expects
+# `True` went red (`assert False is True`), and so did the purge's AC-9 test. Source restored byte-exact afterwards.
+# Rows are scoped to ids the test created (a committed, already-expired session may sit in the
+# database), and every read is a direct table query, never the answer under test.
+
+
+async def test_deleting_a_present_session_returns_true_and_removes_the_row(
+    settings: Settings, engine: AsyncEngine, rig: _Rig, clock: FixedClock
+) -> None:
+    _assert_test_database(settings)
+    owner = await rig.new_guest_session(expires_at=clock.now() - timedelta(hours=1))
+
+    answer = await SqlAlchemyExpiredGuestData(rig.session).delete_session(owner)
+    await rig.session.commit()
+
+    assert answer is True
+    async with engine.connect() as conn:
+        assert not await _session_exists(conn, owner)
+
+
+async def test_deleting_an_already_gone_session_returns_false_and_is_not_an_error(
+    settings: Settings, rig: _Rig, clock: FixedClock
+) -> None:
+    _assert_test_database(settings)
+    owner = await rig.new_guest_session(expires_at=clock.now() - timedelta(hours=1))
+    adapter = SqlAlchemyExpiredGuestData(rig.session)
+    assert await adapter.delete_session(owner) is True
+    await rig.session.commit()
+
+    assert await adapter.delete_session(owner) is False
+
+
+async def test_deleting_a_session_that_never_existed_returns_false(
+    settings: Settings, rig: _Rig
+) -> None:
+    _assert_test_database(settings)
+
+    answer = await SqlAlchemyExpiredGuestData(rig.session).delete_session(GuestSessionId(uuid4()))
+
+    assert answer is False
+
+
+async def test_the_committing_wrapper_passes_the_answer_through_for_present_and_gone(
+    settings: Settings, engine: AsyncEngine, rig: _Rig, clock: FixedClock
+) -> None:
+    """The wrapper commits whatever the answer and returns the inner answer unchanged; the first
+    call's row is durably gone on a separate connection by the time it returns."""
+    _assert_test_database(settings)
+    owner = await rig.new_guest_session(expires_at=clock.now() - timedelta(hours=1))
+    wrapper = CommittingExpiredGuestDataAdapter(
+        SqlAlchemyExpiredGuestData(rig.session), rig.session
+    )
+
+    first = await wrapper.delete_session(owner)
+    async with engine.connect() as conn:
+        gone_when_first_returned = not await _session_exists(conn, owner)
+    second = await wrapper.delete_session(owner)
+
+    assert first is True
+    assert gone_when_first_returned
+    assert second is False
+
+
 # --- T32: whole-second fidelity on the heartbeat's `at` ----------------------------------------------
 
 
