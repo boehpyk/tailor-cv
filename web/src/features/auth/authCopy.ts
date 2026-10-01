@@ -62,7 +62,7 @@ export const PASSWORD_HINT = 'At least 12 characters. A few unrelated words make
 export const REGISTER_STORAGE_NOTICE =
   'We store your email address and a one-way hash of your password — never the password itself.';
 export const REGISTER_GUEST_WORK_NOTICE =
-  "Work you did as a guest stays with this browser for 24 hours and is not moved into your account yet. Once you're signed in, what you tailor is saved to your history until you delete it.";
+  "Work you did as a guest stays with this browser for 24 hours. Once you're signed in, we'll offer to keep it in your account; what you keep, and what you tailor from then on, is saved to your history until you delete it.";
 
 /** AC-42 / I-51 — the header and the guard both say this when the boot refresh could not answer. */
 export const AUTH_UNAVAILABLE_NOTE = "Couldn't check whether you're logged in";
