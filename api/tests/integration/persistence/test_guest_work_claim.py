@@ -55,7 +55,6 @@ from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
-from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvLabel
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.files import FileRef
@@ -99,6 +98,7 @@ from tests.integration.owners import (
     succeeded_run,
 )
 from tests.integration.persistence.owner_rows import persist_user
+from tests.integration.working_copy_support import seed_working_copy
 
 _OWNED_TABLES: Final[dict[str, Table]] = {
     "intake_base_cv": base_cv_table,
@@ -166,16 +166,7 @@ async def _seed_session(
     source.rename(BaseCvLabel("Saved original"), at)
     source.release_events()
     await cvs.add(source)
-    copy_id = cvs.next_identity()
-    copy = BaseCv.copy_from(
-        source=source,
-        id=copy_id,
-        into=owner,
-        file=FileRef.for_base_cv(copy_id, source.content_type),
-        at=at,
-    )
-    copy.release_events()
-    await cvs.add(copy)
+    copy = await seed_working_copy(session, owner, at, copied_from=source.id)
     await session.commit()
     return _Seeded(
         guest=guest.id,

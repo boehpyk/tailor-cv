@@ -54,10 +54,8 @@ from tailorcraft.application.tailoring.execute_tailoring_run import (
 )
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
-from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import BaseCvLabel, ExtractedText
 from tailorcraft.domain.posting.value_objects import JobPostingText
-from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.value_objects import (
     TailoredDocumentKind,
     TailoredDraft,
@@ -89,6 +87,7 @@ from tests.integration.owners import (
     queued_run,
     succeeded_run,
 )
+from tests.integration.working_copy_support import seed_working_copy
 
 CLAIM_URL = "/api/me/guest-work/claim"
 _STEP_TIMEOUT = 30.0
@@ -364,16 +363,7 @@ async def test_ac20_a_queued_run_from_a_working_copy_fails_base_cv_deleted_befor
             source.rename(BaseCvLabel("Saved original"), at)
             source.release_events()
             await cvs.add(source)
-            copy_id = cvs.next_identity()
-            copy = BaseCv.copy_from(
-                source=source,
-                id=copy_id,
-                into=guest,
-                file=FileRef.for_base_cv(copy_id, source.content_type),
-                at=at,
-            )
-            copy.release_events()
-            await cvs.add(copy)
+            copy = await seed_working_copy(session, guest, at, copied_from=source.id)
             await session.commit()
         run_id, _ = await _seed_guest_run(world, guest, base_cv_id=copy.id)
 

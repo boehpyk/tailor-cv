@@ -94,6 +94,7 @@ from tailorcraft.infrastructure.persistence.retention.expired_guest_data import 
 )
 from tailorcraft.infrastructure.retention.data_access import CommittingExpiredGuestDataAdapter
 from tailorcraft.infrastructure.settings import Settings
+from tests.integration.working_copy_support import seed_working_copy
 
 _PASSWORD_HASH = PasswordHash("$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA")
 _WINDOW_HOURS = 24
@@ -426,7 +427,7 @@ async def test_ac16_a_registered_users_saved_cvs_survive_the_orphan_sweep(
 async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_or_file(
     settings: Settings, session: AsyncSession, clock: FixedClock, tmp_path: Path
 ) -> None:
-    """AC-17, S-54. Copy a saved CV into a guest session via the real `BaseCv.copy_from` (I-8), then
+    """AC-17, S-54. Seed a working copy of a saved CV in a guest session (`seed_working_copy`), then
     expire that session and purge: the copy's row and file are gone, the saved CV's row and file are
     untouched, and the two `file_key`s were never equal.
 
@@ -439,7 +440,6 @@ async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_o
     """
     _assert_test_database(settings)
     files = LocalFileStore(tmp_path)
-    cvs = SqlAlchemyBaseCvRepository(session)
 
     user_id = await _new_user(session, clock, email="ac17-source@example.com")
     source = await _saved_cv_with_file(
@@ -448,13 +448,10 @@ async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_o
     await session.flush()
 
     copy_session = await _insert_guest_session(session, expires_at=clock.now() + timedelta(hours=1))
-    copy_id = cvs.next_identity()
-    copy_ref = FileRef.for_base_cv(copy_id, source.content_type)
-    assert copy_ref != source.file, "test setup: FileRef.for_base_cv must derive distinct keys"
-    copy = BaseCv.copy_from(
-        source=source, id=copy_id, into=GuestOwner(copy_session), file=copy_ref, at=clock.now()
+    copy = await seed_working_copy(
+        session, GuestOwner(copy_session), clock.now(), copied_from=source.id
     )
-    await cvs.add(copy)
+    assert copy.file != source.file, "test setup: FileRef.for_base_cv must derive distinct keys"
     await files.put(copy.file, b"a working copy, its own bytes")
     await session.flush()
 

@@ -76,6 +76,7 @@ from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
+from tests.integration.working_copy_support import seed_working_copy
 
 REGISTER_URL = "/api/auth/register"
 ME_BASE_CVS_URL = "/api/me/base-cvs"
@@ -496,17 +497,11 @@ async def test_purge_and_orphan_sweep_over_a_saved_cv_and_its_working_copy_never
     )
     await committed_session.commit()
 
-    working_copy_id = cvs.next_identity()
-    working_copy_ref = FileRef.for_base_cv(working_copy_id, CvContentType.PDF)
-    working_copy = BaseCv.copy_from(
-        saved_cv,
-        id=working_copy_id,
-        into=GuestOwner(expired_session_id),
-        file=working_copy_ref,
-        at=now,
+    working_copy = await seed_working_copy(
+        committed_session, GuestOwner(expired_session_id), now, copied_from=saved_cv.id
     )
+    working_copy_ref = working_copy.file
     working_copy_bytes_marker = _sweep_marker("WORKINGCOPYBYTES")
-    await cvs.add(working_copy)
     await committed_session.commit()
     await files.put(working_copy_ref, f"{working_copy_bytes_marker}\ncopy bytes".encode())
 
