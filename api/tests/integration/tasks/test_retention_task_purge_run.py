@@ -170,10 +170,10 @@ async def test_a_refused_delete_session_logs_the_session_failed_line_with_only_i
     marker = "MARKER-do-not-let-this-travel-into-a-log-record"
     original = SqlAlchemyExpiredGuestData.delete_session
 
-    async def _refuse(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> None:
+    async def _refuse(self: SqlAlchemyExpiredGuestData, sid: GuestSessionId) -> bool:
         if sid == session_id:
             raise RuntimeError(marker)
-        await original(self, sid)
+        return await original(self, sid)
 
     monkeypatch.setattr(SqlAlchemyExpiredGuestData, "delete_session", _refuse)
 
