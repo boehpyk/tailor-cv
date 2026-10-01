@@ -70,17 +70,18 @@ function statefulServer(opts: { readonly hangClaim?: boolean } = {}) {
       jsonResponse(200, {
         items: byUser(call) === USER_A && state.claimed ? [savedCv(A_CV)] : [],
       }),
-    'GET /api/me/job-postings': () =>
+    'GET /api/me/job-postings': (call) =>
       jsonResponse(200, {
-        items: state.claimed
-          ? [
-              makePostingSummary({
-                id: 'claimed-posting',
-                title: 'A-ONLY posting',
-                expires_at: null,
-              }),
-            ]
-          : [],
+        items:
+          byUser(call) === USER_A && state.claimed
+            ? [
+                makePostingSummary({
+                  id: 'claimed-posting',
+                  title: 'A-ONLY posting',
+                  expires_at: null,
+                }),
+              ]
+            : [],
       }),
     'GET /api/me/tailoring-runs': (call) =>
       jsonResponse(
