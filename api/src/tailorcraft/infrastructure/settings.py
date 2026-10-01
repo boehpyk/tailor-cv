@@ -538,6 +538,11 @@ class Settings(BaseSettings):
     login_rate_limit_per_ip_per_hour: int = Field(default=20, gt=0)
     login_rate_limit_per_email_per_hour: int = Field(default=10, gt=0)
     register_rate_limit_per_ip_per_hour: int = Field(default=5, gt=0)
+    # Slice 2.4 (ADR-0025, OQ-11): claims of a guest's work per signed-in user per hour. This one
+    # fails OPEN, unlike the three above: a claim costs our own database and nothing else, and it
+    # exists to bound how far repeated claims can push an account past its caps (plan §0.8, R-4),
+    # not to protect money. Bounded both ways so a typo cannot disable it or make it meaningless.
+    guest_work_claim_rate_limit_per_hour: int = Field(default=10, ge=1, le=100)
 
     @model_validator(mode="after")
     def _refuse_to_boot_without_a_key_in_production(self) -> Settings:

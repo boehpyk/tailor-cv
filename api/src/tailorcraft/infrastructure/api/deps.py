@@ -33,6 +33,7 @@ from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
+from tailorcraft.application.identity.claim_guest_work import ClaimGuestWork
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
 from tailorcraft.application.identity.get_current_user import GetCurrentUser
 from tailorcraft.application.identity.log_in import LogIn
@@ -69,6 +70,7 @@ from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
     FailedLoginObserver,
     GuestSessionRepository,
+    GuestWorkClaimPort,
     LoginRepository,
     PasswordHasherPort,
     UserRepository,
@@ -108,6 +110,7 @@ from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
+from tailorcraft.infrastructure.identity.claim_access import CommittingGuestWorkClaim
 from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
 from tailorcraft.infrastructure.identity.reuse_alert import ReuseAlertingEventPublisher
 from tailorcraft.infrastructure.intake.committing import CommittingBaseCvRemoval
@@ -1400,3 +1403,55 @@ def get_list_recent_job_postings(
 ListRecentJobPostingsDep = Annotated[
     ListRecentJobPostingsForUser, Depends(get_list_recent_job_postings)
 ]
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.4 — a guest's work claimed into an account (ADR-0025, technical plan §3 "Wiring").
+# Deferred imports throughout, for the mapper-configuration reason `get_base_cv_repository` documents.
+# --------------------------------------------------------------------------------------------------
+
+
+def get_guest_work_claim(session: SessionDep) -> GuestWorkClaimPort:
+    """Binds `GuestWorkClaimPort` -> `CommittingGuestWorkClaim(SqlAlchemyGuestWorkClaim)`
+    (ADR-0025): `transfer` commits before `ClaimGuestWork` unlinks a dropped working copy's file —
+    `get_account_data`'s rule, "rows first, committed, then files" — and the commit is what releases
+    the session row's `FOR UPDATE` to a waiting purge or second claim."""
+    from tailorcraft.infrastructure.persistence.identity.guest_work_claim import (
+        SqlAlchemyGuestWorkClaim,
+    )
+
+    return CommittingGuestWorkClaim(SqlAlchemyGuestWorkClaim(session), session)
+
+
+GuestWorkClaimDep = Annotated[GuestWorkClaimPort, Depends(get_guest_work_claim)]
+
+
+def get_claim_guest_work(
+    users: UserRepositoryDep,
+    claims: GuestWorkClaimDep,
+    files: FileStoreDep,
+    clock: ClockDep,
+) -> ClaimGuestWork:
+    return ClaimGuestWork(users, claims, files, clock)
+
+
+ClaimGuestWorkDep = Annotated[ClaimGuestWork, Depends(get_claim_guest_work)]
+
+
+def get_claim_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds claims per signed-in user (slice 2.4, OQ-11). **Fails open** — `fail_open=True`.
+
+    The rule from 1.1 (OQ-7), once more: *fail open when the cost is ours and bounded; fail closed
+    when the cost is money or somebody else's infrastructure.* A claim is a handful of `UPDATE`s and
+    one `DELETE` on our own database, bounded by what one 24-hour guest session can hold, and Redis
+    being down must not stop someone who just registered from keeping what they made. It exists to
+    bound repeated claims pushing an account past its caps (plan §0.8, R-4) — not to protect money,
+    which is why it fails open where `get_login_ip_rate_limiter` fails closed.
+
+    User scope only: the route answers to the bearer, so the user id is the principal. The router
+    keys it with `guest_work_claim_rate_limit_per_hour` (10/h by default).
+    """
+    return RedisFixedWindowRateLimiter(redis, namespace="identity:guest-work-claim", fail_open=True)
+
+
+ClaimRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_claim_rate_limiter)]

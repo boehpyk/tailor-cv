@@ -57,10 +57,12 @@ _BOUND_ELSEWHERE: dict[str, str] = {
         "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "
         "behind a route (ADR-0018)."
     ),
-    # Temporary, slice 2.4: the port lands at T7 and is bound in `deps.py` at T17, whose commit
-    # removes this entry (the `stale` assertion below makes leaving it behind a failure).
+    # Temporary, slice 2.4: the port lands at T7 and `deps.py` binds it at T17
+    # (`get_guest_work_claim`), but the API walker reads only what a *route* depends on, so the
+    # binding is visible from T19, whose router depends on `ClaimGuestWorkDep`. T19's commit removes
+    # this entry (the `stale` assertion below makes leaving it behind a failure).
     "GuestWorkClaimPort": (
-        "not bound yet — `deps.py` binds it with `ClaimGuestWork` at slice 2.4's T17 (ADR-0025)."
+        "bound in `deps.py` at T17; no route depends on it until slice 2.4's T19 (ADR-0025)."
     ),
 }
 
