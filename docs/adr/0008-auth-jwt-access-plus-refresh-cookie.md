@@ -148,3 +148,45 @@ does not arise. Four mechanics keep it honest:
   work to the user, will be the second, and it joins the list in the slice that builds it, under the
   same order and the same scan. Any other route that wants both credentials is a design question for
   an ADR, not an edit to the list.
+  *(Revised in amendment (g) below: the copy is retired, the claim is the only exception, and the
+  order rule is restated so it reads the same in both directions.)*
+
+## Amendment: 2026-10-01, from the plan of slice 2.4 (`workspace-registration-cta`)
+
+Slice 2.4 builds the claim (ADR-0025) — the second transfer route (f) named — and retires the first.
+The two are mirror images, and (f)'s order rule was written for only one of them:
+
+| | Source (read) | Destination (written) | May mint a guest session? |
+|---|---|---|---|
+| Copy (2.2, retired) | a saved CV — **bearer** | the guest workspace — **cookie** | yes: the destination may not exist yet |
+| Claim (2.4) | the guest's work — **cookie** | the account — **bearer** | **never**: no session means nothing to move |
+
+**(g) The exception set is exactly `{POST /api/me/guest-work/claim}`, and the order rule is stated by
+its reason, not by its direction.**
+
+- **The set.** The copy route is removed in the same slice (ADR-0022 (d)): since 2.3 it has no
+  first-party caller, and a transfer route with no caller is attack surface with no user. The claim
+  joins. The walker plus AST scan pins the new set, and its watched helpers gain `clear_guest_cookie`,
+  because the claim also *writes* the guest cookie. The set changes in its own red-then-green commits,
+  never together with the code.
+- **The order.** (f)'s *"the source is authorized first"* was true of the copy only because the
+  source happened to be the bearer's half. Its **reason** was that a `Depends` that mutates runs even
+  on a 422. Restated so it holds both ways: **the bearer is a dependency** (`require_user` is
+  stateless, mutates nothing, and runs first, so a bad bearer is a 401 before the guest session table
+  is touched); **the cookie is read in the handler body**, through `read_guest_token` — never through
+  `require_guest_session`, whose 401 would break the claim's idempotency, and never through
+  `resolve_or_start_guest_session`; and **the destination (the user) is resolved before the source is
+  looked at**, so an erased user is a 401 even when the cookie names nothing.
+- **A transfer route whose source is the guest never mints.** The claim has no body and no
+  parameters, so *"a 422 mints nothing"* is vacuous for it; the stronger invariant is pinned instead:
+  no response of the route sets a non-empty `tc_guest`. Its error responses neither clear nor set the
+  cookie; a 200 clears it iff the request carried one.
+- **Idempotent, in effect.** The Consequence above says the claiming endpoint *"must be idempotent"*.
+  It is, without an idempotency key: the claim deletes the guest session it consumes (ADR-0025
+  decision 4), so a retry presents a cookie that names nothing and receives **200 with zero counts**
+  — the same answer as a browser with no guest work.
+- **CSRF** is (f)'s reasoning unchanged: the bearer is a header only our page's script holds. The
+  route lives under `/api/me/`, not `/api/auth/`, so the refresh cookie (`Path=/api/auth`) never
+  travels with it and ADR-0021's `Origin` check does not apply.
+
+A third route that wants both credentials is still a design question for an ADR, not a list edit.

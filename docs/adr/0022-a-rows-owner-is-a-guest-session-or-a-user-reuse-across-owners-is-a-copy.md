@@ -119,6 +119,7 @@ for the wire's `origin` field and for slice 2.4's claim.
   `copied_from_base_cv_id` lets 2.4 drop or keep them, and 2.2 deliberately adds **no** "copied ⇒
   guest-owned" CHECK that would make either choice illegal. The claim is the second transfer route
   under ADR-0008 (f).
+  *(Decided in amendment (d) below: working copies are never claimed.)*
 - **No file ever moves.** Keys derive from object ids (ADR-0011 §1); a claim changes an owner column,
   never a key.
 - **The copy is not idempotent.** Two clicks make two working copies. The client guards the click; a
@@ -170,4 +171,47 @@ the *Working copy* badge and ADR-0008 (f)'s exception are **unchanged**: an open
 call it while the deploy runs two versions, existing working copies live out their 24 hours, and
 slice 2.4 decides what a working copy *is* once a guest's work can become the user's — which the
 Consequence above already hands it. Removing the route in 2.3 would make that decision early and
-half. **Trigger, carried by 2.4:** remove the copy route, or give it a caller.
+half. **Trigger, carried by 2.4:** remove the copy route, or give it a caller. *(Discharged by
+amendment (d) below: removed.)*
+
+## Amendment: 2026-10-01, from the plan of slice 2.4 (`workspace-registration-cta`)
+
+Slice 2.4 builds the claim (ADR-0025), and the Consequence above and amendment (c) hand it two
+questions: what a working copy *is* once a guest's work can become a user's, and whether the copy route
+is removed or given a caller. Decisions 1–3 and 5 stand, and so do (a) and (b): *an ownership graph
+never crosses owners* is exactly what the claim preserves by moving a session's rows together.
+
+**(d) The copy route is removed; a working copy is never claimed; the readers stay until no working
+copy can exist.**
+
+- **The route is removed, in expand → contract terms, stage 1, by behaviour.** Since 2.3 the account
+  workspace references saved CVs directly, so the copy has no first-party caller and no screen on which
+  one would make sense: a signed-in user's `/` is the account workspace, and a signed-out user has no
+  bearer. A transfer route with no caller is attack surface with no user. What **creates** working
+  copies goes now: `POST /api/base-cvs/copies` and its request schema, `CopySavedBaseCvToWorkspace` and
+  its wiring, `BaseCv.copy_from` (decision 4's named constructor), the `BaseCvCopied` event, the two
+  errors only the copy raised and their mappings, ADR-0008 (f)'s exception for it, and the client's
+  copy mode. The copy's tests go with the code they test, in the removal commit, named in its body.
+- **What reads working copies stays**, because rows created before the release live out their 24
+  hours: `copied_from_base_cv_id` (decision 6's column, its mapping and `BaseCv.copied_from`),
+  `BaseCv.origin` and `BaseCvOrigin`, the wire's `origin` field, the *Working copy* badge, and the
+  claim's `copied_from_base_cv_id IS NULL` clause. The deploy window is safe in both directions: a 2.3
+  client never calls the route, and the column the old process maps is still there.
+- **A working copy is never claimed.** It is by definition a copy of a CV some account already keeps.
+  If the claimant owns the source, nothing is lost — it is in their saved list. If **another account**
+  owns it (a user copied it into this browser, signed out, and someone else signs in), claiming it
+  would move that account's CV into this one, kept until deleted. If the source was deleted, its owner
+  chose that, and a claim must not undo the choice. One rule covers all three: the claim leaves working
+  copies guest-owned and deletes them with the session — `DELETE … RETURNING file_key` in the claim's
+  transaction, the files unlinked after the commit. Runs made from a working copy **are** claimed and
+  dangle, and history derives *"CV deleted"* (ADR-0023 decision 4) with no new code. Re-pointing such a
+  run to its source when the claimant owns it was considered and rejected: machinery for a row that,
+  after 2.3's release, only a non-first-party client could have created.
+- **Contraction trigger.** The first slice that migrates `intake_base_cv` after 2.4's release plus 24
+  hours — or any time after that, on a production read showing **zero** rows with
+  `copied_from_base_cv_id IS NOT NULL` — drops the column, `copied_from`, `origin`, `BaseCvOrigin`, the
+  badge and the claim's clause, in one contract migration. Its downgrade need refuse nothing, since the
+  column would be all-`NULL`. The trigger is also carried in the roadmap and in the domain's docstring.
+
+Decision 6's *"it exists for the wire's `origin` field and for slice 2.4's claim"* is thereby used
+once, as an exclusion, and then retired with its readers.
