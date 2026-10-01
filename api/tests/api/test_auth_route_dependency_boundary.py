@@ -191,7 +191,9 @@ async def _register_and_get_access_token(client: AsyncClient, settings: Settings
 # depend on `require_user` **and** touch `tc_guest` by either mechanism — to exactly one route.
 # ---------------------------------------------------------------------------------------------
 
-_GUEST_TOUCHING_CALL_NAMES = frozenset({"resolve_or_start_guest_session", "read_guest_token"})
+_GUEST_TOUCHING_CALL_NAMES = frozenset(
+    {"resolve_or_start_guest_session", "read_guest_token", "clear_guest_cookie"}
+)
 _ROUTERS_PACKAGE_PREFIX = "tailorcraft.infrastructure.api.routers"
 
 
@@ -367,11 +369,15 @@ def test_the_transitive_closure_catches_a_helper_indirected_guest_touching_call(
     assert "unrelated" not in touching
 
 
-def test_ac24_transfer_route_exception_set_is_exactly_the_copy_route(app: FastAPI) -> None:
-    """AC-24. The set of routes that depend on `require_user` **and** touch `tc_guest` — via
+def test_ac24_ac32_transfer_route_exception_set_is_exactly_the_two_transfer_routes(
+    app: FastAPI,
+) -> None:
+    """AC-24 (2.2), amended by AC-32 (2.4: the claim is the reverse transfer route). The set of
+    routes that depend on `require_user` **and** touch `tc_guest` — via
     `require_guest_session`/`resolve_or_start_guest_session` in the dependency graph, **or** a
-    direct call the AST scan finds — must be exactly `{POST /api/base-cvs/copies}`. A route added
-    with both, by either mechanism, turns this red."""
+    direct call the AST scan finds — must be exactly `{POST /api/base-cvs/copies,
+    POST /api/me/guest-work/claim}` (the copy leaves the set in the slice's removal task).
+    A route added with both, by either mechanism, turns this red."""
     api_routes = list(_iter_api_routes(app.routes))
     assert len(api_routes) > 5, "the walker found suspiciously few routes — is it even recursing?"
 
@@ -386,7 +392,7 @@ def test_ac24_transfer_route_exception_set_is_exactly_the_copy_route(app: FastAP
             for method in sorted(route.methods or ()):
                 violations.add(f"{method} {route.path}")
 
-    assert violations == {"POST /api/base-cvs/copies"}, (
+    assert violations == {"POST /api/base-cvs/copies", "POST /api/me/guest-work/claim"}, (
         f"the set of routes reading both credentials must be exactly the named transfer route "
         f"(ADR-0008 (f)); found: {sorted(violations)}"
     )
@@ -409,4 +415,17 @@ def test_ac24_r10_the_guest_cookie_name_is_referenced_only_inside_guest_session_
     assert offending == {}, (
         f"COOKIE_NAME (the tc_guest constant) must be referenced only inside guest_session.py's "
         f"own read_guest_token/set_guest_cookie — found a direct reference in: {sorted(offending)}"
+    )
+
+
+def test_ac32_the_ast_scan_actually_finds_the_claim_routes_direct_calls() -> None:
+    """AC-32's second positive control (slice 2.4): the claim is a transfer route read in the other
+    direction — the bearer is a dependency, the cookie is read and cleared **in the body**. The scan
+    must be able to see that body, or the exception-set test above is satisfied by a scan that cannot
+    see the new route at all (the skeleton calls nothing, so it is invisible until T22)."""
+    touching = _guest_touching_functions("tailorcraft.infrastructure.api.routers.me_guest_work")
+    assert "claim_guest_work" in touching, (
+        f"the AST scan found no guest-cookie call in routers/me_guest_work.py's claim_guest_work — "
+        f"it found: {touching!r}. The handler must call read_guest_token / clear_guest_cookie "
+        f"directly (ADR-0008 amendment (g): read in the body, never through a Depends)."
     )
