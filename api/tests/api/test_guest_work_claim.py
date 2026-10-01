@@ -619,6 +619,13 @@ async def test_ac31_claimed_ids_are_served_on_the_me_routes_with_null_expiry_and
     guest, entry, old_token = await _guest_with_work(client, session, settings, clock)
     job = entry.jobs[0]
     assert (await client.post(CLAIM_URL, headers=account.headers)).status_code == 200
+    # Fixture artifact, not product behaviour: the `app` fixture serves every request on this
+    # test's one `AsyncSession`, and `entry` holds the seeded aggregates strongly, so they stay in
+    # its identity map with their *guest* owner. The claim re-keys rows with Core `UPDATE`s, which
+    # never touch loaded ORM state, and a later `select()` hitting the identity map does not
+    # overwrite loaded attributes. A real client's next request gets a fresh session; this restores
+    # that premise for the reads below.
+    session.expire_all()
 
     cvs = await client.get(ME_BASE_CVS, headers=account.headers)
     assert cvs.status_code == 200, cvs.text
