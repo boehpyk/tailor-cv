@@ -66,7 +66,8 @@ also the registration prompt the PRD asks for.
   file is a broken app with a green restore.
 - Phase 2's guest→registered **claim flow** is constrained by this design: registering must re-key the
   work to the user before the session expires, and that path needs its own test. Design it when
-  Phase 2.4 is planned, not when a user complains.
+  Phase 2.4 is planned, not when a user complains. *(Designed in amendment (e) below and ADR-0025: not on
+  registering, but on an explicit offer after it.)*
 - GDPR erasure for registered users is a *different* mechanism and is not built here. Named so nobody
   assumes the purge covers it. *(Discharged by the amendment below: account erasure, slice 2.2.)*
 
@@ -157,3 +158,29 @@ amendment adds a third kind of saved data and says how each deletion reaches it.
   the user row now also serializes run, posting and export `INSERT`s, since each foreign-key check
   takes `FOR KEY SHARE` on that row — so a racing request waits, then answers "not signed in", and
   any file it already wrote is an orphan for the sweep.
+
+## Amendment: 2026-10-01, from the plan of slice 2.4 (`workspace-registration-cta`)
+
+Slice 2.4 lets a signed-in user keep the work they did as a guest (ADR-0025). The promises of (a) and
+(d) stand; this amendment adds a fourth way into *kept until deleted*, and says how the change is
+stated.
+
+**(e) Claimed guest work is kept until the user deletes it, and the offer says so before the click.**
+
+- **What changes.** When a user accepts the claim, the guest session's base CVs, job postings,
+  tailoring runs and export jobs become user-owned in one transaction, and from then on they are
+  account data under (a) and (d): spared by the purge **by schema** (no guest session), spared by the
+  orphan sweep's owner-blind cross-check, deletable one history entry or one saved CV at a time, and
+  erased with the account. Their files do not move; keys derive from ids (ADR-0011 §1). Working
+  copies are the exception: they are never claimed and are deleted with the session (ADR-0022 (d)), in
+  §2's order — rows committed, then files, unlink failures returned and left to the orphan sweep.
+- **It is a change to the privacy promise, stated where it happens** (§5's rule). Data the user was
+  told would be *"deleted within 24 hours"* becomes *"saved until you delete it"*. The offer names the
+  work — CV filenames and the number of tailored applications — and states both outcomes before either
+  button: keep it and it is saved until deleted, otherwise it is deleted within 24 hours. A claim is
+  never automatic, so nothing becomes kept without that sentence having been shown.
+- **Declined work keeps the 24-hour promise.** *Not now* changes nothing on the server. Work the user
+  declines, or never signs in for, is the purge's, as in §1.
+- **The guest session ends with the claim.** Its row is deleted in the claim's transaction and its
+  cookie cleared (ADR-0010's amendment), so nothing is left for the purge to find; the purge's own
+  rule for a session a claim got to first is in ADR-0018's amendment.
