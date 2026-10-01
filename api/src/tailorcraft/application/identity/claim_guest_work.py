@@ -27,6 +27,7 @@ precedent for inputs with no rules of their own to hold.
 
 from __future__ import annotations
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
 from tailorcraft.domain.identity.claim import GuestWorkClaimReport
 from tailorcraft.domain.identity.ports import GuestWorkClaimPort, UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
@@ -49,9 +50,10 @@ class ClaimGuestWork:
     5. ``claimed = await claims.transfer(session.id, user_id)`` — the rows are durable on return.
        A `UserNotFound` from it (the user erased between steps 1 and 5) propagates, and nothing is
        unlinked.
-    6. For each ``ref`` in ``claimed.files_to_unlink``: ``await files.delete(ref)``. A `FileStoreUnavailable`
-       (the failure `FileStorePort.delete` documents) is recorded by its **type name** (never its message, which can quote a path) and
-       the loop continues.
+    6. For each ``ref`` in ``claimed.files_to_unlink``: ``await files.delete(ref)``. Any
+       `Exception` (`FileStoreUnavailable` is the one `LocalFileStore` documents, but the floor is
+       wider on purpose; see the loop) is recorded by its **type name** (never its message, which
+       can quote a path) and the loop continues.
     7. Return ``GuestWorkClaimReport.of(claimed, failures)``.
     """
 
@@ -68,4 +70,28 @@ class ClaimGuestWork:
         self._clock = clock
 
     async def __call__(self, user_id: UserId, token_hash: str | None) -> GuestWorkClaimReport:
-        raise NotImplementedError
+        await resolve_existing_user(self._users, user_id)
+        if token_hash is None:
+            return GuestWorkClaimReport.nothing()
+
+        session = await self._claims.lock_session(token_hash)
+        if session is None or session.is_expired(self._clock.now()):
+            return GuestWorkClaimReport.nothing()
+
+        claimed = await self._claims.transfer(session.id, user_id)
+
+        failures: list[str] = []
+        for ref in claimed.files_to_unlink:
+            try:
+                await self._files.delete(ref)
+            except Exception as exc:
+                # A floor, not `except FileStoreUnavailable`. `FileStorePort.delete` is a Protocol
+                # with no exception list in its signature, so naming the one failure today's adapter
+                # translates to is a bet on every future adapter; and C-31's promise is "returned,
+                # never raised" because the rows are already committed: an escaping exception would
+                # turn a claim that happened into a 500 and skip the remaining unlinks.
+                # `EraseAccount` draws the same line for the same reason. `Exception`, never
+                # `BaseException`, so a cancellation still cancels. Only the class name is kept.
+                failures.append(type(exc).__name__)
+
+        return GuestWorkClaimReport.of(claimed, failures)
