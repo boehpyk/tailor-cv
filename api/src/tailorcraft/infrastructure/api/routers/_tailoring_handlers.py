@@ -7,8 +7,8 @@ is keyed on (`"session"` and the session id for a guest) — and, where a `Locat
 collection's URL prefix. The guest router (`routers/tailoring.py`) is then only its decorators, its
 credential and a call. The contract each body implements is documented on the guest route.
 
-**Nothing here reads a credential**, so the AST scan's transfer-route set stays exactly
-`{POST /api/base-cvs/copies}` (AC-25).
+**Nothing here reads a credential**, so this module adds nothing to the AST scan's transfer-route
+set, which is exactly `{POST /api/me/guest-work/claim}` since 2.4 (AC-25).
 
 **What this module logs, and what it never logs** (AC-21, Constitution §8): ids, scopes, namespaces
 and exception *type names*. Never a CV, a posting or a tailored document. **Never a client IP**: it

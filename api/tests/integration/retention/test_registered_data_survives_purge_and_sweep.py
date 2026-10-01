@@ -433,9 +433,9 @@ async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_o
 
     This is the **green, unmutated** proof — the primary claim AC-17 makes about the shipped code.
     The counterfactual immediately below (`test_ac17_mutation_...`) is what shows *why* the two keys
-    being distinct is load-bearing rather than incidental: it constructs the one scenario `BaseCv
-    .copy_from`'s own guard (`file == source.file -> InvariantViolated`) and `uq_intake_base_cv_
-    file_key` jointly make unreachable through ordinary code, and shows the purge would destroy the
+    being distinct is load-bearing rather than incidental: it constructs the one scenario the retired
+    copy's own guard (`file == source.file -> InvariantViolated`, 2.2) and `uq_intake_base_cv_
+    file_key` jointly made unreachable through ordinary code, and shows the purge would destroy the
     saved CV's bytes if it were ever reached.
     """
     _assert_test_database(settings)
@@ -493,14 +493,11 @@ async def test_ac17_a_working_copys_expiry_never_touches_its_saved_sources_row_o
 async def test_ac17_mutation_two_base_cvs_sharing_a_file_key_would_let_the_purge_unlink_the_saved_cvs_bytes(
     settings: Settings, session: AsyncSession, clock: FixedClock, tmp_path: Path
 ) -> None:
-    """AC-17's named mutation — "make the copy use `FileRef.for_base_cv(source.id, ...)`" — cannot be
-    reached through `BaseCv.copy_from` at all: that method's own guard refuses `file == source.file`
-    (I-8) before any row is built, so mutating the *use case* to hand it the source's `FileRef` would
-    just turn `CopySavedBaseCvToWorkspace` into a use case that always raises `InvariantViolated`, not
-    into one that creates the dangerous row — there is no version of "make the copy reuse the
-    source's key" reachable by editing application code alone. Reaching the scenario at all needs
-    **both** locks removed: `copy_from`'s guard (bypassed here by building the "copy" through the
-    plain `BaseCv.upload` constructor instead, which carries no such check) and
+    """AC-17's named mutation — "make the copy use `FileRef.for_base_cv(source.id, ...)`" — could not
+    be reached through 2.2's copy at all (the copy is retired in 2.4, AC-33; its guard refused
+    `file == source.file`, I-8, before any row was built), so the scenario is built directly. It needs
+    **both** locks removed: that guard (bypassed here by building the "copy" through the plain
+    `BaseCv.upload` constructor instead, which carries no such check) and
     `uq_intake_base_cv_file_key` (dropped for the width of this one test, inside its own rolled-back
     transaction — never committed, never touching `api/src`, and gone the instant this test's
     connection rolls back at teardown, same as everything else this suite does).
@@ -534,10 +531,8 @@ async def test_ac17_mutation_two_base_cvs_sharing_a_file_key_would_let_the_purge
         session, expires_at=clock.now() + timedelta(hours=1)
     )
     buggy_copy_id = cvs.next_identity()
-    # Bypasses `copy_from`'s I-8 guard entirely by never calling it: `BaseCv.upload` has no rule
-    # against reusing another row's file key, which is exactly why the guard has to live on
-    # `copy_from` and not on `upload` — the aggregate that should never share a key is the one this
-    # constructor is not aware of.
+    # `BaseCv.upload` has no rule against reusing another row's file key (the guard that once refused
+    # it lived on the retired `copy_from`), so the dangerous row is built through it directly.
     buggy_copy = BaseCv.upload(
         id=buggy_copy_id,
         owner=GuestOwner(buggy_session),

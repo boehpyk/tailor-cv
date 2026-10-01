@@ -7,7 +7,7 @@ test written that way would have no source of truth independent of the code it i
 **Slice 2.2 additions (AC-2...AC-5) hit a specific wall, named once here rather than at every test
 that meets it.** `_assign_owner`'s `UserOwner` arm is `raise NotImplementedError` unconditionally
 (T4's skeleton), so **no `UserOwner`-owned `BaseCv` can be constructed at all until T6 lands** — not
-even as a precondition for a test of `copy_from`, `rename` or `delete`. Every test below that needs a
+even as a precondition for a test of `rename` or `delete`. Every test below that needs a
 saved (user-owned) source CV therefore goes red inside its own setup helper (`_saved_source`), on
 `NotImplementedError`, before it ever reaches the method under test. That is still a legitimate red
 per sdlc.md §2 ("or on the skeleton's `NotImplementedError` where the behaviour is unimplemented") —
@@ -28,11 +28,10 @@ from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import ExtractionAlreadyDecided
-from tailorcraft.domain.intake.events import BaseCvCopied, BaseCvDeleted
+from tailorcraft.domain.intake.events import BaseCvDeleted
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
     BaseCvLabel,
-    BaseCvOrigin,
     BaseCvStatus,
     CvContentType,
     ExtractedText,
@@ -50,8 +49,6 @@ _UPLOADED_AT = datetime(2026, 9, 7, 10, 0, 0, tzinfo=UTC)
 
 _USER_ID = UserId(value=UUID("22222222-2222-7222-8222-222222222222"))
 _SOURCE_ID = BaseCvId(value=UUID("33333333-3333-7333-8333-333333333333"))
-_TARGET_SESSION_ID = GuestSessionId(value=UUID("44444444-4444-7444-8444-444444444444"))
-_COPY_ID = BaseCvId(value=UUID("55555555-5555-7555-8555-555555555555"))
 
 
 def _upload(*, size_bytes: int = 1024, at: datetime = _UPLOADED_AT) -> BaseCv:
@@ -83,8 +80,7 @@ def _saved_uploaded(*, at: datetime = _UPLOADED_AT) -> BaseCv:
 
 
 def _saved_source(*, at: datetime = _UPLOADED_AT, text: str = "a" * 250) -> BaseCv:
-    """A saved base CV: `UserOwner`-owned and `EXTRACTED` — the only kind `copy_from` accepts as a
-    source. Blocked today the same way `_saved_uploaded` is."""
+    """A saved base CV: `UserOwner`-owned and `EXTRACTED`."""
     cv = _saved_uploaded(at=at)
     cv.mark_extracted(ExtractedText(text), at)
     cv.release_events()
@@ -259,183 +255,6 @@ def _owner_kind(cv: BaseCv) -> str:
 
 def test_owner_property_dispatches_exhaustively_for_a_guest_owned_cv() -> None:
     assert _owner_kind(_upload()) == "guest"
-
-
-# ====================================================================================================
-# AC-3: `copy_from` — refusals, the field-by-field result, the untouched source, `BaseCvCopied`.
-# ====================================================================================================
-
-
-def test_copy_from_refuses_a_guest_owned_source() -> None:
-    """I-8: only a saved (`UserOwner`-owned) CV can be copied. A guest-owned source is constructible
-    today, so this red sits directly on `copy_from`'s own `NotImplementedError`, not on setup."""
-    source = _upload()
-
-    with pytest.raises(InvariantViolated):
-        BaseCv.copy_from(
-            source=source,
-            id=_COPY_ID,
-            into=GuestOwner(_TARGET_SESSION_ID),
-            file=FileRef.for_base_cv(_COPY_ID, CvContentType.PDF),
-            at=_UPLOADED_AT,
-        )
-
-
-def test_copy_from_refuses_a_source_not_yet_extracted() -> None:
-    """I-8: `status == UPLOADED` is not `EXTRACTED`."""
-    source = _saved_uploaded()
-
-    with pytest.raises(InvariantViolated):
-        BaseCv.copy_from(
-            source=source,
-            id=_COPY_ID,
-            into=GuestOwner(_TARGET_SESSION_ID),
-            file=FileRef.for_base_cv(_COPY_ID, CvContentType.PDF),
-            at=_UPLOADED_AT,
-        )
-
-
-def test_copy_from_refuses_a_source_whose_extraction_failed() -> None:
-    """I-8: `status == EXTRACTION_FAILED` is not `EXTRACTED` either."""
-    source = _saved_uploaded()
-    source.mark_extraction_failed(ExtractionFailureReason.CORRUPT, _UPLOADED_AT)
-    source.release_events()
-
-    with pytest.raises(InvariantViolated):
-        BaseCv.copy_from(
-            source=source,
-            id=_COPY_ID,
-            into=GuestOwner(_TARGET_SESSION_ID),
-            file=FileRef.for_base_cv(_COPY_ID, CvContentType.PDF),
-            at=_UPLOADED_AT,
-        )
-
-
-def test_copy_from_refuses_the_same_id_as_the_source() -> None:
-    """I-8: `id != source.id` — a copy is a new identity, never the source's own."""
-    source = _saved_source()
-
-    with pytest.raises(InvariantViolated):
-        BaseCv.copy_from(
-            source=source,
-            id=source.id,
-            into=GuestOwner(_TARGET_SESSION_ID),
-            file=FileRef.for_base_cv(_COPY_ID, CvContentType.PDF),
-            at=_UPLOADED_AT,
-        )
-
-
-def test_copy_from_refuses_the_same_file_as_the_source() -> None:
-    """I-8: `file != source.file` — the copy owns its own bytes on disk; sharing the source's
-    `FileRef` would let the purge unlink the saved CV's file out from under it (ADR-0022 §2)."""
-    source = _saved_source()
-
-    with pytest.raises(InvariantViolated):
-        BaseCv.copy_from(
-            source=source,
-            id=_COPY_ID,
-            into=GuestOwner(_TARGET_SESSION_ID),
-            file=source.file,
-            at=_UPLOADED_AT,
-        )
-
-
-def test_copy_from_builds_an_extracted_working_copy_with_the_sources_extraction() -> None:
-    """The field-by-field result AC-3 specifies: a new id and file, `EXTRACTED` with an *equal*
-    `ExtractedText` (never re-extracted), the source's filename/content-type/size,
-    `copied_from == source.id`, `uploaded_at == extracted_at == at`, no label."""
-    source = _saved_source()
-    copy_file = FileRef.for_base_cv(_COPY_ID, CvContentType.PDF)
-    at = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
-
-    copy = BaseCv.copy_from(
-        source=source,
-        id=_COPY_ID,
-        into=GuestOwner(_TARGET_SESSION_ID),
-        file=copy_file,
-        at=at,
-    )
-
-    assert copy.id == _COPY_ID
-    assert copy.owner == GuestOwner(_TARGET_SESSION_ID)
-    assert copy.file == copy_file
-    assert copy.status is BaseCvStatus.EXTRACTED
-    assert copy.extracted_text == source.extracted_text
-    assert copy.original_filename == source.original_filename
-    assert copy.content_type == source.content_type
-    assert copy.size_bytes == source.size_bytes
-    assert copy.uploaded_at == at
-    assert copy.extracted_at == at
-    assert copy.copied_from == source.id
-    assert copy.label is None
-    assert copy.origin is BaseCvOrigin.COPIED_FROM_SAVED
-
-
-def test_copy_from_never_mutates_the_source() -> None:
-    """I-9, compared field-by-field before and after — the source is a *different* object read
-    through the same reference, so this is the one place a shallow "it still looks the same"
-    assertion would miss a mutation that a fresh read would not."""
-    source = _saved_source()
-    before = (
-        source.id,
-        source.owner,
-        source.file,
-        source.status,
-        source.extracted_text,
-        source.original_filename,
-        source.content_type,
-        source.size_bytes,
-        source.uploaded_at,
-        source.extracted_at,
-        source.copied_from,
-        source.label,
-    )
-
-    BaseCv.copy_from(
-        source=source,
-        id=_COPY_ID,
-        into=GuestOwner(_TARGET_SESSION_ID),
-        file=FileRef.for_base_cv(_COPY_ID, CvContentType.PDF),
-        at=_UPLOADED_AT,
-    )
-
-    after = (
-        source.id,
-        source.owner,
-        source.file,
-        source.status,
-        source.extracted_text,
-        source.original_filename,
-        source.content_type,
-        source.size_bytes,
-        source.uploaded_at,
-        source.extracted_at,
-        source.copied_from,
-        source.label,
-    )
-    assert after == before
-
-
-def test_copy_from_records_exactly_one_base_cv_copied_event() -> None:
-    source = _saved_source()
-    at = _UPLOADED_AT
-
-    copy = BaseCv.copy_from(
-        source=source,
-        id=_COPY_ID,
-        into=GuestOwner(_TARGET_SESSION_ID),
-        file=FileRef.for_base_cv(_COPY_ID, CvContentType.PDF),
-        at=at,
-    )
-    events = copy.release_events()
-
-    assert len(events) == 1
-    event = events[0]
-    assert isinstance(event, BaseCvCopied)
-    assert event.base_cv_id == _COPY_ID
-    assert event.source_base_cv_id == source.id
-    assert event.owner == GuestOwner(_TARGET_SESSION_ID)
-    assert event.occurred_at == at
 
 
 # ====================================================================================================

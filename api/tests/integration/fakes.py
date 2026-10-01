@@ -60,7 +60,7 @@ Used by:
   `FixedClock` itself does not track — what T13's "one `clock.now()` per use-case call" assertion
   needs.
 - `tests/integration/intake/{test_upload_base_cv,test_list_saved_base_cvs,test_rename_saved_base_cv,
-  test_delete_saved_base_cv,test_copy_saved_base_cv}.py`, `tests/integration/retention/
+  test_delete_saved_base_cv}.py`, `tests/integration/retention/
   test_erase_account.py`, `tests/integration/identity/{test_resolve_existing_user,
   test_delete_own_account}.py` (T9, slice 2.2 — AC-7…AC-12). `FakeBaseCvRepository.list_for_user`/
   `count_for_user`/`save_label`/`remove` and `FakeUserRepository` already existed (T7/T13); this
@@ -533,8 +533,8 @@ class InMemoryFileStore:
     **T9 additions (slice 2.2), backward-compatible with every existing caller:**
 
     - `get` on a missing key now raises `StoredFileMissing` rather than a bare `KeyError` —
-      `CopySavedBaseCvToWorkspace`'s S-32/S-33 re-read branch (AC-9) needs the real port's documented
-      exception, and no existing test relies on the old `KeyError` (every prior caller always `put`s
+      the real port's documented exception is the one a missing key raises, and no existing test
+      relies on the old `KeyError` (every prior caller always `put`s
       before it `get`s the same key).
     - `delete_calls` records every `FileRef` handed to `delete`, in order — `DeleteSavedBaseCv`'s
       AC-10 needs to prove `delete` is the *last* thing that happens, never `delete_partial`.

@@ -1,6 +1,6 @@
 """Seed a *working copy* — a guest CV whose `copied_from_base_cv_id` is set — without the copy.
 
-2.2's `BaseCv.copy_from` made these rows and 2.4 retires it (AC-33, OQ-2), but rows it already made
+2.2's copy route made these rows and 2.4 retired it (AC-33, OQ-2), but rows it already made
 still exist on the box until the purge takes them, and the claim, the purge and the history read
 `copied_from_base_cv_id`. Tests of those readers need the *row*, not the transition, so they seed it
 here: an ordinary upload, then the provenance column set in SQL (it carries no FK, ADR-0022).

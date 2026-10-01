@@ -45,7 +45,9 @@ class BaseCvResponse(BaseModel):
 
     `origin` (slice 2.2, additive): `uploaded`, or `copied_from_saved` for a working copy made from a
     registered user's saved CV — the client's cue for the *Working copy* badge (AC-41). Derived from
-    the aggregate (`BaseCv.origin`), never stored.
+    the aggregate (`BaseCv.origin`), never stored. **Nothing creates a working copy since 2.4**
+    (the copy route was retired, ADR-0022 amendment (d)); this field is a *reader* kept until none
+    can exist — see the contraction trigger on `origin` below.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -60,6 +62,11 @@ class BaseCvResponse(BaseModel):
     failure_message: str | None
     uploaded_at: datetime
     expires_at: datetime
+    # Contraction trigger (2.4 technical plan §0.9, ADR-0022 amendment (d)): the first slice that
+    # migrates `intake_base_cv` after 2.4's release + 24 h — or any time after, on a production read
+    # showing zero rows with `copied_from_base_cv_id IS NOT NULL` — drops this field together with
+    # the column, `BaseCv.copied_from`, `BaseCv.origin`, `BaseCvOrigin`, the *Working copy* badge
+    # and the claim's `copied_from_base_cv_id IS NULL` clause, in one contract migration.
     origin: BaseCvOrigin
 
 
@@ -73,7 +80,7 @@ class BaseCvListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------------------------
-# Saved base CVs — slice 2.2 (technical plan §4). `/api/me/base-cvs*` and the copy request.
+# Saved base CVs — slice 2.2 (technical plan §4). `/api/me/base-cvs*`.
 # ---------------------------------------------------------------------------------------------
 
 LABEL_WIRE_MAX_LENGTH = 200
@@ -90,7 +97,8 @@ class SavedBaseCvResponse(BaseModel):
     never expires, and a field that could only ever be `null` would read as "unknown" rather than
     "never". **No text and no bytes** — `character_count` is computed from the text (for the list,
     by Postgres, without selecting it: `SavedBaseCvSummary`), never the text itself. No `origin`: a
-    saved CV is only ever uploaded; copies live in the guest workspace.
+    saved CV is only ever uploaded; 2.2's working copies lived in the guest workspace, and since
+    2.4 nothing makes one.
 
     Built from a `SavedBaseCvSummary` on the list, and from the `BaseCv` aggregate after an upload
     or a rename — two sources, one key set, which is exactly what AC-20 pins.
@@ -124,16 +132,6 @@ class RenameSavedBaseCvRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str | None = Field(max_length=LABEL_WIRE_MAX_LENGTH)
-
-
-class CopySavedBaseCvRequest(BaseModel):
-    """`POST /api/base-cvs/copies` — `{"saved_base_cv_id": uuid}`. A malformed id is FastAPI's 422
-    `validation_error`, raised before the handler body runs — so before any guest session is
-    resolved or minted (S-26)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    saved_base_cv_id: UUID
 
 
 class ErrorDetail(BaseModel):

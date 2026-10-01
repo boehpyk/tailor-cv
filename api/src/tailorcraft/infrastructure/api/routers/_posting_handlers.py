@@ -8,8 +8,8 @@ per-principal budget is keyed on (`"session"` and the session id for a guest). T
 
 **Nothing here reads a credential.** No cookie, no bearer, no `resolve_or_start_guest_session`: the
 caller resolved the principal before calling, which keeps the AST scan's transfer-route set exactly
-`{POST /api/base-cvs/copies}` (AC-25) — a body that resolved a guest session would make every
-router calling it a guest-touching route.
+`{POST /api/me/guest-work/claim}` since 2.4 (AC-25) — a body that resolved a guest session would
+make every router calling it a guest-touching route.
 
 The contract each body implements is documented on the guest route that calls it.
 """

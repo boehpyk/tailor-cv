@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.ownership import Owner, UserOwner
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
     CvContentType,
@@ -72,25 +72,10 @@ class BaseCvExtractionFailed(DomainEvent):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class BaseCvCopied(DomainEvent):
-    """A saved base CV was copied into a guest workspace as a working copy (ADR-0022 §4).
-
-    Payload: `base_cv_id` (the copy), `source_base_cv_id` (the saved CV), `owner` (the copy's —
-    always a guest session, which the type says) (+ inherited `occurred_at`). Deliberately absent:
-    the filename, the label and the extracted text the copy shares with its source.
-    """
-
-    base_cv_id: BaseCvId
-    source_base_cv_id: BaseCvId
-    owner: GuestOwner
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
 class BaseCvDeleted(DomainEvent):
     """A registered user deleted one of their saved base CVs (AC-5).
 
-    Payload: `base_cv_id`, `owner` (+ inherited `occurred_at`). `owner` is typed `UserOwner`, the
-    same narrowing `BaseCvCopied` makes: a guest CV is deleted by the purge and never by a request
+    Payload: `base_cv_id`, `owner` (+ inherited `occurred_at`). `owner` is typed `UserOwner`: a guest CV is deleted by the purge and never by a request
     (I-10), so an event saying otherwise is unconstructable. Deliberately absent: the filename, the
     label and the storage key.
     """

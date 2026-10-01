@@ -9,8 +9,8 @@ is a dependency (`require_user` — stateless, runs first, so a bad bearer is a 
 touches the guest session table); the **`tc_guest` cookie** names the source and is read **in the
 handler body**, never through `require_guest_session` (its 401 would break idempotency) and never
 through `resolve_or_start_guest_session` (which mints). **This route never mints a guest session.**
-The AST scan over `routers/*.py` pins the routes whose bodies touch the guest cookie to
-`{POST /api/base-cvs/copies, POST /api/me/guest-work/claim}`.
+The AST scan over `routers/*.py` pins the routes whose bodies touch the guest cookie to exactly
+`{POST /api/me/guest-work/claim}` — 2.2's copy route was retired in 2.4 (ADR-0022 amendment (d)).
 
 No body, no query parameters: nothing to validate, so no 422 is possible (C-19). Every response the
 handler builds carries `Cache-Control: no-store`.

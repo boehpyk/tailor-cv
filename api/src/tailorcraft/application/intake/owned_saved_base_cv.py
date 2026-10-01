@@ -1,8 +1,9 @@
 """`get_owned_saved_base_cv`: load a base CV and refuse it unless `user_id` owns it (slice 2.2, AC-8).
 
-`RenameSavedBaseCv`, `DeleteSavedBaseCv` and `CopySavedBaseCvToWorkspace` all start with the same
-two steps — ``cvs.get`` then one equality — and "authorization is one equality" is exactly the rule
-that must not drift between three copies of it. A plain function for `resolve_active_guest_session`'s
+`RenameSavedBaseCv` and `DeleteSavedBaseCv` both start with the same two steps — ``cvs.get`` then
+one equality — and "authorization is one equality" is exactly the rule that must not drift between
+two copies of it. (2.2's `CopySavedBaseCvToWorkspace` was the third caller until slice 2.4 removed
+it, ADR-0022 amendment (d).) A plain function for `resolve_active_guest_session`'s
 reason: it holds no state, and every dependency it needs already sits on the caller.
 
 **Not yours is not there.** A guest-owned id, another user's id and a nonexistent id all raise the

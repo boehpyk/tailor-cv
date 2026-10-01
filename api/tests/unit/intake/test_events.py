@@ -8,12 +8,12 @@ these events, not merely if someone changes the value of an existing field.
 **Amended for AC-6 (slice 2.2), in this RED commit rather than the GREEN one that will make T6's
 new events real** (CLAUDE.md: "a test edited in the commit that made it pass is the failure this
 cycle exists to prevent" — this edit precedes GREEN, so it is not that failure). Two changes:
-`BaseCvCopied` and `BaseCvDeleted` join the parametrized field-set sweep, and `"label"` joins the
+`BaseCvDeleted` joins the parametrized field-set sweep, and `"label"` joins the
 forbidden-name set — AC-6 is explicit that "no event carries a filename, a label, extracted text or
-bytes," and the pre-2.2 list only ever forbade a filename. Both new events are pure data that
+bytes," and the pre-2.2 list only ever forbade a filename. The new event is pure data that
 shipped complete in T4, so this addition is legitimately green already, exactly like the three
 existing rows in the same parametrize — it still earns its place, because without it a future edit
-adding a `label` field to any of these five events would pass silently.
+adding a `label` field to any of these four events would pass silently.
 """
 
 from __future__ import annotations
@@ -28,7 +28,6 @@ from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.events import (
-    BaseCvCopied,
     BaseCvDeleted,
     BaseCvExtractionFailed,
     BaseCvTextExtracted,
@@ -112,32 +111,10 @@ def test_mark_extraction_failed_records_one_event_carrying_the_reason() -> None:
     assert event.occurred_at == _UPLOADED_AT
 
 
-# --- AC-6: BaseCvCopied / BaseCvDeleted are pinned by exact field set --------------------------
+# --- AC-6: BaseCvDeleted is pinned by exact field set ------------------------------------------
 #
-# Direct dataclass construction, not via `BaseCv.copy_from`/`delete` — both events shipped complete
-# in T4 (pure data, nothing deferred to GREEN), so this pins the exact shape the other contexts'
-# `test_events.py` files pin for their own new events (`field_names == {...}`), independent of
-# whether `copy_from`/`delete` themselves are implemented yet (they are not — see test_base_cv.py).
-
-
-def test_base_cv_copied_field_set_is_pinned() -> None:
-    field_names = {field.name for field in dataclasses.fields(BaseCvCopied)}
-
-    assert field_names == {"base_cv_id", "source_base_cv_id", "owner", "occurred_at"}
-
-
-def test_base_cv_copied_owner_is_typed_guest_owner_not_the_general_union() -> None:
-    """The copy's owner is always a guest workspace (AC-3): `BaseCvCopied` narrows to `GuestOwner`
-    rather than accepting the general `Owner` union, so a `UserOwner`-owned copy is unconstructable
-    as an event, not merely disallowed by convention."""
-    event = BaseCvCopied(
-        base_cv_id=_CV_ID,
-        source_base_cv_id=_CV_ID,
-        owner=GuestOwner(_SESSION_ID),
-        occurred_at=_UPLOADED_AT,
-    )
-
-    assert event.owner == GuestOwner(_SESSION_ID)
+# Direct dataclass construction, not via `BaseCv.delete`: this pins the exact shape the other
+# contexts' `test_events.py` files pin for their own events (`field_names == {...}`).
 
 
 def test_base_cv_deleted_field_set_is_pinned() -> None:
@@ -176,12 +153,11 @@ def test_release_events_empties_the_buffer() -> None:
 
 @pytest.mark.parametrize(
     "event_type",
-    [BaseCvUploaded, BaseCvTextExtracted, BaseCvExtractionFailed, BaseCvCopied, BaseCvDeleted],
+    [BaseCvUploaded, BaseCvTextExtracted, BaseCvExtractionFailed, BaseCvDeleted],
     ids=[
         "BaseCvUploaded",
         "BaseCvTextExtracted",
         "BaseCvExtractionFailed",
-        "BaseCvCopied",
         "BaseCvDeleted",
     ],
 )

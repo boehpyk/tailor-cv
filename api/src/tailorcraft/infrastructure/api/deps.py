@@ -41,7 +41,6 @@ from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
 from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
-from tailorcraft.application.intake.copy_saved_base_cv import CopySavedBaseCvToWorkspace
 from tailorcraft.application.intake.delete_saved_base_cv import DeleteSavedBaseCv
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.intake.list_base_cvs import ListBaseCvsForSession
@@ -1243,9 +1242,10 @@ GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]
 
 # ---------------------------------------------------------------------------------------------
 # Saved base CVs and account erasure — slice 2.2 (T18). Every route below answers to
-# `require_user`; the one transfer route (`POST /api/base-cvs/copies`, ADR-0008 (f)) also reaches
-# the guest session, **in its handler body**, never through a `Depends` here — so no provider in
-# this block depends on `require_guest_session` or `resolve_or_start_guest_session` (AC-24).
+# `require_user`, and no provider in this block depends on `require_guest_session` or
+# `resolve_or_start_guest_session` (AC-24). 2.2's transfer route (`POST /api/base-cvs/copies`) was
+# retired in 2.4 (ADR-0022 amendment (d)); the one transfer route is now the claim,
+# `POST /api/me/guest-work/claim` (ADR-0008 (g)), which reads `tc_guest` in its handler body.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1282,31 +1282,6 @@ def get_delete_saved_base_cv(
 
 
 DeleteSavedBaseCvDep = Annotated[DeleteSavedBaseCv, Depends(get_delete_saved_base_cv)]
-
-
-def get_copy_saved_base_cv(
-    cvs: BaseCvRepositoryDep,
-    users: UserRepositoryDep,
-    sessions: GuestSessionRepositoryDep,
-    files: FileStoreDep,
-    events: EventPublisherDep,
-    clock: ClockDep,
-    settings: SettingsDep,
-) -> CopySavedBaseCvToWorkspace:
-    """**No extractor** — the use case's constructor does not take one (AC-9: a copy never
-    re-extracts). The cap is the *guest* cap: a working copy is guest data."""
-    return CopySavedBaseCvToWorkspace(
-        cvs,
-        users,
-        sessions,
-        files,
-        events,
-        clock,
-        max_per_session=settings.max_base_cvs_per_session,
-    )
-
-
-CopySavedBaseCvDep = Annotated[CopySavedBaseCvToWorkspace, Depends(get_copy_saved_base_cv)]
 
 
 def get_account_data(session: SessionDep) -> AccountDataPort:
