@@ -95,6 +95,7 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
+from tailorcraft.domain.identity.claim import ClaimedGuestWork
 from tailorcraft.domain.identity.errors import (
     AccessTokenInvalid,
     EmailAlreadyRegistered,
@@ -1345,3 +1346,40 @@ async def create_active_session(
     )
     await sessions.add(session)
     return session
+
+
+class RecordingGuestWorkClaim:
+    """Recording `GuestWorkClaimPort` (slice 2.4, T13). `calls` is the ordered log of what the use
+    case did to the port: `("lock_session", token_hash)` and `("transfer", session_id, user_id)`.
+    A test can share `order` with a recording file store to prove `transfer` comes before every
+    unlink. `lock_session` answers `session` (None = no such row); `transfer` answers `claimed`, or
+    raises `transfer_error` (the user erased between the use case's read and the re-key)."""
+
+    def __init__(
+        self,
+        session: GuestSession | None,
+        claimed: ClaimedGuestWork | None = None,
+        *,
+        transfer_error: Exception | None = None,
+        order: list[str] | None = None,
+    ) -> None:
+        self._session = session
+        self._claimed = claimed
+        self._transfer_error = transfer_error
+        self._order = order
+        self.calls: list[tuple[object, ...]] = []
+
+    async def lock_session(self, token_hash: str) -> GuestSession | None:
+        self.calls.append(("lock_session", token_hash))
+        if self._order is not None:
+            self._order.append("lock_session")
+        return self._session
+
+    async def transfer(self, session_id: GuestSessionId, user_id: UserId) -> ClaimedGuestWork:
+        self.calls.append(("transfer", session_id, user_id))
+        if self._order is not None:
+            self._order.append("transfer")
+        if self._transfer_error is not None:
+            raise self._transfer_error
+        assert self._claimed is not None, "this double was built without a transfer outcome"
+        return self._claimed
