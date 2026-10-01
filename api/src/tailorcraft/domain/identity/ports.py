@@ -11,6 +11,9 @@ transport or a cookie.** The domain knows that a password becomes a `PasswordHas
 up by its `TokenHash`, and that an access token turns back into a `UserId` or is refused with a
 reason; which hash function, which signature scheme and which header carries what is
 `infrastructure/identity/`'s business (ADR-0020, ADR-0021, AC-4, AC-7).
+
+Slice 2.4 adds `GuestWorkClaimPort`: the hand-off of a guest session's work to a signed-in user
+(ADR-0025 decision 8). Like the rest, it names no table, no SQL and no other context's aggregate.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
+from tailorcraft.domain.identity.claim import ClaimedGuestWork
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.user import User
@@ -248,4 +252,59 @@ class FailedLoginObserver(Protocol):
 
     def wrong_password(self, user_id: UserId) -> None:
         """The account `user_id` exists and the password presented does not match its hash."""
+        ...
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.4 — a guest's work becomes a user's by an explicit claim (ADR-0025).
+# --------------------------------------------------------------------------------------------------
+
+
+class GuestWorkClaimPort(Protocol):
+    """Moves every row a guest session owns to a user, in one transaction (ADR-0025 decision 8).
+
+    **Why a port and not an aggregate.** The claim's invariant — *every row of a session changes
+    owner together* — spans four contexts' tables (`intake`, `posting`, `tailoring`, `export`), and
+    nothing in this process can hold it. One transaction in one adapter does, as ADR-0018 argued for
+    the purge. **Nothing in any signature here names another context's aggregate**: a session going
+    in, counts and `FileRef`s (inside `ClaimedGuestWork`) coming out. The adapter may import the
+    four tables; the domain may not.
+
+    **The order of the two methods is the lock order** (technical plan §0.6), and a caller calls them
+    in this order or not at all:
+
+    1. `lock_session` takes the guest session row `FOR UPDATE`.
+    2. `transfer` takes the user row `FOR KEY SHARE`, implicitly, through each re-key's `user_id`
+       foreign-key check.
+
+    Every other actor takes at most one of the two rows, or both in this same order — the purge and
+    a second claim meet the claim at (1), a guest write's FK check waits behind (1), and account
+    erasure's `FOR UPDATE` on the user meets it at (2) — so there is no cycle to deadlock on.
+    """
+
+    async def lock_session(self, token_hash: str) -> GuestSession | None:
+        """The guest session whose cookie hashes to `token_hash`, locked `FOR UPDATE` until the end of
+        the transaction `transfer` commits — or `None` when there is no such row.
+
+        `None` is ordinary, not exceptional: no cookie's session, one the purge already deleted, or
+        one a concurrent claim already took (it waited on the lock, then found the row gone). The
+        caller answers it with a report of zeros. **The lock is taken whether or not the session has
+        expired**; judging that is `GuestSession.is_expired`'s job, applied by the caller.
+        """
+        ...
+
+    async def transfer(self, session_id: GuestSessionId, user_id: UserId) -> ClaimedGuestWork:
+        """Re-key everything `session_id` owns to `user_id`, drop its working copies, delete the
+        session row, and report what moved.
+
+        **Rows only, durable on return.** The bound adapter commits before returning, so a returned
+        `ClaimedGuestWork` describes committed fact, and the session row it deleted is the purge's
+        signal that a claim came first (§0.5). **No file is touched here**: the dropped working
+        copies' keys come back in `files_to_unlink`, and unlinking them is the caller's next step —
+        rows committed, then files (ADR-0006 amendment).
+
+        Must be called after `lock_session` returned this session, in the same transaction. Raises
+        `UserNotFound` when the user's foreign key refuses the re-key — the account was erased first
+        — and nothing is committed.
+        """
         ...
