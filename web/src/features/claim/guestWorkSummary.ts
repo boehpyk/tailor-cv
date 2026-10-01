@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T29 SKELETON: the parameters are the signature qa's T30 tests compile against; T31 uses them and deletes this line. */
 import type { BaseCv } from '@/features/intake/types';
 import type { TailoringRunSummary } from '@/features/tailoring/types';
 
@@ -19,14 +18,18 @@ export interface GuestWorkSummary {
  *
  * Working copies (`origin: 'copied_from_saved'`) are left out: a claim never moves one (OQ-3) — the
  * user already owns its source — so offering it would promise something the server will not do.
- * `null` iff no CV is left after that and there are no runs.
- *
- * SKELETON (T29): returns a sentinel that is never a correct answer (a negative count, and non-null
- * even for empty lists); T31 implements it.
+ * `null` iff no CV is left after that and there are no runs. Every run counts, whatever its status:
+ * a failed run moves too.
  */
 export function summarizeGuestWork(
-  _cvs: readonly BaseCv[],
-  _runs: readonly TailoringRunSummary[],
+  cvs: readonly BaseCv[],
+  runs: readonly TailoringRunSummary[],
 ): GuestWorkSummary | null {
-  return { cvFilenames: [], runCount: -1 };
+  const cvFilenames = cvs
+    .filter((cv) => cv.origin !== 'copied_from_saved')
+    .map((cv) => cv.original_filename);
+  if (cvFilenames.length === 0 && runs.length === 0) {
+    return null;
+  }
+  return { cvFilenames, runCount: runs.length };
 }

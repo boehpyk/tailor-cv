@@ -1,3 +1,6 @@
+import { useBaseCvs } from '@/features/intake/hooks/useBaseCvs';
+import { useTailoringRuns } from '@/features/tailoring/hooks/useTailoringRuns';
+
 import { summarizeGuestWork } from '../guestWorkSummary';
 
 import type { GuestWorkSummary } from '../guestWorkSummary';
@@ -13,9 +16,13 @@ import type { GuestWorkSummary } from '../guestWorkSummary';
  * already fold a 401 `guest_session_expired` into "none", and a guest request never refreshes a
  * login (2.1's I-48), so an expired session costs no refresh call.
  *
- * SKELETON (T29): reads nothing and returns `summarizeGuestWork`'s skeleton sentinel; T31 wires the
- * two queries.
+ * Derived during render from the two cached lists — never copied into state.
  */
 export function useGuestWorkSummary(): GuestWorkSummary | null {
-  return summarizeGuestWork([], []);
+  const cvs = useBaseCvs();
+  const runs = useTailoringRuns();
+  if (cvs.isError || runs.isError || cvs.data === undefined || runs.data === undefined) {
+    return null;
+  }
+  return summarizeGuestWork(cvs.data.items, runs.data.items);
 }

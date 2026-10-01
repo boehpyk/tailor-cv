@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T29 SKELETON: the parameters are the signature qa's T30 tests compile against; T31 uses them and deletes this line. */
 import type { GuestWorkSummary } from './guestWorkSummary';
 import type { GuestWorkClaimResult } from './types';
 
@@ -51,22 +50,64 @@ export const SESSION_ENDED_HISTORY_LINK_LABEL = 'Open it in your history';
 
 // ── Sentences built from counts ─────────────────────────────────────────────────────────────────
 
+/** `1 CV`, `2 CVs` — the ordinary plural, pinned both ways by the tests. */
+function countOf(count: number, singular: string, plural: string): string {
+  return `${String(count)} ${count === 1 ? singular : plural}`;
+}
+
+function applications(count: number): string {
+  return countOf(count, 'tailored application', 'tailored applications');
+}
+
+/** `a`, `a and b`, `a, b and c`. */
+function listed(parts: readonly string[]): string {
+  if (parts.length <= 1) {
+    return parts.join('');
+  }
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1] ?? ''}`;
+}
+
 /**
  * AC-37: the offer's first sentence — each guest CV by its `original_filename`, and the number of
- * tailored applications.
- *
- * SKELETON (T29): returns an empty string; T31 writes the sentence.
+ * tailored applications (left out when there are none; the summary is never empty, because
+ * `summarizeGuestWork` answers `null` for nothing).
  */
-export function guestWorkOfferSentence(_summary: GuestWorkSummary): string {
-  return '';
+export function guestWorkOfferSentence(summary: GuestWorkSummary): string {
+  const parts = [...summary.cvFilenames];
+  if (summary.runCount > 0) {
+    parts.push(applications(summary.runCount));
+  }
+  return `This browser still holds work you did as a guest: ${listed(parts)}.`;
 }
 
 /**
  * AC-38: the `role="status"` note after a claim that moved something, from the **server's** counts —
- * e.g. *"Kept in your account: 1 CV, 2 tailored applications."*
- *
- * SKELETON (T29): returns an empty string; T31 writes the sentence.
+ * e.g. *"Kept in your account: 1 CV, 2 tailored applications."* Only CVs and runs are named (the
+ * postings and exports travel with their runs); a part that moved nothing is left out rather than
+ * printed as "0". A claim that moved only postings or exports still says it kept something.
  */
-export function claimSuccessNote(_result: GuestWorkClaimResult): string {
-  return '';
+export function claimSuccessNote(result: GuestWorkClaimResult): string {
+  const parts: string[] = [];
+  if (result.base_cvs > 0) {
+    parts.push(countOf(result.base_cvs, 'CV', 'CVs'));
+  }
+  if (result.tailoring_runs > 0) {
+    parts.push(applications(result.tailoring_runs));
+  }
+  return parts.length === 0
+    ? 'Kept in your account.'
+    : `Kept in your account: ${parts.join(', ')}.`;
+}
+
+/**
+ * AC-39: a 200 that moved nothing at all ("nothing left to claim") — every count the server reports
+ * as moved is zero. `working_copies_dropped` is not a move, so it does not count.
+ */
+export function claimMovedNothing(result: GuestWorkClaimResult): boolean {
+  return (
+    result.base_cvs === 0 &&
+    result.job_postings === 0 &&
+    result.tailoring_runs === 0 &&
+    result.export_jobs === 0
+  );
 }

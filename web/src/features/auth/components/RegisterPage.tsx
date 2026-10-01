@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { Navigate, useSearchParams } from 'react-router';
+import { Link, Navigate, useSearchParams } from 'react-router';
 
 import {
   PASSWORD_HINT,
@@ -23,9 +23,9 @@ import type { Credentials } from '../types';
  * The two static notices are part of the idle state, not small print: what is stored, and what
  * happens to the work the visitor did as a guest (AC-40).
  *
- * There is deliberately no second "Log in" link on this page. The one a user needs appears inside
- * the `email_already_registered` notice, at the moment it is the answer; the header's `AuthStatus`
- * offers **Log in** the rest of the time.
+ * **Sign in** links back to `/login` with the same query string, so a `next` that brought the
+ * visitor here survives the cross-link both ways (slice 2.4, AC-36) — `safeNext` still judges it on
+ * arrival. Without a `next` the link is exactly `/login`.
  */
 export function RegisterPage() {
   const auth = useAuth();
@@ -63,6 +63,15 @@ export function RegisterPage() {
         <div className="space-y-2 text-sm text-slate-600">
           <p>{REGISTER_STORAGE_NOTICE}</p>
           <p>{REGISTER_GUEST_WORK_NOTICE}</p>
+          <p>
+            Already have an account?{' '}
+            <Link
+              to={{ pathname: '/login', search: searchParams.toString() }}
+              className="font-medium text-slate-900 underline underline-offset-2"
+            >
+              Sign in
+            </Link>
+          </p>
         </div>
       </CredentialsForm>
     </section>

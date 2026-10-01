@@ -1,4 +1,12 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T29 SKELETON: the parameters are the signature qa's T30 tests compile against; T31 uses them and deletes this line. */
+import { useLocation, useNavigate } from 'react-router';
+
+import { useAuth } from '@/features/auth/hooks/useAuth';
+import { ACCOUNT_RUN_LINKS, runLink } from '@/features/scope/scopeMap';
+import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+
+import { GuestWorkOffer } from './GuestWorkOffer';
+import { RegistrationCta } from './RegistrationCta';
+
 import type { TailoredDocumentKind, TailoringRunStatus } from '@/features/tailoring/types';
 
 export interface GuestRunPromptProps {
@@ -19,10 +27,43 @@ export interface GuestRunPromptProps {
  * - guest scope, **`anonymous`**, `runStatus === 'succeeded'` → `RegistrationCta` with
  *   `next` = this page's path (C-34); any other status → nothing (C-35).
  * - guest scope, **`authenticated`** → `GuestWorkOffer` (C-36), and on success
- *   `navigate('/history/:runId/:document', { replace: true })`.
- *
- * SKELETON (T29): renders nothing; T31 builds it.
+ *   `navigate('/history/:runId/:document', { replace: true })` — `replace`, because the guest
+ *   entry it leaves names a session that no longer exists, so "back" must not return to it.
+ *   (While `/me` has not answered who is signed in, there is no user id to key the claim, so
+ *   nothing — the same as booting.)
  */
-export function GuestRunPrompt(_props: GuestRunPromptProps): React.JSX.Element | null {
-  return null;
+export function GuestRunPrompt({
+  runId,
+  document,
+  runStatus,
+}: GuestRunPromptProps): React.JSX.Element | null {
+  const map = useScopeMap();
+  const auth = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  if (map.kind !== 'guest') {
+    return null;
+  }
+  switch (auth.status) {
+    case 'booting':
+    case 'unavailable':
+      return null;
+    case 'anonymous':
+      return runStatus === 'succeeded' ? <RegistrationCta next={location.pathname} /> : null;
+    case 'authenticated': {
+      if (auth.user === undefined) {
+        return null;
+      }
+      return (
+        <GuestWorkOffer
+          key={auth.user.id}
+          userId={auth.user.id}
+          onClaimed={() => {
+            void navigate(runLink(ACCOUNT_RUN_LINKS, runId, document), { replace: true });
+          }}
+        />
+      );
+    }
+  }
 }

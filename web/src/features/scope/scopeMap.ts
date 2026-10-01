@@ -91,6 +91,14 @@ export const GUEST_QUERY_ROOTS: readonly (readonly [string])[] = [
   ['export'],
 ];
 
+/**
+ * Where an account's runs live in the app, independent of *which* account: `/history/{id}`. The
+ * account branch of `scopeMap` spreads it, and a link to the account's copy of a run built where no
+ * user id is to hand yet (a guest run page whose session ended, slice 2.4's AC-41) passes it to
+ * `runLink` directly — the prefix is still written down once.
+ */
+export const ACCOUNT_RUN_LINKS: Pick<ScopeMap, 'linkPrefix'> = { linkPrefix: '/history' };
+
 /** The account's key root — `['auth', 'account', userId]`, under 2.1's auth prefix (AC-43). */
 export function accountKeyRoot(userId: string): readonly string[] {
   return [...authQueryKeyPrefix, 'account', userId];
@@ -111,14 +119,18 @@ export function scopeMap(scope: WorkspaceScope): ScopeMap {
         ...ACCOUNT_API_TARGET,
         keyRoot,
         runListKey: [...keyRoot, 'history'],
-        linkPrefix: '/history',
+        ...ACCOUNT_RUN_LINKS,
       };
     }
   }
 }
 
 /** The app path of a run, or of one of its documents, in a scope. */
-export function runLink(map: ScopeMap, runId: string, document?: string): string {
+export function runLink(
+  map: Pick<ScopeMap, 'linkPrefix'>,
+  runId: string,
+  document?: string,
+): string {
   const base = `${map.linkPrefix}/${encodeURIComponent(runId)}`;
   return document === undefined ? base : `${base}/${document}`;
 }

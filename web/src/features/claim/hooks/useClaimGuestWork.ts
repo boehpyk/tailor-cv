@@ -1,7 +1,8 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T29 SKELETON: the parameters are the signature qa's T30 tests compile against; T31 uses them and deletes this line. */
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
-import { accountKeyRoot } from '@/features/scope/scopeMap';
+import { claimGuestWork } from '@/api/guestWork';
+import { savedBaseCvsQueryKey } from '@/features/savedCvs/hooks/savedCvsKeys';
+import { GUEST_QUERY_ROOTS, accountKeyRoot } from '@/features/scope/scopeMap';
 
 import type { GuestWorkClaimResult } from '../types';
 import type { UseMutationResult } from '@tanstack/react-query';
@@ -22,20 +23,30 @@ export function claimGuestWorkMutationKey(userId: string): readonly unknown[] {
  *
  * On success — in the hook's own `onSuccess`, so it runs even if the caller unmounts, and **before**
  * any navigation the caller does (2.2's rule) — every `GUEST_QUERY_ROOTS` entry is removed from the
- * cache (the session they describe no longer exists) and the account root is invalidated (the
- * account now holds the work). Navigating is the caller's job.
+ * cache (the session they describe no longer exists), and the account's data is marked stale: the
+ * account root **and** the saved-CV list, which lives at `['auth', 'savedBaseCvs', userId]`, outside
+ * that root (2.2 keyed it before 2.3 introduced the root). Invalidating only the root would leave the
+ * claimed CVs missing from the picker and `/account` until the next mount.
+ *
+ * The invalidations are not awaited: the claim is done when the server says so, and the re-reads
+ * belong to whichever screens are showing the data. A failure touches no cache — nothing moved.
  *
  * Variables are `void`: the claim takes no input — what moves is everything the cookie's session
  * owns, decided on the server.
- *
- * SKELETON (T29): no mutation key, no request, no cache work — `mutate()` settles as an error;
- * T31 implements it.
  */
 export function useClaimGuestWork(
-  _userId: string,
+  userId: string,
 ): UseMutationResult<GuestWorkClaimResult, Error, void> {
+  const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (): Promise<GuestWorkClaimResult> =>
-      Promise.reject(new Error('useClaimGuestWork: not implemented (T29 skeleton)')),
+    mutationKey: claimGuestWorkMutationKey(userId),
+    mutationFn: () => claimGuestWork(),
+    onSuccess: () => {
+      for (const root of GUEST_QUERY_ROOTS) {
+        queryClient.removeQueries({ queryKey: root });
+      }
+      void queryClient.invalidateQueries({ queryKey: accountKeyRoot(userId) });
+      void queryClient.invalidateQueries({ queryKey: savedBaseCvsQueryKey(userId) });
+    },
   });
 }

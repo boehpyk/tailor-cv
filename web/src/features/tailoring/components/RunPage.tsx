@@ -1,5 +1,8 @@
 import { Link, useNavigate, useParams } from 'react-router';
 
+import { ApiError } from '@/api/client';
+import { GuestRunPrompt } from '@/features/claim/components/GuestRunPrompt';
+import { SessionEndedHistoryNote } from '@/features/claim/components/SessionEndedHistoryNote';
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
 import { ExportBar } from '@/features/export/components/ExportBar';
 import { runLink } from '@/features/scope/scopeMap';
@@ -129,6 +132,11 @@ export function RunPage(): React.JSX.Element {
 
   const rejection = create.error;
   const activeRunId = rejection === null ? null : activeTailoringRunId(rejection);
+  // AC-41: a guest run whose session ended may have been kept — say where it went if signed in.
+  const guestSessionEnded =
+    map.kind === 'guest' &&
+    watched.error instanceof ApiError &&
+    watched.error.code === 'guest_session_expired';
 
   return (
     <section aria-labelledby="run-heading" className="mb-10 space-y-4">
@@ -160,7 +168,12 @@ export function RunPage(): React.JSX.Element {
               {watched.isFetching ? 'Checking…' : 'Check again'}
             </button>
           ) : (
-            <BackLink scope={map.kind} />
+            <>
+              {guestSessionEnded && (
+                <SessionEndedHistoryNote runId={runId} document={documentSegment} />
+              )}
+              <BackLink scope={map.kind} />
+            </>
           )}
         </div>
       )}
@@ -180,6 +193,14 @@ export function RunPage(): React.JSX.Element {
           }}
         />
       )}
+
+      {/* Slice 2.4's one slot: the registration CTA or the claim offer on a guest's run. The
+          component owns every branch (scope, auth, status), so this page does not branch on them. */}
+      <GuestRunPrompt
+        runId={runId}
+        document={documentSegment}
+        runStatus={watched.data?.status ?? null}
+      />
 
       {/* `succeeded` implies the detail query answered (a list summary cannot show the documents,
           so the view never says `succeeded` from one), hence `data` is set; the narrowing is for
