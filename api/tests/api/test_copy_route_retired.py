@@ -5,7 +5,7 @@ the signed-in workspace a first-class one and 2.4's claim is the only transfer r
 copy has no caller (OQ-2). This file asserts the *absence* and pairs it with discriminating
 positives, because an absence assertion is satisfied by any app that is broken in some other way:
 
-- the 404 is paired with `GET /api/base-cvs` still answering and still naming `origin`;
+- the 405 is paired with `GET /api/base-cvs` still answering and still naming `origin`;
 - the removed names are looked up with `importlib`/`hasattr`, so the red is an assertion and not an
   `ImportError` at collection, and each lookup is paired with a name that must stay importable.
 
@@ -26,6 +26,21 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 COPIES_URL = "/api/base-cvs/copies"
+
+# Why 405 and not the 404 AC-33 first said: with the copy route gone, the path still matches the
+# surviving `/api/base-cvs/{base_cv_id}` route (GET, PATCH, DELETE), so Starlette answers "method not
+# allowed" before any handler runs. Forcing a 404 would need production code whose only job is to
+# disguise that. What the AC protects is that nothing serves POST here: the status is 405 and the
+# `Allow` header does not offer POST (spec amendment carried to /verify).
+
+
+def _assert_no_post_is_served(response_status: int, allow: str, body: str) -> None:
+    assert response_status == 405, (response_status, body)
+    offered = {method.strip().upper() for method in allow.split(",") if method.strip()}
+    assert offered, "a 405 names the methods the path does serve"
+    assert "POST" not in offered, offered
+
+
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "cvs"
 
 # (module, attribute) for every name the retirement removes, and for the siblings that must stay.
@@ -76,7 +91,7 @@ def test_ac33_base_cv_no_longer_has_copy_from_but_keeps_its_readers() -> None:
     assert hasattr(BaseCv, "origin"), "`origin` is a reader the wire keeps (OQ-2)"
 
 
-async def test_ac33_post_base_cvs_copies_is_404_for_a_bearer_with_a_well_formed_body(
+async def test_ac33_post_base_cvs_copies_is_405_for_a_bearer_with_a_well_formed_body(
     client: AsyncClient,
 ) -> None:
     response = await client.post(
@@ -85,15 +100,19 @@ async def test_ac33_post_base_cvs_copies_is_404_for_a_bearer_with_a_well_formed_
         headers={"Authorization": "Bearer not-a-real-token"},
     )
 
-    assert response.status_code == 404, (response.status_code, response.text)
+    _assert_no_post_is_served(
+        response.status_code, response.headers.get("allow", ""), response.text
+    )
 
 
-async def test_ac33_post_base_cvs_copies_is_404_for_an_anonymous_caller_and_mints_no_session(
+async def test_ac33_post_base_cvs_copies_is_405_for_an_anonymous_caller_and_mints_no_session(
     client: AsyncClient,
 ) -> None:
     response = await client.post(COPIES_URL, json={"saved_base_cv_id": str(uuid4())})
 
-    assert response.status_code == 404, (response.status_code, response.text)
+    _assert_no_post_is_served(
+        response.status_code, response.headers.get("allow", ""), response.text
+    )
     assert "set-cookie" not in response.headers, "a route that does not exist mints nothing"
 
 
