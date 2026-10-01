@@ -20,7 +20,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
-from tailorcraft.domain.identity.errors import UserNotFound
+from tailorcraft.domain.identity.errors import GuestSessionNotFound, UserNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.posting.errors import JobPostingNotFound
@@ -56,6 +56,11 @@ _JOB_POSTING_CREATED_AT: InstrumentedAttribute[datetime] = cast(
 # Recognised by name, never by message (`violated_constraint`). Renaming the FK in
 # `mapping/posting/job_posting.py` is a breaking change to `add` below.
 _USER_FK: Final = "fk_posting_job_posting_user_id_identity_user"
+# The guest twin (slice 2.4, AC-12): a claim that commits between a guest write's session lookup and
+# its `INSERT` deletes the session row, and this FK refuses. That refusal *is* "the session is gone"
+# — the same fact the cookie resolver reports — so it becomes the same error and the same 401
+# `guest_session_expired`. Name checked against `registry.py`'s convention and `pg_constraint`.
+_GUEST_FK: Final = "fk_posting_job_posting_guest_session_id_identity_guest_session"
 
 
 def _owned_by(owner: Owner) -> ColumnElement[bool]:
@@ -102,8 +107,9 @@ class SqlAlchemyJobPostingRepository:
 
         **Inside a SAVEPOINT**, for the reason given there: a failed flush at the root expires every
         instance in the session inside the flush (the 1.4 lesson); a SAVEPOINT confines it to this
-        one pending posting. Any other refusal — the guest FK, a CHECK — is not "the user is gone"
-        and propagates untranslated.
+        one pending posting. The guest FK refusing (a claim deleted the session row first, slice 2.4,
+        AC-12) is "the session is gone", `GuestSessionNotFound`. Any other refusal — a CHECK —
+        propagates untranslated.
         """
         # Read before the flush: after a nested rollback the pending posting is expunged.
         posting_id = posting.id
@@ -116,6 +122,12 @@ class SqlAlchemyJobPostingRepository:
                 # `from None`: the listener already reduced the chain to identifiers, and the frame
                 # holds `posting`, whose text names a job someone is applying for (Constitution §8).
                 raise UserNotFound(f"the owner of {posting_id!r} no longer exists") from None
+            if violated_constraint(exc) == _GUEST_FK:
+                # `from None`: the chain is already reduced to identifiers, and the frame holds
+                # the aggregate (Constitution §8). AC-12, slice 2.4.
+                raise GuestSessionNotFound(
+                    f"the guest session owning {posting_id!r} no longer exists"
+                ) from None
             raise
 
     async def get(self, posting_id: JobPostingId) -> JobPosting:
