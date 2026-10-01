@@ -16,8 +16,9 @@ export interface GuestWorkSummary {
 /**
  * **Pure**: the guest lists → what the offer names, or `null` when there is nothing to offer.
  *
- * Working copies (`origin: 'copied_from_saved'`) are left out: a claim never moves one (OQ-3) — the
- * user already owns its source — so offering it would promise something the server will not do.
+ * Working copies (`origin: 'copied_from_saved'`) are left out: a claim never moves one (OQ-3,
+ * ADR-0025 — it copies a CV some account keeps, possibly another person's), so offering it would
+ * promise something the server will not do.
  * `null` iff no CV is left after that and there are no runs. Every run counts, whatever its status:
  * a failed run moves too.
  */

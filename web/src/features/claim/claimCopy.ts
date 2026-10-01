@@ -101,7 +101,8 @@ export function claimSuccessNote(result: GuestWorkClaimResult): string {
 
 /**
  * AC-39: a 200 that moved nothing at all ("nothing left to claim") — every count the server reports
- * as moved is zero. `working_copies_dropped` is not a move, so it does not count.
+ * as moved is zero. `working_copies_dropped` is not a move, so it does not count. The server's own
+ * rule is `GuestWorkClaimReport.claimed_anything` (`domain/identity/claim.py`); keep the two in step.
  */
 export function claimMovedNothing(result: GuestWorkClaimResult): boolean {
   return (

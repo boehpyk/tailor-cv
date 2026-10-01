@@ -8,8 +8,9 @@
  * success**: "nothing left to claim" (no cookie, an expired session, a claim whose first response was
  * lost) answers 200, so a retry never reads as a failure.
  *
- * `working_copies_dropped` counts 2.2's working copies, which a claim never moves (OQ-3): the user
- * already owns their source, so they stay with the guest session and go with it.
+ * `working_copies_dropped` counts 2.2's working copies, which a claim never moves (OQ-3, ADR-0025): a
+ * working copy is a copy of a CV some account keeps — possibly another person's, on a shared browser —
+ * so the claim deletes it with the session instead of filing it in this account.
  */
 export interface GuestWorkClaimResult {
   readonly base_cvs: number;

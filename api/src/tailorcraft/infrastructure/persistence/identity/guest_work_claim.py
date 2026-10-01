@@ -39,8 +39,8 @@ waits for nor refuses it:
 2. **The worker never writes an owner column**: the ORM's `UPDATE` sets only dirty attributes, and an
    outcome dirties no owner attribute, so the worker's save cannot write the guest back.
 3. **The claim never bumps `version`**: so the worker's `UPDATE … WHERE version = :loaded` still
-   matches after this commits. Bumping it "for safety" turns a paid result into `SKIPPED` (AC-18's
-   mutation). The `UPDATE`s below name the owner columns and nothing else, on purpose.
+   matches after this commits. Bumping it "for safety" loses a paid result: the worker's outcome save
+   raises `TailoringRunConcurrentlyModified` (AC-18's mutation, observed). The `UPDATE`s below name the owner columns and nothing else, on purpose.
 
 **Lock order** (§0.6): `lock_session` takes the session row `FOR UPDATE`; `transfer`'s `UPDATE`s take
 the user row `FOR KEY SHARE` implicitly, through the `user_id` FK check. A guest `INSERT` waits behind
