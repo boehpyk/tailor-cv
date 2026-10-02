@@ -833,6 +833,9 @@ async def _real_registered_and_mailed(
 async def test_confirming_an_expired_link_is_400_and_the_deletion_is_committed(
     concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
+    """Mutation-proven (T33 carried item): `CommittingPendingRegistrationRepository.remove` without its
+    `commit()` -> red on `the deletion must be committed before the request answers` (`assert 1 == 0`).
+    Production restored byte-exact."""
     queue = install_recording_queue(concurrent_app)
     email = _unique_email("expired")
     try:
@@ -865,6 +868,8 @@ async def test_confirming_an_expired_link_is_400_and_the_deletion_is_committed(
 async def test_confirming_an_address_that_became_an_account_meanwhile_is_409_and_commits_the_deletion(
     concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
+    """Mutation-proven (T33 carried item): the same missing `commit()` on
+    `CommittingPendingRegistrationRepository.remove` -> red. Production restored byte-exact."""
     queue = install_recording_queue(concurrent_app)
     email = _unique_email("raced")
     try:
@@ -1231,6 +1236,9 @@ async def test_resetting_a_password_is_204_changes_the_hash_and_revokes_every_lo
     session: AsyncSession,
     queue: RecordingAccountMailQueue,
 ) -> None:
+    """Mutation-proven (T33 carried item): `revoked = await self._logins.remove_all_for_user(user.id)`
+    replaced by `revoked = 0` in `ResetPassword` -> red on `assert 2 == 0` (both logins survive).
+    Production restored byte-exact."""
     email = _unique_email("reset-ok")
     first, second = await _account_with_two_logins(app, settings, email)
     user_id = await _scalar(session, "SELECT id FROM identity_user WHERE email = :e", e=email)
@@ -1331,6 +1339,10 @@ async def test_a_policy_refusal_is_422_hashes_nothing_and_leaves_the_link_usable
     code: str,
     bound: tuple[str, int] | None,
 ) -> None:
+    """Mutation-proven (T33 carried item): `await self._resets.remove(reset.id)` inserted in
+    `ResetPassword` before `policy.check` -> red for all three parametrizations on `the refusal
+    hashed nothing; only the retry did` (`assert 1 == (1 + 1)`: the consumed link never reaches the
+    retry's hash). Production restored byte-exact."""
     email = _unique_email("reset-policy")
     await seed_user_and_sign_in(client, settings, email=email)
     token = await _reset_requested_and_mailed(client, settings, session, queue, email)
@@ -1429,6 +1441,9 @@ async def test_reset_confirm_with_a_malformed_token_is_400_with_no_database_read
 async def test_an_expired_reset_link_is_400_the_deletion_is_committed_and_nothing_changed(
     concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
+    """Mutation-proven (T33 carried item): `CommittingPasswordResetRepository.remove` without its
+    `commit()` -> red on `the expired row's deletion must be committed before the request answers`
+    (`assert 1 == 0`). Production restored byte-exact."""
     queue = install_recording_queue(concurrent_app)
     email = _unique_email("reset-expired")
     try:
