@@ -40,7 +40,6 @@ from tailorcraft.application.identity.get_current_user import GetCurrentUser
 from tailorcraft.application.identity.log_in import LogIn
 from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
-from tailorcraft.application.identity.register_user import RegisterUser
 from tailorcraft.application.identity.request_password_reset import RequestPasswordReset
 from tailorcraft.application.identity.request_registration import RequestRegistration
 from tailorcraft.application.identity.reset_password import ResetPassword
@@ -1165,32 +1164,6 @@ def _refresh_lifetime(settings: Settings) -> timedelta:
     return timedelta(days=settings.refresh_token_ttl_days)
 
 
-def get_register_user(
-    users: UserRepositoryDep,
-    logins: LoginRepositoryDep,
-    hasher: PasswordHasherDep,
-    tokens: AccessTokensDep,
-    clock: ClockDep,
-    events: EventPublisherDep,
-    settings: SettingsDep,
-) -> RegisterUser:
-    """`PasswordPolicy()` with its defaults — 12 to 128 code points (OQ-3). Constructed here and
-    injected, so the object that refuses a password is the one whose bounds the 422 reports."""
-    return RegisterUser(
-        users,
-        logins,
-        hasher,
-        tokens,
-        clock,
-        events,
-        PasswordPolicy(),
-        refresh_lifetime=_refresh_lifetime(settings),
-    )
-
-
-RegisterUserDep = Annotated[RegisterUser, Depends(get_register_user)]
-
-
 def get_log_in(
     users: UserRepositoryDep,
     logins: LoginRepositoryDep,
@@ -1580,8 +1553,9 @@ def get_request_registration(
     clock: ClockDep,
     settings: SettingsDep,
 ) -> RequestRegistration:
-    """`PasswordPolicy()` with its defaults, `get_register_user`'s reason; the confirmation link's
-    lifetime from `EMAIL_CONFIRMATION_TTL_HOURS`, as a `timedelta` so the unit is a type."""
+    """`PasswordPolicy()` with its defaults, injected so the object that refuses a password is the one
+    whose bounds the 422 reports; the confirmation link's lifetime from
+    `EMAIL_CONFIRMATION_TTL_HOURS`, as a `timedelta` so the unit is a type."""
     return RequestRegistration(
         pending,
         hasher,

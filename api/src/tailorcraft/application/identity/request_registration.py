@@ -13,7 +13,7 @@ the row is committed when it returns; only then is the id handed to the queue �
 race a commit it cannot see (the tailoring precedent). An enqueue failure after the commit leaves
 the row for *Send it again* to supersede, or for the sweep.
 
-**No command dataclass**, `RegisterUser`'s precedent: two raw strings whose rules belong to the
+**No command dataclass**: two raw strings whose rules belong to the
 value objects that parse them on the first two lines.
 
 **This layer does not log.** The route logs `pending_registration_id=` from the returned id.
@@ -47,7 +47,7 @@ class RequestRegistration:
     - `pending`, `hasher`, `mail_queue`, `clock` — ports, bound in the composition root (`pending`
       through a committing adapter: durable on return).
     - `policy` — the `PasswordPolicy` applied, injected so the 422's bounds are the refusing
-      object's own (`RegisterUser`'s reason).
+      object's own.
     - `confirmation_ttl` — the pending registration's lifetime, built from
       `settings.email_confirmation_ttl_hours` (OQ-7). A `timedelta`, so the unit is a type.
 

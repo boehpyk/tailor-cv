@@ -54,7 +54,7 @@ class LogIn:
 
     Constructor arguments: the ports `users`, `logins`, `hasher`, `tokens`, `clock`, `events`,
     `failed_logins` (see the module docstring), and `refresh_lifetime` — the new `Login`'s absolute
-    lifetime, as in `RegisterUser`. **No `PasswordPolicy`**: a login checks the password against the
+    lifetime, a `timedelta`. **No `PasswordPolicy`**: a login checks the password against the
     stored hash and nothing else, so a policy tightened next year cannot lock out anybody who
     registered under this one (`PasswordPolicy`'s docstring).
 

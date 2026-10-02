@@ -41,7 +41,7 @@ class ResetPassword:
     """Set the password of the account whose reset link hashes to `token_hash` to `raw_password`.
 
     Constructor: ports bound in the composition root, and the injected `PasswordPolicy`
-    (`RegisterUser`'s reason: the 422's bounds are the refusing object's own).
+    (so the 422's bounds are the refusing object's own).
 
     Flow of `__call__` (technical plan §2, AC-12), with **one `clock.now()`**:
 

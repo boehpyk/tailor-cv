@@ -13,7 +13,7 @@ only see itself — a `User` checking it would have to load every other user, or
 inside a constructor, and even then two concurrent registrations would both pass the check before
 either inserted. The rule belongs to the one component that sees the whole set atomically: the unique
 index `uq_identity_user_email`. `UserRepository.add` translates its violation into
-`EmailAlreadyRegistered`, and `RegisterUser` never looks the email up first — the insert *is* the
+`EmailAlreadyRegistered`, and `ConfirmRegistration` never looks the email up first — the insert *is* the
 check (technical plan §0.4; I-5, I-6).
 
 **Not a subtype of anything `GuestSession` is.** Both answer "who is asking", and they share no base

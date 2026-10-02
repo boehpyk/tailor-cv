@@ -316,14 +316,12 @@ async def _enforce(
 
 
 def _register_refusal_reason(exc: DomainError) -> str | None:
-    """The `reason=` of `identity.register_refused` (I-1 … I-5), or `None` for an error that is not a
+    """The `reason=` of `identity.register_refused` (I-1 … I-4), or `None` for an error that is not a
     refusal of the input (a hasher failure is I-45's line, written by the adapter)."""
     if isinstance(exc, InvalidEmailAddress):
         return "invalid_email"
     if isinstance(exc, WeakPassword):
         return exc.reason.value
-    if isinstance(exc, EmailAlreadyRegistered):
-        return "email_taken"
     return None
 
 
@@ -334,10 +332,6 @@ def _register_refusal_reason(exc: DomainError) -> str | None:
     dependencies=[Depends(require_trusted_origin)],
     responses={
         **_ORIGIN_NOT_ALLOWED,
-        status.HTTP_409_CONFLICT: {
-            "model": ErrorResponse,
-            "description": "email_already_registered (conceded enumeration, OQ-1)",
-        },
         status.HTTP_422_UNPROCESSABLE_CONTENT: {
             "model": ErrorResponse,
             "description": (
@@ -391,7 +385,7 @@ async def register(
     except DomainError as exc:
         reason = _register_refusal_reason(exc)
         if reason is not None:
-            # Never the email, never the password, never its length (I-1 … I-5, V-11, V-13). A
+            # Never the email, never the password, never its length (I-1 … I-4, V-11, V-13). A
             # broker refusal is the queue adapter's `identity.mail_enqueue_failed` line (V-17).
             log.info(EVENT_REGISTER_REFUSED, reason=reason)
         raise _refusal(exc) from None

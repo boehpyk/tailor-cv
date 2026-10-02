@@ -43,8 +43,9 @@ Used by:
   (one instance, one configured outcome, a `.calls` / `.enqueued` log); `MissingFileStore` is a third
   `FileStorePort` stand-in beside the pre-existing `InMemoryFileStore` and `AlwaysFailingFileStore`,
   for the one case neither covers — a `ready` job's `get` finding nothing (X-47).
-- `tests/integration/identity/{test_register_user,test_log_in,test_refresh_login,test_log_out,
-  test_get_current_user,test_revoke_all_logins}.py` (T13 — the six slice-2.1 use cases).
+- `tests/integration/identity/{test_log_in,test_refresh_login,test_log_out,
+  test_get_current_user,test_revoke_all_logins}.py` (T13 — slice 2.1's use cases;
+  `test_register_user` went with `RegisterUser` in slice 2.5).
   `FakeUserRepository` and `FakeLoginRepository` are `add`-is-the-uniqueness-check and
   revocation-is-deletion respectively (technical plan §0.4, ADR-0020), mirroring
   `FakeGuestSessionRepository`'s shape one context over. `FakeLoginRepository.
@@ -452,8 +453,8 @@ class RecordingPasswordHasher:
 class FakeAccessTokenPort:
     """In-memory `AccessTokenPort` (slice 2.1, T13). `issue` mints a distinct token string per call
     and records `(user_id, at)`; `verify` looks up the id that was returned for that exact string,
-    refusing an unrecognized one. None of T13's six use cases call `verify` — only `issue`, from
-    `RegisterUser`, `LogIn` and `RefreshLogin` — but the fake still needs a working `verify` to
+    refusing an unrecognized one. None of T13's use cases call `verify` — only `issue`, from
+    `LogIn` and `RefreshLogin` — but the fake still needs a working `verify` to
     satisfy `AccessTokenPort`'s `Protocol` under `mypy --strict`; the real adapter's own decode/claim
     rules (I-32 … I-40) are T25's.
     """
