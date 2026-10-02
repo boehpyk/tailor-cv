@@ -1,4 +1,4 @@
-"""The worker's hard time limit, and the two settings refusals it bounds.
+"""The worker's time limits, and the settings refusals they bound.
 
 **Why this is its own module** (slice 2.1, T46, OQ-2): `tasks/app.py` builds the Celery application
 at import, so the only way to run these refusals used to be to build one. `python -m tailorcraft.cli
@@ -19,6 +19,10 @@ from tailorcraft.infrastructure.settings import MisconfiguredSettings, Settings
 # `tasks/app.py`'s `PURGE_LOCK_TTL_SECONDS` — and a limit written twice is a limit that drifts from
 # the check guarding it.
 TASK_TIME_LIMIT_SECONDS: Final = 180
+# The soft time limit: `SoftTimeLimitExceeded` is raised inside the task at this many seconds. Named
+# for the same reason as the hard limit: `create_celery`'s config and the mail-deadline refusal
+# below both read it (slice 2.5).
+TASK_SOFT_TIME_LIMIT_SECONDS: Final = 120
 
 
 def refuse_stale_windows_within_time_limit(settings: Settings) -> None:
@@ -70,4 +74,28 @@ def refuse_stale_windows_within_time_limit(settings: Settings) -> None:
             f"task_time_limit={TASK_TIME_LIMIT_SECONDS}. The stale-job sweep would record a render "
             "that is still running as abandoned, and its paid-for result would be lost. Set it "
             f"above {TASK_TIME_LIMIT_SECONDS} (the default is 300)."
+        )
+
+
+def refuse_mail_deadline_within_soft_limit(settings: Settings) -> None:
+    """Raise `MisconfiguredSettings` unless `MAIL_TOTAL_DEADLINE_SECONDS` is below the soft limit.
+
+    Slice 2.5 (technical plan §3, AC-24). Same shape, same two callers, same "every environment" as
+    the stale-window refusals above. The SMTP adapter stops *starting* attempts once its deadline
+    has passed; an attempt already in flight is bounded by `MAIL_SEND_TIMEOUT_SECONDS` per socket
+    operation. If the deadline reached the soft limit, `SoftTimeLimitExceeded` would land inside a
+    send instead of the adapter deciding `unavailable` itself, and the task would record no outcome
+    at all — a person waiting on a confirmation link, and nothing anywhere saying why it never came.
+    Equality is refused: a deadline at second 120 and a soft limit at second 120 is that race.
+
+    The field's own bound (5-120) admits 120 on purpose, so that this rule is what refuses it, by
+    name, rather than a `ValidationError` that cannot say why.
+    """
+    if settings.mail_total_deadline_seconds >= TASK_SOFT_TIME_LIMIT_SECONDS:
+        raise MisconfiguredSettings(
+            "MAIL_TOTAL_DEADLINE_SECONDS must be below Celery's task_soft_time_limit: "
+            f"mail_total_deadline_seconds={settings.mail_total_deadline_seconds} is not below "
+            f"task_soft_time_limit={TASK_SOFT_TIME_LIMIT_SECONDS}. A send could then be interrupted "
+            "by the soft limit before the mail adapter records an outcome. Set it below "
+            f"{TASK_SOFT_TIME_LIMIT_SECONDS} (the default is 30)."
         )

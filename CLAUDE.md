@@ -1000,8 +1000,9 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `check-settings` (`infrastructure/check_settings_command.py`) builds `Settings` and runs the Celery
   stale-window check **once, in a single pre-flight process**, before uvicorn is `exec`'d — so a
   refusal exits the shell non-zero and uvicorn never starts, and success replaces the shell with
-  uvicorn (still PID 1, still receives signals directly). It covers **all five** refusals the API
-  process has, the same code paths a request would hit, not a copy:
+  uvicorn (still PID 1, still receives signals directly). It covers **all eleven** refusals the API
+  process has (five since 2.1, six added in 2.5), the same code paths a request would hit, not a
+  copy:
   1. `GEMINI_API_KEY` empty under `APP_ENV=production` (`Settings` validator).
   2. `JWT_SIGNING_KEY` missing, whitespace, the `.env.example` placeholder, or shorter than 32 bytes,
      under `APP_ENV=production` (`Settings` validator, AC-22/I-46).
@@ -1010,6 +1011,12 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   4. `TAILORING_STALE_AFTER_SECONDS` at or below the Celery hard time limit
      (`tasks/limits.refuse_stale_windows_within_time_limit`).
   5. `EXPORT_STALE_AFTER_SECONDS` at or below the same hard time limit (same function).
+  6–10. (slice 2.5, `APP_ENV=production` only, `Settings` validator) `MAIL_SMTP_HOST` empty;
+     `MAIL_SMTP_SECURITY=none`; `MAIL_SMTP_USERNAME`/`MAIL_SMTP_PASSWORD` empty; `MAIL_FROM_ADDRESS`
+     not an `EmailAddress`; `PUBLIC_BASE_URL` not `https://`. **The box's `.env` must carry the
+     `MAIL_*` values before 2.5's image starts there**, or the API never starts.
+  11. `MAIL_TOTAL_DEADLINE_SECONDS` at or above Celery's soft limit (120), every environment
+     (`tasks/limits.refuse_mail_deadline_within_soft_limit`).
   It prints `settings ok` and exits 0, or `check-settings: <sentence>` on stderr and exits 1 — never
   a secret: a `MisconfiguredSettings` sentence names the variable, not the value; a pydantic
   `ValidationError` is reduced to field names and error types.

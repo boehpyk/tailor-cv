@@ -19,6 +19,9 @@ from urllib.parse import urlsplit, urlunsplit
 from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from tailorcraft.domain.identity.errors import InvalidEmailAddress
+from tailorcraft.domain.identity.value_objects import EmailAddress
+
 Environment = Literal["production", "dev", "test"]
 
 # The Redis database the test suite owns. Redis ships with 16 (0-15) and this system uses three of
@@ -119,6 +122,41 @@ def _refuse_weak_jwt_signing_key(key: SecretStr) -> None:
         f"Generate one with `openssl rand -hex {JWT_SIGNING_KEY_MIN_BYTES}` and set it in the "
         "box's .env (mode 600, created by hand), or run with APP_ENV=dev."
     )
+
+
+def _mail_refusal(settings: Settings) -> str | None:
+    """The first production mail rule `settings` breaks, as a sentence fragment, or `None`.
+
+    A plain function returning a constant string, so the caller raises outside any `except`. Order
+    is the order of AC-24's rows (6)-(10); only the first broken rule is reported, like the JWT key.
+    """
+    if not settings.mail_smtp_host.strip():
+        return "MAIL_SMTP_HOST is empty"
+    if settings.mail_smtp_security == "none":
+        return "MAIL_SMTP_SECURITY disables TLS (use `starttls` or `tls`)"
+    if not settings.mail_smtp_username.strip():
+        return "MAIL_SMTP_USERNAME is empty"
+    if not settings.mail_smtp_password.get_secret_value().strip():
+        return "MAIL_SMTP_PASSWORD is empty"
+    if not _is_email_address(settings.mail_from_address):
+        return "MAIL_FROM_ADDRESS is not a valid email address"
+    parts = urlsplit(settings.public_base_url)
+    if parts.scheme != "https" or not parts.hostname:
+        return (
+            "PUBLIC_BASE_URL is not an https URL (every emailed link is built from it, and a "
+            "token in a link must never travel in clear)"
+        )
+    return None
+
+
+def _is_email_address(value: str) -> bool:
+    """Whether `value` parses as the domain's `EmailAddress`. The refusal is swallowed here, on
+    purpose: its reason is not needed, and returning a bool keeps the raise outside this `except`."""
+    try:
+        EmailAddress.parse(value)
+    except InvalidEmailAddress:
+        return False
+    return True
 
 
 class Settings(BaseSettings):
@@ -544,13 +582,18 @@ class Settings(BaseSettings):
     # not to protect money. Bounded both ways so a typo cannot disable it or make it meaningless.
     guest_work_claim_rate_limit_per_hour: int = Field(default=10, ge=1, le=100)
 
-    # -- Account mail (slice 2.5, ADR-0026, technical plan §0.5) -------------------------------
+    # -- Account mail (slice 2.5, ADR-0026, technical plan §0.5 and §3) -----------------------
     # SMTP submission on the standard library: the vendor is these settings, not a dependency.
-    # Plain fields with in-code defaults only. Their bounds and the production refusals (an empty
-    # host, `none` security, empty credentials, an unparseable sender, a non-https base URL) are
-    # T20/T21's RED/GREEN pair, and a field is not a refusal.
+    # The production refusals (6)-(10) are `_refuse_unusable_mail_in_production` below, and the
+    # deadline's ceiling against Celery's soft limit is `tasks/limits.py`'s
+    # `refuse_mail_deadline_within_soft_limit` (it reads a Celery number, so it lives beside the
+    # stale-window refusals and reaches `check-settings` the same way).
+    #
+    # The string fields here carry NO `Field(min_length=…)`: a `ValidationError` renders
+    # `input_value`, and for `MAIL_SMTP_PASSWORD` that is the secret. The integer bounds below are
+    # safe for the reason the TTLs above are — a rejected integer leaks nothing.
     mail_smtp_host: str = ""
-    mail_smtp_port: int = 587
+    mail_smtp_port: int = Field(default=587, ge=1, le=65535)
     # `starttls` (587, upgraded, required), `tls` (465, implicit TLS) or `none` (Mailpit in dev and
     # CI only). There is no "starttls if offered": a server that does not offer it is unavailable.
     mail_smtp_security: Literal["starttls", "tls", "none"] = "starttls"
@@ -561,13 +604,25 @@ class Settings(BaseSettings):
     mail_from_name: str = "TailorCraft"
     # The socket timeout of every SMTP operation. `wait_for` cannot cancel a thread, so this is the
     # bound that actually holds; Celery's hard limit is the one behind it.
-    mail_send_timeout_seconds: int = 10
-    # No new attempt starts once this has passed. Below Celery's soft limit (120).
-    mail_total_deadline_seconds: int = 30
+    mail_send_timeout_seconds: int = Field(default=10, ge=1, le=30)
+    # No new attempt starts once this has passed. The field admits 120 so that the *rule* — strictly
+    # below Celery's soft limit (120) — is the thing that refuses it, by name, in every environment.
+    mail_total_deadline_seconds: int = Field(default=30, ge=5, le=120)
     # Connections per send, for `unavailable` and `throttled` only. The task never retries.
-    mail_max_attempts: int = 2
+    mail_max_attempts: int = Field(default=2, ge=1, le=3)
     # The fourth named queue (plan §0.10): a person waiting on mail has no spinner to look at.
     mail_queue_name: str = "mail"
+    # How long an emailed link stays usable (OQ-7). Ceilings bound a typo: a link in an inbox is a
+    # bearer credential for as long as it lives, and a reset link more so.
+    email_confirmation_ttl_hours: int = Field(default=24, ge=1, le=72)
+    password_reset_ttl_minutes: int = Field(default=60, ge=10, le=240)
+    # Mail-sending limiters. All three fail CLOSED, like the login/register ones above: each request
+    # that passes may send an email to an address a stranger typed, and a limiter that fails open is
+    # a mail cannon pointed at somebody else's inbox (and at our sender reputation). `ge=1` for the
+    # same lockout-by-typo reason as `gt=0` above.
+    register_rate_limit_per_email_per_hour: int = Field(default=3, ge=1)
+    password_reset_rate_limit_per_ip_per_hour: int = Field(default=10, ge=1)
+    password_reset_rate_limit_per_email_per_hour: int = Field(default=3, ge=1)
 
     @model_validator(mode="after")
     def _refuse_to_boot_without_a_key_in_production(self) -> Settings:
@@ -620,6 +675,36 @@ class Settings(BaseSettings):
         """
         if self.app_env == "production":
             _refuse_weak_jwt_signing_key(self.jwt_signing_key)
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_unusable_mail_in_production(self) -> Settings:
+        """AC-24, refusals (6)-(10): production must be able to send the mail that 2.5 depends on.
+
+        Registration and password reset both end in an email. A box that cannot send one boots,
+        answers every register with the byte-identical 202 it owes an existing address, and then
+        records `unavailable` in a worker log nobody reads, so nobody can ever sign up and every
+        health check is green. That is the Gemini guard's failure shape again, so it is refused the
+        same way: at startup, by name, through `check-settings` before uvicorn.
+
+        Dev and test accept every one of these values on purpose: Mailpit takes `none` security and
+        no credentials, and `http://localhost:8080` is the dev origin.
+
+        Each sentence is a constant naming the variable and never its value: the host is not a
+        secret, but the password is, and one rule for all five is a rule nobody has to re-check.
+        The from-address is parsed with the domain's own `EmailAddress.parse`, so "a sender we could
+        send from" and "an address the product accepts" are one rule. Its refusal is raised outside
+        the `except`, so no `__context__` carries the refused address into a rendered traceback.
+        """
+        if self.app_env != "production":
+            return self
+        reason = _mail_refusal(self)
+        if reason is not None:
+            raise MisconfiguredSettings(
+                f"{reason}; APP_ENV=production refuses to start without working account mail, "
+                "because registration and password reset both end in an email. Set it in the box's "
+                ".env (mode 600, created by hand), or run with APP_ENV=dev."
+            )
         return self
 
     @property

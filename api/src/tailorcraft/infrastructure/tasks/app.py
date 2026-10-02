@@ -42,13 +42,17 @@ from kombu import Queue
 
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.settings import Settings, get_settings
+from tailorcraft.infrastructure.tasks.limits import (
+    TASK_SOFT_TIME_LIMIT_SECONDS,
+    refuse_mail_deadline_within_soft_limit,
+    refuse_stale_windows_within_time_limit,
+)
 
 # `as` is an explicit re-export: `tasks.app.TASK_TIME_LIMIT_SECONDS` was this module's name for the
 # limit before it moved to `limits.py`, and existing importers keep it.
 from tailorcraft.infrastructure.tasks.limits import (
     TASK_TIME_LIMIT_SECONDS as TASK_TIME_LIMIT_SECONDS,
 )
-from tailorcraft.infrastructure.tasks.limits import refuse_stale_windows_within_time_limit
 
 # The queue Celery publishes to when nothing says otherwise — Celery's own default name, written
 # down rather than left implicit, because `task_queues` below turns the set of consumed queues into
@@ -156,6 +160,7 @@ def create_celery() -> Celery:
     Raises:
         MisconfiguredSettings: `tailoring_stale_after_seconds` is not above the hard time limit.
         MisconfiguredSettings: `export_stale_after_seconds` is not above the hard time limit.
+        MisconfiguredSettings: `mail_total_deadline_seconds` is not below the soft time limit.
     """
     settings = get_settings()
 
@@ -168,6 +173,8 @@ def create_celery() -> Celery:
     # `uvicorn --workers N` a refusal here respawns the failing import for ever rather than exiting,
     # which is why the production `api` command runs `check-settings` first.
     refuse_stale_windows_within_time_limit(settings)
+    # Slice 2.5: the mail adapter's deadline must end before the soft limit interrupts a send.
+    refuse_mail_deadline_within_soft_limit(settings)
 
     celery_app = Celery(
         "tailorcraft",
@@ -218,7 +225,7 @@ def create_celery() -> Celery:
         task_acks_late=True,
         worker_prefetch_multiplier=1,
         # An export the user is waiting on must fail visibly rather than hang forever.
-        task_soft_time_limit=120,
+        task_soft_time_limit=TASK_SOFT_TIME_LIMIT_SECONDS,
         task_time_limit=TASK_TIME_LIMIT_SECONDS,
         result_expires=3600,
         # --- The Redis redelivery window (slice 1.3) --------------------------------------------
