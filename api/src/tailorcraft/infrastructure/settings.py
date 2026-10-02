@@ -544,6 +544,31 @@ class Settings(BaseSettings):
     # not to protect money. Bounded both ways so a typo cannot disable it or make it meaningless.
     guest_work_claim_rate_limit_per_hour: int = Field(default=10, ge=1, le=100)
 
+    # -- Account mail (slice 2.5, ADR-0026, technical plan §0.5) -------------------------------
+    # SMTP submission on the standard library: the vendor is these settings, not a dependency.
+    # Plain fields with in-code defaults only. Their bounds and the production refusals (an empty
+    # host, `none` security, empty credentials, an unparseable sender, a non-https base URL) are
+    # T20/T21's RED/GREEN pair, and a field is not a refusal.
+    mail_smtp_host: str = ""
+    mail_smtp_port: int = 587
+    # `starttls` (587, upgraded, required), `tls` (465, implicit TLS) or `none` (Mailpit in dev and
+    # CI only). There is no "starttls if offered": a server that does not offer it is unavailable.
+    mail_smtp_security: Literal["starttls", "tls", "none"] = "starttls"
+    mail_smtp_username: str = ""
+    # A `SecretStr`, `jwt_signing_key`'s reason: neither `repr(settings)` nor a traceback prints it.
+    mail_smtp_password: SecretStr = SecretStr("")
+    mail_from_address: str = ""
+    mail_from_name: str = "TailorCraft"
+    # The socket timeout of every SMTP operation. `wait_for` cannot cancel a thread, so this is the
+    # bound that actually holds; Celery's hard limit is the one behind it.
+    mail_send_timeout_seconds: int = 10
+    # No new attempt starts once this has passed. Below Celery's soft limit (120).
+    mail_total_deadline_seconds: int = 30
+    # Connections per send, for `unavailable` and `throttled` only. The task never retries.
+    mail_max_attempts: int = 2
+    # The fourth named queue (plan §0.10): a person waiting on mail has no spinner to look at.
+    mail_queue_name: str = "mail"
+
     @model_validator(mode="after")
     def _refuse_to_boot_without_a_key_in_production(self) -> Settings:
         """AC-32/G-32: `APP_ENV=production` with an empty `GEMINI_API_KEY` must not start.
