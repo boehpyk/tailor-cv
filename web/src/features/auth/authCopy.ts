@@ -156,8 +156,10 @@ function copyForCode(
     case 'refresh_token_reused':
     case 'refresh_in_progress':
     case 'invalid_access_token':
-      // Answers from refresh / me, never from these two forms. Written down so the switch stays
-      // exhaustive; if one ever arrives here, "try again" is still true.
+    case 'link_invalid':
+      // Answers from refresh / me — and, for `link_invalid` (slice 2.5), from the two mail-link
+      // confirmations, whose screens have their own copy — never from these two forms. Written
+      // down so the switch stays exhaustive; if one ever arrives here, "try again" is still true.
       return { message: 'Something went wrong. Try again.' };
   }
 }
