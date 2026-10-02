@@ -131,6 +131,7 @@ from tailorcraft.infrastructure.api.guest_session import COOKIE_NAME
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks import container as tailoring_container
+from tests.api.me_support import seed_user_and_sign_in
 from tests.integration.fakes import FakeLlm, FakeTailoringQueue
 
 # ---------------------------------------------------------------------------------------------
@@ -1361,13 +1362,7 @@ async def test_a_saved_user_owned_cv_id_is_404_and_creates_no_run(
     — the same shape every other T19 test blocked on that route takes — and it becomes AC-19's real
     proof the moment T21 lands, without editing this test.
     """
-    register = await client.post(
-        "/api/auth/register",
-        json={"email": f"t19-ac19-{uuid4().hex}@example.com", "password": "a strong password 12"},
-        headers={"Origin": settings.public_base_url},
-    )
-    assert register.status_code == 201, register.text
-    token = register.json()["access_token"]
+    token, _ = await seed_user_and_sign_in(client, settings)
 
     uploaded = await client.post(
         "/api/me/base-cvs",

@@ -4,7 +4,8 @@ Every `/api/me/job-postings*`, `/api/me/tailoring-runs*` and `/api/me/export-job
 skeleton (`NotImplementedError`), so the rows those tests read are **seeded through the real
 repositories** on the test's own `session` — the same session the `app` fixture serves requests
 from — and never through the routes under test, except in the tests that are *about* a create
-route. Users are registered through the real 2.1 endpoint, so the bearer is the exact token
+route. Users are seeded through the repository and signed in through the real login endpoint
+(`seed_user_and_sign_in`, 2.5 T7), so the bearer is the exact token
 `require_user` sees in production; guests are minted through the real 1.1 upload, so the cookie is
 too.
 """
@@ -28,20 +29,25 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
-from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.value_objects import EmailAddress, GuestSessionId, Password, UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId, JobPostingText
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
-from tailorcraft.infrastructure.api.deps import get_app_settings
+from tailorcraft.infrastructure.api.deps import get_app_settings, get_session
 from tailorcraft.infrastructure.api.main import create_app
+from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
     SqlAlchemyExportJobRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.identity.user import (
+    SqlAlchemyUserRepository,
 )
 from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
     SqlAlchemyBaseCvRepository,
@@ -65,6 +71,7 @@ ME_POSTINGS = "/api/me/job-postings"
 ME_RUNS = "/api/me/tailoring-runs"
 ME_EXPORT_JOBS = "/api/me/export-jobs"
 ME_BASE_CVS = "/api/me/base-cvs"
+LOGIN_URL = "/api/auth/login"
 REGISTER_URL = "/api/auth/register"
 DELETE_ACCOUNT_URL = "/api/auth/delete-account"
 A_PASSWORD = "correct horse battery staple 9"
@@ -224,15 +231,55 @@ class Account:
         return self.owner.user_id
 
 
-async def register(client: AsyncClient, settings: Settings) -> Account:
+async def seed_user_and_sign_in(
+    client: AsyncClient, settings: Settings, *, email: str | None = None
+) -> tuple[str, UUID]:
+    """A fresh user who did not come through registration, signed in through the real login route.
+
+    Slice 2.5 (T7): `POST /api/auth/register` stops returning a token (it answers 202, empty), so a
+    test that needs *an account* must not depend on it. The user is written through the real
+    `UserRepository` with a hash from the app's own (cheap-parameter) hasher, **committed** — a
+    seed that only flushes dies with a refused request (2.3) — and the bearer is whatever
+    `POST /api/auth/login` hands back, so it is exactly the token `require_user` sees in production.
+
+    The app is reached through the client's transport because every caller holds only `client` and
+    `settings`; a test's `session` fixture is the one `app.state.session_factory` returns, so the
+    seed lands in the same transaction the request will read.
+    """
+    app = client._transport.app  # type: ignore[attr-defined]
+    assert isinstance(app, FastAPI)
+    factory = app.state.session_factory
+    seed_session: AsyncSession = factory()
+    # The shared-session app overrides `get_session`; a concurrent app hands out a real session per
+    # call, which this helper must release itself.
+    owns_session = get_session not in app.dependency_overrides
+    email = email or f"t21-{uuid4().hex}@example.com"
+    try:
+        users = SqlAlchemyUserRepository(seed_session)
+        user = User.register_with_password(
+            users.next_identity(),
+            EmailAddress.parse(email),
+            await app.state.password_hasher.hash(Password.from_input(A_PASSWORD)),
+            at=SystemClock().now(),
+        )
+        user.release_events()
+        await users.add(user)
+        await seed_session.commit()
+    finally:
+        if owns_session:
+            await seed_session.close()
     response = await client.post(
-        REGISTER_URL,
-        json={"email": f"t21-{uuid4().hex}@example.com", "password": A_PASSWORD},
+        LOGIN_URL,
+        json={"email": email, "password": A_PASSWORD},
         headers={"Origin": settings.public_base_url},
     )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    return Account(str(body["access_token"]), UserOwner(UserId(UUID(body["user"]["id"]))))
+    assert response.status_code == 200, response.text
+    return str(response.json()["access_token"]), user.id.value
+
+
+async def register(client: AsyncClient, settings: Settings) -> Account:
+    token, user_id = await seed_user_and_sign_in(client, settings)
+    return Account(token, UserOwner(UserId(user_id)))
 
 
 async def mint_guest(client: AsyncClient, session: AsyncSession) -> GuestOwner:

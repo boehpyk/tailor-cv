@@ -77,6 +77,7 @@ from tailorcraft.infrastructure.api.routers.intake import _failure_message
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
+from tests.api.me_support import seed_user_and_sign_in
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "cvs"
 
@@ -1550,21 +1551,13 @@ def test_failure_message_is_textually_distinct_for_every_extraction_failure_reas
 # ---------------------------------------------------------------------------------------------
 
 ME_BASE_CVS_URL = "/api/me/base-cvs"
-REGISTER_URL = "/api/auth/register"
 
 
 async def _register_2_2(client: AsyncClient, settings: Settings) -> tuple[str, str]:
-    """A fresh registered user, through the real (2.1, already-implemented) register endpoint.
-    Suffixed `_2_2` to stay unmistakably apart from anything 1.1's tests might one day add here."""
-    email = f"t19-2-2-{uuid4().hex}@example.com"
-    response = await client.post(
-        REGISTER_URL,
-        json={"email": email, "password": "correct horse battery staple 9"},
-        headers={"Origin": settings.public_base_url},
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    return str(body["access_token"]), str(body["user"]["id"])
+    """A fresh user with a real bearer (seeded, then signed in through the real login route — 2.5
+    T7). Suffixed `_2_2` to stay unmistakably apart from anything 1.1's tests might one day add."""
+    token, user_id = await seed_user_and_sign_in(client, settings)
+    return token, str(user_id)
 
 
 def _bearer_2_2(token: str) -> dict[str, str]:
