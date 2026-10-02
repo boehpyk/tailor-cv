@@ -84,3 +84,11 @@ def test_identity_module_never_imports_intake_posting_tailoring_export_or_retent
         f"contexts' rows in one adapter transaction and names them only as counts and `FileRef`s "
         f"(ADR-0025); an import of their types here means that boundary has gone."
     )
+
+
+def test_the_walk_covers_slice_2_5s_new_modules() -> None:
+    """Slice 2.5 AC-6: guard the guard for the modules it added, so the allow-list cannot pass by
+    not looking at them."""
+    names = {p.name for p in _identity_modules()}
+
+    assert {"account_mail.py", "pending_registration.py", "password_reset.py"} <= names

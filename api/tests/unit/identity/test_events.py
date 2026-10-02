@@ -1,4 +1,6 @@
-"""Domain events for `identity` (slice 2.1): the five events' exact field sets (AC-5).
+"""Domain events for `identity` (slice 2.1): the six events' exact field sets (AC-5).
+
+Five from 2.1; slice 2.5 (AC-4) added `PasswordChangedByReset`.
 
 Pure domain tests: no I/O, no fixtures, no event loop, no mocks. Checked structurally via
 `dataclasses.fields()`, the same form `tests/unit/tailoring/test_events.py` and
@@ -19,6 +21,7 @@ import dataclasses
 from tailorcraft.domain.identity.events import (
     LoggedIn,
     LoggedOut,
+    PasswordChangedByReset,
     RefreshTokenReuseDetected,
     UserPasswordRehashed,
     UserRegistered,
@@ -30,6 +33,7 @@ _ALL_EVENTS = (
     LoggedIn,
     LoggedOut,
     RefreshTokenReuseDetected,
+    PasswordChangedByReset,
 )
 
 
@@ -89,3 +93,21 @@ def test_no_identity_event_has_a_field_whose_name_mentions_email() -> None:
         assert not any("email" in name.lower() for name in field_names), (
             f"{event_cls.__name__} has a field whose name mentions 'email': {field_names}"
         )
+
+
+# --- slice 2.5 (AC-4): the sixth event --------------------------------------------------------
+
+
+def test_password_changed_by_reset_field_set_is_exactly_the_agreed_fields() -> None:
+    """The count of logins evicted is the point of the event ("0" is a forgotten password, "4" is
+    somebody evicting devices). **No hash, no token, no address**: the event that follows a
+    credential change is the most tempting place to put the credential. Passes on arrival: the
+    skeleton wrote this event whole."""
+    field_names = {field.name for field in dataclasses.fields(PasswordChangedByReset)}
+
+    assert field_names == {"user_id", "logins_revoked", "occurred_at"}
+
+
+def test_the_pinned_event_set_is_six() -> None:
+    assert len(_ALL_EVENTS) == 6
+    assert PasswordChangedByReset in _ALL_EVENTS
