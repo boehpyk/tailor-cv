@@ -22,18 +22,19 @@ from tailorcraft.infrastructure.settings import (
 )
 from tailorcraft.infrastructure.tasks import app as tasks_app_module
 from tailorcraft.infrastructure.tasks.app import TASK_TIME_LIMIT_SECONDS
+from tests.unit._production_mail import PRODUCTION_MAIL
 
 
 def test_production_with_an_empty_key_refuses_to_boot() -> None:
     with pytest.raises(MisconfiguredSettings):
-        Settings(app_env="production", gemini_api_key="")
+        Settings(app_env="production", **PRODUCTION_MAIL, gemini_api_key="")
 
 
 def test_production_with_a_whitespace_only_key_refuses_to_boot() -> None:
     """A whitespace-only key counts as empty (the class's own docstring: "we have a key" must not be
     satisfiable by a space) — the plausible hand-edit-a-`.env` typo, not a hypothetical."""
     with pytest.raises(MisconfiguredSettings):
-        Settings(app_env="production", gemini_api_key="   ")
+        Settings(app_env="production", **PRODUCTION_MAIL, gemini_api_key="   ")
 
 
 @pytest.mark.parametrize("app_env", ["dev", "test"])
@@ -57,6 +58,7 @@ def test_the_guard_never_leaks_a_secret_from_a_sibling_field() -> None:
     with pytest.raises(MisconfiguredSettings) as exc_info:
         Settings(
             app_env="production",
+            **PRODUCTION_MAIL,
             gemini_api_key="",
             database_url=(
                 f"postgresql+asyncpg://tailorcraft:{sentinel_password}@postgres:5432/tailorcraft"
@@ -248,14 +250,24 @@ def test_the_collision_refusal_names_no_url_and_leaks_no_password() -> None:
 
 def test_production_with_an_empty_jwt_signing_key_refuses_to_boot() -> None:
     with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
-        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(""))
+        Settings(
+            app_env="production",
+            **PRODUCTION_MAIL,
+            gemini_api_key="x",
+            jwt_signing_key=SecretStr(""),
+        )
 
 
 def test_production_with_a_whitespace_only_jwt_signing_key_refuses_to_boot() -> None:
     """The same "a space is not a key" rule the Gemini guard already applies — the plausible
     hand-edited-`.env` typo, not a hypothetical."""
     with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
-        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr("   "))
+        Settings(
+            app_env="production",
+            **PRODUCTION_MAIL,
+            gemini_api_key="x",
+            jwt_signing_key=SecretStr("   "),
+        )
 
 
 def test_production_with_the_example_placeholder_key_refuses_to_boot() -> None:
@@ -267,6 +279,7 @@ def test_production_with_the_example_placeholder_key_refuses_to_boot() -> None:
     with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
         Settings(
             app_env="production",
+            **PRODUCTION_MAIL,
             gemini_api_key="x",
             jwt_signing_key=SecretStr(JWT_SIGNING_KEY_PLACEHOLDER),
         )
@@ -288,7 +301,12 @@ def test_production_with_a_31_byte_jwt_signing_key_refuses_to_boot_and_never_lea
     assert len(marker.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES - 1
 
     with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY") as exc_info:
-        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(marker))
+        Settings(
+            app_env="production",
+            **PRODUCTION_MAIL,
+            gemini_api_key="x",
+            jwt_signing_key=SecretStr(marker),
+        )
 
     rendered_traceback = "".join(
         traceback.format_exception(
@@ -303,7 +321,9 @@ def test_production_with_a_32_byte_jwt_signing_key_boots() -> None:
     key = "a" * JWT_SIGNING_KEY_MIN_BYTES
     assert len(key.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES
 
-    settings = Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+    settings = Settings(
+        app_env="production", **PRODUCTION_MAIL, gemini_api_key="x", jwt_signing_key=SecretStr(key)
+    )
 
     assert settings.jwt_signing_key.get_secret_value() == key
 
@@ -317,7 +337,9 @@ def test_a_32_byte_key_of_multibyte_characters_is_counted_in_bytes_not_character
     assert len(key) == 16
     assert len(key.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES
 
-    settings = Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+    settings = Settings(
+        app_env="production", **PRODUCTION_MAIL, gemini_api_key="x", jwt_signing_key=SecretStr(key)
+    )
 
     assert settings.jwt_signing_key.get_secret_value() == key
 
@@ -331,7 +353,12 @@ def test_a_31_byte_key_of_multibyte_characters_refuses_to_boot() -> None:
     assert len(key.encode("utf-8")) == JWT_SIGNING_KEY_MIN_BYTES - 1
 
     with pytest.raises(MisconfiguredSettings, match="JWT_SIGNING_KEY"):
-        Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+        Settings(
+            app_env="production",
+            **PRODUCTION_MAIL,
+            gemini_api_key="x",
+            jwt_signing_key=SecretStr(key),
+        )
 
 
 @pytest.mark.parametrize("app_env", ["dev", "test"])
@@ -351,7 +378,9 @@ def test_jwt_signing_key_is_a_secret_str_and_never_appears_in_repr() -> None:
     construction; this pins that `jwt_signing_key` is actually typed as one and stays masked on the
     live object, not only on the class's declared default."""
     key = "b" * JWT_SIGNING_KEY_MIN_BYTES
-    settings = Settings(app_env="production", gemini_api_key="x", jwt_signing_key=SecretStr(key))
+    settings = Settings(
+        app_env="production", **PRODUCTION_MAIL, gemini_api_key="x", jwt_signing_key=SecretStr(key)
+    )
 
     assert isinstance(settings.jwt_signing_key, SecretStr)
     assert key not in repr(settings)
