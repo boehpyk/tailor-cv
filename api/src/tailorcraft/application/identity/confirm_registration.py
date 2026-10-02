@@ -18,8 +18,10 @@ refusal's `reason` from `ConfirmationTokenInvalid`.
 
 from __future__ import annotations
 
+from tailorcraft.domain.identity.errors import ConfirmationTokenInvalid, EmailAlreadyRegistered
 from tailorcraft.domain.identity.ports import PendingRegistrationRepository, UserRepository
-from tailorcraft.domain.identity.value_objects import TokenHash, UserId
+from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.value_objects import TokenHash, TokenRefusal, UserId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -54,4 +56,25 @@ class ConfirmRegistration:
         self._events = events
 
     async def __call__(self, token_hash: TokenHash) -> UserId:
-        raise NotImplementedError
+        now = self._clock.now()
+
+        pending = await self._pending.lock_by_token_hash(token_hash)
+        if pending is None:
+            raise ConfirmationTokenInvalid(TokenRefusal.UNKNOWN)
+        if pending.is_expired(now):
+            await self._pending.remove(pending.id)
+            raise ConfirmationTokenInvalid(TokenRefusal.EXPIRED)
+
+        email, password_hash = pending.confirm(now)
+        user = User.register_with_password(self._users.next_identity(), email, password_hash, now)
+        try:
+            # The insert is the uniqueness check, as in 2.1: an account made for this address since
+            # the link was mailed wins, and the pending row has no future either way.
+            await self._users.add(user)
+        except EmailAlreadyRegistered:
+            await self._pending.remove(pending.id)
+            raise
+        await self._pending.remove(pending.id)
+
+        await self._events.publish(*user.release_events())
+        return user.id

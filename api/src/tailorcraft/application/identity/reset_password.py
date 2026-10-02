@@ -20,13 +20,19 @@ handler. **This layer does not log**; the route logs the refusal's `reason`.
 
 from __future__ import annotations
 
+from tailorcraft.domain.identity.errors import ResetTokenInvalid
 from tailorcraft.domain.identity.ports import (
     LoginRepository,
     PasswordHasherPort,
     PasswordResetRepository,
     UserRepository,
 )
-from tailorcraft.domain.identity.value_objects import PasswordPolicy, TokenHash
+from tailorcraft.domain.identity.value_objects import (
+    Password,
+    PasswordPolicy,
+    TokenHash,
+    TokenRefusal,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -73,4 +79,30 @@ class ResetPassword:
         self._policy = policy
 
     async def __call__(self, token_hash: TokenHash, raw_password: str) -> None:
-        raise NotImplementedError
+        password = Password.from_input(raw_password)
+        now = self._clock.now()
+
+        # Unlocked, only to learn whose reset this is: the user is locked before the reset (§0.8).
+        unlocked = await self._resets.find_by_token_hash(token_hash)
+        if unlocked is None:
+            raise ResetTokenInvalid(TokenRefusal.UNKNOWN)
+        user = await self._users.get_for_update(unlocked.user_id)
+        reset = await self._resets.lock_by_token_hash(token_hash)
+        if reset is None:
+            # Used or superseded between the unlocked read and the lock.
+            raise ResetTokenInvalid(TokenRefusal.UNKNOWN)
+        if reset.is_expired(now):
+            await self._resets.remove(reset.id)
+            raise ResetTokenInvalid(TokenRefusal.EXPIRED)
+
+        # Before any write, so a refused password leaves the link usable for a second attempt.
+        self._policy.check(password, user.email)
+        new_hash = await self._hasher.hash(password)
+
+        # Revocation is deletion (ADR-0020); the count goes onto the event the aggregate records.
+        revoked = await self._logins.remove_all_for_user(user.id)
+        user.reset_password(new_hash, now, logins_revoked=revoked)
+        await self._users.save(user)
+        await self._resets.remove_all_for_user(user.id)
+
+        await self._events.publish(*user.release_events())

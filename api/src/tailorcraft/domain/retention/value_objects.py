@@ -459,9 +459,6 @@ class IdentityTokenSweepReport:
     logins: int
 
     def __post_init__(self) -> None:
-        """Refuse a negative count (`InvariantViolated`), per the plan's "counts ≥ 0".
-
-        SKELETON: a no-op (AC-6's rule, carried from 2.4), so that if T13 pins the refusal it goes
-        red on `DID NOT RAISE` rather than passing on arrival. If no test pins it, T14 drops this
-        method rather than ship an untested rule.
-        """
+        """Refuse a negative count (`InvariantViolated`), per the plan's "counts ≥ 0"."""
+        if min(self.pending_registrations, self.password_resets, self.logins) < 0:
+            raise InvariantViolated("an identity token sweep cannot delete a negative count")

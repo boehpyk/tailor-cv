@@ -13,14 +13,27 @@ row (`reset.expires_at - now`). Each for `deliver_registration_mail.py`'s reason
 
 from __future__ import annotations
 
-from tailorcraft.application.identity.delivery_outcome import DeliveryOutcome
+from typing import assert_never
+
+from tailorcraft.application.identity.delivery_outcome import (
+    DeliveryOutcome,
+    DeliveryStatus,
+    outcome_of_failed_send,
+)
+from tailorcraft.domain.identity.account_mail import ResetYourPassword
+from tailorcraft.domain.identity.errors import MailNotDelivered, PasswordResetAlreadyIssued
 from tailorcraft.domain.identity.ports import (
     AccountMailPort,
     OneTimeTokenPort,
     PasswordResetRepository,
     UserRepository,
 )
-from tailorcraft.domain.identity.value_objects import PasswordResetId
+from tailorcraft.domain.identity.value_objects import (
+    AddressedReset,
+    IssuedReset,
+    MailFailureReason,
+    PasswordResetId,
+)
 from tailorcraft.domain.shared.clock import Clock
 
 
@@ -57,4 +70,45 @@ class DeliverPasswordResetMail:
         self._clock = clock
 
     async def __call__(self, reset_id: PasswordResetId) -> DeliveryOutcome:
-        raise NotImplementedError
+        now = self._clock.now()
+
+        reset = await self._resets.get(reset_id)
+        if reset is None:
+            return DeliveryOutcome(DeliveryStatus.MISSING)
+        if reset.is_expired(now):
+            await self._resets.remove(reset.id)
+            return DeliveryOutcome(DeliveryStatus.EXPIRED)
+
+        match reset.target:
+            case IssuedReset():
+                return DeliveryOutcome(DeliveryStatus.SKIPPED)
+            case AddressedReset(email=email):
+                pass
+            case _:
+                assert_never(reset.target)
+
+        user = await self._users.find_by_email(email)
+        if user is None:
+            # No account, no mail of any kind (registration sends a notice here; a reset does not).
+            await self._resets.remove(reset.id)
+            return DeliveryOutcome(DeliveryStatus.NO_ACCOUNT)
+
+        minted = self._tokens.mint()
+        reset.issue(user.id, minted.token_hash, now)
+        try:
+            # Durable on return, and supersedes the account's other resets in the same commit.
+            await self._resets.save_issued(reset)
+        except PasswordResetAlreadyIssued:
+            return DeliveryOutcome(DeliveryStatus.SKIPPED)
+
+        try:
+            await self._mailer.send(
+                ResetYourPassword(
+                    to=user.email, token=minted.token, expires_in=reset.expires_at - now
+                )
+            )
+        except MailNotDelivered as failure:
+            if failure.reason is MailFailureReason.RECIPIENT_REJECTED:
+                await self._resets.remove(reset.id)
+            return outcome_of_failed_send(failure)
+        return DeliveryOutcome(DeliveryStatus.SENT)

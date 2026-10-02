@@ -15,8 +15,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from tailorcraft.domain.identity.password_reset import PasswordReset
 from tailorcraft.domain.identity.ports import AccountMailQueuePort, PasswordResetRepository
-from tailorcraft.domain.identity.value_objects import PasswordResetId
+from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordResetId
 from tailorcraft.domain.shared.clock import Clock
 
 
@@ -47,4 +48,10 @@ class RequestPasswordReset:
         self._reset_ttl = reset_ttl
 
     async def __call__(self, raw_email: str) -> PasswordResetId:
-        raise NotImplementedError
+        email = EmailAddress.parse(raw_email)
+        now = self._clock.now()
+
+        reset = PasswordReset.request(self._resets.next_identity(), email, now, self._reset_ttl)
+        await self._resets.add(reset)
+        await self._mail_queue.enqueue_password_reset(reset.id)
+        return reset.id

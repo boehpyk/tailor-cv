@@ -20,6 +20,7 @@ dataclass: an instant, the purge's precedent.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from tailorcraft.domain.retention.ports import ExpiredIdentityTokenPort
@@ -42,4 +43,17 @@ class PurgeExpiredIdentityTokens:
         self._batch_size = batch_size
 
     async def __call__(self, as_of: datetime) -> IdentityTokenSweepReport:
-        raise NotImplementedError
+        return IdentityTokenSweepReport(
+            pending_registrations=await self._drain(self._tokens.delete_expired_pending, as_of),
+            password_resets=await self._drain(self._tokens.delete_expired_resets, as_of),
+            logins=await self._drain(self._tokens.delete_expired_logins, as_of),
+        )
+
+    async def _drain(
+        self, delete_batch: Callable[[datetime, int], Awaitable[int]], as_of: datetime
+    ) -> int:
+        """Call `delete_batch(as_of, batch_size)` until a batch deletes nothing; the total."""
+        total = 0
+        while deleted := await delete_batch(as_of, self._batch_size):
+            total += deleted
+        return total

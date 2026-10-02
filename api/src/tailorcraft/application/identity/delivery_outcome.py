@@ -21,7 +21,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from tailorcraft.domain.identity.errors import MailNotDelivered
 from tailorcraft.domain.identity.value_objects import MailFailureReason
+from tailorcraft.domain.shared.errors import InvariantViolated
 
 
 class DeliveryStatus(StrEnum):
@@ -56,13 +58,17 @@ class DeliveryStatus(StrEnum):
     link that was never delivered); the user's recovery is *Send it again*."""
 
 
+# The statuses reached by a `send` the server answered with a refusal: the only ones that can carry
+# its reply code. `SENT` is not here (V-23 amended): a success's `250` tells the log nothing.
+_ANSWERED_BY_THE_SERVER = frozenset({DeliveryStatus.FAILED, DeliveryStatus.RECIPIENT_REJECTED})
+
+
 @dataclass(frozen=True, slots=True)
 class DeliveryOutcome:
     """One delivery's result: a `status`, and for a failed send the adapter's `reason` and SMTP
     reply `smtp_code` (a number, never the reply's text — `MailNotDelivered`'s rule).
 
-    **Invariant** (T14 implements it; this skeleton's `__post_init__` is a no-op, AC-6's carried
-    rule, so a test pinning a refusal goes red on `DID NOT RAISE`):
+    **Invariant** (`InvariantViolated` otherwise):
 
     - `reason` is set **iff** `status is FAILED` (`UNAVAILABLE`, `THROTTLED` or `PROVIDER_REFUSED`;
       never `RECIPIENT_REJECTED`, which is a status of its own because it changes what was written).
@@ -75,5 +81,25 @@ class DeliveryOutcome:
     smtp_code: int | None = None
 
     def __post_init__(self) -> None:
-        """SKELETON: a no-op. T14 refuses a `reason` off `FAILED`, a missing `reason` on `FAILED`,
-        a `RECIPIENT_REJECTED` reason, and an `smtp_code` on any other status (`InvariantViolated`)."""
+        if self.status is DeliveryStatus.FAILED:
+            if self.reason is None:
+                raise InvariantViolated("a failed delivery must carry its reason")
+            if self.reason is MailFailureReason.RECIPIENT_REJECTED:
+                # A rejected recipient changes what was written (the row is deleted), so it is a
+                # status of its own and never folded into `FAILED`, which leaves the row as it was.
+                raise InvariantViolated("a rejected recipient is a status, not a failure reason")
+        elif self.reason is not None:
+            raise InvariantViolated("only a failed delivery carries a reason")
+        if self.smtp_code is not None and self.status not in _ANSWERED_BY_THE_SERVER:
+            raise InvariantViolated("only a send the server refused carries an SMTP reply code")
+
+
+def outcome_of_failed_send(failure: MailNotDelivered) -> DeliveryOutcome:
+    """The outcome a `MailNotDelivered` from `AccountMailPort.send` becomes: `RECIPIENT_REJECTED` (a
+    status, with the reply code) or `FAILED` carrying the reason and the code. What was *written*
+    about the failure is the calling use case's decision, not this function's."""
+    if failure.reason is MailFailureReason.RECIPIENT_REJECTED:
+        return DeliveryOutcome(DeliveryStatus.RECIPIENT_REJECTED, smtp_code=failure.smtp_code)
+    return DeliveryOutcome(
+        DeliveryStatus.FAILED, reason=failure.reason, smtp_code=failure.smtp_code
+    )

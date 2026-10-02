@@ -28,7 +28,8 @@ class DeleteOwnAccount:
 
     Flow (technical plan §2): ``resolve_existing_user`` (→ `UserNotFound`) →
     ``hasher.verify(password, user.password_hash)`` (→ `PasswordHashingFailed` propagates) →
-    `MISMATCH` → `InvalidCredentials`, nothing deleted → ``erase_account(user_id)`` → its report.
+    `MISMATCH` → `InvalidCredentials`, nothing deleted → ``users.confirm_credential_unchanged``
+    (`False` → `InvalidCredentials`, slice 2.5's re-check) → ``erase_account(user_id)`` → its report.
     """
 
     def __init__(
@@ -48,6 +49,11 @@ class DeleteOwnAccount:
         # deletion. `MATCH_NEEDS_REHASH` falls through as a match, and no rehash is written.
         verdict = await self._hasher.verify(password, user.password_hash)
         if verdict is PasswordVerdict.MISMATCH:
+            raise InvalidCredentials()
+        # `LogIn`'s credential re-check (slice 2.5, technical plan §0.7): a reset that committed
+        # during the verify means the password just checked is no longer this account's, so it
+        # erases nothing. `True` leaves the user row locked until the erasure commits.
+        if not await self._users.confirm_credential_unchanged(user.id, user.password_hash):
             raise InvalidCredentials()
 
         return await self._erase_account(user.id)

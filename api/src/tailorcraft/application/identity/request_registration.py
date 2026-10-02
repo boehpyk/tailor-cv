@@ -23,12 +23,18 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from tailorcraft.domain.identity.pending_registration import PendingRegistration
 from tailorcraft.domain.identity.ports import (
     AccountMailQueuePort,
     PasswordHasherPort,
     PendingRegistrationRepository,
 )
-from tailorcraft.domain.identity.value_objects import PasswordPolicy, PendingRegistrationId
+from tailorcraft.domain.identity.value_objects import (
+    EmailAddress,
+    Password,
+    PasswordPolicy,
+    PendingRegistrationId,
+)
 from tailorcraft.domain.shared.clock import Clock
 
 
@@ -74,4 +80,18 @@ class RequestRegistration:
         self._confirmation_ttl = confirmation_ttl
 
     async def __call__(self, raw_email: str, raw_password: str) -> PendingRegistrationId:
-        raise NotImplementedError
+        email = EmailAddress.parse(raw_email)
+        password = Password.from_input(raw_password)
+        self._policy.check(password, email)
+        password_hash = await self._hasher.hash(password)
+        now = self._clock.now()
+
+        pending = PendingRegistration.request(
+            self._pending.next_identity(), email, password_hash, now, self._confirmation_ttl
+        )
+        # One upsert, no read first: superseding an earlier registration for the address is `put`'s
+        # contract (§0.3), so the statements here are the same whatever the address already has.
+        await self._pending.put(pending)
+        # `put` is durable on return, so the worker can never be handed an id it cannot see.
+        await self._mail_queue.enqueue_registration(pending.id)
+        return pending.id

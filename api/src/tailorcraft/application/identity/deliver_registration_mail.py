@@ -23,14 +23,20 @@ row already carries, and could only disagree with it.
 
 from __future__ import annotations
 
-from tailorcraft.application.identity.delivery_outcome import DeliveryOutcome
+from tailorcraft.application.identity.delivery_outcome import (
+    DeliveryOutcome,
+    DeliveryStatus,
+    outcome_of_failed_send,
+)
+from tailorcraft.domain.identity.account_mail import AccountAlreadyExists, ConfirmYourEmail
+from tailorcraft.domain.identity.errors import MailNotDelivered, PendingRegistrationAlreadyIssued
 from tailorcraft.domain.identity.ports import (
     AccountMailPort,
     OneTimeTokenPort,
     PendingRegistrationRepository,
     UserRepository,
 )
-from tailorcraft.domain.identity.value_objects import PendingRegistrationId
+from tailorcraft.domain.identity.value_objects import MailFailureReason, PendingRegistrationId
 from tailorcraft.domain.shared.clock import Clock
 
 
@@ -68,4 +74,45 @@ class DeliverRegistrationMail:
         self._clock = clock
 
     async def __call__(self, pending_id: PendingRegistrationId) -> DeliveryOutcome:
-        raise NotImplementedError
+        now = self._clock.now()
+
+        pending = await self._pending.get(pending_id)
+        if pending is None:
+            return DeliveryOutcome(DeliveryStatus.MISSING)
+        if pending.is_expired(now):
+            await self._pending.remove(pending.id)
+            return DeliveryOutcome(DeliveryStatus.EXPIRED)
+        if pending.token_hash is not None:
+            return DeliveryOutcome(DeliveryStatus.SKIPPED)
+
+        if await self._users.find_by_email(pending.email) is not None:
+            # The row is deleted and committed before the notice goes; no token is minted, because
+            # there is nothing to confirm.
+            await self._pending.remove(pending.id)
+            try:
+                await self._mailer.send(AccountAlreadyExists(to=pending.email))
+            except MailNotDelivered as failure:
+                # The row is already gone, so a rejected recipient has nothing left to delete.
+                return outcome_of_failed_send(failure)
+            return DeliveryOutcome(DeliveryStatus.ACCOUNT_EXISTS_NOTICE_SENT)
+
+        minted = self._tokens.mint()
+        pending.issue(minted.token_hash, now)
+        try:
+            await self._pending.save_issued(pending)
+        except PendingRegistrationAlreadyIssued:
+            # A concurrent delivery of the same id issued it first and sends its own mail.
+            return DeliveryOutcome(DeliveryStatus.SKIPPED)
+
+        # Committed above, sent below: a crash between the two leaves no mail, never a dead link.
+        try:
+            await self._mailer.send(
+                ConfirmYourEmail(
+                    to=pending.email, token=minted.token, expires_in=pending.expires_at - now
+                )
+            )
+        except MailNotDelivered as failure:
+            if failure.reason is MailFailureReason.RECIPIENT_REJECTED:
+                await self._pending.remove(pending.id)
+            return outcome_of_failed_send(failure)
+        return DeliveryOutcome(DeliveryStatus.SENT)
