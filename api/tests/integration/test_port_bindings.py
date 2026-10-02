@@ -57,18 +57,13 @@ _BOUND_ELSEWHERE: dict[str, str] = {
         "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "
         "behind a route (ADR-0018)."
     ),
-    # slice 2.5 skeleton; bound at T22 (removed in that commit)
-    "AccountMailPort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
-    # slice 2.5 skeleton; bound at T22 (removed in that commit)
-    "AccountMailQueuePort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
-    # slice 2.5 skeleton; bound at T22 (removed in that commit)
-    "ExpiredIdentityTokenPort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
-    # slice 2.5 skeleton; bound at T22 (removed in that commit)
-    "OneTimeTokenPort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
-    # slice 2.5 skeleton; bound at T22 (removed in that commit)
-    "PasswordResetRepository": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
-    # slice 2.5 skeleton; bound at T22 (removed in that commit)
-    "PendingRegistrationRepository": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
+    # Slice 2.5, the one T11 exemption T22 cannot remove: bound in `deps.py`
+    # (`get_account_mail_queue`), but this walker sees only providers a route reaches, and no route
+    # depends on `RequestRegistrationDep`/`RequestPasswordResetDep` until T26's skeleton. The stale
+    # check below fails the moment one does, so T26 must remove this entry.
+    "AccountMailQueuePort": (
+        "bound by `deps.get_account_mail_queue`; reached by a route from T26 (remove it then)."
+    ),
 }
 
 
@@ -144,6 +139,9 @@ def _worker_use_cases(settings: Settings, session: AsyncSession) -> list[object]
         container._build_export_use_case(settings, session),
         container._build_export_sweep_use_case(settings, session),
         purge,
+        container._build_registration_delivery(settings, session),
+        container._build_password_reset_delivery(settings, session),
+        container._build_identity_token_sweep(session),
     ]
 
 
