@@ -1,4 +1,38 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T36 SKELETON: the parameters are the signature qa's T37 tests compile against; T38 uses them and deletes this line. */
+import { useQueryClient } from '@tanstack/react-query';
+import { useId } from 'react';
+import { Link } from 'react-router';
+
+import { ApiError } from '@/api/client';
+import { focusOnMount } from '@/components/ui/focusOnMount';
+import { authErrorCopy } from '@/features/auth/authCopy';
+
+import {
+  ALREADY_CONFIRMED_PROMPT,
+  CHECK_EMAIL_HEADING,
+  GUEST_WORK_DEADLINE_NOTE,
+  LOG_IN_LABEL,
+  MAIL_PROVIDER_SENTENCE,
+  SENDING_LABEL,
+  SEND_AGAIN_FAILED,
+  SEND_AGAIN_LABEL,
+  SENT_AGAIN_NOTE,
+  USE_DIFFERENT_EMAIL_LABEL,
+  checkInboxSentence,
+} from '../accountMailCopy';
+import {
+  requestRegistrationMutationKey,
+  useRequestRegistration,
+} from '../hooks/useRequestRegistration';
+
+import {
+  alertClass,
+  headingClass,
+  linkClass,
+  primaryButtonClass,
+  secondaryButtonClass,
+  sectionClass,
+} from './styles';
+
 import type { Credentials } from '@/features/auth/types';
 
 export interface CheckYourEmailProps {
@@ -34,8 +68,93 @@ export interface CheckYourEmailProps {
  * - **Failures** (`role="alert"`): 429 with the server's seconds, then re-enabled (V-61);
  *   503 / network → *"Couldn't send just now — try again."*
  *
- * SKELETON (T36): renders nothing; T38 builds it.
+ * **Every outcome is the send-again mutation's own state**, read during render — "sent again" and
+ * "failed" are its `isSuccess` / `error`, so they can never both show. The copy is the same for
+ * every address: the 202 does not say whether the address already had an account, and neither
+ * may anything on this screen.
  */
-export function CheckYourEmail(_props: CheckYourEmailProps): React.JSX.Element | null {
-  return null;
+export function CheckYourEmail({
+  credentials,
+  next,
+  hasGuestWork,
+  onUseDifferentEmail,
+}: CheckYourEmailProps): React.JSX.Element {
+  const sendAgain = useRequestRegistration();
+  const queryClient = useQueryClient();
+  const headingId = useId();
+
+  function resend(): void {
+    // 2.1's I-53 trap: `sendAgain.isPending` lags a same-tick double click; the cache does not.
+    if (queryClient.isMutating({ mutationKey: requestRegistrationMutationKey }) > 0) {
+      return;
+    }
+    sendAgain.mutate(credentials);
+  }
+
+  // `next` travels verbatim: `/login` judges it with `safeNext` on arrival (AC-50).
+  const loginSearch = next === null ? '' : new URLSearchParams({ next }).toString();
+
+  return (
+    <section aria-labelledby={headingId} className={sectionClass}>
+      <h2 id={headingId} tabIndex={-1} ref={focusOnMount} className={headingClass}>
+        {CHECK_EMAIL_HEADING}
+      </h2>
+
+      <div role="status" className="space-y-2 text-sm text-slate-700">
+        <p>{checkInboxSentence(credentials.email)}</p>
+        <p className="text-slate-600">{MAIL_PROVIDER_SENTENCE}</p>
+      </div>
+
+      {hasGuestWork && (
+        <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          {GUEST_WORK_DEADLINE_NOTE}
+        </p>
+      )}
+
+      <div className="mt-6 flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={resend}
+          disabled={sendAgain.isPending}
+          className={primaryButtonClass}
+        >
+          {sendAgain.isPending ? SENDING_LABEL : SEND_AGAIN_LABEL}
+        </button>
+        <button type="button" onClick={onUseDifferentEmail} className={secondaryButtonClass}>
+          {USE_DIFFERENT_EMAIL_LABEL}
+        </button>
+      </div>
+
+      {sendAgain.isSuccess && (
+        <p role="status" className="mt-3 text-sm text-emerald-800">
+          {SENT_AGAIN_NOTE}
+        </p>
+      )}
+      {sendAgain.error !== null && (
+        <p role="alert" tabIndex={-1} ref={focusOnMount} className={`mt-3 ${alertClass}`}>
+          {sendAgainFailure(sendAgain.error)}
+        </p>
+      )}
+
+      <p className="mt-6 text-sm text-slate-600">
+        <span>{ALREADY_CONFIRMED_PROMPT}</span>{' '}
+        <Link to={{ pathname: '/login', search: loginSearch }} className={linkClass}>
+          {LOG_IN_LABEL}
+        </Link>
+      </p>
+    </section>
+  );
+}
+
+/**
+ * The sentence for a failed **Send it again**. A 429 carries the server's own seconds (2.1's
+ * `tooManyAttempts` copy, V-61); "not right now" — a 5xx or no answer at all — is one sentence that
+ * says nothing was sent and the button can be pressed again (V-66). Anything else (a 403 after a
+ * deploy, say) reads as `/register`'s own refusal would.
+ */
+function sendAgainFailure(error: Error): string {
+  if (!(error instanceof ApiError) || error.status >= 500) {
+    return SEND_AGAIN_FAILED;
+  }
+  return authErrorCopy('register', error).message;
 }

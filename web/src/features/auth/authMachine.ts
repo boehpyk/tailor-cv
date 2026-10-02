@@ -3,7 +3,7 @@
  * `authStore.ts`, in the shape 1.4's `autosaveMachine.ts` established.
  *
  * **Why a reducer and not four setters.** The store has several async sources that finish in any
- * order: the boot refresh, a login, a register, a proactive refresh, a logout. Written as
+ * order: the boot refresh, a login, a proactive refresh, a logout. Written as
  * `state = 'authenticated'` in each callback, the order they happen to resolve in *is* the logic,
  * and the bug is always the same one — a boot refresh that started before a login and answered
  * after it overwrites the login with "anonymous". Here each source becomes an **event**, and one
@@ -95,7 +95,7 @@ export type AuthEvent =
    * `unavailable`; ignored everywhere else.
    */
   | { readonly type: 'REFRESH_FAILED' }
-  /** A login, a register or a non-boot refresh succeeded. */
+  /** A login or a non-boot refresh succeeded. */
   | ({ readonly type: 'AUTHENTICATED' } & AccessGrant)
   /** Logout succeeded, or a refresh answered 401. */
   | { readonly type: 'SIGNED_OUT'; readonly reason: SignOutReason }
@@ -123,7 +123,7 @@ export function authReducer(state: AuthState, event: AuthEvent): AuthState {
     case 'REFRESH_FAILED':
       return state.status === 'authenticated' ? { status: 'unavailable' } : state;
 
-    // A login, register or later refresh is fresh news in every state.
+    // A login or later refresh is fresh news in every state.
     case 'AUTHENTICATED':
       return grantedState(event);
     case 'SIGNED_OUT':

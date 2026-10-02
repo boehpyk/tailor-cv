@@ -3,7 +3,7 @@ import { request } from './client';
 import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/types';
 
 /**
- * The `/api/auth/*` endpoints (2.1's five, plus 2.2's `delete-account`) — transport only.
+ * The `/api/auth/*` endpoints (2.1's, 2.2's `delete-account`, 2.5's email channel) — transport only.
  *
  * **None of these touches the auth store.** They return what the server said and throw an
  * `ApiError` keyed by `code` when it refused; deciding what a response *means* for the session
@@ -16,7 +16,7 @@ import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/t
  * `tc_refresh` to these requests without anything here asking for it — and, because of the `Path`,
  * to no other request. JavaScript never reads or writes it.
  *
- * **Origin.** `register`, `login`, `refresh` and `logout` are refused without a trusted `Origin`
+ * **Origin.** `requestRegistration`, `login`, `refresh` and `logout` are refused without a trusted `Origin`
  * (technical plan §0.5). A browser sets that header on every same-origin `POST` by itself; it is a
  * forbidden header name, so nothing here could set it even if it tried.
  *
@@ -25,26 +25,6 @@ import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/t
  * *when* the token is missing or stale, so routing it through the interceptor would recurse, and
  * `logout` must work precisely when the access token has expired (its cookie names the login).
  */
-
-/**
- * Create an account and log it in: **201** with an `AuthenticatedResponse` and a fresh
- * `tc_refresh` cookie.
- *
- * Refusals (`ApiError.code`): 409 `email_already_registered`; 422 `invalid_email`,
- * `password_too_short` (`details.min_length`), `password_too_long` (`details.max_length`),
- * `password_matches_email`, `validation_error`; 429 `rate_limited` (`retryAfterSeconds`); 403
- * `origin_not_allowed`; 503 `rate_limit_unavailable` or `service_unavailable`.
- */
-export function register(
-  credentials: Credentials,
-  signal?: AbortSignal,
-): Promise<AuthenticatedResponse> {
-  return request<AuthenticatedResponse>('/api/auth/register', {
-    method: 'POST',
-    body: credentials,
-    ...(signal ? { signal } : {}),
-  });
-}
 
 /**
  * Log in: **200** with an `AuthenticatedResponse` and a fresh `tc_refresh` cookie.

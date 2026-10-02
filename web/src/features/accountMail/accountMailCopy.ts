@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T36 SKELETON: the parameters are the signature qa's T37 tests compile against; T38 uses them and deletes this line. */
 /**
  * The words the mail-link screens say (slice 2.5, AC-45 … AC-49) — `authCopy.ts`'s pattern: every
  * sentence the spec states verbatim lives here, so a test pins a constant rather than whatever the
@@ -7,9 +6,6 @@
  * **Every sentence is the same for every address.** Nothing here may say "new account" or "no such
  * account": the server answers 202 either way on purpose (ADR-0008 (h)), and copy that guessed
  * would undo it.
- *
- * SKELETON (T36): the static sentences are final; the two built from an address return `''` until
- * T38.
  */
 
 // --- The mail provider (OQ-8) ---------------------------------------------------------------------
@@ -38,9 +34,9 @@ export const RESET_PASSWORD_LINK_LABEL = 'Reset your password';
 
 export const CHECK_EMAIL_HEADING = 'Check your email';
 
-/** *"Check your inbox at {email}. …"* — the same for every address. SKELETON: `''`. */
-export function checkInboxSentence(_email: string): string {
-  return '';
+/** *"Check your inbox at {email}. …"* — the same for every address, registered or not. */
+export function checkInboxSentence(email: string): string {
+  return `Check your inbox at ${email}. We've sent a message to that address — open it to finish. It's valid for 24 hours.`;
 }
 
 export const SEND_AGAIN_LABEL = 'Send it again';
@@ -72,9 +68,9 @@ export const LINK_INCOMPLETE = 'This link is incomplete. Open the link from the 
 export const RESET_REQUEST_HEADING = 'Reset your password';
 export const RESET_REQUEST_SUBMIT_LABEL = 'Send reset link';
 
-/** *"If there's an account for {email}, …"* — neutral on purpose. SKELETON: `''`. */
-export function resetRequestedSentence(_email: string): string {
-  return '';
+/** *"If there's an account for {email}, …"* — neutral on purpose: the 202 is the same either way. */
+export function resetRequestedSentence(email: string): string {
+  return `If there's an account for ${email}, we've sent a link to reset its password. It's valid for 60 minutes.`;
 }
 
 // --- /reset-password/confirm (AC-48) --------------------------------------------------------------
