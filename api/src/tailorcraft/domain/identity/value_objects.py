@@ -9,8 +9,8 @@ The rule is the one every other context follows: a frozen `@dataclass(frozen=Tru
 where there is something to validate, a `StrEnum` where the set is closed. Never Pydantic
 (ADR-0002).
 
-**Four of these hold a secret or something derived from one** — `Password`, `PasswordHash`,
-`TokenHash`, `IssuedAccessToken` — and each redacts its own `repr`. That is not tidiness. A value
+**Five of these hold a secret or something derived from one** — `Password`, `PasswordHash`,
+`TokenHash`, `IssuedAccessToken` and (slice 2.5) `OneTimeToken` — and each redacts its own `repr`. That is not tidiness. A value
 object's `repr` is what an f-string, a `logging` call with `%r`, a failed `assert` in pytest and a
 Sentry frame all reach for, and "nobody would log that" is a belief; a `repr` that cannot contain the
 value is a control. Each also declares the secret field `field(repr=False)`, so that deleting the
@@ -27,6 +27,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import TypeAlias
 from uuid import UUID
 
 from tailorcraft.domain.shared.errors import InvariantViolated
@@ -507,3 +508,116 @@ class LoginNotFoundReason(StrEnum):
 
     UNKNOWN = "unknown"
     EXPIRED = "expired"
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.5 — a pending registration, a password reset, and the mail that carries their links
+# (ADR-0026, ADR-0027, ADR-0028).
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRegistrationId:
+    """A `PendingRegistration`'s identity. Typed so it cannot be handed where a `UserId` was meant —
+    the two are minted at different moments for different things: a pending registration's id names
+    a sign-up that is **not yet** an account (ADR-0027), and the `UserId` is minted only when the link
+    is confirmed. It is also all the broker ever carries (technical plan §0.4)."""
+
+    value: UUID
+
+    # No `__post_init__`: every `UUID` is a valid id (the `GuestSessionId` reasoning above).
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordResetId:
+    """A `PasswordReset`'s identity — what the `mail` queue carries for a reset (§0.4)."""
+
+    value: UUID
+
+    # No `__post_init__`: every `UUID` is a valid id (the `GuestSessionId` reasoning above).
+
+
+@dataclass(frozen=True, slots=True)
+class OneTimeToken:
+    """The plaintext of a confirmation or reset link's token: exactly 43 characters of
+    `[A-Za-z0-9_-]` — the shape of `secrets.token_urlsafe(32)` (AC-1).
+
+    **The one plaintext token that crosses `application/`** (technical plan §0.4): the worker's
+    delivery use case mints it, stores its `TokenHash`, commits, then hands it to `AccountMailPort`.
+    So it is a type that cannot be printed: `repr`, `str` and `format` all return `OneTimeToken(***)`
+    (`Password`'s pattern, and the field is `repr=False` as the second lock), and `reveal()` is the
+    only accessor — called by the mail adapter alone, when it writes the link into the body.
+
+    `__post_init__` refuses any other shape with `InvalidOneTimeToken`, whose message never carries
+    the value. A token *presented* by a browser never becomes one of these: the route hashes it
+    (`hash_presented`, infrastructure), so `ConfirmRegistration` and `ResetPassword` receive a
+    `TokenHash` and nothing else.
+    """
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """Refuse anything but exactly 43 URL-safe base64 characters (`InvalidOneTimeToken`).
+
+        SKELETON: a no-op on purpose (AC-6, the rule carried from 2.4), so a "refused" test goes red
+        on `DID NOT RAISE` rather than on a `NotImplementedError`. The masked `__repr__`, `__str__`
+        and `__format__` land with the GREEN, for the same reason: until then the generated `repr`
+        prints `OneTimeToken()`, which a masking assertion refuses on its own terms.
+        """
+
+    def reveal(self) -> str:
+        """The plaintext. Only the mail adapter calls this, to put the link in the message."""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True, slots=True)
+class AddressedReset:
+    """A reset that has been requested and not yet delivered: all it knows is the address it was
+    asked for (ADR-0028). Nobody has checked whether an account exists — the request path never
+    looks (technical plan §0.2); the worker does."""
+
+    email: EmailAddress
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedReset:
+    """A reset whose link has been minted and mailed to an account. It names the **account**, and
+    the address is gone (data minimisation: the account row holds it, so this row need not)."""
+
+    user_id: UserId
+
+
+# A sum type with no methods, `Owner`'s shape (ADR-0022, `ownership.py`): a reset is addressed or
+# issued, never both, never neither, and `match` + `assert_never` is the exhaustiveness check.
+# `TypeAlias` rather than a `type` statement for `ownership.py`'s reason — a `TypeAliasType` refuses
+# `isinstance` and class patterns at runtime.
+ResetTarget: TypeAlias = AddressedReset | IssuedReset  # noqa: UP040 — see the comment above
+
+
+class TokenRefusal(StrEnum):
+    """Why a presented confirmation or reset token was refused. Closed; carried by
+    `ConfirmationTokenInvalid` and `ResetTokenInvalid` for the **log line only** — the client sees one
+    `link_invalid` for all three, so a guesser learns nothing about which check caught them."""
+
+    MALFORMED = "malformed"
+    """Not a token's shape at all — refused before any lookup."""
+
+    UNKNOWN = "unknown"
+    """No live row holds that hash: never issued, superseded, already used, or swept."""
+
+    EXPIRED = "expired"
+    """It matched a row at or past `expires_at`, which was deleted on sight."""
+
+
+class MailFailureReason(StrEnum):
+    """Why `AccountMailPort.send` gave up (ADR-0026). Closed; carried by `MailNotDelivered`.
+
+    The protocol's own taxonomy, not a vendor's: a 5xx naming the recipient, a connection or 4xx
+    that never got through, a rate limit, and every other permanent refusal (authentication
+    included). Only `UNAVAILABLE` and `THROTTLED` are retried — inside the adapter, never by Celery.
+    """
+
+    RECIPIENT_REJECTED = "recipient_rejected"
+    UNAVAILABLE = "unavailable"
+    THROTTLED = "throttled"
+    PROVIDER_REFUSED = "provider_refused"

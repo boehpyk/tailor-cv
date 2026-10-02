@@ -1,7 +1,7 @@
 """The `User` aggregate: a registered person — one normalized email, one password credential.
 
 **Invariant:** a user has exactly one `EmailAddress` and one `PasswordHash`, and the hash changes only
-through `replace_password_hash`, never by assignment. That is the whole of it, and it is small on
+through `replace_password_hash` (a rehash) or `reset_password` (slice 2.5), never by assignment. That is the whole of it, and it is small on
 purpose: a `Login` rotates every 15 minutes per tab while a user row is written at registration and on
 a rare rehash, so logins are a separate aggregate rather than a collection in here (technical plan
 §0.1 — the consistency boundary is the smallest set of things that must change together, and a
@@ -110,6 +110,26 @@ class User(RecordsEvents):
         self._password_hash = new
         self._password_updated_at = at
         self.record(UserPasswordRehashed(user_id=self._id, occurred_at=at))
+
+    def reset_password(self, new: PasswordHash, at: datetime, logins_revoked: int) -> None:
+        """Install `new` — a **different password**, proven by a reset link — as the credential and
+        set `password_updated_at = at` (AC-4, ADR-0028).
+
+        Records `PasswordChangedByReset(user_id, logins_revoked, occurred_at=at)`. Raises
+        `InvariantViolated` if `at` is before `created_at` (`replace_password_hash`'s guard) or if
+        `logins_revoked < 0`.
+
+        **Why the count comes in as an argument.** `ResetPassword` deletes every `Login` of the
+        account first — same transaction, so the order is invisible outside it — and hands the
+        number here, so the event is recorded by the aggregate like every other event rather than
+        built by a use case. The deleting stays the repository's (ADR-0020: revocation is deletion);
+        the aggregate only records how many went.
+
+        Not `replace_password_hash` with a flag: that method keeps its rehash meaning (same password,
+        today's parameters) and its own event, and a boolean choosing between two events is two
+        methods wearing one name.
+        """
+        raise NotImplementedError
 
     @property
     def id(self) -> UserId:

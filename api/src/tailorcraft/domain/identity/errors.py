@@ -23,6 +23,8 @@ from tailorcraft.domain.identity.value_objects import (
     InvalidEmailReason,
     LoginId,
     LoginNotFoundReason,
+    MailFailureReason,
+    TokenRefusal,
     WeakPasswordReason,
 )
 from tailorcraft.domain.shared.errors import DomainError
@@ -164,3 +166,92 @@ class PasswordHashingFailed(DomainError):
     """`PasswordHasherPort` could not hash or verify — the adapter's `except Exception` floor, so the
     port's promise holds by construction (CLAUDE.md: a port that translates every failure needs a
     catch-all). Carries nothing: a hashing library's message can quote its input."""
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.5 — pending registrations, password resets and account mail (ADR-0026 … ADR-0028).
+#
+# The rule of this module's docstring applies twice over here: every one of these is raised about an
+# address or a token, and none carries either — nor a hash of one. Reasons are closed enums; the ids
+# a log line wants are in the use case's hands, not the error's.
+# --------------------------------------------------------------------------------------------------
+
+
+class InvalidOneTimeToken(DomainError):
+    """A value that is not a one-time token's shape was made into a `OneTimeToken` (AC-1).
+
+    **Carries nothing**, not even in its message: a near-miss token is still most of a token.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("one-time token refused: not 43 URL-safe base64 characters")
+
+
+class PendingRegistrationExpired(DomainError):
+    """`PendingRegistration.issue` or `.confirm` was asked to act at or past `expires_at` (AC-2).
+    The aggregate saying *why*; the use case deletes the row and answers with its own outcome."""
+
+
+class PendingRegistrationAlreadyIssued(DomainError):
+    """A pending registration's link was already minted (AC-2): `issue` refuses a second time, and
+    `PendingRegistrationRepository.save_issued` raises it when a concurrent delivery won (§0.4's
+    issued-once guard — what makes a redelivered task a no-op rather than a second mail)."""
+
+
+class PendingRegistrationNotIssued(DomainError):
+    """`PendingRegistration.confirm` was asked to confirm a row whose link was never minted (AC-2).
+    Unreachable through the confirm route — a row with no token hash cannot be found by one — so
+    this is the aggregate refusing to be confirmed by a caller that skipped the lookup."""
+
+
+class PasswordResetExpired(DomainError):
+    """`PasswordReset.issue` was asked to act at or past `expires_at` (AC-3)."""
+
+
+class PasswordResetAlreadyIssued(DomainError):
+    """A reset's link was already minted (AC-3) — `issue` refuses a second time; also the
+    repository's word for a concurrent delivery that won."""
+
+
+class PasswordResetNotIssued(DomainError):
+    """A reset that is still only *addressed* was asked for its account (`PasswordReset.user_id`).
+    An addressed reset has no account by construction (`AddressedReset` holds an address only)."""
+
+
+class ConfirmationTokenInvalid(DomainError):
+    """A confirmation link was refused: malformed, unknown, or expired (ADR-0027).
+
+    Carries the reason **for the log line**; the client sees one `link_invalid` for every reason.
+    Never the token and never its hash.
+    """
+
+    def __init__(self, reason: TokenRefusal) -> None:
+        super().__init__(f"confirmation link refused: {reason.value}")
+        self.reason = reason
+
+
+class ResetTokenInvalid(DomainError):
+    """A password-reset link was refused: malformed, unknown, or expired (ADR-0028). Same contract
+    as `ConfirmationTokenInvalid` — the reason is for the log line, the client sees `link_invalid`."""
+
+    def __init__(self, reason: TokenRefusal) -> None:
+        super().__init__(f"reset link refused: {reason.value}")
+        self.reason = reason
+
+
+class MailNotDelivered(DomainError):
+    """`AccountMailPort.send` gave up (ADR-0026) — after its own bounded retry, or at once for a
+    permanent refusal. Carries the closed reason and, when the server answered with one, the SMTP
+    reply **code** (`550`, `421`, …) — a number, never the reply's text, which can quote the
+    recipient. Never the address and never the mail.
+    """
+
+    def __init__(self, reason: MailFailureReason, smtp_code: int | None = None) -> None:
+        super().__init__(f"account mail not delivered: {reason.value}")
+        self.reason = reason
+        self.smtp_code = smtp_code
+
+
+class AccountMailQueueUnavailable(DomainError):
+    """`AccountMailQueuePort` could not enqueue a delivery — the broker is down. The request's row is
+    already committed; the user's recovery is *Send it again*. Carries nothing."""

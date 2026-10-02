@@ -3,8 +3,8 @@
 **Ids, integers and instants only — never an email (AC-5).** `LoggingEventPublisher`
 (`infrastructure/events/logging_publisher.py`) logs **every field of every event it receives**, so an
 event's field set *is* a log field set: an email in a payload is an email in a log, and a hash or a
-token in a payload is half a credential in one. AC-5 pins each of the five field sets below exactly
-rather than trusting this docstring.
+token in a payload is half a credential in one. AC-5 pins each of the six field sets below exactly
+rather than trusting this docstring (five from 2.1; slice 2.5 adds `PasswordChangedByReset`).
 
 **No rotation event.** A refresh rotates every 15 minutes per open tab; an event for each would be a
 log flood with no listener. Reuse is the rotation fact anybody needs, and it has its own event.
@@ -72,3 +72,22 @@ class RefreshTokenReuseDetected(DomainEvent):
     login_id: LoginId
     generation_presented: int
     generation_current: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PasswordChangedByReset(DomainEvent):
+    """A user proved their address with a reset link and set a new password; every login they had
+    was revoked in the same transaction (ADR-0028). Payload: `user_id`, `logins_revoked`
+    (+ `occurred_at`).
+
+    `logins_revoked` is what makes the event worth reading — "0" is a forgotten password, "4" is
+    somebody evicting the devices they suspect. **Neither hash, no token, no address** — the event
+    that follows a credential change is the most tempting place to put the credential.
+
+    A separate type from `UserPasswordRehashed` on purpose: that one is a parameter upgrade on a
+    successful login (same password, new hash); this one is a *different password*. One event with a
+    `cause` field would let a listener that only wanted one of them act on both.
+    """
+
+    user_id: UserId
+    logins_revoked: int
