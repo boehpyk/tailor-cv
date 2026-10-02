@@ -166,12 +166,15 @@ def test_task_queues_declares_exactly_the_same_three_queues_with_the_purge_sched
 
     queue_names = {queue.name for queue in built.conf.task_queues}
 
+    # Slice 2.5 (AC-44): `mail` is the fourth queue, declared unconditionally; the purge flag
+    # still adds none.
     assert queue_names == {
         DEFAULT_QUEUE_NAME,
         settings.tailoring_queue_name,
         settings.export_queue_name,
+        settings.mail_queue_name,
     }
-    assert len(built.conf.task_queues) == 3
+    assert len(built.conf.task_queues) == 4
 
 
 # --- The decorator's own name, and the worker's own registry ------------------------------------

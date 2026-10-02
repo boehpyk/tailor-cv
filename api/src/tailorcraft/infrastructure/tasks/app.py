@@ -5,7 +5,7 @@ application use case, and translates the outcome — exactly like an HTTP route,
 short as one. Business logic in a task is logic that can only be exercised by running a worker
 (ADR-0005).
 
-The beat schedule holds two jobs, one per aggregate that a lost worker can strand: the stale-run
+The beat schedule holds two sweeps, one per aggregate that a lost worker can strand: the stale-run
 sweep (slice 1.3, G-25') and the stale-**job** sweep (slice 1.5, X-29, AC-20). They are two entries
 rather than one generalized sweep for the reason ADR-0016 (c) gives — the two aggregates have
 different terminal states, different failure reasons and different windows, and a shared sweep would
@@ -19,6 +19,9 @@ through `purge-guests` (docs/infrastructure.md's runbook). The flag gates the *e
 — the module is always imported and the task is always registered, because a worker that could not
 run a message beat publishes is a worse failure than an idle registration. See
 `_guest_purge_schedule`.
+
+**A fourth entry, the identity token sweep (slice 2.5, technical plan §0.9), is unconditional**: it
+deletes expired link tokens and expired logins, rows every code path already refuses, so it ships on.
 
 **The worker's observability is configured here, by Celery signal, and that is not decoration.**
 `create_app`'s lifespan calls `configure_logging` / `configure_sentry` for the API process; nothing
@@ -98,6 +101,19 @@ PURGE_EXPIRED_GUEST_SESSIONS_TASK_NAME: Final = "tailorcraft.retention.purge_exp
 GUEST_PURGE_INTERVAL_SECONDS: Final = 3600.0
 GUEST_PURGE_EXPIRES_SECONDS: Final = 3500.0
 
+# The identity token sweep's task name (slice 2.5, technical plan §0.9, AC-43), here for the reason
+# the purge's is: `beat_schedule` names it and `tasks/retention.py` imports this module.
+SWEEP_EXPIRED_IDENTITY_TOKENS_TASK_NAME: Final = (
+    "tailorcraft.retention.sweep_expired_identity_tokens"
+)
+
+# Hourly, the expiry below the interval (one live tick at most), the purge's numbers for the purge's
+# reasons. `/health/ready`'s `overdue` counts rows expired more than **two** intervals ago, derived
+# from this constant (`IDENTITY_TOKEN_SWEEP_OVERDUE_GRACE_SECONDS`), so a healthy sweep reads 0.
+IDENTITY_TOKEN_SWEEP_INTERVAL_SECONDS: Final = 3600.0
+IDENTITY_TOKEN_SWEEP_EXPIRES_SECONDS: Final = 3500.0
+IDENTITY_TOKEN_SWEEP_OVERDUE_GRACE_SECONDS: Final = int(2 * IDENTITY_TOKEN_SWEEP_INTERVAL_SECONDS)
+
 # How old the heartbeat may get before `/health/ready` calls the purge `stale` — **three missed
 # ticks**, derived from the interval above rather than written as a number, so halving the interval
 # cannot silently leave the staleness bound three times too generous. One missed tick is a busy
@@ -172,6 +188,8 @@ def create_celery() -> Celery:
             # message published by a beat that has the flag on — two processes, one `.env`, and the
             # failure would be `NotRegistered` on the one job whose absence is otherwise silent.
             "tailorcraft.infrastructure.tasks.retention",
+            # The two account-mail deliveries (slice 2.5), on the `mail` queue.
+            "tailorcraft.infrastructure.tasks.identity_mail",
         ],
     )
     celery_app.conf.update(
@@ -284,17 +302,24 @@ def create_celery() -> Celery:
         # broker before anyone chose to run it, bound `export` under the key `celery`, and left a
         # publish on `celery` reaching two queues until someone ran `SREM` by hand. There is no
         # version of this declaration without the key anywhere in this branch's history.
+        #
+        # **The fourth queue, `mail` (slice 2.5, plan §0.10, AC-44)**: a person waiting on a
+        # confirmation link has no spinner to look at, so mail must not queue behind renders and
+        # paid runs. One worker consumes all four today; a mail worker is then `-Q mail`. Written
+        # with its routing key in its first version, for `export`'s reason above. **After a dev
+        # restart the healthy broker holds four members in `_kombu.binding.celery` on db 1.**
         task_default_queue=DEFAULT_QUEUE_NAME,
         task_queues=(
             Queue(DEFAULT_QUEUE_NAME, routing_key=DEFAULT_QUEUE_NAME),
             Queue(settings.tailoring_queue_name, routing_key=settings.tailoring_queue_name),
             Queue(settings.export_queue_name, routing_key=settings.export_queue_name),
+            Queue(settings.mail_queue_name, routing_key=settings.mail_queue_name),
         ),
         # --- The beat schedule --------------------------------------------------------------------
         #
-        # Two sweeps, plus the guest purge when it is enabled. See the module docstring for why the
-        # sweeps are two entries and not one, and `_guest_purge_schedule` for why the third is
-        # conditional and the other two are not.
+        # Two sweeps, the guest purge when it is enabled, and the identity token sweep (2.5). See
+        # the module docstring for why the sweeps are two entries and not one, and
+        # `_guest_purge_schedule` for why the purge is conditional and the others are not.
         beat_schedule={
             "abandon-stale-tailoring-runs": {
                 "task": ABANDON_STALE_TAILORING_RUNS_TASK_NAME,
@@ -350,6 +375,20 @@ def create_celery() -> Celery:
             # stay byte-for-byte what they were, and the third's condition is one call a reader can
             # follow instead of a second place the schedule is assembled.
             **_guest_purge_schedule(settings),
+            # The identity token sweep (slice 2.5, plan §0.9, AC-43). **Unconditional**, unlike the
+            # purge: it deletes only rows every code path already refuses (expired link tokens,
+            # expired logins), so there is nothing to rehearse that a test cannot prove, and no flag
+            # to forget to turn on.
+            "sweep-expired-identity-tokens": {
+                "task": SWEEP_EXPIRED_IDENTITY_TOKENS_TASK_NAME,
+                "schedule": IDENTITY_TOKEN_SWEEP_INTERVAL_SECONDS,
+                "options": {
+                    # The default `celery` queue: hygiene never queues behind the workload, and in
+                    # particular never behind `mail`, whose rows it is cleaning up after.
+                    "queue": DEFAULT_QUEUE_NAME,
+                    "expires": IDENTITY_TOKEN_SWEEP_EXPIRES_SECONDS,
+                },
+            },
         },
     )
     return celery_app
@@ -386,10 +425,10 @@ def _guest_purge_schedule(settings: Settings) -> dict[str, dict[str, object]]:
                 # slow renders would delay the job that keeps a privacy promise, and the promise has
                 # a deadline the queue knows nothing about.
                 #
-                # A fourth queue would also mean a fourth kombu binding, and kombu adds one per
-                # declaration and never removes one. The healthy broker state stays **three members
-                # in `_kombu.binding.celery`** on db 1 (all queues share the one default exchange),
-                # so there is nothing to `SREM` after this slice.
+                # A queue of its own would also mean another kombu binding, and kombu adds one per
+                # declaration and never removes one. The purge added none; slice 2.5's `mail` queue
+                # is the fourth, so the healthy broker state is **four members in
+                # `_kombu.binding.celery`** on db 1 (all queues share the one default exchange).
                 "queue": DEFAULT_QUEUE_NAME,
                 # Below the interval, so at most one live tick exists — the shape both sweeps use.
                 # A tick that expires unrun costs nothing here: the next one deletes everything this

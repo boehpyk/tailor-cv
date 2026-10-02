@@ -48,6 +48,21 @@ class GuestPurgeStatus(BaseModel):
     detail: str | None
 
 
+class IdentityTokenSweepStatus(BaseModel):
+    """The identity token sweep, reported as a fact (slice 2.5, ADR-0019 amendment (a), AC-43).
+
+    **Three fields, and the absent ones are the decision.** No `last_run`, `last_outcome` or
+    `stale`: those come with a heartbeat (ADR-0019 decision 6), and this job has none. The backlog
+    is the fact. `overdue` counts pending registrations, password resets and logins that expired
+    more than two sweep intervals ago, so a healthy hourly sweep reads 0; `null` with a `detail`
+    when the count could not be taken. No defaults, `GuestPurgeStatus`'s rule.
+    """
+
+    scheduled: bool
+    overdue: int | None
+    detail: str | None
+
+
 class JobsStatus(BaseModel):
     """The scheduled jobs this deployment reports.
 
@@ -63,6 +78,7 @@ class JobsStatus(BaseModel):
     """
 
     guest_purge: GuestPurgeStatus
+    identity_token_sweep: IdentityTokenSweepStatus
 
 
 class ReadinessResponse(BaseModel):

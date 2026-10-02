@@ -161,12 +161,14 @@ def test_task_queues_declares_exactly_the_default_tailoring_and_export_queues() 
     settings = get_settings()
     queue_names = {queue.name for queue in app.conf.task_queues}
 
+    # Slice 2.5 (AC-44, plan §0.10): `mail` is the fourth.
     assert queue_names == {
         tasks_app_module.DEFAULT_QUEUE_NAME,
         settings.tailoring_queue_name,
         settings.export_queue_name,
+        settings.mail_queue_name,
     }
-    assert len(app.conf.task_queues) == 3, "one Queue object per name — no duplicate declarations"
+    assert len(app.conf.task_queues) == 4, "one Queue object per name — no duplicate declarations"
 
 
 # --- RED (verify round 2): tailoring_stale_after_seconds must stay above task_time_limit, or the --

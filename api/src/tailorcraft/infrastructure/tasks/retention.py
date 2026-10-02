@@ -45,7 +45,7 @@ from typing import Final
 
 import structlog
 
-from tailorcraft.domain.retention.value_objects import PurgeReport
+from tailorcraft.domain.retention.value_objects import IdentityTokenSweepReport, PurgeReport
 from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
@@ -61,9 +61,13 @@ from tailorcraft.infrastructure.settings import get_settings
 from tailorcraft.infrastructure.tasks.app import (
     PURGE_EXPIRED_GUEST_SESSIONS_TASK_NAME,
     PURGE_LOCK_TTL_SECONDS,
+    SWEEP_EXPIRED_IDENTITY_TOKENS_TASK_NAME,
     app,
 )
-from tailorcraft.infrastructure.tasks.container import purge_expired_guest_sessions_use_case
+from tailorcraft.infrastructure.tasks.container import (
+    purge_expired_guest_sessions_use_case,
+    sweep_expired_identity_tokens_use_case,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -248,3 +252,49 @@ async def _run_purge() -> tuple[PurgeReport, int]:
 
 def _elapsed_ms(started_at: float) -> int:
     return int((time.monotonic() - started_at) * 1000)
+
+
+# --- The identity token sweep (slice 2.5, technical plan §0.9, AC-41, AC-43) --------------------
+
+_EVENT_IDENTITY_SWEEP: Final = "retention.identity_token_sweep"
+_EVENT_IDENTITY_SWEEP_FAILED: Final = "retention.identity_token_sweep_failed"
+
+
+@app.task(name=SWEEP_EXPIRED_IDENTITY_TOKENS_TASK_NAME, bind=False, ignore_result=True)  # type: ignore[untyped-decorator]  # celery is untyped
+def sweep_expired_identity_tokens() -> None:
+    """Delete every expired pending registration, password reset and login.
+
+    **Unlike the purge: no lock, no heartbeat, no flag.** The rows it deletes are ones every code
+    path already refuses, two overlapping ticks delete disjoint batches or nothing, and its fact in
+    `/health/ready` is the backlog alone (ADR-0019 amendment (a)). **No retry**: the next tick is
+    the retry (V-57), and the backlog rises meanwhile.
+
+    One line per run, including the empty runs, with three counts and a duration; a failure logs
+    the exception's **type** only and re-raises, so Celery records it and Sentry sees it.
+    """
+    started_at = time.monotonic()
+    try:
+        report = asyncio.run(_sweep_identity_tokens())
+    except Exception as exc:
+        log.warning(
+            _EVENT_IDENTITY_SWEEP_FAILED,
+            error_type=type(exc).__name__,
+            duration_ms=_elapsed_ms(started_at),
+        )
+        raise
+    log.info(
+        _EVENT_IDENTITY_SWEEP,
+        pending_registrations=report.pending_registrations,
+        password_resets=report.password_resets,
+        logins=report.logins,
+        duration_ms=_elapsed_ms(started_at),
+    )
+
+
+async def _sweep_identity_tokens() -> IdentityTokenSweepReport:
+    """One run at one instant. Each batch commits through the committing adapter; this commit
+    closes whatever the last statement left open, inside the task's error boundary."""
+    async with sweep_expired_identity_tokens_use_case() as (sweep, session):
+        report = await sweep(SystemClock().now())
+        await session.commit()
+        return report

@@ -46,18 +46,25 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.export.abandon_stale_export_jobs import AbandonStaleExportJobs
 from tailorcraft.application.export.render_export_job import RenderExportJob
+from tailorcraft.application.identity.deliver_password_reset_mail import DeliverPasswordResetMail
+from tailorcraft.application.identity.deliver_registration_mail import DeliverRegistrationMail
 from tailorcraft.application.retention.purge_expired_guest_sessions import PurgeExpiredGuestSessions
+from tailorcraft.application.retention.purge_expired_identity_tokens import (
+    PurgeExpiredIdentityTokens,
+)
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.ports import AccountMailPort
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
@@ -67,11 +74,18 @@ from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
+from tailorcraft.infrastructure.identity.one_time_tokens import SecretsOneTimeTokenMinter
+from tailorcraft.infrastructure.identity.token_access import (
+    CommittingPasswordResetRepository,
+    CommittingPendingRegistrationRepository,
+)
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
+from tailorcraft.infrastructure.mail.smtp import SmtpAccountMailer
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.retention.data_access import (
     CommittingExpiredGuestDataAdapter,
+    CommittingExpiredIdentityTokens,
     OverdueBacklog,
 )
 from tailorcraft.infrastructure.settings import Settings, get_settings
@@ -719,3 +733,126 @@ def _build_purge_use_case(
         # promise on paper only, and the dry run belongs to the operator's rehearsal.
     )
     return purge, OverdueBacklog(data, clock, window)
+
+
+# --- Slice 2.5: account mail and the identity token sweep -----------------------------------------
+
+# Rows per `DELETE` in the identity token sweep (plan §0.9). Not a setting, for the purge's
+# `batch_limit` reason: it bounds one statement's row locks, it is not a throughput knob, and the
+# use case loops batches until one deletes nothing.
+IDENTITY_TOKEN_SWEEP_BATCH_SIZE: Final = 1000
+
+
+@asynccontextmanager
+async def _unit_of_work() -> AsyncIterator[tuple[Settings, AsyncSession]]:
+    """Settings and one session, inside the loop `asyncio.run` opened: mappings configured, **one
+    engine per invocation** built here and disposed before the loop closes, a rollback when the
+    body raises. The lifecycle every builder above writes out, written once for the three below.
+    """
+    settings = get_settings()
+    configure_mappings()
+    engine = create_engine(settings)
+    try:
+        factory = create_session_factory(engine)
+        async with factory() as session:
+            try:
+                yield settings, session
+            except Exception:
+                await session.rollback()
+                raise
+    finally:
+        await engine.dispose()
+
+
+@asynccontextmanager
+async def deliver_registration_mail_use_case() -> AsyncIterator[
+    tuple[DeliverRegistrationMail, AsyncSession]
+]:
+    """What one `deliver_registration_mail` task needs (V-19 … V-31). The session is yielded so the
+    task commits inside its own error boundary; the load-bearing commits are the committing
+    repository's, one per write, which is what makes *commit, then send* two calls in the use case
+    (plan §0.4)."""
+    async with _unit_of_work() as (settings, session):
+        yield _build_registration_delivery(settings, session), session
+
+
+def _build_registration_delivery(
+    settings: Settings, session: AsyncSession, mailer: AccountMailPort | None = None
+) -> DeliverRegistrationMail:
+    """Bind the five ports `DeliverRegistrationMail` declares. `mailer` is the test seam on this
+    path (`_build_use_case`'s `llm`): a test hands a recording mailer, production gets SMTP."""
+    from tailorcraft.infrastructure.persistence.repositories.identity.pending_registration import (
+        SqlAlchemyPendingRegistrationRepository,
+    )
+    from tailorcraft.infrastructure.persistence.repositories.identity.user import (
+        SqlAlchemyUserRepository,
+    )
+
+    return DeliverRegistrationMail(
+        # The committing wrapper: `save_issued` and `remove` are durable on return, so the hash is
+        # committed before the link is sent and a crash between the two leaves no mail rather than a
+        # dead link.
+        pending=CommittingPendingRegistrationRepository(
+            SqlAlchemyPendingRegistrationRepository(session), session
+        ),
+        # Read-only here (`find_by_email`), so the bare adapter.
+        users=SqlAlchemyUserRepository(session),
+        tokens=SecretsOneTimeTokenMinter(),
+        mailer=mailer if mailer is not None else SmtpAccountMailer(settings),
+        clock=SystemClock(),
+    )
+
+
+@asynccontextmanager
+async def deliver_password_reset_mail_use_case() -> AsyncIterator[
+    tuple[DeliverPasswordResetMail, AsyncSession]
+]:
+    """What one `deliver_password_reset_mail` task needs (V-42 … V-44). As above."""
+    async with _unit_of_work() as (settings, session):
+        yield _build_password_reset_delivery(settings, session), session
+
+
+def _build_password_reset_delivery(
+    settings: Settings, session: AsyncSession, mailer: AccountMailPort | None = None
+) -> DeliverPasswordResetMail:
+    """Bind the five ports `DeliverPasswordResetMail` declares; `mailer` as above."""
+    from tailorcraft.infrastructure.persistence.repositories.identity.password_reset import (
+        SqlAlchemyPasswordResetRepository,
+    )
+    from tailorcraft.infrastructure.persistence.repositories.identity.user import (
+        SqlAlchemyUserRepository,
+    )
+
+    return DeliverPasswordResetMail(
+        # The committing wrapper: `save_issued` (with its supersede) and `remove` commit.
+        resets=CommittingPasswordResetRepository(
+            SqlAlchemyPasswordResetRepository(session), session
+        ),
+        users=SqlAlchemyUserRepository(session),
+        tokens=SecretsOneTimeTokenMinter(),
+        mailer=mailer if mailer is not None else SmtpAccountMailer(settings),
+        clock=SystemClock(),
+    )
+
+
+@asynccontextmanager
+async def sweep_expired_identity_tokens_use_case() -> AsyncIterator[
+    tuple[PurgeExpiredIdentityTokens, AsyncSession]
+]:
+    """What one tick of the identity token sweep needs (plan §0.9, AC-41, AC-43)."""
+    async with _unit_of_work() as (_settings, session):
+        yield _build_identity_token_sweep(session), session
+
+
+def _build_identity_token_sweep(session: AsyncSession) -> PurgeExpiredIdentityTokens:
+    """Bind `ExpiredIdentityTokenPort` to the committing wrapper: **one commit per batch**, so a
+    sweep that fails part-way keeps every batch already deleted and holds no row lock longer than
+    one statement."""
+    from tailorcraft.infrastructure.persistence.retention.expired_identity_tokens import (
+        SqlAlchemyExpiredIdentityTokens,
+    )
+
+    return PurgeExpiredIdentityTokens(
+        tokens=CommittingExpiredIdentityTokens(SqlAlchemyExpiredIdentityTokens(session), session),
+        batch_size=IDENTITY_TOKEN_SWEEP_BATCH_SIZE,
+    )
