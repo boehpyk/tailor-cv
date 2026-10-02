@@ -1,6 +1,9 @@
 import { Navigate, createBrowserRouter } from 'react-router';
 
 import { App } from './App';
+import { ConfirmEmailPage } from './features/accountMail/components/ConfirmEmailPage';
+import { PasswordResetConfirmPage } from './features/accountMail/components/PasswordResetConfirmPage';
+import { PasswordResetRequestPage } from './features/accountMail/components/PasswordResetRequestPage';
 import { AccountPage } from './features/auth/components/AccountPage';
 import { LoginPage } from './features/auth/components/LoginPage';
 import { RegisterPage } from './features/auth/components/RegisterPage';
@@ -25,6 +28,9 @@ import type { RouteObject } from 'react-router';
  * | `/runs/:runId/:document`  | `RunPage`                     |
  * | `/login`                  | `LoginPage`                   |
  * | `/register`               | `RegisterPage`                |
+ * | `/confirm-email`          | `ConfirmEmailPage` (2.5)      |
+ * | `/reset-password`         | `PasswordResetRequestPage` (2.5) |
+ * | `/reset-password/confirm` | `PasswordResetConfirmPage` (2.5) |
  * | `/account`                | `RequireAuth` → `AccountPage` |
  * | `/history`                | `RequireAuth` → `AccountScope` → `HistoryPage` (2.3) |
  * | `/history/:runId`         | redirect → `/history/:runId/cv` (2.3)                 |
@@ -43,7 +49,9 @@ import type { RouteObject } from 'react-router';
  * **Only `/account` is guarded** (slice 2.1). Every earlier route stays open: the product works
  * for a guest, and a guard there would turn "not logged in" into "cannot use TailorCraft". `/login`
  * and `/register` guard themselves the other way round — an authenticated visitor is sent on to
- * `safeNext(next)` by the page — so they need no wrapper here.
+ * `safeNext(next)` by the page — so they need no wrapper here. Slice 2.5's three mail-link pages are
+ * public too, and *not* turned away when signed in: a link opened while signed in as someone else
+ * still confirms, and the current session is untouched (V-65).
  *
  * **Slice 2.3: the route decides the scope** (plan §0.9, AC-48). `/runs/…` renders with no
  * provider — the guest scope, the context's default — and `/history/…` inside `AccountScope`, so
@@ -68,6 +76,14 @@ export const routes: RouteObject[] = [
       },
       { path: 'login', element: <LoginPage /> },
       { path: 'register', element: <RegisterPage /> },
+      { path: 'confirm-email', element: <ConfirmEmailPage /> },
+      {
+        path: 'reset-password',
+        children: [
+          { index: true, element: <PasswordResetRequestPage /> },
+          { path: 'confirm', element: <PasswordResetConfirmPage /> },
+        ],
+      },
       {
         path: 'account',
         element: (

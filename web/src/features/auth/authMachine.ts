@@ -52,7 +52,12 @@ export type SignOutReason =
    * Another tab of this origin logged out or deleted the account and said so on the
    * `BroadcastChannel` (slice 2.2, AC-42). This tab made no request to learn it.
    */
-  | 'signed_out_elsewhere';
+  | 'signed_out_elsewhere'
+  /**
+   * This tab set a new password through a reset link (slice 2.5, AC-48): the server revoked every
+   * login of the account, this one included, so there is nothing to refresh.
+   */
+  | 'password_changed';
 
 /**
  * A usable access token and the moment it stops being usable, on the `performance.now()` clock
