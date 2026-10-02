@@ -149,11 +149,11 @@ def test_the_purge_entry_publishes_to_the_default_queue(
     assert entry["options"]["queue"] == DEFAULT_QUEUE_NAME == "celery"
 
 
-def test_task_queues_declares_exactly_the_same_three_queues_with_the_purge_schedule_enabled(
+def test_task_queues_declares_exactly_the_same_four_queues_with_the_purge_schedule_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """AC-27: enabling the third beat entry must add no fourth queue and no fourth kombu binding —
-    `task_queues` stays byte-for-byte `celery`, `tailoring`, `export`, exactly as it is with the flag
+    `task_queues` stays byte-for-byte `celery`, `tailoring`, `export`, `mail`, exactly as it is with the flag
     off (`test_celery_config.py`'s own `test_task_queues_declares_exactly_the_default_tailoring_and_
     export_queues`). Proven to discriminate by adding a fourth `Queue(...)` to `task_queues` gated on
     `settings.guest_purge_enabled`: this test's set comparison goes red while the un-gated sibling

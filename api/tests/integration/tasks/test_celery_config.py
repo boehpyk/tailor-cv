@@ -142,7 +142,7 @@ def test_no_two_queues_in_task_queues_share_a_routing_key() -> None:
 # --- AC-44 (I14t): the export queue is the third declared queue --------------------------------
 
 
-def test_task_queues_declares_exactly_the_default_tailoring_and_export_queues() -> None:
+def test_task_queues_declares_exactly_the_default_tailoring_export_and_mail_queues() -> None:
     """AC-44: `export` (I12) joins the default and `tailoring` queues as the third one declared —
     not merely "some three queues", but specifically the ones `settings` and `tasks/app.py`'s own
     `DEFAULT_QUEUE_NAME` constant name. `test_every_queue_in_task_queues_has_a_routing_key_equal_
