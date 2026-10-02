@@ -2,21 +2,26 @@
 
 2.2's S-46 (`test_auth.py::test_two_concurrent_correct_deletions_exactly_one_204_one_401`) says
 two correct-password deletions of one account answer exactly one 204 and one 401
-`not_signed_in` ("user gone"). T14 added `users.confirm_credential_unchanged` to
-`DeleteOwnAccount`: a `SELECT … FOR SHARE` on the user row, held to the end of the transaction,
-followed by erasure's `SELECT … FOR UPDATE` on the same row — a lock **upgrade**. That breaks S-46
-two ways, and the existing test sees them only when the scheduler happens to line up:
+`not_signed_in` ("user gone"). The credential re-check between "the password verified" and
+"erasure starts" must not break that. T14's first shape (`confirm_credential_unchanged`, a
+`SELECT ... FOR SHARE` held to the end of the transaction, then erasure's `FOR UPDATE` on the same
+row) was a lock **upgrade** and broke S-46 two ways:
 
 (a) both requests hold `FOR SHARE`, both then ask for `FOR UPDATE` -> `deadlock_detected`, one is
     aborted -> 503 instead of 204/401;
 (b) the winner commits before the loser's re-check -> the re-check finds no row -> `False` ->
     `InvalidCredentials` -> 403 `password_incorrect` instead of 401 (the user is gone).
 
-Each interleaving is staged by wrapping `SqlAlchemyUserRepository.confirm_credential_unchanged` —
-the single seam between "the password verified" and "the erasure starts", so the wrapper decides
-the order and the code under test is otherwise untouched. `SET LOCAL lock_timeout` is issued on the
-request's own transaction (it lasts exactly as long as the locks it guards, so it cannot be lost on
-a pooled connection), so a regression that waits for ever fails in seconds naming a lock.
+Amended AC-14 (ADR-0028 section 5): `DeleteOwnAccount` re-checks with `users.get_for_update`
+(`FOR UPDATE`), so a second deletion waits and then finds the row gone. This test does not know
+which lock the fix chooses. It stages each interleaving at the **point between verify and erasure**
+by wrapping every re-check entry point on `SqlAlchemyUserRepository` -- `confirm_credential_unchanged`
+(the old shape) and `get_for_update` (the new one); a request calls exactly one of them once on the
+deletion path, so the wrapper runs a gate immediately before whichever lock the code under test
+takes first. The wrappers decide the order; the code under test is otherwise untouched.
+`SET LOCAL lock_timeout` is issued on the request's own transaction (it lasts exactly as long as
+the locks it guards, so it cannot be lost on a pooled connection), so a regression that waits for
+ever fails in seconds naming a lock.
 
 Real, committed rows on `tailorcraft_test`, cleaned up by hand. The expectation is the spec's, not
 the code's: exactly one 204, exactly one 401 `not_signed_in`, never a 403, never a 503.
@@ -25,6 +30,7 @@ the code's: exactly one 204, exactly one 401 `not_signed_in`, never a 403, never
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID, uuid4
@@ -35,7 +41,6 @@ from httpx import ASGITransport, AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from tailorcraft.domain.identity.value_objects import PasswordHash, UserId
 from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
 from tailorcraft.infrastructure.persistence.database import create_session_factory
@@ -44,7 +49,6 @@ from tailorcraft.infrastructure.persistence.repositories.identity.user import (
 )
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
-from tests.integration.claim_race_support import wait_for_lock_waiter
 
 REGISTER_URL = "/api/auth/register"
 DELETE_ACCOUNT_URL = "/api/auth/delete-account"
@@ -52,7 +56,7 @@ A_STRONG_PASSWORD = "correct horse battery staple 9"
 LOCK_TIMEOUT_MS = 8_000
 GATE_SECONDS = 10.0
 
-_Confirm = Callable[[SqlAlchemyUserRepository, UserId, PasswordHash], Awaitable[bool]]
+_Real = Callable[..., Awaitable[Any]]
 
 
 @pytest.fixture
@@ -123,12 +127,6 @@ def _assert_one_204_one_401_user_gone(results: tuple[Response, Response]) -> Non
     assert the_401.json()["error"]["code"] == "not_signed_in", the_401.text
 
 
-def _install(monkeypatch: pytest.MonkeyPatch, staged: _Confirm) -> None:
-    """Replace the seam with `staged`, which receives the **real** method as `real` via closure of
-    the caller; each wrapper first bounds lock waits on the request's own transaction."""
-    monkeypatch.setattr(SqlAlchemyUserRepository, "confirm_credential_unchanged", staged)
-
-
 async def _set_lock_timeout(repo: SqlAlchemyUserRepository) -> None:
     session: Any = (
         repo._session
@@ -136,51 +134,59 @@ async def _set_lock_timeout(repo: SqlAlchemyUserRepository) -> None:
     await session.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
 
 
-async def test_two_deletions_both_holding_the_shared_lock_do_not_deadlock(
+def _install(
+    monkeypatch: pytest.MonkeyPatch,
+    gate: Callable[[SqlAlchemyUserRepository], Awaitable[None]],
+) -> None:
+    """Run `gate(repo)` right before the first re-check lock a deletion takes, whichever method that
+    is. Both entry points are wrapped; the real method then runs unchanged."""
+
+    def wrap(real: _Real) -> _Real:
+        async def staged(repo: SqlAlchemyUserRepository, *args: Any, **kwargs: Any) -> Any:
+            await _set_lock_timeout(repo)
+            await gate(repo)
+            return await real(repo, *args, **kwargs)
+
+        return staged
+
+    for name in ("confirm_credential_unchanged", "get_for_update"):
+        monkeypatch.setattr(
+            SqlAlchemyUserRepository, name, wrap(getattr(SqlAlchemyUserRepository, name))
+        )
+
+
+async def test_two_concurrent_correct_deletions_do_not_deadlock(
     concurrent_app: FastAPI,
     settings: Settings,
     engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Interleaving (a): neither request may reach erasure until the other has finished its re-check
-    or is parked on the row's lock. Under today's `FOR SHARE` re-check both then hold a shared lock and both ask for
-    `FOR UPDATE`: a lock upgrade, so PostgreSQL aborts one with `deadlock_detected`. The spec's
-    answer is one 204 and one 401 whatever lock the fix chooses. A fix that serialises the
-    re-checks makes the second wait on the lock, which the gate tolerates."""
+    """Interleaving (a): neither request takes its re-check lock until **both** have passed the
+    password verify, so the two genuinely overlap at the lock. Under the old `FOR SHARE` re-check
+    both then hold a shared lock and both ask for `FOR UPDATE`: a lock upgrade, so PostgreSQL
+    aborts one with `deadlock_detected` (503). With an exclusive re-check the second simply waits
+    for the first to commit and then finds the row gone. The spec's answer is one 204 and one 401
+    whatever lock the fix chooses."""
     _assert_test_database(settings)
-    real = SqlAlchemyUserRepository.confirm_credential_unchanged
-    rechecked = 0
-    both_rechecked = asyncio.Event()
-    both_held_the_lock = False
+    arrived = 0
+    both_verified = asyncio.Event()
+    overlapped = False
 
-    async def staged(repo: SqlAlchemyUserRepository, user_id: UserId, seen: PasswordHash) -> bool:
-        nonlocal rechecked, both_held_the_lock
-        await _set_lock_timeout(repo)
-        answer = await real(repo, user_id, seen)
-        rechecked += 1
-        if rechecked == 2:
-            both_held_the_lock = True
-            both_rechecked.set()
-        # Hold the re-check's lock until the other request has either finished *its* re-check
-        # (both hold `FOR SHARE`: today's code) or is observably parked on this row's lock (a fix
-        # that takes an exclusive lock early, which this gate must not hang on).
-        waiter = asyncio.ensure_future(wait_for_lock_waiter(engine, "identity_user"))
-        done = asyncio.ensure_future(both_rechecked.wait())
-        try:
-            await asyncio.wait(
-                {waiter, done}, timeout=GATE_SECONDS, return_when=asyncio.FIRST_COMPLETED
-            )
-        finally:
-            for task in (waiter, done):
-                task.cancel()
-            await asyncio.gather(waiter, done, return_exceptions=True)
-        return answer
+    async def gate(repo: SqlAlchemyUserRepository) -> None:
+        nonlocal arrived, overlapped
+        arrived += 1  # synchronous: no await between the read and the write
+        if arrived == 2:
+            overlapped = True
+            both_verified.set()
+        # On timeout `overlapped` stays False and the assertion below names it.
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(both_verified.wait(), timeout=GATE_SECONDS)
 
     token, user_id = await _register(concurrent_app, settings)
-    _install(monkeypatch, staged)
+    _install(monkeypatch, gate)
     try:
         results = await _delete_twice(concurrent_app, settings, token)
-        assert both_held_the_lock or rechecked == 1, "the re-checks never overlapped: not staged"
+        assert overlapped, "the two requests never both reached the re-check: not staged"
         _assert_one_204_one_401_user_gone(results)
     finally:
         async with engine.begin() as conn:
@@ -197,28 +203,28 @@ async def test_a_deletion_whose_account_was_erased_before_its_recheck_is_401_not
     account; the second is held **before** its re-check until the user row is observably gone on a
     third connection (so the winner has committed). It already verified the password against a
     row that existed. S-46: that is "user gone" -> 401 `not_signed_in`, never 403
-    `password_incorrect` — the password was right, the account was erased."""
+    `password_incorrect` -- the password was right, the account was erased."""
     _assert_test_database(settings)
-    real = SqlAlchemyUserRepository.confirm_credential_unchanged
+    user_id_holder: list[UUID] = []
     arrivals = 0
     loser_saw_row_gone = False
 
-    async def staged(repo: SqlAlchemyUserRepository, user_id: UserId, seen: PasswordHash) -> bool:
+    async def gate(repo: SqlAlchemyUserRepository) -> None:
         nonlocal arrivals, loser_saw_row_gone
-        await _set_lock_timeout(repo)
         arrivals += 1  # synchronous: the first to arrive is the winner
         if arrivals == 1:
-            return await real(repo, user_id, seen)
+            return
+        target = user_id_holder[0]
         deadline = asyncio.get_running_loop().time() + GATE_SECONDS
-        while await _user_row_exists(engine, user_id.value):
+        while await _user_row_exists(engine, target):
             if asyncio.get_running_loop().time() > deadline:
                 break
             await asyncio.sleep(0.02)
-        loser_saw_row_gone = not await _user_row_exists(engine, user_id.value)
-        return await real(repo, user_id, seen)
+        loser_saw_row_gone = not await _user_row_exists(engine, target)
 
     token, user_id = await _register(concurrent_app, settings)
-    _install(monkeypatch, staged)
+    user_id_holder.append(user_id)
+    _install(monkeypatch, gate)
     try:
         results = await _delete_twice(concurrent_app, settings, token)
         assert arrivals == 2, "both requests must reach the re-check"
