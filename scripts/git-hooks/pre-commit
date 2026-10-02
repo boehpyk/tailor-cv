@@ -45,6 +45,14 @@ git show ":docker-compose.dev.yml" > "$_mc_dir/dev.yml" 2>/dev/null || cp docker
 python3 scripts/git-hooks/check-mail-compose.py "$_mc_dir/prod.yml" "$_mc_dir/dev.yml" \
   || fail "mail wiring guard failed (see above). Dev must not be able to mail real addresses."
 
+# 7) Referrer policy (2.5, AC-53): the SPA document's nginx location and index.html both say
+#    no-referrer, since reset/verify links carry a one-time token. STAGED content again.
+git show ":docker/nginx/default.conf" > "$_mc_dir/default.conf" 2>/dev/null || cp docker/nginx/default.conf "$_mc_dir/default.conf"
+git show ":docker/nginx/dev.conf" > "$_mc_dir/dev.conf" 2>/dev/null || cp docker/nginx/dev.conf "$_mc_dir/dev.conf"
+git show ":web/index.html" > "$_mc_dir/index.html" 2>/dev/null || cp web/index.html "$_mc_dir/index.html"
+python3 scripts/git-hooks/check-nginx-referrer.py "$_mc_dir/default.conf" "$_mc_dir/dev.conf" --html "$_mc_dir/index.html" \
+  || fail "referrer-policy guard failed (see above). Reset and verify tokens must not leak through Referer."
+
 # --- Quality gates (run in the dev stack if it's up) ---------------------------
 # The RED commit of a tiered-TDD cycle (docs/sdlc.md §2) stages a test that is SUPPOSED to fail, so
 # `make check` cannot be the gate for it. TDD_RED=1 swaps in `make check.static` — every gate except

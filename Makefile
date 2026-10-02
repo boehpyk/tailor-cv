@@ -162,6 +162,9 @@ eval: ## Run the prompt eval set against the real Gemini API, by hand (ADR-0004)
 compose.mail.check: ## Run the 2.5 mail-wiring guard on the working-tree compose files (host python3 + PyYAML)
 	python3 scripts/git-hooks/check-mail-compose.py docker-compose.yml docker-compose.dev.yml
 
+nginx.referrer.check: ## Run the 2.5 referrer-policy guard on the working-tree nginx configs and index.html
+	python3 scripts/git-hooks/check-nginx-referrer.py docker/nginx/default.conf docker/nginx/dev.conf --html web/index.html
+
 hooks.install: ## Point git at the tracked hooks in scripts/git-hooks/
 	git config core.hooksPath scripts/git-hooks
 	chmod +x scripts/git-hooks/*
@@ -176,4 +179,4 @@ help: ## Show this help
 
 .PHONY: up.dev mail.ui down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
         db.dump purge.dry purge fmt lint types imports test.db test test.twice web.types web.lint \
-        web.format web.format.check web.test web.build web.check check eval compose.mail.check hooks.install help
+        web.format web.format.check web.test web.build web.check check eval compose.mail.check nginx.referrer.check hooks.install help
