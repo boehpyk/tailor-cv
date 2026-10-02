@@ -321,6 +321,11 @@ class FakeUserRepository:
         """Test-only inspection, not part of `UserRepository`."""
         return list(self._by_id.values())
 
+    def drop(self, user_id: UserId) -> None:
+        """Test-only: the row vanishes, as an account deletion committing on another connection
+        would make it. Not part of `UserRepository`."""
+        self._by_id.pop(user_id, None)
+
 
 class FakeLoginRepository:
     """In-memory `LoginRepository` (slice 2.1, T13). **Revocation is deletion** (ADR-0020): `remove`

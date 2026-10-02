@@ -2,10 +2,12 @@
 
 Against today's `DeleteOwnAccount` (a change to existing code). The shape is `LogIn`'s: verify takes
 ~50 ms off the loop, a reset can commit inside it, and an account must not be erased on the strength
-of a password the reset just replaced (a stolen old password plus a victim's reset is otherwise a
-deletion). The race is staged as in `test_log_in_credential_recheck.py`: the stored row is replaced by
-a different instance carrying the new hash while the use case holds the old aggregate; the fake's
-`confirm_credential_unchanged` is the faithful one.
+of a password the reset just replaced. Amended after T14 (`e7f04c9`): the re-check is NOT
+`confirm_credential_unchanged` (`FOR SHARE`, then erasure's `FOR UPDATE` is a lock upgrade that
+deadlocks two concurrent deletions). It is `users.get_for_update` -- the lock erasure takes -- and a
+comparison of the locked row's hash with the verified one. A vanished row is `UserNotFound`.
+The race is staged by replacing the stored row with a different instance, as in
+`test_log_in_credential_recheck.py`; `get_for_update` returns the stored row.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ import pytest
 
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
 from tailorcraft.application.retention.erase_account import EraseAccount
-from tailorcraft.domain.identity.errors import InvalidCredentials
+from tailorcraft.domain.identity.errors import InvalidCredentials, UserNotFound
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     EmailAddress,
@@ -58,7 +60,7 @@ class _Rig:
 
 
 async def _setup(
-    clock: FixedClock, *, reset_in_flight: bool
+    clock: FixedClock, *, reset_in_flight: bool = False, row_vanishes: bool = False
 ) -> tuple[_Rig, _OrderedAccountData, DeleteOwnAccount]:
     log: list[str] = []
     users = LoggingUserRepository(log)
@@ -74,10 +76,14 @@ async def _setup(
     async def reset_commits() -> None:
         await commit_a_reset_elsewhere(users, user, _RESET_HASH, clock.now())
 
+    async def row_is_deleted() -> None:
+        users.drop(user.id)
+
+    after_verify = reset_commits if reset_in_flight else (row_is_deleted if row_vanishes else None)
     hasher = LoggingPasswordHasher(
         log,
         verify_result=PasswordVerdict.MATCH,
-        after_verify=reset_commits if reset_in_flight else None,
+        after_verify=after_verify,
     )
     accounts = _OrderedAccountData(log, user.id)
     use_case = DeleteOwnAccount(users, hasher, EraseAccount(accounts, InMemoryFileStore()))
@@ -100,16 +106,38 @@ async def test_a_credential_changed_during_the_verify_refuses_the_deletion_and_e
     assert (await rig.users.get(rig.user.id)).password_hash == _RESET_HASH
 
 
-async def test_the_recheck_runs_once_with_the_seen_hash_between_the_verify_and_the_erasure(
+async def test_the_recheck_takes_the_row_lock_between_the_verify_and_the_erasure(
     clock: FixedClock,
 ) -> None:
-    """AC-14's order: verify, then the re-check, then `EraseAccount`'s first read."""
-    rig, _accounts, use_case = await _setup(clock, reset_in_flight=False)
+    """AC-14's order: verify, then `get_for_update` (the lock erasure will take), then
+    `EraseAccount`'s first read."""
+    rig, _accounts, use_case = await _setup(clock)
 
     await use_case(rig.user.id, Password.from_input("correct password"))
 
-    assert rig.users.confirm_calls == [(rig.user.id, _OLD_HASH)]
-    assert rig.log.index("hasher.verify") < rig.log.index("users.confirm_credential_unchanged")
-    assert rig.log.index("users.confirm_credential_unchanged") < rig.log.index(
-        "accounts.files_of_account"
-    )
+    assert rig.log.count("users.get_for_update") == 1
+    assert rig.log.index("hasher.verify") < rig.log.index("users.get_for_update")
+    assert rig.log.index("users.get_for_update") < rig.log.index("accounts.files_of_account")
+
+
+async def test_the_recheck_is_not_a_share_lock_confirmation(clock: FixedClock) -> None:
+    """The lock-upgrade deadlock (`e7f04c9`): `FOR SHARE` then `FOR UPDATE` on one row."""
+    rig, _accounts, use_case = await _setup(clock)
+
+    await use_case(rig.user.id, Password.from_input("correct password"))
+
+    assert "users.confirm_credential_unchanged" not in rig.log
+    assert rig.users.confirm_calls == []
+
+
+async def test_a_row_deleted_during_the_verify_is_user_not_found_and_erases_nothing(
+    clock: FixedClock,
+) -> None:
+    """AC-14: the row gone -> `UserNotFound` (401 at the route), not `InvalidCredentials`."""
+    rig, accounts, use_case = await _setup(clock, row_vanishes=True)
+
+    with pytest.raises(UserNotFound):
+        await use_case(rig.user.id, Password.from_input("correct password"))
+
+    assert accounts.files_of_account_calls == []
+    assert accounts.delete_account_calls == []
