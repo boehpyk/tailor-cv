@@ -23,7 +23,12 @@ from sqlalchemy.orm.util import identity_key
 
 from tailorcraft.domain.identity.errors import LoginConcurrentlyRotated
 from tailorcraft.domain.identity.login import Login
-from tailorcraft.domain.identity.value_objects import LoginId, RetiredRefreshToken, TokenHash
+from tailorcraft.domain.identity.value_objects import (
+    LoginId,
+    RetiredRefreshToken,
+    TokenHash,
+    UserId,
+)
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.mapping.identity.login import (
@@ -226,6 +231,27 @@ class SqlAlchemyLoginRepository:
             if isinstance(instance, Login):
                 self._session.expunge(instance)
         return result.rowcount
+
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        """`DELETE FROM identity_login WHERE user_id = :u RETURNING id` — a password reset revokes
+        every device of one account (ADR-0028; ADR-0020: revocation is deletion). Returns how many
+        logins went; 0 when there were none. Each login's retired hashes go by the
+        `identity_retired_refresh_token.login_id` `ON DELETE CASCADE`.
+
+        `RETURNING id` rather than a row count, because the ids are also what the identity map needs:
+        every `Login` this statement removed is expunged, for the reason `remove` gives. Only those —
+        another user's logins in the same session are left alone, as the port promises for the rows.
+        Seeks on `ix_identity_login_user_id`.
+        """
+        result = await self._session.execute(
+            delete(login_table).where(login_table.c.user_id == user_id).returning(login_table.c.id)
+        )
+        removed = result.scalars().all()
+        for login_id in removed:
+            stale = self._session.identity_map.get(identity_key(Login, login_id))
+            if stale is not None:
+                self._session.expunge(stale)
+        return len(removed)
 
 
 if TYPE_CHECKING:

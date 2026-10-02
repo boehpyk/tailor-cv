@@ -57,6 +57,18 @@ _BOUND_ELSEWHERE: dict[str, str] = {
         "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "
         "behind a route (ADR-0018)."
     ),
+    # slice 2.5 skeleton; bound at T22 (removed in that commit)
+    "AccountMailPort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
+    # slice 2.5 skeleton; bound at T22 (removed in that commit)
+    "AccountMailQueuePort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
+    # slice 2.5 skeleton; bound at T22 (removed in that commit)
+    "ExpiredIdentityTokenPort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
+    # slice 2.5 skeleton; bound at T22 (removed in that commit)
+    "OneTimeTokenPort": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
+    # slice 2.5 skeleton; bound at T22 (removed in that commit)
+    "PasswordResetRepository": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
+    # slice 2.5 skeleton; bound at T22 (removed in that commit)
+    "PendingRegistrationRepository": "slice 2.5 skeleton; bound at T22 (removed in that commit).",
 }
 
 

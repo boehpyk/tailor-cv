@@ -585,6 +585,24 @@ class OneTimeToken:
 
 
 @dataclass(frozen=True, slots=True)
+class MintedOneTimeToken:
+    """A freshly minted one-time token and the hash that is stored in its place — what
+    `OneTimeTokenPort.mint` returns (technical plan §0.4).
+
+    The pair travels together for one reason: the delivery use case stores `token_hash` on the
+    aggregate, commits, and only then hands `token` to `AccountMailPort.send`. Both fields print
+    redacted through their own types, so this one's generated `repr` is already safe — there is no
+    hand-written `__repr__` here to delete as boilerplate, and nothing it could get wrong.
+    """
+
+    token: OneTimeToken
+    token_hash: TokenHash
+
+    # No `__post_init__`: both fields validate themselves, and that the hash is *of* the token is
+    # the adapter's promise, which the domain cannot check without naming the algorithm (AC-4).
+
+
+@dataclass(frozen=True, slots=True)
 class AddressedReset:
     """A reset that has been requested and not yet delivered: all it knows is the address it was
     asked for (ADR-0028). Nobody has checked whether an account exists — the request path never

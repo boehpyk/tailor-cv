@@ -14,6 +14,13 @@ reason; which hash function, which signature scheme and which header carries wha
 
 Slice 2.4 adds `GuestWorkClaimPort`: the hand-off of a guest session's work to a signed-in user
 (ADR-0025 decision 8). Like the rest, it names no table, no SQL and no other context's aggregate.
+
+Slice 2.5 adds five (technical plan §1, ADR-0026 … ADR-0028): `PendingRegistrationRepository`,
+`PasswordResetRepository`, `OneTimeTokenPort`, `AccountMailPort` and `AccountMailQueuePort`; and it
+widens `UserRepository` (`get_for_update`, `confirm_credential_unchanged`) and `LoginRepository`
+(`remove_all_for_user`). None names SMTP, a vendor, a hash function, a queue technology or a lock
+mode — the lock **order** is named, because callers must keep it; how a lock is taken is the
+adapter's.
 """
 
 from __future__ import annotations
@@ -21,18 +28,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Protocol
 
+from tailorcraft.domain.identity.account_mail import AccountMail
 from tailorcraft.domain.identity.claim import ClaimedGuestWork
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
+from tailorcraft.domain.identity.password_reset import PasswordReset
+from tailorcraft.domain.identity.pending_registration import PendingRegistration
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     EmailAddress,
     GuestSessionId,
     IssuedAccessToken,
     LoginId,
+    MintedOneTimeToken,
     Password,
     PasswordHash,
+    PasswordResetId,
     PasswordVerdict,
+    PendingRegistrationId,
     RetiredRefreshToken,
     TokenHash,
     UserId,
@@ -104,7 +117,44 @@ class UserRepository(Protocol):
         ...
 
     async def save(self, user: User) -> None:
-        """Persist a change to an existing user — today only the rehash-on-login path (I-11)."""
+        """Persist a change to an existing user — the rehash-on-login path (I-11) and, since slice
+        2.5, a password reset (`User.reset_password`, ADR-0028)."""
+        ...
+
+    async def get_for_update(self, user_id: UserId) -> User:
+        """`get`, with the user row locked exclusively until the end of the current transaction
+        (technical plan §0.7, §0.8). Raises `UserNotFound` if no user has this id.
+
+        `ResetPassword` takes this **first**, before it re-finds and locks the reset row: everything
+        that takes both a user and a reset takes the **user first** (§0.8's lock order), so a reset
+        and an account erasure — which also locks the user first — queue on one row instead of
+        deadlocking on two. It is also what makes a login racing a reset safe from the reset's side:
+        a login holding `confirm_credential_unchanged`'s shared lock makes this wait until that login
+        has committed, and the reset then deletes the login it created.
+        """
+        ...
+
+    async def confirm_credential_unchanged(self, user_id: UserId, seen: PasswordHash) -> bool:
+        """Whether `user_id`'s stored hash is still exactly `seen` — the hash the caller just verified
+        a password against — taking a **shared** lock on the user row that is held until the end of
+        the current transaction (technical plan §0.7, ADR-0028).
+
+        `LogIn` and `DeleteOwnAccount` call it after a matching verify and **before any write**.
+        Verifying costs ~50 ms off the loop, and a reset can commit inside that window:
+
+        - **A reset committed first** → the stored hash is no longer `seen` → `False`, and the
+          caller answers exactly as it does for a wrong password. The old password must not open a
+          `Login` that would outlive the reset that was meant to evict it.
+        - **This lock is taken first** → the reset's exclusive lock (`get_for_update`) waits until
+          the caller commits, and the reset then deletes whatever `Login` it wrote.
+
+        **Compared on the hash, not on `password_updated_at`**: timestamps are whole-second, so a
+        reset in the same second as the previous change would compare equal; two hashes of even the
+        same password differ by their salts. `False` also when the user row is gone.
+
+        Not taken on the unknown-email or wrong-password paths, so 2.1's timing equality between
+        them is untouched (AC-28).
+        """
         ...
 
 
@@ -165,6 +215,18 @@ class LoginRepository(Protocol):
     async def remove_all(self) -> int:
         """Delete every login — the break-glass that signs everybody out (AC-13, OQ-5). Returns how
         many were removed. Idempotent: on an empty table it returns 0."""
+        ...
+
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        """Delete every login of `user_id` and everything each one issued — a password reset
+        revokes every device (ADR-0028; ADR-0020: revocation is deletion). Returns how many logins
+        went, which `User.reset_password` records as `logins_revoked`. Idempotent: 0 when there are
+        none. Another user's logins are never touched.
+
+        Called inside `ResetPassword`'s transaction, after `UserRepository.get_for_update` — so a
+        login that was racing the reset has either committed (and is deleted here) or will find the
+        credential changed (`confirm_credential_unchanged`).
+        """
         ...
 
 
@@ -308,3 +370,190 @@ class GuestWorkClaimPort(Protocol):
         — and nothing is committed.
         """
         ...
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.5 — email verification and password reset (ADR-0026, ADR-0027, ADR-0028).
+#
+# Two rules run through every port below, and each docstring restates the one it carries:
+#
+# - **No lookup at request time** (technical plan §0.2). Registering and asking for a reset each
+#   write one row and enqueue one id, the same statements for every address; nothing on the request
+#   path asks whether an account exists. The worker — which nobody can time — decides what is sent.
+# - **The token is minted in the worker; commit, then send** (§0.4). The broker carries an id, never
+#   a token. The delivery use case mints, stores the hash on the aggregate, commits, and only then
+#   hands the plaintext to `AccountMailPort.send` — so every link that is mailed works, and a crash
+#   between the two leaves no mail (recoverable by *Send it again*) rather than a dead link.
+# --------------------------------------------------------------------------------------------------
+
+
+class PendingRegistrationRepository(Protocol):
+    """Persistence for the `PendingRegistration` aggregate (ADR-0027).
+
+    **`put` is the supersede** (technical plan §0.3), as `UserRepository.add` is the uniqueness
+    check: "one pending registration per address, newest wins" is a property of the set, which only
+    the unique index sees atomically. There is no `find_by_email` here, and that absence is §0.2's
+    rule — the request path must not be able to ask.
+    """
+
+    def next_identity(self) -> PendingRegistrationId:
+        """Mint an id for a pending registration that does not exist yet. Synchronous: application-
+        assigned UUIDv7 needs no I/O (ADR-0007)."""
+        ...
+
+    async def put(self, pending: PendingRegistration) -> None:
+        """Store `pending` as **the** pending registration for its address, replacing any other —
+        new id, new password hash, no token — in one statement, durable on return (§0.3).
+
+        No read first: the request path is the same statement whether or not a row existed, so it
+        neither branches nor races a concurrent registration for the same address (AC-17). The
+        replaced row's id disappears, so a delivery task still queued for it finds nothing and sends
+        nothing; the replaced row's link, if one was mailed, stops working.
+        """
+        ...
+
+    async def get(self, pending_id: PendingRegistrationId) -> PendingRegistration | None:
+        """The pending registration with this id, or `None` — the ordinary answer for a delivery task
+        whose row was superseded, confirmed or swept before the worker reached it."""
+        ...
+
+    async def lock_by_token_hash(self, token_hash: TokenHash) -> PendingRegistration | None:
+        """The pending registration whose issued token hashes to `token_hash`, locked exclusively
+        until the end of the current transaction, or `None` (unknown, superseded, already used or
+        swept — one answer, so a guesser learns nothing).
+
+        `ConfirmRegistration`'s first step (§0.8: pending row, then the `User` insert, then the
+        delete). Two clicks of one link queue here; the second finds nothing.
+        """
+        ...
+
+    async def save_issued(self, pending: PendingRegistration) -> None:
+        """Persist the token hash and `issued_at` that `PendingRegistration.issue` set, durable on
+        return — this is the *commit* in §0.4's *commit, then send*.
+
+        Writes only over a row that is **not yet issued**. Raises `PendingRegistrationAlreadyIssued`
+        when the stored row was issued meanwhile (a concurrent delivery of the same id won), so a
+        redelivered task sends no second mail (AC-39).
+        """
+        ...
+
+    async def remove(self, pending_id: PendingRegistrationId) -> None:
+        """Delete the pending registration. **Idempotent**: one already gone is success."""
+        ...
+
+
+class PasswordResetRepository(Protocol):
+    """Persistence for the `PasswordReset` aggregate (ADR-0028).
+
+    `add`, not `put`: a reset request does **not** supersede at request time. The request path knows
+    only an address and may not look anything up (§0.2), so it cannot know which account's resets to
+    replace; that happens at delivery, when the worker has found the account (`save_issued`).
+    """
+
+    def next_identity(self) -> PasswordResetId:
+        """Mint an id for a reset that does not exist yet. Synchronous, as every `next_identity`."""
+        ...
+
+    async def add(self, reset: PasswordReset) -> None:
+        """Insert a newly requested (addressed) reset — the one write of the request path, durable
+        on return: the enqueue that follows must never hand the worker an id it cannot yet see."""
+        ...
+
+    async def get(self, reset_id: PasswordResetId) -> PasswordReset | None:
+        """The reset with this id, or `None` (superseded, used or swept before the worker came)."""
+        ...
+
+    async def find_by_token_hash(self, token_hash: TokenHash) -> PasswordReset | None:
+        """The issued reset whose token hashes to `token_hash`, **without** a lock, or `None`.
+
+        `ResetPassword`'s first read, taken unlocked on purpose: it yields the `user_id` whose row
+        must be locked **first** (§0.8). The reset is then re-found and locked with
+        `lock_by_token_hash`, which is the read the use case acts on.
+        """
+        ...
+
+    async def lock_by_token_hash(self, token_hash: TokenHash) -> PasswordReset | None:
+        """`find_by_token_hash`, locked exclusively until the end of the current transaction, or
+        `None` if it went between the two reads (used by a concurrent confirm, superseded, swept).
+
+        Must be called **after** `UserRepository.get_for_update` on the reset's user (§0.8).
+        """
+        ...
+
+    async def save_issued(self, reset: PasswordReset) -> None:
+        """Persist the issue `PasswordReset.issue` made — the account it is now for, its token hash,
+        `issued_at`, and the address cleared — **and delete every other reset of that account**, in
+        one unit, durable on return (§0.4's *commit*; one live reset link per account).
+
+        Writes only over a row that is not yet issued. Raises `PasswordResetAlreadyIssued` when the
+        stored row was issued meanwhile (a concurrent delivery won), so a redelivery sends nothing.
+        """
+        ...
+
+    async def remove(self, reset_id: PasswordResetId) -> None:
+        """Delete one reset. **Idempotent**: one already gone is success."""
+        ...
+
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        """Delete every reset issued to `user_id`, returning how many — a successful reset spends its
+        own link and any other (ADR-0028). Idempotent: 0 when there are none."""
+        ...
+
+
+class OneTimeTokenPort(Protocol):
+    """Mints the one-time token a confirmation or reset link carries, with the hash stored in its
+    place (technical plan §0.4).
+
+    **Only the worker's delivery use cases call this.** If the request path minted, the plaintext
+    would ride in the broker until a worker took it — a credential in a store kept for something
+    else. Minting in the worker keeps it in one process's memory and in one mail. A token **presented**
+    by a browser never comes through here: the route hashes it (infrastructure, as the refresh cookie
+    is hashed), so the confirm and reset use cases receive a `TokenHash` and never a plaintext.
+
+    **Synchronous**, for `AccessTokenPort`'s reason: random bytes and one hash are microseconds, with
+    no I/O, and a thread hop would cost more than the work.
+    """
+
+    def mint(self) -> MintedOneTimeToken:
+        """A new random token and its hash. Never returns the same token twice in practice."""
+        ...
+
+
+class AccountMailPort(Protocol):
+    """Sends the mail an account is sent: a confirmation link, an account-exists notice, a reset link
+    (ADR-0026). Which message and what it carries is the domain's (`AccountMail`); subject, wording,
+    link URL and transport are the adapter's.
+
+    **This is where the plaintext token leaves `application/`** — the one place it crosses that
+    layer at all (§0.4). `send` is called **after** the token's hash is committed, never before: a
+    crash between the two then leaves no mail rather than a link to nothing. The adapter reads the
+    token with `OneTimeToken.reveal()` to write the link, and nowhere else.
+
+    **Retry is inside**, bounded, for transient failures only; the caller never retries `send`, and
+    the queue that ran it does not either. **Every failure is `MailNotDelivered`** — specific
+    translations on top, an `except Exception` floor underneath, so the promise holds by
+    construction. **The adapter never logs the recipient, the token or the message body**, and a
+    `MailNotDelivered` carries a reason and at most a numeric reply code, never the server's text.
+    """
+
+    async def send(self, mail: AccountMail) -> None:
+        """Deliver `mail` to the mail provider. Raises `MailNotDelivered(reason, smtp_code)`."""
+        ...
+
+
+class AccountMailQueuePort(Protocol):
+    """Hands a pending registration or a reset to the worker that will decide and send its mail.
+
+    **Carries an id and nothing else** (§0.4): no address, no token, no password hash. The worker
+    re-reads the row by id, so a row superseded or removed in the meantime is simply not found.
+    Called **after** the row is committed: an id enqueued for an uncommitted row would be a task
+    that can find nothing.
+
+    Both methods are the request path's last step, the same for every address (§0.2). Each raises
+    `AccountMailQueueUnavailable` when the broker cannot take it; the row is already committed, and
+    the user's recovery is *Send it again*.
+    """
+
+    async def enqueue_registration(self, pending_id: PendingRegistrationId) -> None: ...
+
+    async def enqueue_password_reset(self, reset_id: PasswordResetId) -> None: ...

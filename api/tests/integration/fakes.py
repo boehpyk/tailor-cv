@@ -295,6 +295,16 @@ class FakeUserRepository:
     async def save(self, user: User) -> None:
         self._by_id[user.id] = user
 
+    async def get_for_update(self, user_id: UserId) -> User:
+        """`get`; a single-threaded fake has no row lock to take (slice 2.5, T11)."""
+        return await self.get(user_id)
+
+    async def confirm_credential_unchanged(self, user_id: UserId, seen: PasswordHash) -> bool:
+        """True iff the stored hash is still exactly `seen`; False when the user is gone. Faithful,
+        so a test can make it answer False by saving a reset before the call (slice 2.5, T11)."""
+        user = self._by_id.get(user_id)
+        return user is not None and user.password_hash == seen
+
     def all(self) -> list[User]:
         """Test-only inspection, not part of `UserRepository`."""
         return list(self._by_id.values())
@@ -363,6 +373,16 @@ class FakeLoginRepository:
         count = len(self._by_id)
         self._by_id.clear()
         return count
+
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        """Delete every login of `user_id` and its retired tokens; another user's are untouched."""
+        gone = [login_id for login_id, login in self._by_id.items() if login.user_id == user_id]
+        for login_id in gone:
+            del self._by_id[login_id]
+        self._retired_by_hash = {
+            h: entry for h, entry in self._retired_by_hash.items() if entry[0] not in gone
+        }
+        return len(gone)
 
     def all(self) -> list[Login]:
         """Test-only inspection, not part of `LoginRepository`."""
