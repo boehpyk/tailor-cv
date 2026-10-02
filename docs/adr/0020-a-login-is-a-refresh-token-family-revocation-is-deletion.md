@@ -94,6 +94,7 @@ waste on a path that runs every 15 minutes per tab. The application layer only e
   day of use. There is no sweep yet; deletion on sight covers every login that comes back. Owner
   `api-dev`; trigger: `identity_retired_refresh_token` above 100 k rows, or slice 2.2 (which adds
   account deletion), whichever comes first — a beat sweep reporting under ADR-0019's `jobs` rule.
+  *(Closed in amendment (a) below: swept hourly from slice 2.5.)*
 - **Logging in again in the same browser does not revoke the previous login**: its cookie is
   overwritten, so it becomes unreachable and lives until its absolute expiry. Reading the old cookie to
   delete it would make login depend on a second credential for housekeeping.
@@ -101,3 +102,35 @@ waste on a path that runs every 15 minutes per tab. The application layer only e
   needs the difference; the reuse was reported when it happened.
 - **The break-glass is `revoke-logins --all`**, a `DELETE` of every login. Rotating the JWT key is not
   one (ADR-0008 amendment (d)).
+
+## Amendment: 2026-10-02, from the plan of slice 2.5 (`identity-email-verification`)
+
+Slice 2.5 adds account mail (ADR-0026), a pending registration (ADR-0027) and a password reset
+(ADR-0028). Two things this ADR left open or did not foresee change; decisions 1–7 stand.
+
+**(a) Expired logins are swept hourly.** The Consequence above left them to accumulate, with a sweep
+triggered by *"100 k rows, or slice 2.2"*. 2.2 did not build it (account erasure cascades a user's
+logins, which was the case it named); the trigger was re-armed at 2.2 and again at 2.3, last to
+*"100 k rows or 2.5"*, and production's retired-hash table held 0 rows when last read. It fires now,
+and 2.5 builds a sweep anyway: retention's **identity token sweep** (ADR-0018's amendment (b)) deletes
+expired pending registrations and expired password resets, and one more batched `DELETE` and one
+index (`ix_identity_login_expires_at`) take expired logins too.
+
+- **The predicate is the one `Login` already applies on sight**: `expires_at <= now`, inclusive, the
+  same rule as `Login.is_expired`. The sweep deletes only rows every code path already refuses — a
+  presented expired login is deleted by `RefreshLogin` regardless — so it removes nothing a user
+  could still use, and needs no rehearsal flag.
+- **Retired hashes go by `ON DELETE CASCADE`**, as with every other revocation (decision 5). No row
+  records that a login was swept.
+- **It reports under ADR-0019's `jobs` rule** as `jobs.identity_token_sweep` (ADR-0019's amendment):
+  a backlog, not a heartbeat.
+
+**(b) A completed password reset deletes every `Login` of the account.** Revocation is deletion
+(decision 5), now on a third path beside logout/reuse/expiry and `revoke-logins --all`: the reset's
+transaction deletes the user's logins and their retired hashes with them, then records
+`PasswordChangedByReset(user_id, logins_revoked)` with the count. A login that verified the **old**
+password while the reset ran cannot survive it: `LogIn` re-checks the stored hash under `FOR SHARE`
+before inserting its `Login`, and the reset's `FOR UPDATE` on the user orders the two (ADR-0028
+decisions 5 and 6). Access tokens already issued live out their ≤ 15 minutes, as after logout.
+*"Revoked by a reset"* and *"never existed"* stay indistinguishable on the next presentation, as the
+Consequence above says of reuse.
