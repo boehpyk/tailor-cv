@@ -139,7 +139,10 @@ class UserRepository(Protocol):
         a password against — taking a **shared** lock on the user row that is held until the end of
         the current transaction (technical plan §0.7, ADR-0028).
 
-        `LogIn` and `DeleteOwnAccount` call it after a matching verify and **before any write**.
+        `LogIn` calls it after a matching verify and **before any write**. `DeleteOwnAccount` does
+        not: its re-check is `get_for_update` plus a hash comparison, because erasure takes
+        `FOR UPDATE` next and a `FOR SHARE` first would be a lock upgrade that deadlocks two
+        concurrent deletions (ADR-0028 §5).
         Verifying costs ~50 ms off the loop, and a reset can commit inside that window:
 
         - **A reset committed first** → the stored hash is no longer `seen` → `False`, and the

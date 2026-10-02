@@ -10,6 +10,15 @@ beyond the user row it must verify against; a `PasswordHashingFailed` propagates
 nothing deleted. `MATCH_NEEDS_REHASH` is a match, and no rehash is written: the account is about to be
 deleted, and a write to a row one step from its `DELETE` would only lengthen the transaction.
 
+**The credential re-check is taken `FOR UPDATE`** (slice 2.5, ADR-0028 §5). A reset can commit during
+the ~50 ms verify, and an account must not be erased on the strength of a password that reset just
+replaced. `LogIn` re-checks under `FOR SHARE`; this use case must not, because account erasure takes
+`FOR UPDATE` on the same row next, in the same transaction. A shared lock followed by an exclusive one
+is a lock *upgrade*, and two concurrent deletions of one account would each hold the shared lock and
+wait for the other's — a deadlock (503), where one deletion should win and the other answer 401. So
+the re-check takes erasure's own lock first: the second deletion waits, then finds the row gone
+(`UserNotFound` → 401), and erasure's own `FOR UPDATE` is a re-entry on a lock already held.
+
 **No command dataclass**, like `GetCurrentUser`: a verified id and an already-validated `Password`.
 """
 
@@ -28,8 +37,9 @@ class DeleteOwnAccount:
 
     Flow (technical plan §2): ``resolve_existing_user`` (→ `UserNotFound`) →
     ``hasher.verify(password, user.password_hash)`` (→ `PasswordHashingFailed` propagates) →
-    `MISMATCH` → `InvalidCredentials`, nothing deleted → ``users.confirm_credential_unchanged``
-    (`False` → `InvalidCredentials`, slice 2.5's re-check) → ``erase_account(user_id)`` → its report.
+    `MISMATCH` → `InvalidCredentials`, nothing deleted → ``users.get_for_update(user.id)`` (gone →
+    `UserNotFound`; its hash no longer the verified one → `InvalidCredentials`, slice 2.5's re-check)
+    → ``erase_account(user_id)`` → its report.
     """
 
     def __init__(
@@ -47,13 +57,20 @@ class DeleteOwnAccount:
 
         # `PasswordHashingFailed` propagates from here untouched, before anything is read for
         # deletion. `MATCH_NEEDS_REHASH` falls through as a match, and no rehash is written.
-        verdict = await self._hasher.verify(password, user.password_hash)
+        # The hash verified against, captured in a local *before* the lock: the real repository's
+        # `get_for_update` reads with `populate_existing`, which overwrites this very identity-map
+        # instance from the locked row — so `user.password_hash` read afterwards would be the
+        # locked value, and comparing it with itself would be vacuous.
+        verified_hash = user.password_hash
+        verdict = await self._hasher.verify(password, verified_hash)
         if verdict is PasswordVerdict.MISMATCH:
             raise InvalidCredentials()
-        # `LogIn`'s credential re-check (slice 2.5, technical plan §0.7): a reset that committed
-        # during the verify means the password just checked is no longer this account's, so it
-        # erases nothing. `True` leaves the user row locked until the erasure commits.
-        if not await self._users.confirm_credential_unchanged(user.id, user.password_hash):
+        # The credential re-check (slice 2.5, technical plan §0.7): a reset that committed during
+        # the verify means the password just checked is no longer this account's, so it erases
+        # nothing. `FOR UPDATE`, never `FOR SHARE` — see the module docstring. The row stays locked
+        # until the erasure commits; a row already gone raises `UserNotFound` (→ 401).
+        locked = await self._users.get_for_update(user.id)
+        if locked.password_hash != verified_hash:
             raise InvalidCredentials()
 
         return await self._erase_account(user.id)

@@ -77,13 +77,21 @@ second as the previous change would compare equal, whereas argon2's salt makes t
 password differ. Only the *matching* path takes the re-check, so the unknown-email and wrong-password
 paths are unchanged and ADR-0021's timing equality is untouched (re-measured, not assumed).
 
+`DeleteOwnAccount` takes its re-check **`FOR UPDATE`** instead: it re-reads the user under the lock
+account erasure takes next in the same transaction, and compares the hash in hand. A `FOR SHARE`
+followed by erasure's `FOR UPDATE` is a lock upgrade, and two concurrent deletions of one account would
+each hold the shared lock and wait for the other's — a deadlock (503), found after the first
+implementation. With the exclusive lock first, the second deletion waits, then finds the row gone and
+answers 401, as before this ADR. `LogIn` keeps `FOR SHARE`: it never upgrades, and a user's concurrent
+logins should not serialize.
+
 **6. The lock order: the user before a reset, everywhere.**
 
 | Actor | Takes, in order |
 |---|---|
 | Reset completion | reset read (no lock) → **user `FOR UPDATE`** → reset `FOR UPDATE` → `DELETE` logins, resets |
 | `LogIn` (matching) | user `FOR SHARE` → `INSERT` login (its FK takes the user `FOR KEY SHARE`) |
-| `DeleteOwnAccount` | user `FOR SHARE` → account erasure's user `FOR UPDATE` (same transaction) → cascades |
+| `DeleteOwnAccount` | **user `FOR UPDATE`** (its re-check) → account erasure re-takes the same lock → cascades. Never `FOR SHARE` first: two concurrent deletions would each hold it and each wait to upgrade — a deadlock |
 | Account erasure | **user `FOR UPDATE`** → cascades (logins, issued resets) → `DELETE` resets and pending registrations by address |
 | Reset issue (worker) | `UPDATE` the reset's target (its FK takes the user `FOR KEY SHARE`) → `DELETE` the user's other resets |
 | Token sweep | per table, `DELETE … WHERE expires_at <= :t` in batches, no user lock |
