@@ -36,6 +36,15 @@ if git diff --cached --name-only | grep -Eq '^uploads/'; then
   fail "Refusing to commit anything under uploads/ — that is user PII."
 fi
 
+# 6) Mail wiring (2.5, AC-25): dev pins Mailpit on api/worker/beat, Mailpit publishes only the
+#    loopback UI port with a pinned tag, and production's compose has no Mailpit. Runs against the
+#    STAGED content (like the guards above); the parse is scripts/git-hooks/check-mail-compose.py.
+_mc_dir="$(mktemp -d)"; trap 'rm -rf "$_mc_dir"' EXIT
+git show ":docker-compose.yml" > "$_mc_dir/prod.yml" 2>/dev/null || cp docker-compose.yml "$_mc_dir/prod.yml"
+git show ":docker-compose.dev.yml" > "$_mc_dir/dev.yml" 2>/dev/null || cp docker-compose.dev.yml "$_mc_dir/dev.yml"
+python3 scripts/git-hooks/check-mail-compose.py "$_mc_dir/prod.yml" "$_mc_dir/dev.yml" \
+  || fail "mail wiring guard failed (see above). Dev must not be able to mail real addresses."
+
 # --- Quality gates (run in the dev stack if it's up) ---------------------------
 # The RED commit of a tiered-TDD cycle (docs/sdlc.md §2) stages a test that is SUPPOSED to fail, so
 # `make check` cannot be the gate for it. TDD_RED=1 swaps in `make check.static` — every gate except
