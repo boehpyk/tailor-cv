@@ -60,3 +60,38 @@ asks for work to happen later; it does not import Celery.
   like an HTTP route, and it should be as thin as one.
 - Tasks must be **idempotent**. A retried export must not produce two files or two rows; key it on the
   `ExportJob` id.
+
+## Amendment: 2026-10-02, from the plan of slice 2.5 (`identity-email-verification`)
+
+This ADR decided *a* queue and left the topology to the slices that needed more. Three have, each
+for its own reason, and the fourth is added now. The topology is recorded here so it lives in one
+place.
+
+**(a) The worker consumes four queues, and each exists for a stated reason.**
+
+| Queue | Carries | Why it is separate | Since |
+|---|---|---|---|
+| `celery` (default) | the beat sweeps: stale tailoring runs, stale export jobs, the guest purge, the identity token sweep | recovery and hygiene must not queue behind the workload they clean up after (ADR-0018 decision 9) | the start |
+| `tailoring` | one paid LLM call per run | the expensive workload, separable by `-Q` | 1.3 (ADR-0014) |
+| `export` | PDF and DOCX renders | CPU-bound, separable from the paid call | 1.5 (ADR-0016) |
+| **`mail`** | account mail deliveries (ADR-0026) | **the one workload a person waits on with nothing to watch** | 2.5 |
+
+`mail` changes nothing about capacity today: the queues share one worker at `--concurrency=2`, so two
+tailoring runs can still hold both slots for ~25 s while a confirmation waits. What it buys is the
+same thing `tailoring` bought in 1.3: the wait is visible per workload, and a dedicated mail worker is
+a `-Q` change rather than a redesign. The trigger for that worker is a confirmation mail measured
+waiting behind tailoring.
+
+**(b) The healthy broker holds four members in `_kombu.binding.celery`.** Every queue is bound on the
+one default `celery` exchange, so kombu keeps their bindings in a single set named after the
+exchange; there is no `_kombu.binding.mail`. The broker is Redis db 1 — read it with `-n 1`, or every
+set looks empty for the wrong reason. A fifth member is a stale binding: one publish could then reach
+two queues, which for this queue means **two mails** for one request. Adding a queue to
+`task_queues` and restarting the dev worker adds a binding, and a local mutation of that declaration
+re-poisons the dev broker the same way, because the worker restarts on the edited file.
+
+**(c) The release script's anchored queue check lists all four.** It asserts the worker consumes
+`celery`, `tailoring`, `export` and `mail`, each matched on `* {'name': '<queue>'` because the exchange
+is also named `celery` and an unanchored match would report the default queue present when it is gone.
+`api`, `worker` and `beat` remain the containers that run application code; 2.5 adds no container in
+production (Mailpit is dev and CI only).
