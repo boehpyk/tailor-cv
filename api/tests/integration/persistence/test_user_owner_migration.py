@@ -29,6 +29,7 @@ from typing import Final
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import Table, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -146,8 +147,15 @@ def _schema_at(url: str) -> dict[str, object]:
     return facts
 
 
+def _real_head() -> str | None:
+    """The head of the revision graph, so a later slice's migration does not turn "at head" red.
+
+    The schema facts below are 2.3's; the revision is whatever the graph says is current."""
+    return ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+
+
 _AT_HEAD: Final = {
-    "revision": _TARGET,
+    "revision": _real_head(),
     **{f"{t}.user_id": 1 for t in _TABLES},
     **{f"{t}.guest_session_id nullable": "YES" for t in _TABLES},
     **{f"{t}.check": 1 for t in _TABLES},
