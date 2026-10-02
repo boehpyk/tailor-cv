@@ -34,6 +34,8 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.identity.errors import (
     AccessTokenInvalid,
+    AccountMailQueueUnavailable,
+    ConfirmationTokenInvalid,
     EmailAlreadyRegistered,
     GuestSessionExpired,
     GuestSessionNotFound,
@@ -43,6 +45,7 @@ from tailorcraft.domain.identity.errors import (
     PasswordHashingFailed,
     RefreshInProgress,
     RefreshTokenReused,
+    ResetTokenInvalid,
     UserNotFound,
     WeakPassword,
 )
@@ -104,6 +107,14 @@ NOT_SIGNED_IN_DETAIL = {
 """401 for every "this refresh cookie names no live login" (I-19, I-20, I-21, I-27) and for a valid
 access token whose user is gone (I-39). One code: after a revocation, "revoked" and "never existed"
 are indistinguishable by design (ADR-0020)."""
+
+LINK_INVALID_DETAIL = {
+    "code": "link_invalid",
+    "message": "This link has expired or has already been used.",
+}
+"""400 for every refused confirmation or reset link (slice 2.5, V-32 … V-34, V-45): malformed,
+unknown, used, superseded or expired all read the same — the reason is the log line's alone. The
+client renders its own fuller copy (technical plan §4)."""
 
 INVALID_ACCESS_TOKEN_DETAIL = {
     "code": "invalid_access_token",
@@ -169,7 +180,11 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         | RefreshInProgress
         | RefreshTokenReused
         | AccessTokenInvalid
-        | PasswordHashingFailed,
+        | PasswordHashingFailed
+        # Slice 2.5: the two link refusals and a broker that would not take a mail's id.
+        | ConfirmationTokenInvalid
+        | ResetTokenInvalid
+        | AccountMailQueueUnavailable,
     ):
         return _identity_error_to_http(exc)
 
@@ -664,9 +679,16 @@ def _identity_error_to_http(exc: DomainError) -> HTTPException:
         # read here: every refusal is the same 401, and the body never says why (AC-34).
         return invalid_access_token_exception()
 
-    if isinstance(exc, PasswordHashingFailed):
-        # I-45. The same code and message as a dead Postgres (`main.py`'s handler): to the client,
-        # "the server cannot check passwords right now" and "the server is down" ask for one action.
+    if isinstance(exc, ConfirmationTokenInvalid | ResetTokenInvalid):
+        # V-32 … V-34, V-45. **One code for every reason** (malformed, unknown, expired): which check
+        # caught a link tells a guesser something and helps the holder of a real one not at all.
+        # `exc.reason` is never read here; the route writes it to the log line.
+        return HTTPException(status.HTTP_400_BAD_REQUEST, detail=LINK_INVALID_DETAIL)
+
+    if isinstance(exc, PasswordHashingFailed | AccountMailQueueUnavailable):
+        # I-45, V-17. The same code and message as a dead Postgres (`main.py`'s handler): to the
+        # client, "the server cannot check passwords (or queue a mail) right now" and "the server is
+        # down" ask for one action. A broker refusal leaves the row committed; the retry supersedes it.
         return HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={

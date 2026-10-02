@@ -1,8 +1,9 @@
 """The `identity` HTTP surface: register, log in, refresh, log out, and "who am I" (technical plan §4).
 
-Built red-first: T28's skeleton, `qa`'s T29 tests, then T30's handlers. Slice 2.5 adds three
-`POST`s — confirm a registration, request a password reset, confirm it — at the end of this file,
-skeleton at its T26 (the section comment there).
+Built red-first: T28's skeleton, `qa`'s T29 tests, then T30's handlers (slice 2.1). Slice 2.5 turns
+register into a *request* (202, nothing signed in) and adds three `POST`s — confirm a registration,
+request a password reset, confirm it — at the end of this file (the section comment there). The
+numbered order below is 2.1's; the slice-2.5 handlers state their own, and set no cookie.
 
 **One credential per route (AC-30).** The four `POST`s answer to the refresh cookie and a trusted
 `Origin`; `/me` answers to a bearer token. **None of them depends on `require_guest_session`**, and
@@ -18,8 +19,8 @@ guest session. A test walks the dependency graph to keep that true.
    it decodes the body first and raises on a `JSONDecodeError` immediately. A well-formed body of
    the wrong shape, an empty body and a non-JSON content type all get the 403 first. Nothing is
    touched on either path, so AC-25's guarantee holds; only the status differs.
-2. The rate limiter (login and register only), **before** the use case, so a 429 or a 503 computes
-   no hash (AC-27).
+2. The rate limiters (login, register, password reset), **before** the use case, so a 429 or a 503
+   computes no hash (AC-27).
 3. The use case — the only step that hashes, reads or writes.
 4. The commit, **inside the handler**, and only then the cookie: a commit that fails after the
    response is on the wire would hand the browser a cookie for a login that does not exist (the
@@ -54,12 +55,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.identity.results import Authenticated
 from tailorcraft.domain.identity.errors import (
+    ConfirmationTokenInvalid,
     EmailAlreadyRegistered,
     InvalidCredentials,
     InvalidEmailAddress,
     LoginNotFound,
     RefreshInProgress,
     RefreshTokenReused,
+    ResetTokenInvalid,
     UserNotFound,
     WeakPassword,
 )
@@ -70,6 +73,7 @@ from tailorcraft.domain.identity.value_objects import (
     LoginId,
     LoginNotFoundReason,
     Password,
+    TokenRefusal,
     UserId,
 )
 from tailorcraft.domain.retention.errors import AccountNotFound
@@ -86,9 +90,10 @@ from tailorcraft.infrastructure.api.deps import (
     PasswordResetEmailRateLimiterDep,
     PasswordResetIpRateLimiterDep,
     RefreshLoginDep,
+    RegisterEmailRateLimiterDep,
     RegisterRateLimiterDep,
-    RegisterUserDep,
     RequestPasswordResetDep,
+    RequestRegistrationDep,
     RequireUserDep,
     ResetPasswordDep,
     SessionDep,
@@ -119,6 +124,7 @@ from tailorcraft.infrastructure.api.schemas.auth import (
 )
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 from tailorcraft.infrastructure.identity.failed_login_log import EVENT_LOGIN_FAILED
+from tailorcraft.infrastructure.identity.one_time_tokens import hash_presented
 from tailorcraft.infrastructure.rate_limit import (
     RateLimiterUnavailable,
     RateLimitScope,
@@ -169,6 +175,12 @@ EVENT_USER_MISSING: Final = "identity.user_missing"
 EVENT_ACCOUNT_DELETION_REFUSED: Final = "identity.account_deletion_refused"
 EVENT_ACCOUNT_ERASED: Final = "retention.account_erased"
 EVENT_ACCOUNT_FILE_UNLINK_FAILED: Final = "retention.account_file_unlink_failed"
+# Slice 2.5 (feature spec, the V-rows' "Logged" column). Ids and closed reasons only — never an
+# address, a token, a token's hash or a password.
+EVENT_REGISTRATION_REQUESTED: Final = "identity.registration_requested"
+EVENT_CONFIRMATION_REFUSED: Final = "identity.confirmation_refused"
+EVENT_PASSWORD_RESET_REQUESTED: Final = "identity.password_reset_requested"  # noqa: S105 -- a log event, not a secret
+EVENT_PASSWORD_RESET_REFUSED: Final = "identity.password_reset_refused"  # noqa: S105 -- a log event, not a secret
 
 PASSWORD_INCORRECT_DETAIL: Final = {
     "code": "password_incorrect",
@@ -189,6 +201,25 @@ def _no_store(response: Response) -> None:
     """`Cache-Control: no-store` (AC-26) — on every response that carries a token or touches the
     cookie, so no shared or browser cache ever keeps a bearer credential or a `Set-Cookie`."""
     response.headers["Cache-Control"] = _NO_STORE
+
+
+def _refusal(exc: DomainError) -> HTTPException:
+    """`exc` as its HTTP refusal, carrying `Cache-Control: no-store` — for the slice-2.5 handlers,
+    every one of whose responses is uncacheable (technical plan §4). `main.py`'s handler renders the
+    `HTTPException` with these headers."""
+    http = domain_error_to_http_exception(exc)
+    http.headers = {**(http.headers or {}), "Cache-Control": _NO_STORE}
+    return http
+
+
+def _parse_email_or_none(raw: str) -> EmailAddress | None:
+    """The address a per-email limiter keys on, or `None` when it does not parse — the domain's own
+    rule, not a second copy of it. The use case refuses the unparsable one 422 with no hash and no
+    write, so there is nothing for that budget to protect (I-15)."""
+    try:
+        return EmailAddress.parse(raw)
+    except InvalidEmailAddress:
+        return None
 
 
 async def _commit(session: AsyncSession) -> None:
@@ -298,8 +329,8 @@ def _register_refusal_reason(exc: DomainError) -> str | None:
 
 @router.post(
     "/register",
-    response_model=AuthenticatedResponse,
-    status_code=status.HTTP_201_CREATED,
+    status_code=status.HTTP_202_ACCEPTED,
+    response_class=Response,
     dependencies=[Depends(require_trusted_origin)],
     responses={
         **_ORIGIN_NOT_ALLOWED,
@@ -322,36 +353,51 @@ async def register(
     body: CredentialsRequest,
     request: Request,
     response: Response,
-    register_user: RegisterUserDep,
-    rate_limiter: RegisterRateLimiterDep,
-    session: SessionDep,
+    request_registration: RequestRegistrationDep,
+    ip_rate_limiter: RegisterRateLimiterDep,
+    email_rate_limiter: RegisterEmailRateLimiterDep,
     settings: SettingsDep,
-) -> AuthenticatedResponse:
-    """Create an account and sign its owner in: 201 + `Set-Cookie: tc_refresh`."""
-    # Before anything costly: a 429 or a 503 here computes no hash and touches no row (AC-27, I-16).
+) -> None:
+    """Ask for an account: **202**, empty body, **no cookie**, byte-identical for a new address, one
+    that already has an account and one already pending (slice 2.5, technical plan §0.2, AC-27).
+
+    Nobody is signed in here: the account exists only once the link mailed to the address is
+    followed (`/registration/confirm`). The order is the contract's: `Origin` (the decorator) →
+    per-IP limiter → parse → per-address limiter → `RequestRegistration` (policy, hash, the committing
+    `put`, the enqueue). Every limiter fails closed — a request that passes may mail a stranger.
+
+    **Nothing to commit here.** `put` is durable on return (the committing adapter, `deps.py`'s
+    unit-of-work note) and every refusal before it wrote nothing; a broker refusal after it leaves a
+    committed row the next request supersedes."""
     await _enforce(
-        rate_limiter,
+        ip_rate_limiter,
         "ip",
         client_ip(request, settings.trusted_proxy_hops),
         settings.register_rate_limit_per_ip_per_hour,
     )
-
-    minted = mint_refresh_token()
-    try:
-        result = await register_user(
-            body.email, body.password.get_secret_value(), minted.token_hash
+    email = _parse_email_or_none(body.email)
+    if email is not None:
+        # Skipped for an address that does not parse: the use case refuses it 422 below with no
+        # hash and no mail, so there is nothing for this budget to protect (login's reason).
+        await _enforce(
+            email_rate_limiter,
+            "email",
+            login_email_rate_limit_identifier(email, settings),
+            settings.register_rate_limit_per_email_per_hour,
         )
+
+    try:
+        pending_id = await request_registration(body.email, body.password.get_secret_value())
     except DomainError as exc:
         reason = _register_refusal_reason(exc)
         if reason is not None:
-            # Never the email, never the password, never its length (I-1 … I-5).
+            # Never the email, never the password, never its length (I-1 … I-5, V-11, V-13). A
+            # broker refusal is the queue adapter's `identity.mail_enqueue_failed` line (V-17).
             log.info(EVENT_REGISTER_REFUSED, reason=reason)
-        await _commit(session)
-        raise domain_error_to_http_exception(exc) from None
+        raise _refusal(exc) from None
 
-    await _commit(session)
-    _sign_in(response, result, minted.token, settings)
-    return _authenticated(result)
+    log.info(EVENT_REGISTRATION_REQUESTED, pending_registration_id=str(pending_id.value))
+    _no_store(response)
 
 
 @router.post(
@@ -401,10 +447,7 @@ async def login(
     # by the *normalized* address, so it needs one that parses; one that does not is refused 422 by
     # the use case below without a hash, so there is nothing for that budget to protect. The parse
     # here is the domain's own rule, not a second copy of it.
-    try:
-        email: EmailAddress | None = EmailAddress.parse(body.email)
-    except InvalidEmailAddress:
-        email = None
+    email = _parse_email_or_none(body.email)
     if email is not None:
         await _enforce(
             email_rate_limiter,
@@ -709,16 +752,15 @@ def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
 
 # ---------------------------------------------------------------------------------------------
 # Slice 2.5 — confirming an address and resetting a password (technical plan §4, ADR-0027,
-# ADR-0028). **SKELETON** (T26): the real paths, the real schemas, every documented status in
-# `responses=`, the dependencies the GREEN handlers need, and bodies raising `NotImplementedError`.
-# RED is T27 (`qa`), GREEN is T29.
+# ADR-0028). Red-first: T26's skeleton, T27/T28's tests (`qa`), T29's handlers. Register (above)
+# is the fourth route of the flow since T29: it asks for an account and no longer creates one.
 #
 # None of the three reads a bearer, `tc_refresh` or `tc_guest`, and none sets a cookie. Each sits
 # behind `require_trusted_origin` (403 before the limiter, the database or the hasher). The two
 # confirms have **no limiter** (plan §4: a 256-bit token is not guessable; garbage costs one indexed
 # lookup, a malformed one none), so Redis down never blocks finishing a confirmation or a reset.
 #
-# **How T29 decides a malformed token**: `one_time_tokens.hash_presented(body.token)` — `None` (not
+# **A malformed token**: `one_time_tokens.hash_presented(body.token)` — `None` (not
 # the 43-character URL-safe grammar the minter produces) is 400 `link_invalid`, `reason=malformed`,
 # **before any database read**; otherwise its `TokenHash` is what the use case receives. The
 # plaintext never reaches `application/`.
@@ -764,11 +806,36 @@ async def confirm_registration(
     body: TokenRequest,
     response: Response,
     confirm_registration: ConfirmRegistrationDep,
-    session: SessionDep,
 ) -> None:
     """Turn a pending registration into an account: **204**, no body, **no cookie** — confirming
-    does not sign in (OQ-3); the client sends the user to `/login`. `Cache-Control: no-store`."""
-    raise NotImplementedError
+    does not sign in (OQ-3); the client sends the user to `/login`. `Cache-Control: no-store`.
+
+    **The handler commits nothing, on any path** (`deps.py`'s unit-of-work note): every path that
+    writes ends in the committing `remove` — the expired link (V-34), the address registered
+    meanwhile (V-37) and success, whose `remove` commits the new `User` with it. So raising the
+    refusals is safe: the teardown's rollback has nothing left to undo. No session is taken here, on
+    purpose, so a later edit cannot add a write that relies on a commit nobody makes."""
+    token_hash = hash_presented(body.token)
+    if token_hash is None:
+        # V-32: not the 43-character grammar. Refused before any database read.
+        log.info(EVENT_CONFIRMATION_REFUSED, reason=TokenRefusal.MALFORMED.value)
+        raise _refusal(ConfirmationTokenInvalid(TokenRefusal.MALFORMED)) from None
+
+    try:
+        await confirm_registration(token_hash)
+    except ConfirmationTokenInvalid as exc:
+        # V-33, V-34. The reason only — never the token, never its hash.
+        log.info(EVENT_CONFIRMATION_REFUSED, reason=exc.reason.value)
+        raise _refusal(exc) from None
+    except EmailAlreadyRegistered as exc:
+        # V-37. The token holder proved the address, so the 409 reveals nothing to them.
+        log.info(EVENT_CONFIRMATION_REFUSED, reason="email_taken")
+        raise _refusal(exc) from None
+    except DomainError as exc:
+        raise _refusal(exc) from None
+
+    # V-35's line is `UserRegistered`, written by the event publisher.
+    _no_store(response)
 
 
 @router.post(
@@ -800,8 +867,32 @@ async def request_password_reset(
     limiter (`auth:password-reset`, scope `ip`, fails closed) → parse (422 `invalid_email`) →
     per-address limiter (scope `email`, keyed by `login_email_rate_limit_identifier`, fails closed)
     → `RequestPasswordReset` (its committing `add`, then the enqueue; a broker refusal is 503
-    `service_unavailable`). `Cache-Control: no-store`."""
-    raise NotImplementedError
+    `service_unavailable`). `Cache-Control: no-store`. Nothing to commit here: `add` is durable on
+    return, and nothing else writes."""
+    await _enforce(
+        ip_rate_limiter,
+        "ip",
+        client_ip(request, settings.trusted_proxy_hops),
+        settings.password_reset_rate_limit_per_ip_per_hour,
+    )
+    email = _parse_email_or_none(body.email)
+    if email is not None:
+        await _enforce(
+            email_rate_limiter,
+            "email",
+            login_email_rate_limit_identifier(email, settings),
+            settings.password_reset_rate_limit_per_email_per_hour,
+        )
+
+    try:
+        reset_id = await request_password_reset(body.email)
+    except DomainError as exc:
+        if isinstance(exc, InvalidEmailAddress):
+            log.info(EVENT_PASSWORD_RESET_REFUSED, reason="invalid_email")
+        raise _refusal(exc) from None
+
+    log.info(EVENT_PASSWORD_RESET_REQUESTED, password_reset_id=str(reset_id.value))
+    _no_store(response)
 
 
 @router.post(
@@ -830,6 +921,40 @@ async def confirm_password_reset(
     session: SessionDep,
 ) -> None:
     """Set a new password from a reset link: **204**, no body, no cookie; **every login of the
-    account is revoked** (ADR-0028). The handler commits on success (`deps.get_reset_password`).
-    `Cache-Control: no-store`."""
-    raise NotImplementedError
+    account is revoked** (ADR-0028). `Cache-Control: no-store`.
+
+    **The one slice-2.5 handler that commits** (`deps.py`'s unit-of-work note): the success path's
+    last write, `resets.remove_all_for_user`, is uncommitted on purpose — the new hash, the deleted
+    logins and the deleted resets are one transaction — and `get_session`'s own commit runs after
+    the response is sent (FastAPI 0.141), too late to turn a failure into a 503. So it is committed
+    here, before the 204 exists; a failed commit is `main.py`'s 503 and no login was revoked.
+
+    The refusals raise: the expired link's deletion is the committing `remove` (V-45), and the
+    others wrote nothing — a policy refusal keeps the token (V-46) — so the teardown's rollback only
+    releases the user row's `FOR UPDATE`."""
+    token_hash = hash_presented(body.token)
+    if token_hash is None:
+        # V-45, malformed: refused before any read, and before any hash.
+        log.info(EVENT_PASSWORD_RESET_REFUSED, reason=TokenRefusal.MALFORMED.value)
+        raise _refusal(ResetTokenInvalid(TokenRefusal.MALFORMED)) from None
+
+    try:
+        await reset_password(token_hash, body.password.get_secret_value())
+    except ResetTokenInvalid as exc:
+        log.info(EVENT_PASSWORD_RESET_REFUSED, reason=exc.reason.value)
+        raise _refusal(exc) from None
+    except UserNotFound:
+        # V-53, erasure won: the reset was read before the account (and its resets) went. To the
+        # holder of the link it is a link that no longer works, never "not signed in".
+        log.info(EVENT_PASSWORD_RESET_REFUSED, reason=TokenRefusal.UNKNOWN.value)
+        raise _refusal(ResetTokenInvalid(TokenRefusal.UNKNOWN)) from None
+    except WeakPassword as exc:
+        # V-46. The policy's reason — never the password, never its length.
+        log.info(EVENT_PASSWORD_RESET_REFUSED, reason=exc.reason.value)
+        raise _refusal(exc) from None
+    except DomainError as exc:
+        raise _refusal(exc) from None
+
+    await _commit(session)
+    # V-47's line is `PasswordChangedByReset`, written by the event publisher.
+    _no_store(response)

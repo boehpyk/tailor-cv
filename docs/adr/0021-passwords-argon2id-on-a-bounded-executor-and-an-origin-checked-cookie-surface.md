@@ -60,7 +60,7 @@ named for the attack it stops: `SameSite=Strict` stops cross-*site* requests; ho
 sibling from *receiving* the cookie; `Path=/api/auth` keeps it off every other request; the `Origin`
 check stops a same-site sibling *sending* one, and stops login CSRF; JSON-only bodies stop a
 cross-origin `<form>`. `/me` is exempt — it is authorised by a bearer header a cross-site request
-cannot attach. *(Widened in amendment (a) below: seven endpoints since slice 2.5.)*
+cannot attach. *(Widened in amendment (a) below: eight endpoints since slice 2.5.)*
 
 ## Alternatives
 
@@ -101,15 +101,15 @@ Slice 2.5 adds three unauthenticated `POST`s under `/api/auth` — confirm a reg
 password reset, complete one (ADR-0027, ADR-0028) — and changes what `register` does (ADR-0008 (h)).
 Decisions 1–4 stand; decisions 5 and 6 are widened.
 
-**(a) The `Origin` check covers seven endpoints**: `register`, `login`, `refresh`, `logout`,
-`registration/confirm`, `password-reset` and `password-reset/confirm` — every `POST` under
-`/api/auth`. Checked first, before the limiter, the database and the hasher, as decision 6 says. The
+**(a) The `Origin` check covers eight endpoints**: `register`, `login`, `refresh`, `logout`,
+`delete-account` (checked since slice 2.2), `registration/confirm`, `password-reset` and
+`password-reset/confirm` — every `POST` under `/api/auth`. Checked first, before the limiter, the database and the hasher, as decision 6 says. The
 three new ones touch no cookie; the reason they join is a different attack, named here so it is not
 mistaken for decision 6's. `register` and `password-reset` **make us send mail**, and their per-IP
 limit is the bound on how much: without the `Origin` check a hostile page could recruit every visitor's
 browser to submit them, spreading that budget across thousands of addresses we would then mail. The
 two confirm endpoints join for uniformity — a rule stated as *every `POST` under `/api/auth`* is one a
-reviewer can check, and it costs a legitimate client nothing. The route walker pins the set at seven.
+reviewer can check, and it costs a legitimate client nothing. The route walker pins the set at eight.
 
 **(b) The new limiters, all failing closed by ADR-0008 (e)'s rule** — the cost of an unlimited sender
 is somebody else's inbox and our sender reputation:
