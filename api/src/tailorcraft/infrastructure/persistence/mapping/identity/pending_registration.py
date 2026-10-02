@@ -26,7 +26,8 @@ from __future__ import annotations
 from sqlalchemy import CheckConstraint, Column, Table
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
-from tailorcraft.infrastructure.persistence.registry import metadata
+from tailorcraft.domain.identity.pending_registration import PendingRegistration
+from tailorcraft.infrastructure.persistence.registry import mapper_registry, metadata
 from tailorcraft.infrastructure.persistence.types.identity import (
     EmailAddressType,
     PasswordHashType,
@@ -60,4 +61,18 @@ pending_registration_table = Table(
     CheckConstraint("(token_hash IS NULL) = (issued_at IS NULL)", name="issued_together"),
     # `PendingRegistration.request` refuses a non-positive TTL; this binds what Python cannot reach.
     CheckConstraint("expires_at > requested_at", name="expires_after_request"),
+)
+
+mapper_registry.map_imperatively(
+    PendingRegistration,
+    pending_registration_table,
+    properties={
+        "_id": pending_registration_table.c.id,
+        "_email": pending_registration_table.c.email,
+        "_password_hash": pending_registration_table.c.password_hash,
+        "_requested_at": pending_registration_table.c.requested_at,
+        "_expires_at": pending_registration_table.c.expires_at,
+        "_token_hash": pending_registration_table.c.token_hash,
+        "_issued_at": pending_registration_table.c.issued_at,
+    },
 )
