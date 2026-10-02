@@ -1,6 +1,8 @@
 """`TypeDecorator`s for the `identity` context's value objects (ADR-0007).
 
-One class per value object, as in `types/intake.py`. Slice 2.1 adds five beside `GuestSessionIdType`.
+One class per value object, as in `types/intake.py`. Slice 2.1 adds five beside `GuestSessionIdType`;
+slice 2.5 adds the two one-time-token aggregates' ids (`PendingRegistrationIdType`,
+`PasswordResetIdType`) and reuses the other four as they are.
 Three of them carry a **credential-shaped** value (`PasswordHash`, `TokenHash`) or PII
 (`EmailAddress`); none of them logs, and none of them has anything to log — a `TypeDecorator` is a
 pure translation, and a failure inside it surfaces through the engine's `handle_error` listener with
@@ -27,6 +29,8 @@ from tailorcraft.domain.identity.value_objects import (
     GuestSessionId,
     LoginId,
     PasswordHash,
+    PasswordResetId,
+    PendingRegistrationId,
     TokenHash,
     UserId,
 )
@@ -147,3 +151,42 @@ class TokenHashType(TypeDecorator[TokenHash]):
         if value is None:
             return None
         return TokenHash(value)
+
+
+class PendingRegistrationIdType(TypeDecorator[PendingRegistrationId]):
+    """`identity_pending_registration.id` — a native `UUID` carrying a `PendingRegistrationId`, so a
+    sign-up that is not yet an account cannot be bound where a `UserId` is meant (ADR-0027)."""
+
+    impl = postgresql.UUID(as_uuid=True)
+    cache_ok = True
+
+    def process_bind_param(
+        self, value: PendingRegistrationId | None, dialect: Dialect
+    ) -> UUID | None:
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(
+        self, value: Any | None, dialect: Dialect
+    ) -> PendingRegistrationId | None:
+        if value is None:
+            return None
+        return PendingRegistrationId(value)
+
+
+class PasswordResetIdType(TypeDecorator[PasswordResetId]):
+    """`identity_password_reset.id` — a native `UUID` carrying a `PasswordResetId` (ADR-0028)."""
+
+    impl = postgresql.UUID(as_uuid=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: PasswordResetId | None, dialect: Dialect) -> UUID | None:
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(self, value: Any | None, dialect: Dialect) -> PasswordResetId | None:
+        if value is None:
+            return None
+        return PasswordResetId(value)
