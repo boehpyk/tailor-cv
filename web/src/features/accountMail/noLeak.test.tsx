@@ -101,6 +101,13 @@ describe('all four mail flows, end to end through the real pages', () => {
     const user = userEvent.setup();
     const addressBar: string[] = [];
     const replaceState = vi.spyOn(window.history, 'replaceState');
+    // `openLink` itself calls replaceState to stage the mail link in the address bar: that is the
+    // test's setup, not the app. Judge only what the app calls, drained after each staging.
+    const appReplaceStateUrls: string[] = [];
+    const drainApp = (): void => {
+      appReplaceStateUrls.push(...replaceState.mock.calls.map((call) => String(call[2])));
+      replaceState.mockClear();
+    };
 
     // 1. Register, then Send it again.
     let page = renderPage(<RegisterPage />, { routePath: '/register', client });
@@ -113,7 +120,9 @@ describe('all four mail flows, end to end through the real pages', () => {
     page.unmount();
 
     // 2. Confirm the registration.
+    drainApp();
     openLink('/confirm-email', TOKEN);
+    replaceState.mockClear();
     page = renderPage(<ConfirmEmailPage />, { routePath: '/confirm-email', client });
     await user.click(await screen.findByRole('button', { name: /confirm my email address/i }));
     await screen.findByRole('status');
@@ -129,7 +138,9 @@ describe('all four mail flows, end to end through the real pages', () => {
     page.unmount();
 
     // 4. Complete it.
+    drainApp();
     openLink('/reset-password/confirm', TOKEN);
+    replaceState.mockClear();
     page = renderPage(<PasswordResetConfirmPage />, {
       routePath: '/reset-password/confirm',
       client,
@@ -156,6 +167,10 @@ describe('all four mail flows, end to end through the real pages', () => {
     }
     expect(fetch.calls.filter((call) => call.method === 'POST').length).toBeGreaterThanOrEqual(5);
 
+    drainApp();
+    // Positive control: the app really did rewrite the address bar (the token scrubbed), twice.
+    expect(appReplaceStateUrls.length).toBeGreaterThanOrEqual(2);
+
     // The absences.
     expect(
       leaks(fetch.calls.map((call) => `${call.path}?${call.query.toString()}`).join('\n')),
@@ -163,7 +178,7 @@ describe('all four mail flows, end to end through the real pages', () => {
     expect(leaks(addressBar.join('\n'))).toEqual([]);
     expect(leaks(storageDump())).toEqual([]);
     expect(leaks(queryCacheDump(client))).toEqual([]);
-    expect(leaks(replaceState.mock.calls.map((call) => String(call[2])).join('\n'))).toEqual([]);
+    expect(leaks(appReplaceStateUrls.join('\n'))).toEqual([]);
     // The query cache holds no query data of these flows at all but the guest lists the register
     // page reads; none of them carries a marker, and none is keyed under a mail-link route.
     expect(

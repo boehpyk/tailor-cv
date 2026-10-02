@@ -69,8 +69,13 @@ function isCommentLine(line: string): boolean {
   return trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*');
 }
 
+/**
+ * Test code: a `*.test.ts(x)` file, or any file under a `test/` directory (shared test support such
+ * as `features/accountMail/test/support.tsx`, which reads storage to prove nothing was written).
+ * Only the directory *named* `test` counts, so a production file cannot hide by a name like `latest`.
+ */
 function isTestFile(path: string): boolean {
-  return path.endsWith('.test.ts') || path.endsWith('.test.tsx');
+  return /[\\/]test[\\/]/.test(path) || path.endsWith('.test.ts') || path.endsWith('.test.tsx');
 }
 
 function findNonCommentOccurrences(needle: string, lines: readonly SourceLine[]): string[] {
@@ -84,6 +89,25 @@ describe('AC-27: no HTML is ever rendered from untrusted content', () => {
     const lines = collectSourceLines(SRC_ROOT);
 
     expect(findNonCommentOccurrences('dangerouslySetInnerHTML', lines)).toEqual([]);
+  });
+});
+
+describe('isTestFile (classification of test support)', () => {
+  it('treats test/ directories and *.test.ts(x) as test code, and real production files as production', () => {
+    expect(isTestFile('/src/features/accountMail/test/support.tsx')).toBe(true);
+    expect(isTestFile('/src/features/x/y.test.tsx')).toBe(true);
+    expect(isTestFile('/src/features/x/latest/Foo.tsx')).toBe(false);
+    expect(isTestFile('/src/features/x/Foo.tsx')).toBe(false);
+  });
+
+  it('a production file that touches storage is still caught (positive control)', () => {
+    const planted: SourceLine[] = [
+      { path: '/src/features/x/Foo.tsx', lineNumber: 1, text: "localStorage.setItem('a', 'b');" },
+      { path: '/src/features/x/test/support.tsx', lineNumber: 1, text: 'localStorage.clear();' },
+    ];
+    const production = planted.filter((line) => !isTestFile(line.path));
+
+    expect(findNonCommentOccurrences('localStorage', production)).toHaveLength(1);
   });
 });
 
