@@ -57,13 +57,6 @@ _BOUND_ELSEWHERE: dict[str, str] = {
         "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "
         "behind a route (ADR-0018)."
     ),
-    # Slice 2.5, the one T11 exemption T22 cannot remove: bound in `deps.py`
-    # (`get_account_mail_queue`), but this walker sees only providers a route reaches, and no route
-    # depends on `RequestRegistrationDep`/`RequestPasswordResetDep` until T26's skeleton. The stale
-    # check below fails the moment one does, so T26 must remove this entry.
-    "AccountMailQueuePort": (
-        "bound by `deps.get_account_mail_queue`; reached by a route from T26 (remove it then)."
-    ),
 }
 
 

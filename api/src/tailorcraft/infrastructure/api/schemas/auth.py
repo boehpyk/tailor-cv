@@ -54,6 +54,49 @@ class DeleteAccountRequest(BaseModel):
     password: SecretStr = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
 
 
+TOKEN_MAX_LENGTH = 128
+"""The boundary's bound on a presented link token. A token we mint is exactly 43 characters; the
+schema refuses only the absurd (a pasted page, a megabyte of junk) as `validation_error`, and
+everything up to 128 reaches the route's grammar check (`one_time_tokens.hash_presented`), which
+answers 400 `link_invalid` for anything not shaped like a token we mint — before any database read.
+So an empty, padded or truncated token is `link_invalid`, never a 422: no `min_length` here."""
+
+
+class TokenRequest(BaseModel):
+    """`POST /api/auth/registration/confirm` — `{"token": str}` (slice 2.5, technical plan §4).
+
+    The token travels in the **body**, never in the URL: the client reads it from the link's
+    fragment, which no server, proxy or `Referer` ever sees, and posts it here."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(max_length=TOKEN_MAX_LENGTH)
+
+
+class EmailRequest(BaseModel):
+    """`POST /api/auth/password-reset` — `{"email": str}` (slice 2.5, technical plan §4).
+
+    A bounded `str`, not `EmailStr`, for `CredentialsRequest`'s reason: `EmailAddress.parse` is the
+    one rule set that decides what an address is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(max_length=EMAIL_MAX_LENGTH)
+
+
+class ResetConfirmRequest(BaseModel):
+    """`POST /api/auth/password-reset/confirm` — `{"token": str, "password": str}` (slice 2.5).
+
+    `token` as in `TokenRequest`; `password` a `SecretStr` with `CredentialsRequest`'s bounds, so the
+    policy (12…128 code points, not the address) answers `password_*` from the domain, and only the
+    absurd is a schema `validation_error`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    token: str = Field(max_length=TOKEN_MAX_LENGTH)
+    password: SecretStr = Field(min_length=1, max_length=PASSWORD_MAX_LENGTH)
+
+
 class UserResponse(BaseModel):
     """`{"id", "email", "created_at"}` — `GET /api/auth/me`, and `user` inside every
     `AuthenticatedResponse`. Nothing else about an account crosses the wire: no hash, no login id,

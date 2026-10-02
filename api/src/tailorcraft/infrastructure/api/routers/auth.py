@@ -1,6 +1,8 @@
 """The `identity` HTTP surface: register, log in, refresh, log out, and "who am I" (technical plan §4).
 
-Built red-first: T28's skeleton, `qa`'s T29 tests, then T30's handlers.
+Built red-first: T28's skeleton, `qa`'s T29 tests, then T30's handlers. Slice 2.5 adds three
+`POST`s — confirm a registration, request a password reset, confirm it — at the end of this file,
+skeleton at its T26 (the section comment there).
 
 **One credential per route (AC-30).** The four `POST`s answer to the refresh cookie and a trusted
 `Origin`; `/me` answers to a bearer token. **None of them depends on `require_guest_session`**, and
@@ -74,16 +76,21 @@ from tailorcraft.domain.retention.errors import AccountNotFound
 from tailorcraft.domain.retention.value_objects import AccountErasureReport
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
+    ConfirmRegistrationDep,
     DeleteOwnAccountDep,
     GetCurrentUserDep,
     LogInDep,
     LoginEmailRateLimiterDep,
     LoginIpRateLimiterDep,
     LogOutDep,
+    PasswordResetEmailRateLimiterDep,
+    PasswordResetIpRateLimiterDep,
     RefreshLoginDep,
     RegisterRateLimiterDep,
     RegisterUserDep,
+    RequestPasswordResetDep,
     RequireUserDep,
+    ResetPasswordDep,
     SessionDep,
     SettingsDep,
     UserRepositoryDep,
@@ -105,6 +112,9 @@ from tailorcraft.infrastructure.api.schemas.auth import (
     AuthenticatedResponse,
     CredentialsRequest,
     DeleteAccountRequest,
+    EmailRequest,
+    ResetConfirmRequest,
+    TokenRequest,
     UserResponse,
 )
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
@@ -695,3 +705,131 @@ def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
         log.warning(
             EVENT_ACCOUNT_FILE_UNLINK_FAILED, user_id=str(user_id.value), error_type=error_type
         )
+
+
+# ---------------------------------------------------------------------------------------------
+# Slice 2.5 — confirming an address and resetting a password (technical plan §4, ADR-0027,
+# ADR-0028). **SKELETON** (T26): the real paths, the real schemas, every documented status in
+# `responses=`, the dependencies the GREEN handlers need, and bodies raising `NotImplementedError`.
+# RED is T27 (`qa`), GREEN is T29.
+#
+# None of the three reads a bearer, `tc_refresh` or `tc_guest`, and none sets a cookie. Each sits
+# behind `require_trusted_origin` (403 before the limiter, the database or the hasher). The two
+# confirms have **no limiter** (plan §4: a 256-bit token is not guessable; garbage costs one indexed
+# lookup, a malformed one none), so Redis down never blocks finishing a confirmation or a reset.
+#
+# **How T29 decides a malformed token**: `one_time_tokens.hash_presented(body.token)` — `None` (not
+# the 43-character URL-safe grammar the minter produces) is 400 `link_invalid`, `reason=malformed`,
+# **before any database read**; otherwise its `TokenHash` is what the use case receives. The
+# plaintext never reaches `application/`.
+# ---------------------------------------------------------------------------------------------
+
+_LINK_INVALID: dict[int | str, dict[str, Any]] = {
+    status.HTTP_400_BAD_REQUEST: {
+        "model": ErrorResponse,
+        "description": (
+            "link_invalid — malformed (refused before any database read), unknown, already used or "
+            "expired; one code for every reason, which goes to the log line only."
+        ),
+    },
+}
+_VALIDATION_ERROR: dict[int | str, dict[str, Any]] = {
+    status.HTTP_422_UNPROCESSABLE_CONTENT: {
+        "model": ErrorResponse,
+        "description": "validation_error",
+    },
+}
+
+
+@router.post(
+    "/registration/confirm",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(require_trusted_origin)],
+    responses={
+        **_ORIGIN_NOT_ALLOWED,
+        **_LINK_INVALID,
+        status.HTTP_409_CONFLICT: {
+            "model": ErrorResponse,
+            "description": (
+                "email_already_registered — the address became an account after this link was "
+                "sent; the pending registration is deleted."
+            ),
+        },
+        **_VALIDATION_ERROR,
+        **_SERVICE_UNAVAILABLE,
+    },
+)
+async def confirm_registration(
+    body: TokenRequest,
+    response: Response,
+    confirm_registration: ConfirmRegistrationDep,
+    session: SessionDep,
+) -> None:
+    """Turn a pending registration into an account: **204**, no body, **no cookie** — confirming
+    does not sign in (OQ-3); the client sends the user to `/login`. `Cache-Control: no-store`."""
+    raise NotImplementedError
+
+
+@router.post(
+    "/password-reset",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_class=Response,
+    dependencies=[Depends(require_trusted_origin)],
+    responses={
+        **_ORIGIN_NOT_ALLOWED,
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "invalid_email | validation_error",
+        },
+        **_RATE_LIMITED,
+        **_SERVICE_UNAVAILABLE_LIMITED,
+    },
+)
+async def request_password_reset(
+    body: EmailRequest,
+    request: Request,
+    response: Response,
+    request_password_reset: RequestPasswordResetDep,
+    ip_rate_limiter: PasswordResetIpRateLimiterDep,
+    email_rate_limiter: PasswordResetEmailRateLimiterDep,
+    settings: SettingsDep,
+) -> None:
+    """Ask for a reset link: **202**, empty body, **byte-identical whether or not the address has an
+    account** (the use case is never handed anything that could tell). Order: `Origin` → per-IP
+    limiter (`auth:password-reset`, scope `ip`, fails closed) → parse (422 `invalid_email`) →
+    per-address limiter (scope `email`, keyed by `login_email_rate_limit_identifier`, fails closed)
+    → `RequestPasswordReset` (its committing `add`, then the enqueue; a broker refusal is 503
+    `service_unavailable`). `Cache-Control: no-store`."""
+    raise NotImplementedError
+
+
+@router.post(
+    "/password-reset/confirm",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(require_trusted_origin)],
+    responses={
+        **_ORIGIN_NOT_ALLOWED,
+        **_LINK_INVALID,
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": (
+                "password_too_short (+min_length) | password_too_long (+max_length) | "
+                "password_matches_email | validation_error — the token is kept, so the user can "
+                "try another password with the same link."
+            ),
+        },
+        **_SERVICE_UNAVAILABLE,
+    },
+)
+async def confirm_password_reset(
+    body: ResetConfirmRequest,
+    response: Response,
+    reset_password: ResetPasswordDep,
+    session: SessionDep,
+) -> None:
+    """Set a new password from a reset link: **204**, no body, no cookie; **every login of the
+    account is revoked** (ADR-0028). The handler commits on success (`deps.get_reset_password`).
+    `Cache-Control: no-store`."""
+    raise NotImplementedError
