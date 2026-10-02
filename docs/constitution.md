@@ -59,6 +59,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
 | PDF rendering | WeasyPrint (HTML → PDF), in a Celery worker | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
 | DOCX rendering | `python-docx` | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
 | File storage | Local filesystem behind a `FileStorePort` | [0006](./adr/0006-guest-retention-and-local-file-storage.md) |
+| Account mail | SMTP submission (stdlib `smtplib`, STARTTLS required) behind an `AccountMailPort`, sent by the worker on the `mail` queue | [0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md) |
 | Auth | JWT access token + rotating refresh token in an HttpOnly cookie | [0008](./adr/0008-auth-jwt-access-plus-refresh-cookie.md) |
 | Lint + format | Ruff (`ruff check` + `ruff format`) | — |
 | Static analysis | mypy `--strict` | — |
@@ -199,6 +200,10 @@ phase that depends on it closes.
   delete guest copies on schedule (FR-6). "It's just a text file" is how leaks happen.
 - **The LLM provider sees the CV.** That is unavoidable and must be *stated to the user*, not buried.
   Nothing else is sent: no email address, no account id, no other user's content in the same prompt.
+- **The mail provider sees the address and the account mail.** That is the price of proving an
+  address, and it is *stated to the user* where the address is typed. The mail carries a one-time
+  link and nothing else — no name, no CV content, no account id — as plain text with tracking off.
+  Nothing else is ever mailed: no marketing, no notifications ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)).
 - **Untrusted input crosses a validation boundary** before touching the domain. Three inputs are
   security-critical: the **uploaded file** (type, size, and content sniffing — a "PDF" is whatever
   bytes the user sent), the **job URL** (SSRF: no localhost, no private ranges, no redirects into
