@@ -168,8 +168,10 @@ class SqlAlchemyUserRepository:
         """`SELECT 1 FROM identity_user WHERE id = :u AND password_hash = :seen FOR SHARE`.
 
         **The shared lock is held until the end of the current transaction** — that is what makes a
-        reset's `get_for_update` wait for this login (or account deletion) to commit, so the reset
-        then deletes whatever it wrote (technical plan §0.7, ADR-0028).
+        reset's `get_for_update` wait for this login to commit, so the reset then deletes the `Login`
+        it wrote (technical plan §0.7, ADR-0028). Only `LogIn` calls it: account deletion re-checks
+        under `get_for_update` instead, since a shared lock upgraded to an exclusive one by two
+        concurrent deletions deadlocks.
 
         Core, against the table, never the ORM: the answer must come from the row as it is *now*,
         and an identity-map hit would answer from the hash this session loaded before verifying —

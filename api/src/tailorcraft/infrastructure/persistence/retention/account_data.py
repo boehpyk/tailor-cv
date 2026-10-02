@@ -36,6 +36,12 @@ from tailorcraft.domain.retention.value_objects import AccountCounts
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
 from tailorcraft.infrastructure.persistence.mapping.identity.login import login_table
+from tailorcraft.infrastructure.persistence.mapping.identity.password_reset import (
+    password_reset_table,
+)
+from tailorcraft.infrastructure.persistence.mapping.identity.pending_registration import (
+    pending_registration_table,
+)
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
@@ -122,8 +128,13 @@ class SqlAlchemyAccountData:
     async def delete_account(self, user_id: UserId) -> bool:
         """`DELETE FROM identity_user WHERE id = :u`. `True` if a row went.
 
-        **One statement**; the rest goes by `ON DELETE CASCADE`: `identity_login` (and through it
-        `identity_retired_refresh_token`), `intake_base_cv`, and since slice 2.3 the account's
+        **Since slice 2.5, preceded by two deletes by address** — the account's addressed password
+        resets and any pending registration for its address (the comment in the body says why) —
+        under the user row's `FOR UPDATE`, which also supplies the address.
+
+        **One statement for the account itself**; the rest goes by `ON DELETE CASCADE`:
+        `identity_login` (and through it `identity_retired_refresh_token`), since 2.5 its *issued*
+        `identity_password_reset` rows, `intake_base_cv`, and since slice 2.3 the account's
         history — `tailoring_run`, `posting_job_posting` and `export_job`, each through its own
         `fk_<table>_user_id_identity_user`. Three independent cascades from the user row, not a
         chain: there is no FK between those three tables (ADR-0014, ADR-0016). Rows only — never a
@@ -142,7 +153,27 @@ class SqlAlchemyAccountData:
         if stale is not None:
             self._session.expunge(stale)
 
+        # Slice 2.5 (technical plan §3, §0.8): the address's one-time rows. An *issued* reset goes by
+        # its `user_id` cascade, but an *addressed* reset and a pending registration name only the
+        # address, so nothing cascades to them — and an erased account must not leave its address
+        # (and, in a pending row, a password hash) behind for up to a day. The address is read from
+        # the user row **under `FOR UPDATE`**: `files_of_account` already holds that lock in this
+        # transaction, so this re-take is free and waits for nothing, and it keeps the lock order
+        # §0.8 names (user first) even for a caller that came here without it. No row → a
+        # concurrent erasure won: `False`, and nothing deleted.
+        locked = await self._session.execute(
+            select(user_table.c.email).where(user_table.c.id == user_id).with_for_update()
+        )
+        email = locked.scalar_one_or_none()
+        if email is None:
+            return False
         connection = await self._session.connection()
+        await connection.execute(
+            delete(password_reset_table).where(password_reset_table.c.email == email)
+        )
+        await connection.execute(
+            delete(pending_registration_table).where(pending_registration_table.c.email == email)
+        )
         result = await connection.execute(delete(user_table).where(user_table.c.id == user_id))
         return result.rowcount > 0
 
