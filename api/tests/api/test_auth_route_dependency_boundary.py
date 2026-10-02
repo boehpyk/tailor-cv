@@ -43,8 +43,8 @@ from tailorcraft.infrastructure.api.deps import (
 from tailorcraft.infrastructure.api.guest_session import COOKIE_NAME as GUEST_COOKIE_NAME
 from tailorcraft.infrastructure.api.guest_session import mint_guest_token
 from tailorcraft.infrastructure.settings import Settings
+from tests.api.me_support import seed_user_and_sign_in
 
-REGISTER_URL = "/api/auth/register"
 ME_URL = "/api/auth/me"
 BASE_CVS_URL = "/api/base-cvs"
 
@@ -168,16 +168,12 @@ async def test_me_with_a_live_guest_cookie_behaves_as_without_it_and_never_touch
 
 
 async def _register_and_get_access_token(client: AsyncClient, settings: Settings) -> str:
-    response = await client.post(
-        REGISTER_URL,
-        json={
-            "email": f"t32-ac30-{uuid4().hex}@example.com",
-            "password": "correct horse battery staple 9",
-        },
-        headers={"Origin": settings.public_base_url},
+    """A signed-in user's bearer. Slice 2.5 (T27): registering no longer returns one (202, empty), so
+    the account is seeded through the repository and signed in through the real login route
+    (`me_support.seed_user_and_sign_in`). The name is kept: the callers' claim is about the bearer."""
+    token, _user_id = await seed_user_and_sign_in(
+        client, settings, email=f"t32-ac30-{uuid4().hex}@example.com"
     )
-    assert response.status_code == 201, response.text
-    token: str = response.json()["access_token"]
     return token
 
 
@@ -415,3 +411,103 @@ def test_ac32_the_ast_scan_actually_finds_the_claim_routes_direct_calls() -> Non
         f"it found: {touching!r}. The handler must call read_guest_token / clear_guest_cookie "
         f"directly (ADR-0008 amendment (g): read in the body, never through a Depends)."
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-32 (slice 2.5, T27) — the `Origin` check's reach, and the three new routes' credentials.
+#
+# **The set is eight, not the spec's seven — and the difference is on purpose.** AC-32 reads "2.1's
+# four plus `registration/confirm`, `password-reset`, `password-reset/confirm`", but `delete-account`
+# (2.2) has carried `require_trusted_origin` since T18: it is a cookie-adjacent `POST` that signs
+# nobody in and acts on a bearer, and the check is right there. Pinning seven would demand that 2.2's
+# check be *removed* to go green. The pinned set is the seven AC-32 names **plus** `delete-account`;
+# the spec row is amended to match (reported in T27's hand-back). A new `/api/auth` `POST` that
+# forgets the check, or a route outside `/api/auth` that grows one, turns this red by name.
+#
+# The three new handlers are skeletons at T27 (they raise), so every absence below is satisfied by
+# them already — which is why each is paired with a positive control over handlers that *do* touch
+# the credential (`login`, `refresh`, `logout`) and over a route that does depend on `require_user`.
+# ---------------------------------------------------------------------------------------------
+
+_ORIGIN_CHECKED_POSTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/auth/register"),
+        ("POST", "/api/auth/login"),
+        ("POST", "/api/auth/refresh"),
+        ("POST", "/api/auth/logout"),
+        ("POST", "/api/auth/delete-account"),
+        ("POST", "/api/auth/registration/confirm"),
+        ("POST", "/api/auth/password-reset"),
+        ("POST", "/api/auth/password-reset/confirm"),
+    }
+)
+_NEW_2_5_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/api/auth/registration/confirm"),
+        ("POST", "/api/auth/password-reset"),
+        ("POST", "/api/auth/password-reset/confirm"),
+    }
+)
+_REFRESH_COOKIE_CALL_NAMES = frozenset(
+    {"read_refresh_token", "set_refresh_cookie", "clear_refresh_cookie", "mint_refresh_token"}
+)
+
+
+def _closure_over(
+    calls_by_function: dict[str, set[str]], watched: frozenset[str]
+) -> frozenset[str]:
+    """Every function that calls a `watched` name directly or through module-local helpers —
+    `_transitive_guest_touchers`' fixpoint, parametrised over the names."""
+    touching = {name for name, calls in calls_by_function.items() if calls & watched}
+    changed = True
+    while changed:
+        changed = False
+        for name, calls in calls_by_function.items():
+            if name not in touching and calls & touching:
+                touching.add(name)
+                changed = True
+    return frozenset(touching)
+
+
+def test_ac32_the_origin_checked_routes_are_exactly_the_eight_auth_posts(app: FastAPI) -> None:
+    from tailorcraft.infrastructure.api.deps import require_trusted_origin
+
+    checked = {
+        (method, route.path)
+        for route in _iter_api_routes(app.routes)
+        if require_trusted_origin in _all_dependency_calls(route.dependant)
+        for method in route.methods or ()
+    }
+
+    assert checked == _ORIGIN_CHECKED_POSTS, (
+        f"missing: {sorted(_ORIGIN_CHECKED_POSTS - checked)}; "
+        f"unexpected: {sorted(checked - _ORIGIN_CHECKED_POSTS)}"
+    )
+
+
+def test_ac32_none_of_the_three_new_routes_takes_a_bearer_a_guest_session_or_a_cookie(
+    app: FastAPI,
+) -> None:
+    routes = {
+        (method, route.path): route
+        for route in _iter_api_routes(app.routes)
+        for method in route.methods or ()
+    }
+    module_name = "tailorcraft.infrastructure.api.routers.auth"
+    collector = _FunctionCallCollector()
+    collector.visit(_parsed_router_module(module_name))
+    guest_touchers = _closure_over(collector.calls_by_function, _GUEST_TOUCHING_CALL_NAMES)
+    refresh_touchers = _closure_over(collector.calls_by_function, _REFRESH_COOKIE_CALL_NAMES)
+
+    # Positive controls: the scan can see what it is asked to prove absent.
+    assert require_user in _all_dependency_calls(routes[("GET", ME_URL)].dependant)
+    assert {"login", "refresh", "logout"} <= refresh_touchers, sorted(refresh_touchers)
+
+    for key in sorted(_NEW_2_5_ROUTES):
+        route = routes[key]
+        calls = _all_dependency_calls(route.dependant)
+        assert require_user not in calls, key
+        assert require_guest_session not in calls, key
+        assert resolve_or_start_guest_session not in calls, key
+        assert route.endpoint.__name__ not in guest_touchers, key
+        assert route.endpoint.__name__ not in refresh_touchers, key

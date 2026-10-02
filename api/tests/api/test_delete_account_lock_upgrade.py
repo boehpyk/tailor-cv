@@ -49,8 +49,8 @@ from tailorcraft.infrastructure.persistence.repositories.identity.user import (
 )
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
+from tests.api.me_support import seed_user_and_sign_in
 
-REGISTER_URL = "/api/auth/register"
 DELETE_ACCOUNT_URL = "/api/auth/delete-account"
 A_STRONG_PASSWORD = "correct horse battery staple 9"
 LOCK_TIMEOUT_MS = 8_000
@@ -91,15 +91,14 @@ def _assert_test_database(settings: Settings) -> None:
 
 
 async def _register(app: FastAPI, settings: Settings) -> tuple[str, UUID]:
+    """A committed user, signed in through the real login route. Slice 2.5 (T27): `POST
+    /api/auth/register` no longer creates an account or a token (202, empty), so this seeds the user
+    through the repository (`me_support.seed_user_and_sign_in`, T7) — the lock-upgrade race under test
+    starts from "an account with a bearer", not from how it got one."""
     async with _client(app) as client:
-        response = await client.post(
-            "/api/auth/register",
-            json={"email": f"t14-lock-{uuid4().hex}@example.com", "password": A_STRONG_PASSWORD},
-            headers={"Origin": settings.public_base_url},
+        return await seed_user_and_sign_in(
+            client, settings, email=f"t14-lock-{uuid4().hex}@example.com"
         )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    return str(body["access_token"]), UUID(str(body["user"]["id"]))
 
 
 async def _user_row_exists(engine: AsyncEngine, user_id: UUID) -> bool:
