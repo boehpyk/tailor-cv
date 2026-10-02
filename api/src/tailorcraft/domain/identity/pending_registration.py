@@ -23,12 +23,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from tailorcraft.domain.identity.errors import (
+    PendingRegistrationAlreadyIssued,
+    PendingRegistrationExpired,
+    PendingRegistrationNotIssued,
+)
 from tailorcraft.domain.identity.value_objects import (
     EmailAddress,
     PasswordHash,
     PendingRegistrationId,
     TokenHash,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
 
@@ -76,11 +82,21 @@ class PendingRegistration(RecordsEvents):
         confirm path never sees a plaintext) by the port, before this is called. Raises
         `InvariantViolated` if `ttl <= 0`. Records nothing.
         """
-        raise NotImplementedError
+        if ttl <= timedelta(0):
+            raise InvariantViolated("a pending registration's lifetime must be positive")
+        pending = cls()
+        pending._id = id
+        pending._email = email
+        pending._password_hash = password_hash
+        pending._requested_at = at
+        pending._expires_at = at + ttl
+        pending._token_hash = None
+        pending._issued_at = None
+        return pending
 
     def is_expired(self, at: datetime) -> bool:
         """Whether `at` is at or past `expires_at` — inclusive, matching `Login.is_expired`."""
-        raise NotImplementedError
+        return at >= self._expires_at
 
     def issue(self, token_hash: TokenHash, at: datetime) -> None:
         """Store the hash of the token the worker just minted: sets `token_hash` and `issued_at = at`.
@@ -89,7 +105,19 @@ class PendingRegistration(RecordsEvents):
         `PendingRegistrationAlreadyIssued` if a token was already issued — the issued-once guard that
         makes a redelivered task send no second mail (technical plan §0.4).
         """
-        raise NotImplementedError
+        # Already-issued first: a redelivery that arrives after expiry is still "already issued",
+        # which is the fact the worker acts on (skip, send nothing).
+        if self._token_hash is not None:
+            raise PendingRegistrationAlreadyIssued
+        if self.is_expired(at):
+            raise PendingRegistrationExpired
+        if at < self._requested_at:
+            # The `requested_at ≤ issued_at` half of the invariant; only a broken clock reaches it.
+            raise InvariantViolated(
+                "a pending registration cannot be issued before it was requested"
+            )
+        self._token_hash = token_hash
+        self._issued_at = at
 
     def confirm(self, at: datetime) -> tuple[EmailAddress, PasswordHash]:
         """Return the `(email, password_hash)` a `User` is registered from.
@@ -98,32 +126,36 @@ class PendingRegistration(RecordsEvents):
         `PendingRegistrationExpired` if `is_expired(at)`. Changes no state: the use case removes the
         row once the `User` is added.
         """
-        raise NotImplementedError
+        if self._token_hash is None:
+            raise PendingRegistrationNotIssued
+        if self.is_expired(at):
+            raise PendingRegistrationExpired
+        return self._email, self._password_hash
 
     @property
     def id(self) -> PendingRegistrationId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def email(self) -> EmailAddress:
-        raise NotImplementedError
+        return self._email
 
     @property
     def password_hash(self) -> PasswordHash:
-        raise NotImplementedError
+        return self._password_hash
 
     @property
     def requested_at(self) -> datetime:
-        raise NotImplementedError
+        return self._requested_at
 
     @property
     def expires_at(self) -> datetime:
-        raise NotImplementedError
+        return self._expires_at
 
     @property
     def token_hash(self) -> TokenHash | None:
-        raise NotImplementedError
+        return self._token_hash
 
     @property
     def issued_at(self) -> datetime | None:
-        raise NotImplementedError
+        return self._issued_at

@@ -18,14 +18,23 @@ never; and their supersede rules differ (per address vs per account). No base cl
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from typing import assert_never
 
+from tailorcraft.domain.identity.errors import (
+    PasswordResetAlreadyIssued,
+    PasswordResetExpired,
+    PasswordResetNotIssued,
+)
 from tailorcraft.domain.identity.value_objects import (
+    AddressedReset,
     EmailAddress,
+    IssuedReset,
     PasswordResetId,
     ResetTarget,
     TokenHash,
     UserId,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
 
@@ -62,11 +71,20 @@ class PasswordReset(RecordsEvents):
     ) -> PasswordReset:
         """The only constructor: target `AddressedReset(email)`, not issued, `requested_at = at`,
         `expires_at = at + ttl`. Raises `InvariantViolated` if `ttl <= 0`. Records nothing."""
-        raise NotImplementedError
+        if ttl <= timedelta(0):
+            raise InvariantViolated("a password reset's lifetime must be positive")
+        reset = cls()
+        reset._id = id
+        reset._target = AddressedReset(email)
+        reset._requested_at = at
+        reset._expires_at = at + ttl
+        reset._token_hash = None
+        reset._issued_at = None
+        return reset
 
     def is_expired(self, at: datetime) -> bool:
         """Whether `at` is at or past `expires_at` — inclusive, matching `Login.is_expired`."""
-        raise NotImplementedError
+        return at >= self._expires_at
 
     def issue(self, user_id: UserId, token_hash: TokenHash, at: datetime) -> None:
         """Address the reset to the account found for its address: target becomes
@@ -75,34 +93,49 @@ class PasswordReset(RecordsEvents):
         Raises `PasswordResetExpired` if `is_expired(at)`, and `PasswordResetAlreadyIssued` if it was
         already issued (the issued-once guard, technical plan §0.4).
         """
-        raise NotImplementedError
+        # `PendingRegistration.issue`'s order, for its reason: a late redelivery is "already issued".
+        if self._token_hash is not None:
+            raise PasswordResetAlreadyIssued
+        if self.is_expired(at):
+            raise PasswordResetExpired
+        if at < self._requested_at:
+            raise InvariantViolated("a password reset cannot be issued before it was requested")
+        self._target = IssuedReset(user_id)
+        self._token_hash = token_hash
+        self._issued_at = at
 
     @property
     def id(self) -> PasswordResetId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def target(self) -> ResetTarget:
-        raise NotImplementedError
+        return self._target
 
     @property
     def user_id(self) -> UserId:
         """The account this reset was issued to. Raises `PasswordResetNotIssued` while the reset is
         still only addressed — it has no account yet, by construction."""
-        raise NotImplementedError
+        match self._target:
+            case IssuedReset(user_id=user_id):
+                return user_id
+            case AddressedReset():
+                raise PasswordResetNotIssued
+            case _:
+                assert_never(self._target)
 
     @property
     def requested_at(self) -> datetime:
-        raise NotImplementedError
+        return self._requested_at
 
     @property
     def expires_at(self) -> datetime:
-        raise NotImplementedError
+        return self._expires_at
 
     @property
     def token_hash(self) -> TokenHash | None:
-        raise NotImplementedError
+        return self._token_hash
 
     @property
     def issued_at(self) -> datetime | None:
-        raise NotImplementedError
+        return self._issued_at

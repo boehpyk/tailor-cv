@@ -31,7 +31,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from tailorcraft.domain.identity.events import UserPasswordRehashed, UserRegistered
+from tailorcraft.domain.identity.events import (
+    PasswordChangedByReset,
+    UserPasswordRehashed,
+    UserRegistered,
+)
 from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
@@ -129,7 +133,16 @@ class User(RecordsEvents):
         today's parameters) and its own event, and a boolean choosing between two events is two
         methods wearing one name.
         """
-        raise NotImplementedError
+        # Both refusals before any assignment, so a refused reset changes nothing and records nothing.
+        if at < self._created_at:
+            raise InvariantViolated("a password cannot be reset before the user existed")
+        if logins_revoked < 0:
+            raise InvariantViolated("a reset cannot have revoked a negative number of logins")
+        self._password_hash = new
+        self._password_updated_at = at
+        self.record(
+            PasswordChangedByReset(user_id=self._id, logins_revoked=logins_revoked, occurred_at=at)
+        )
 
     @property
     def id(self) -> UserId:

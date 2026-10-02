@@ -49,6 +49,9 @@ _PASSWORD_HASH_MAX_LENGTH = 512
 
 _TOKEN_HASH_LENGTH = 64
 _LOWERCASE_HEX = frozenset("0123456789abcdef")
+# `secrets.token_urlsafe(32)`: 32 random bytes, base64url without padding — 43 characters (AC-1).
+_ONE_TIME_TOKEN_LENGTH = 43
+_URLSAFE_BASE64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -557,17 +560,28 @@ class OneTimeToken:
     value: str = field(repr=False)
 
     def __post_init__(self) -> None:
-        """Refuse anything but exactly 43 URL-safe base64 characters (`InvalidOneTimeToken`).
+        """Refuse anything but exactly 43 URL-safe base64 characters (`InvalidOneTimeToken`)."""
+        from tailorcraft.domain.identity.errors import InvalidOneTimeToken
 
-        SKELETON: a no-op on purpose (AC-6, the rule carried from 2.4), so a "refused" test goes red
-        on `DID NOT RAISE` rather than on a `NotImplementedError`. The masked `__repr__`, `__str__`
-        and `__format__` land with the GREEN, for the same reason: until then the generated `repr`
-        prints `OneTimeToken()`, which a masking assertion refuses on its own terms.
-        """
+        # A set test against an explicit ASCII alphabet, `TokenHash`'s idiom: `str.isalnum` would
+        # admit `é` and `٣`, and a regex's `$` would admit a trailing newline. No padding (`=`),
+        # and neither `+` nor `/` — those are standard base64, which this is not.
+        if len(self.value) != _ONE_TIME_TOKEN_LENGTH or not set(self.value) <= _URLSAFE_BASE64:
+            raise InvalidOneTimeToken
 
     def reveal(self) -> str:
         """The plaintext. Only the mail adapter calls this, to put the link in the message."""
-        raise NotImplementedError
+        return self.value
+
+    def __repr__(self) -> str:
+        return "OneTimeToken(***)"
+
+    def __str__(self) -> str:
+        return repr(self)
+
+    def __format__(self, format_spec: str) -> str:
+        # `Password.__format__`'s reason: every spec is applied to the mask, never to the value.
+        return format(repr(self), format_spec)
 
 
 @dataclass(frozen=True, slots=True)

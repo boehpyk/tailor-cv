@@ -23,6 +23,11 @@ from typing import TypeAlias
 
 from tailorcraft.domain.identity.value_objects import EmailAddress, OneTimeToken
 
+# What every mail type prints in place of its recipient. A hand-written `__repr__` on a dataclass
+# replaces the generated one (`repr=True` is ignored when the class defines its own), and `str` and
+# `format` fall through to it — so these three methods are the whole of the masking.
+_MASKED_ADDRESS = "<redacted>"
+
 
 @dataclass(frozen=True, slots=True)
 class ConfirmYourEmail:
@@ -37,13 +42,11 @@ class ConfirmYourEmail:
     token: OneTimeToken
     expires_in: timedelta
 
-    def __post_init__(self) -> None:
-        """Refuse `expires_in <= 0` (`InvariantViolated`) — a link that is dead on arrival is a bug
-        in whoever computed the lifetime, not a mail worth sending.
-
-        SKELETON: a no-op (AC-6). The masked `__repr__` lands with the GREEN; until then the
-        generated one prints the address, which a masking assertion refuses on its own terms.
-        """
+    def __repr__(self) -> str:
+        return (
+            f"ConfirmYourEmail(to={_MASKED_ADDRESS}, token={self.token!r}, "
+            f"expires_in={self.expires_in!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +58,9 @@ class AccountAlreadyExists:
 
     to: EmailAddress
 
+    def __repr__(self) -> str:
+        return f"AccountAlreadyExists(to={_MASKED_ADDRESS})"
+
 
 @dataclass(frozen=True, slots=True)
 class ResetYourPassword:
@@ -64,11 +70,11 @@ class ResetYourPassword:
     token: OneTimeToken
     expires_in: timedelta
 
-    def __post_init__(self) -> None:
-        """Refuse `expires_in <= 0` (`InvariantViolated`), as `ConfirmYourEmail` does.
-
-        SKELETON: a no-op (AC-6); the masked `__repr__` lands with the GREEN.
-        """
+    def __repr__(self) -> str:
+        return (
+            f"ResetYourPassword(to={_MASKED_ADDRESS}, token={self.token!r}, "
+            f"expires_in={self.expires_in!r})"
+        )
 
 
 # `TypeAlias` rather than a `type` statement for `ownership.py`'s reason: `isinstance` and class
