@@ -183,4 +183,29 @@ where they type their address, that the provider sees it (Constitution §8).
   `check-settings` refuses and the API never starts. The release orders it.
 - **A thread running `smtplib` cannot be cancelled.** The bounds are the socket timeout, the attempt
   count and the total deadline, all below Celery's limits.
-- **This ADR owes an amendment**: the vendor, its retention setting and its tracking setting, at T44.
+- **This ADR owed an amendment** (the vendor, its retention and its tracking settings, at T44). It
+  follows below.
+
+## Amendment (2026-10-03, T44): the provider, its tracking and its retention
+
+- **Provider: Resend**, through its SMTP relay. The adapter is unchanged (`smtp.resend.com:587`,
+  STARTTLS, username `resend`, password = an API key with sending access). The sender domain is
+  `notifications.samolit.com`, with Resend's return-path SPF and MX, a DKIM key, and `_dmarc` at
+  `p=none` on `samolit.com`. A real delivery to Gmail read `spf=pass dkim=pass dmarc=pass` on
+  2026-10-03.
+- **Click and open tracking are off**, and no custom tracking domain is configured. Read on the
+  domain's settings page on 2026-10-03. Click tracking is not a preference here, it is a leak: it
+  rewrites each link to pass through the provider's redirect, and the rewritten URL carries the
+  original **including its fragment**. That is the one place this design keeps the token out of
+  every server. It must stay off. Open tracking needs HTML, and our mail is plain text, so it is
+  inert today. It is off so that it stays inert if HTML ever arrives.
+- **Retention is plan-level, not per domain**, and is **not yet read**. The owner records the value
+  here; the requirement is "the shortest the plan allows". Until then: a sent message (the address
+  and a link whose token is used-once and expires in ≤ 24 h) stays visible in the provider's logs
+  for the plan's default period.
+- **Met at the release, worth knowing next time:** the first API key was dead, and every send
+  failed **535** until it was replaced. A bare `AUTH` from the box (`smtplib`, no message) told the
+  key apart from the code in seconds. The new key reached the worker only after
+  `docker compose up -d api worker beat`, because `env_file:` is read when a container is created,
+  not when it restarts.
+
