@@ -532,7 +532,8 @@ async def test_ac54_no_marker_token_hash_or_address_leaks_across_the_whole_accou
     ids_published |= {str(row.value) for row in queue.resets}
     for name, args, kwargs in celery.published:
         assert args == (), (name, args, kwargs)
-        assert set(kwargs) == {"args", "queue"}, (name, args, kwargs)
+        assert set(kwargs) == {"args", "queue", "ignore_result"}, (name, args, kwargs)
+        assert kwargs["ignore_result"] is True
         assert kwargs["queue"] == "mail"
         assert len(kwargs["args"]) == 1, kwargs
         (only,) = kwargs["args"]

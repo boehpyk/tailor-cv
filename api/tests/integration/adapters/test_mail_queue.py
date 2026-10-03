@@ -66,7 +66,7 @@ async def test_a_registration_publishes_one_uuid_string_to_the_mail_queue() -> N
     ((name, positional, kwargs),) = app.published
     assert name == "tailorcraft.identity.deliver_registration_mail"
     assert positional == ()
-    assert kwargs == {"args": [str(pending.value)], "queue": "mail"}
+    assert kwargs == {"args": [str(pending.value)], "queue": "mail", "ignore_result": True}
     assert UUID(kwargs["args"][0]) == pending.value
 
 
@@ -79,7 +79,7 @@ async def test_a_password_reset_publishes_one_uuid_string_to_the_mail_queue() ->
     ((name, positional, kwargs),) = app.published
     assert name == "tailorcraft.identity.deliver_password_reset_mail"
     assert positional == ()
-    assert kwargs == {"args": [str(reset.value)], "queue": "mail"}
+    assert kwargs == {"args": [str(reset.value)], "queue": "mail", "ignore_result": True}
 
 
 async def test_each_enqueue_publishes_exactly_one_message() -> None:
