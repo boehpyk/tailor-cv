@@ -52,16 +52,36 @@ def _identity(url: str) -> tuple[str | None, int | None, str]:
 
 
 @pytest.fixture
-def real_app(settings: Settings) -> Iterator[tuple[Celery, redis.Redis]]:
+def real_app(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[tuple[Celery, redis.Redis]]:
     backend_url = _db_url(settings.test_redis_url, _BACKEND_DB)
     broker_url = _db_url(settings.test_redis_url, _BROKER_DB)
     live = {_identity(u) for u in (settings.celery_broker_url, settings.celery_result_backend)} | {
         _identity(_db_url(settings.test_redis_url, 0))
     }
-    assert _identity(backend_url) not in live, "the test backend collides with a live Redis role"
-    assert _identity(broker_url) not in live, "the test broker collides with a live Redis role"
+
+    # Celery's `conf.broker_url` / `conf.result_backend` PREFER these two environment variables over
+    # the constructor arguments (/verify r1: measured in the api container, `Celery("x",
+    # broker=…/7).conf.broker_url` read `…/1`). The container sets them to the live roles, so without
+    # this the "test-only" app published to the DEV broker — 150 tasks to the dev worker per suite
+    # run — and a guard on the constructor arguments judged URLs Celery never used.
+    monkeypatch.delenv("CELERY_BROKER_URL", raising=False)
+    monkeypatch.delenv("CELERY_RESULT_BACKEND", raising=False)
 
     app = Celery("qa-no-result-subscription", broker=broker_url, backend=backend_url)
+
+    # The guard judges what the app will EFFECTIVELY use, not what it was handed.
+    effective_broker = str(app.conf.broker_url)
+    effective_backend = str(app.conf.result_backend)
+    assert _identity(effective_broker) == _identity(broker_url), "an env var overrode the broker"
+    assert _identity(effective_backend) == _identity(backend_url), "an env var overrode the backend"
+    assert _identity(effective_backend) not in live, (
+        "the test backend collides with a live Redis role"
+    )
+    assert _identity(effective_broker) not in live, (
+        "the test broker collides with a live Redis role"
+    )
     backend_client = redis.Redis.from_url(backend_url)
     broker_client = redis.Redis.from_url(broker_url)
     backend_client.flushdb()

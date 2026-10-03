@@ -31,6 +31,7 @@ import asyncio
 from collections.abc import AsyncIterator, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from typing import Any, NamedTuple
 
 import pytest
 import pytest_asyncio
@@ -336,6 +337,58 @@ def password_hasher() -> Iterator[Argon2PasswordHasher]:
         yield Argon2PasswordHasher(executor, TEST_ARGON2_PARAMETERS)
     finally:
         executor.shutdown(wait=True, cancel_futures=True)
+
+
+class PublishedTask(NamedTuple):
+    """One `send_task` the process's Celery singleton was asked to make during a test."""
+
+    name: str
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    options: dict[str, Any]
+
+
+@pytest.fixture(autouse=True)
+def published_tasks() -> Iterator[list[PublishedTask]]:
+    """No test can publish to the live broker: the singleton's `send_task` records instead.
+
+    **Why (/verify r1, measured).** The suite used to deliver ~150 tasks per run to the DEV worker
+    (`tailoring.run`, `export.render`, both mail tasks), each answering `outcome=missing` against the
+    dev database. Two sources: one test built a "test-only" Celery app that the `CELERY_BROKER_URL`
+    env var silently redirected to the dev broker (fixed in that test), and every app-building
+    fixture here wires `tasks.app.app` — the real application, bound to the live broker — as
+    `app.state.celery`, so any API test that reaches a queue adapter without overriding its
+    dependency would publish for real.
+
+    **Why this and not an override per fixture.** `app`, `concurrent_app` and the many tests that
+    build their own app (`app.state.celery = celery_app`) all share that one object, so replacing
+    its `send_task` closes every present and future path at once; a default
+    `dependency_overrides[get_account_mail_queue]` would cover one queue of three and leave the
+    adapters themselves untested through the API. The adapter code still runs (its `to_thread`, its
+    `ignore_result=True`, its floor) — only the last network hop is replaced. A test that needs a
+    real publish builds its own `Celery` on the test broker (`test_queue_adapters_never_subscribe…`).
+
+    Request the fixture to assert on what was published.
+    """
+    recorded: list[PublishedTask] = []
+
+    def record(
+        name: str,
+        args: tuple[Any, ...] | None = None,
+        kwargs: dict[str, Any] | None = None,
+        **options: Any,  # Any: Celery's own free-form publish options
+    ) -> None:
+        recorded.append(PublishedTask(name, tuple(args or ()), dict(kwargs or {}), options))
+
+    # Not the `monkeypatch` fixture: an autouse fixture that requests it would be set up before every
+    # test's own fixtures and so torn down AFTER them, silently reordering the teardown of tests that
+    # patch things their cleanup still needs (`test_erase_account_cli.py`'s rig unlinks through the
+    # test's own patched `Path.unlink`; with this fixture on `monkeypatch` its teardown errored).
+    celery_app.send_task = record  # replacing the publish hop on purpose
+    try:
+        yield recorded
+    finally:
+        del celery_app.send_task  # the class's method shows through again
 
 
 @pytest.fixture
