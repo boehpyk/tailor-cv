@@ -72,7 +72,14 @@ class CeleryAccountMailQueue:
             # unreachable would freeze the loop for every user for kombu's connection timeout. One
             # thread hop is the fix (`CeleryTailoringQueue`'s comment, measured there).
             await asyncio.to_thread(
-                self._app.send_task, task_name, args=[str(row_id)], queue=self._queue_name
+                self._app.send_task,
+                task_name,
+                args=[str(row_id)],
+                queue=self._queue_name,
+                # `ignore_result=True`: without it the discarded `AsyncResult` unsubscribes from
+                # Redis synchronously on the event loop when it is collected, and a burst of
+                # enqueues wedged the API process. `tailoring/queue.py` has the whole story.
+                ignore_result=True,
             )
         except Exception as exc:
             # The floor: the ways a broker can refuse are not an allow-list anybody can complete
