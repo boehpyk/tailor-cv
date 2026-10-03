@@ -44,6 +44,7 @@ from tailorcraft.infrastructure.persistence.repositories.identity.password_reset
 )
 from tests.integration.claim_race_support import (
     assert_test_database,
+    bound_cleanup_locks,
     new_user,
     pinned_session,
     wait_for_lock_waiter,
@@ -442,6 +443,7 @@ async def _committed_reset(
         yield reset.id, user_id
     finally:
         async with engine.begin() as conn:
+            await bound_cleanup_locks(conn)
             await conn.execute(
                 text("DELETE FROM identity_password_reset WHERE id = :i"), {"i": reset.id.value}
             )
@@ -469,12 +471,20 @@ async def test_two_deliveries_racing_to_issue_one_reset_mail_one_link(
             await repo_a.save_issued(row_a)
 
             loser = asyncio.create_task(repo_b.save_issued(row_b))
-            await wait_for_lock_waiter(engine, "update identity_password_reset")
-            assert not loser.done()
-            await a.commit()
-            with pytest.raises(PasswordResetAlreadyIssued):
-                await asyncio.wait_for(loser, _STEP_TIMEOUT)
-            await b.rollback()
+            try:
+                await wait_for_lock_waiter(engine, "update identity_password_reset")
+                assert not loser.done()
+                await a.commit()
+                with pytest.raises(PasswordResetAlreadyIssued):
+                    await asyncio.wait_for(loser, _STEP_TIMEOUT)
+                await b.rollback()
+            finally:
+                # /verify r1: a failure above used to leave `loser` blocked on a lock while both
+                # sessions closed under it, A's transaction stayed open, and the fixture's DELETE
+                # waited behind it for ever. Settle the task before the connections go.
+                if not loser.done():
+                    loser.cancel()
+                await asyncio.gather(loser, return_exceptions=True)
 
         async with engine.connect() as conn:
             stored = (

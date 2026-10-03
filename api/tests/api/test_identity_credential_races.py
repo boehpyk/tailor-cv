@@ -76,6 +76,7 @@ from tests.api.me_support import A_PASSWORD, build_concurrent_app, new_client, s
 from tests.integration.claim_race_support import (
     LOCK_TIMEOUT_MS,
     assert_test_database,
+    bound_cleanup_locks,
     wait_for_lock_waiter,
 )
 from tests.integration.fakes import RecordingAccountMailQueue
@@ -167,6 +168,7 @@ async def world(
     finally:
         await browser.aclose()
         async with engine.begin() as conn:
+            await bound_cleanup_locks(conn)
             for address in (email, *built.extra_emails):
                 await conn.execute(
                     text("DELETE FROM identity_pending_registration WHERE email = :e"),
