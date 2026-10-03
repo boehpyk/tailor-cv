@@ -321,7 +321,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   production argon2, n = 200 interleaved: register new vs. existing Δ **0.56 %**, reset-request
 >   known vs. unknown Δ **1.63 %**, login wrong-password vs. unknown-email Δ **0.42 %** (≤ 10 %);
 >   T41's burst after the `ignore_result` fix: 2 × 3 600 resets, 0 probe timeouts, `/health/live`
->   p50 **3.9 ms** (AC-56/AC-57's own numbers are not yet in the task list). **AC-62 holds**:
+>   p50 **3.9 ms**. AC-56 p95s (n=50, api direct, not via `:8080` — the dev limiters forbid n=50 there): register **60.1**, confirm **6.1**, login **59.1**, reset-request **7.8**, reset-confirm **58.9 ms**; 202 → Mailpit **122.5 ms**. AC-57: a 10 000 × 3 sweep **0.167 s** (2 s); the `overdue` probe p95 **5.86 ms** (20). **AC-62 holds**:
 >   `git diff main --stat` over `infrastructure/llm`, `domain/tailoring` and
 >   `application/tailoring` is empty (`infrastructure/tailoring/queue.py` changed — the enqueue
 >   fix, outside the LLM boundary). Spec rows amended during `/implement`: AC-5 (`MailNotDelivered`
