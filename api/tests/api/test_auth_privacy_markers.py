@@ -34,6 +34,7 @@ from typing import Final
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
 from httpx import AsyncClient, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +46,6 @@ from tailorcraft.infrastructure.api.refresh_cookie import (
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.settings import Settings
 
-REGISTER_URL = "/api/auth/register"
 LOGIN_URL = "/api/auth/login"
 REFRESH_URL = "/api/auth/refresh"
 LOGOUT_URL = "/api/auth/logout"
@@ -84,6 +84,7 @@ def _reset_redis(clear_redis: None) -> None:
 
 
 async def test_a_full_auth_flow_never_logs_or_returns_any_of_its_seven_secrets(
+    app: FastAPI,
     client: AsyncClient,
     session: AsyncSession,
     settings: Settings,
@@ -106,14 +107,19 @@ async def test_a_full_auth_flow_never_logs_or_returns_any_of_its_seven_secrets(
     responses: list[Response] = []
 
     with caplog.at_level(logging.DEBUG):
-        # --- register --------------------------------------------------------------------------
+        # --- sign-up, seeded (slice 2.5, T27) ---------------------------------------------------
+        # `POST /api/auth/register` no longer creates an account or returns a token (202, empty), so
+        # the account this flow is about is written through the repository with the marker password
+        # (hashed by the app's own hasher) and the first `Login` is a real login. The confirm flow's
+        # own planted-marker proof is T28's.
+        await _seed_marker_user(app, session, marker_email, marker_password)
         register_response = await client.post(
-            REGISTER_URL,
+            LOGIN_URL,
             json={"email": marker_email, "password": marker_password},
             headers=headers,
         )
         responses.append(register_response)
-        assert register_response.status_code == 201, register_response.text
+        assert register_response.status_code == 200, register_response.text
         access_token_1 = register_response.json()["access_token"]
         raw_token_1 = _cookie_value(register_response, REFRESH_COOKIE_NAME)
 
@@ -278,12 +284,12 @@ async def test_a_full_auth_flow_never_logs_or_returns_any_of_its_seven_secrets(
         "the wrong-password variant": wrong_password,
         "the unknown email": unknown_email,
         "the resulting password hash": password_hash_marker,
-        "the raw refresh token (register)": raw_token_1,
+        "the raw refresh token (first login)": raw_token_1,
         "the raw refresh token (login)": raw_token_2,
         "the raw refresh token (rotated once)": raw_token_3,
         "the raw refresh token (rotated twice)": raw_token_4,
         "the raw refresh token (the expired login's)": expired_raw_token,
-        "the access token (register)": access_token_1,
+        "the access token (first login)": access_token_1,
         "the access token (login)": access_token_2,
         "the client IP marker": ip_marker,
     }
@@ -304,7 +310,7 @@ async def test_a_full_auth_flow_never_logs_or_returns_any_of_its_seven_secrets(
         "the marker password": marker_password,
         "the wrong-password variant": wrong_password,
         "the resulting password hash": password_hash_marker,
-        "the raw refresh token (register)": raw_token_1,
+        "the raw refresh token (first login)": raw_token_1,
         "the raw refresh token (login)": raw_token_2,
         "the raw refresh token (rotated once)": raw_token_3,
         "the raw refresh token (rotated twice)": raw_token_4,
@@ -321,7 +327,7 @@ async def test_a_full_auth_flow_never_logs_or_returns_any_of_its_seven_secrets(
     error_body_only: dict[str, str] = {
         "the marker email": marker_email,
         "the unknown email": unknown_email,
-        "the access token (register)": access_token_1,
+        "the access token (first login)": access_token_1,
         "the access token (login)": access_token_2,
     }
     for response in responses:
@@ -332,6 +338,26 @@ async def test_a_full_auth_flow_never_logs_or_returns_any_of_its_seven_secrets(
                 f"{description} ({marker!r}) appeared in an ERROR response body — AC-46: "
                 f"{response.status_code} {response.request.url} -> {response.text}"
             )
+
+
+async def _seed_marker_user(app: FastAPI, session: AsyncSession, email: str, password: str) -> None:
+    """A committed `User` whose hash is the app's own hasher's hash of `password`."""
+    from tailorcraft.domain.identity.user import User
+    from tailorcraft.domain.identity.value_objects import EmailAddress, Password
+    from tailorcraft.infrastructure.persistence.repositories.identity.user import (
+        SqlAlchemyUserRepository,
+    )
+
+    users = SqlAlchemyUserRepository(session)
+    user = User.register_with_password(
+        users.next_identity(),
+        EmailAddress.parse(email),
+        await app.state.password_hasher.hash(Password.from_input(password)),
+        datetime.now(UTC).replace(microsecond=0),
+    )
+    user.release_events()
+    await users.add(user)
+    await session.commit()
 
 
 async def _seed_an_already_expired_login(session: AsyncSession, email: str) -> tuple[object, str]:

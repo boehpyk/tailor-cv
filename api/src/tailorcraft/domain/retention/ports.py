@@ -22,7 +22,7 @@ presents as "the app is slow" and never as an error.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
@@ -228,4 +228,52 @@ class HistoryEntryDataPort(Protocol):
         row was not there (a concurrent deletion won): nothing else is touched, and the loser
         unlinks nothing (H-44).
         """
+        ...
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.5 — the identity token sweep (technical plan §0.9).
+# --------------------------------------------------------------------------------------------------
+
+
+class ExpiredIdentityTokenPort(Protocol):
+    """Everything retention needs to delete identity rows that have aged out: pending registrations,
+    password resets and logins past their `expires_at` (technical plan §0.9).
+
+    **Not methods on identity's repositories**, for `ExpiredGuestDataPort`'s reason: those speak about
+    one aggregate at a time in the language of authentication, while "delete the next thousand that
+    have expired" is retention's question. **No identity type crosses** — not even an id: the
+    signatures are instants, a grace and counts, so this port needs nothing from `domain.identity`
+    at all (retention's import allow-list, `tests/unit/retention/test_import_allowlist.py`).
+
+    Every row these delete is one every code path already refuses (an expired token is
+    `link_invalid`; an expired login is deleted on sight by a refresh), which is why the sweep is on
+    by default and needs no rehearsal (§0.9). **No user lock is taken** (§0.8): a reset-confirm that
+    holds a reset row makes the sweep's delete of that row wait, and a reset-confirm that deletes it
+    first leaves the sweep a no-op.
+
+    Each `delete_expired_*` deletes **at most `limit`** rows with `expires_at <= as_of` (inclusive,
+    as every aggregate's `is_expired` is), durable on return, and returns how many went. The caller
+    loops until a batch deletes nothing, so a large backlog never becomes one long statement.
+    """
+
+    async def count_overdue(self, as_of: datetime, grace: timedelta) -> int:
+        """How many rows of the three kinds expired at or before `as_of - grace` and are still here
+        — the backlog `/health/ready` publishes (`grace` is two sweep intervals). As with the purge,
+        the count of what is still overdue is the signal to trust, because a job that is not working
+        cannot fake it (ADR-0018 decision 4)."""
+        ...
+
+    async def delete_expired_pending(self, as_of: datetime, limit: int) -> int:
+        """Delete at most `limit` expired pending registrations — an abandoned sign-up's address and
+        password hash, which must not be kept for ever."""
+        ...
+
+    async def delete_expired_resets(self, as_of: datetime, limit: int) -> int:
+        """Delete at most `limit` expired password resets, addressed or issued."""
+        ...
+
+    async def delete_expired_logins(self, as_of: datetime, limit: int) -> int:
+        """Delete at most `limit` expired logins and everything each one issued (ADR-0020's
+        accumulation trigger, *"100 k rows or 2.5"*)."""
         ...

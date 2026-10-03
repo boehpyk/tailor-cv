@@ -9,8 +9,8 @@ The rule is the one every other context follows: a frozen `@dataclass(frozen=Tru
 where there is something to validate, a `StrEnum` where the set is closed. Never Pydantic
 (ADR-0002).
 
-**Four of these hold a secret or something derived from one** — `Password`, `PasswordHash`,
-`TokenHash`, `IssuedAccessToken` — and each redacts its own `repr`. That is not tidiness. A value
+**Five of these hold a secret or something derived from one** — `Password`, `PasswordHash`,
+`TokenHash`, `IssuedAccessToken` and (slice 2.5) `OneTimeToken` — and each redacts its own `repr`. That is not tidiness. A value
 object's `repr` is what an f-string, a `logging` call with `%r`, a failed `assert` in pytest and a
 Sentry frame all reach for, and "nobody would log that" is a belief; a `repr` that cannot contain the
 value is a control. Each also declares the secret field `field(repr=False)`, so that deleting the
@@ -27,6 +27,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import TypeAlias
 from uuid import UUID
 
 from tailorcraft.domain.shared.errors import InvariantViolated
@@ -48,6 +49,9 @@ _PASSWORD_HASH_MAX_LENGTH = 512
 
 _TOKEN_HASH_LENGTH = 64
 _LOWERCASE_HEX = frozenset("0123456789abcdef")
+# `secrets.token_urlsafe(32)`: 32 random bytes, base64url without padding — 43 characters (AC-1).
+_ONE_TIME_TOKEN_LENGTH = 43
+_URLSAFE_BASE64 = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -507,3 +511,145 @@ class LoginNotFoundReason(StrEnum):
 
     UNKNOWN = "unknown"
     EXPIRED = "expired"
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.5 — a pending registration, a password reset, and the mail that carries their links
+# (ADR-0026, ADR-0027, ADR-0028).
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PendingRegistrationId:
+    """A `PendingRegistration`'s identity. Typed so it cannot be handed where a `UserId` was meant —
+    the two are minted at different moments for different things: a pending registration's id names
+    a sign-up that is **not yet** an account (ADR-0027), and the `UserId` is minted only when the link
+    is confirmed. It is also all the broker ever carries (technical plan §0.4)."""
+
+    value: UUID
+
+    # No `__post_init__`: every `UUID` is a valid id (the `GuestSessionId` reasoning above).
+
+
+@dataclass(frozen=True, slots=True)
+class PasswordResetId:
+    """A `PasswordReset`'s identity — what the `mail` queue carries for a reset (§0.4)."""
+
+    value: UUID
+
+    # No `__post_init__`: every `UUID` is a valid id (the `GuestSessionId` reasoning above).
+
+
+@dataclass(frozen=True, slots=True)
+class OneTimeToken:
+    """The plaintext of a confirmation or reset link's token: exactly 43 characters of
+    `[A-Za-z0-9_-]` — the shape of `secrets.token_urlsafe(32)` (AC-1).
+
+    **The one plaintext token that crosses `application/`** (technical plan §0.4): the worker's
+    delivery use case mints it, stores its `TokenHash`, commits, then hands it to `AccountMailPort`.
+    So it is a type that cannot be printed: `repr`, `str` and `format` all return `OneTimeToken(***)`
+    (`Password`'s pattern, and the field is `repr=False` as the second lock), and `reveal()` is the
+    only accessor — called by the mail adapter alone, when it writes the link into the body.
+
+    `__post_init__` refuses any other shape with `InvalidOneTimeToken`, whose message never carries
+    the value. A token *presented* by a browser never becomes one of these: the route hashes it
+    (`hash_presented`, infrastructure), so `ConfirmRegistration` and `ResetPassword` receive a
+    `TokenHash` and nothing else.
+    """
+
+    value: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        """Refuse anything but exactly 43 URL-safe base64 characters (`InvalidOneTimeToken`)."""
+        from tailorcraft.domain.identity.errors import InvalidOneTimeToken
+
+        # A set test against an explicit ASCII alphabet, `TokenHash`'s idiom: `str.isalnum` would
+        # admit `é` and `٣`, and a regex's `$` would admit a trailing newline. No padding (`=`),
+        # and neither `+` nor `/` — those are standard base64, which this is not.
+        if len(self.value) != _ONE_TIME_TOKEN_LENGTH or not set(self.value) <= _URLSAFE_BASE64:
+            raise InvalidOneTimeToken
+
+    def reveal(self) -> str:
+        """The plaintext. Only the mail adapter calls this, to put the link in the message."""
+        return self.value
+
+    def __repr__(self) -> str:
+        return "OneTimeToken(***)"
+
+    def __str__(self) -> str:
+        return repr(self)
+
+    def __format__(self, format_spec: str) -> str:
+        # `Password.__format__`'s reason: every spec is applied to the mask, never to the value.
+        return format(repr(self), format_spec)
+
+
+@dataclass(frozen=True, slots=True)
+class MintedOneTimeToken:
+    """A freshly minted one-time token and the hash that is stored in its place — what
+    `OneTimeTokenPort.mint` returns (technical plan §0.4).
+
+    The pair travels together for one reason: the delivery use case stores `token_hash` on the
+    aggregate, commits, and only then hands `token` to `AccountMailPort.send`. Both fields print
+    redacted through their own types, so this one's generated `repr` is already safe — there is no
+    hand-written `__repr__` here to delete as boilerplate, and nothing it could get wrong.
+    """
+
+    token: OneTimeToken
+    token_hash: TokenHash
+
+    # No `__post_init__`: both fields validate themselves, and that the hash is *of* the token is
+    # the adapter's promise, which the domain cannot check without naming the algorithm (AC-4).
+
+
+@dataclass(frozen=True, slots=True)
+class AddressedReset:
+    """A reset that has been requested and not yet delivered: all it knows is the address it was
+    asked for (ADR-0028). Nobody has checked whether an account exists — the request path never
+    looks (technical plan §0.2); the worker does."""
+
+    email: EmailAddress
+
+
+@dataclass(frozen=True, slots=True)
+class IssuedReset:
+    """A reset whose link has been minted and mailed to an account. It names the **account**, and
+    the address is gone (data minimisation: the account row holds it, so this row need not)."""
+
+    user_id: UserId
+
+
+# A sum type with no methods, `Owner`'s shape (ADR-0022, `ownership.py`): a reset is addressed or
+# issued, never both, never neither, and `match` + `assert_never` is the exhaustiveness check.
+# `TypeAlias` rather than a `type` statement for `ownership.py`'s reason — a `TypeAliasType` refuses
+# `isinstance` and class patterns at runtime.
+ResetTarget: TypeAlias = AddressedReset | IssuedReset  # noqa: UP040 — see the comment above
+
+
+class TokenRefusal(StrEnum):
+    """Why a presented confirmation or reset token was refused. Closed; carried by
+    `ConfirmationTokenInvalid` and `ResetTokenInvalid` for the **log line only** — the client sees one
+    `link_invalid` for all three, so a guesser learns nothing about which check caught them."""
+
+    MALFORMED = "malformed"
+    """Not a token's shape at all — refused before any lookup."""
+
+    UNKNOWN = "unknown"
+    """No live row holds that hash: never issued, superseded, already used, or swept."""
+
+    EXPIRED = "expired"
+    """It matched a row at or past `expires_at`, which was deleted on sight."""
+
+
+class MailFailureReason(StrEnum):
+    """Why `AccountMailPort.send` gave up (ADR-0026). Closed; carried by `MailNotDelivered`.
+
+    The protocol's own taxonomy, not a vendor's: a 5xx naming the recipient, a connection or 4xx
+    that never got through, a rate limit, and every other permanent refusal (authentication
+    included). Only `UNAVAILABLE` and `THROTTLED` are retried — inside the adapter, never by Celery.
+    """
+
+    RECIPIENT_REJECTED = "recipient_rejected"
+    UNAVAILABLE = "unavailable"
+    THROTTLED = "throttled"
+    PROVIDER_REFUSED = "provider_refused"

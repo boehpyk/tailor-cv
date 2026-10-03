@@ -34,12 +34,15 @@ from tailorcraft.application.export.list_exports_for_run import ListExportsForRu
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
 from tailorcraft.application.identity.claim_guest_work import ClaimGuestWork
+from tailorcraft.application.identity.confirm_registration import ConfirmRegistration
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
 from tailorcraft.application.identity.get_current_user import GetCurrentUser
 from tailorcraft.application.identity.log_in import LogIn
 from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
-from tailorcraft.application.identity.register_user import RegisterUser
+from tailorcraft.application.identity.request_password_reset import RequestPasswordReset
+from tailorcraft.application.identity.request_registration import RequestRegistration
+from tailorcraft.application.identity.reset_password import ResetPassword
 from tailorcraft.application.identity.start_guest_session import StartGuestSession
 from tailorcraft.application.intake.delete_saved_base_cv import DeleteSavedBaseCv
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
@@ -67,11 +70,14 @@ from tailorcraft.domain.identity.errors import AccessTokenInvalid
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
+    AccountMailQueuePort,
     FailedLoginObserver,
     GuestSessionRepository,
     GuestWorkClaimPort,
     LoginRepository,
     PasswordHasherPort,
+    PasswordResetRepository,
+    PendingRegistrationRepository,
     UserRepository,
 )
 from tailorcraft.domain.identity.value_objects import (
@@ -112,9 +118,14 @@ from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.claim_access import CommittingGuestWorkClaim
 from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
 from tailorcraft.infrastructure.identity.reuse_alert import ReuseAlertingEventPublisher
+from tailorcraft.infrastructure.identity.token_access import (
+    CommittingPasswordResetRepository,
+    CommittingPendingRegistrationRepository,
+)
 from tailorcraft.infrastructure.intake.committing import CommittingBaseCvRemoval
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
+from tailorcraft.infrastructure.mail.queue import CeleryAccountMailQueue
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
@@ -1087,9 +1098,10 @@ def login_email_rate_limit_identifier(email: EmailAddress, settings: Settings) -
 
 # ---------------------------------------------------------------------------------------------
 # identity — slice 2.1 (T27): the remaining ports and the five route use cases. A port with no
-# binding is a bug. **This is the only composition root that binds them**: the worker and beat
-# (`tasks/container.py`) bind none — no task needs auth — and the CLI binds `LoginRepository` alone,
-# for the break-glass (`infrastructure/identity/composition.py`).
+# binding is a bug. **This is the only composition root that binds the auth use cases**: the CLI
+# binds `LoginRepository` alone, for the break-glass (`infrastructure/identity/composition.py`), and
+# since slice 2.5 the worker (`tasks/container.py`) binds `UserRepository` read-only for the two
+# mail-delivery use cases — no task authenticates anyone.
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1150,32 +1162,6 @@ FailedLoginObserverDep = Annotated[FailedLoginObserver, Depends(get_failed_login
 def _refresh_lifetime(settings: Settings) -> timedelta:
     """A `Login`'s absolute lifetime. A `timedelta`, so the unit is a type and not a parameter name."""
     return timedelta(days=settings.refresh_token_ttl_days)
-
-
-def get_register_user(
-    users: UserRepositoryDep,
-    logins: LoginRepositoryDep,
-    hasher: PasswordHasherDep,
-    tokens: AccessTokensDep,
-    clock: ClockDep,
-    events: EventPublisherDep,
-    settings: SettingsDep,
-) -> RegisterUser:
-    """`PasswordPolicy()` with its defaults — 12 to 128 code points (OQ-3). Constructed here and
-    injected, so the object that refuses a password is the one whose bounds the 422 reports."""
-    return RegisterUser(
-        users,
-        logins,
-        hasher,
-        tokens,
-        clock,
-        events,
-        PasswordPolicy(),
-        refresh_lifetime=_refresh_lifetime(settings),
-    )
-
-
-RegisterUserDep = Annotated[RegisterUser, Depends(get_register_user)]
 
 
 def get_log_in(
@@ -1430,3 +1416,202 @@ def get_claim_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
 
 
 ClaimRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_claim_rate_limiter)]
+
+
+# ---------------------------------------------------------------------------------------------
+# identity — slice 2.5 (T22, technical plan §3 "Wiring"): email verification and password reset.
+#
+# **Who builds what.** The four request-side use cases are bound here; the two delivery use cases
+# and the identity token sweep are the worker's (`tasks/container.py`, wired at T19), which is also
+# the only root that mints a one-time token (`SecretsOneTimeTokenMinter`): the API never mints, it
+# only hashes what a link presents (`infrastructure/identity/one_time_tokens.hash_presented`, a
+# function the router calls, not a port), so no `OneTimeTokenPort` provider lives in this file.
+#
+# **The unit of work — read this before writing the T26/T29 handlers.** All four use cases get the
+# *committing* one-time-token repositories (`identity/token_access.py`), never the bare adapters,
+# because every write those ports make is promised durable on return, and FastAPI 0.141 runs
+# `get_session`'s commit **after the response is sent** (CLAUDE.md), so a teardown commit can never
+# make a response true:
+#
+# - `RequestRegistration` / `RequestPasswordReset`: `put` / `add` commits **before** the enqueue, so
+#   the worker is never handed an id it cannot see. The handler commits nothing. A broker refusal
+#   (`AccountMailQueueUnavailable`, 503) leaves a committed row with no mail, which the next
+#   request's upsert/supersede replaces and the sweep eventually deletes.
+# - `ConfirmRegistration`: every path that writes ends in the wrapper's committing `remove` — the
+#   expired link (`remove`, then raise), an address registered meanwhile (`users.add` refuses inside
+#   its own SAVEPOINT, so the transaction is still usable; `remove`, then re-raise), and success
+#   (`users.add`, then `remove`, whose commit makes the new `User` and the deleted pending row one
+#   commit). **The confirm handler commits nothing on any path**; it translates the error.
+# - `ResetPassword`: the expired link is the wrapper's committing `remove`, then raise — nothing for
+#   the handler to do. **The success path is the one the handler must commit**: its last write,
+#   `resets.remove_all_for_user`, passes through uncommitted *on purpose* (it belongs to one
+#   transaction with the new hash and the revoked logins; `token_access.py`'s docstring), so the
+#   handler awaits `session.commit()` after the use case returns and before it builds the response.
+#   A refusal that wrote nothing (unknown token, the password policy) needs no commit; the request
+#   ends in a rollback that releases the user's `FOR UPDATE`.
+#
+# **The three limiters fail closed**, the identity limiters' rule above: every request that passes
+# one may send an email to an address a stranger typed. Per-email limiters key on
+# `login_email_rate_limit_identifier` (the HMAC; the email never reaches a Redis key) — the
+# namespace, not the identifier, is what keeps the budgets apart.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_register_email_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """`auth:register`, scope `email` — `settings.register_rate_limit_per_email_per_hour` (OQ-11).
+
+    The same namespace as the per-IP register limiter (one endpoint, two scopes, login's shape),
+    keyed by `login_email_rate_limit_identifier`. Bounds how many confirmation mails one address can
+    be sent, however many networks ask. Fails closed."""
+    return RedisFixedWindowRateLimiter(redis, namespace="auth:register", fail_open=False)
+
+
+RegisterEmailRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_register_email_rate_limiter)
+]
+
+
+def get_password_reset_ip_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """`auth:password-reset`, scope `ip` — `settings.password_reset_rate_limit_per_ip_per_hour`.
+
+    Bounds one network's reset requests across every address it types. Fails closed."""
+    return RedisFixedWindowRateLimiter(redis, namespace="auth:password-reset", fail_open=False)
+
+
+PasswordResetIpRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_password_reset_ip_rate_limiter)
+]
+
+
+def get_password_reset_email_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """`auth:password-reset`, scope `email` —
+    `settings.password_reset_rate_limit_per_email_per_hour`, keyed by
+    `login_email_rate_limit_identifier`. Bounds how many reset mails one inbox receives. The same
+    for a registered and an unknown address, so a 429 says nothing about which it is. Fails closed."""
+    return RedisFixedWindowRateLimiter(redis, namespace="auth:password-reset", fail_open=False)
+
+
+PasswordResetEmailRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_password_reset_email_rate_limiter)
+]
+
+
+def get_account_mail_queue(celery: CeleryDep, settings: SettingsDep) -> AccountMailQueuePort:
+    """Binds `AccountMailQueuePort` -> `CeleryAccountMailQueue` (plan §0.10).
+
+    `settings.mail_queue_name` is the one place the name is written; `tasks/app.py`'s
+    `task_queues` derives the consumed queue from the same field (`get_tailoring_queue`'s reason)."""
+    return CeleryAccountMailQueue(celery, settings.mail_queue_name)
+
+
+AccountMailQueueDep = Annotated[AccountMailQueuePort, Depends(get_account_mail_queue)]
+
+
+def get_pending_registration_repository(session: SessionDep) -> PendingRegistrationRepository:
+    """Binds `PendingRegistrationRepository` -> the **committing** wrapper over
+    `SqlAlchemyPendingRegistrationRepository` (see the unit-of-work note above).
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.identity.pending_registration import (
+        SqlAlchemyPendingRegistrationRepository,
+    )
+
+    return CommittingPendingRegistrationRepository(
+        SqlAlchemyPendingRegistrationRepository(session), session
+    )
+
+
+PendingRegistrationRepositoryDep = Annotated[
+    PendingRegistrationRepository, Depends(get_pending_registration_repository)
+]
+
+
+def get_password_reset_repository(session: SessionDep) -> PasswordResetRepository:
+    """Binds `PasswordResetRepository` -> the **committing** wrapper over
+    `SqlAlchemyPasswordResetRepository`. `remove_all_for_user` passes through uncommitted, which is
+    why `ResetPassword`'s handler commits on success (see the note above).
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.identity.password_reset import (
+        SqlAlchemyPasswordResetRepository,
+    )
+
+    return CommittingPasswordResetRepository(SqlAlchemyPasswordResetRepository(session), session)
+
+
+PasswordResetRepositoryDep = Annotated[
+    PasswordResetRepository, Depends(get_password_reset_repository)
+]
+
+
+def get_request_registration(
+    pending: PendingRegistrationRepositoryDep,
+    hasher: PasswordHasherDep,
+    mail_queue: AccountMailQueueDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RequestRegistration:
+    """`PasswordPolicy()` with its defaults, injected so the object that refuses a password is the one
+    whose bounds the 422 reports; the confirmation link's lifetime from
+    `EMAIL_CONFIRMATION_TTL_HOURS`, as a `timedelta` so the unit is a type."""
+    return RequestRegistration(
+        pending,
+        hasher,
+        mail_queue,
+        clock,
+        PasswordPolicy(),
+        confirmation_ttl=timedelta(hours=settings.email_confirmation_ttl_hours),
+    )
+
+
+RequestRegistrationDep = Annotated[RequestRegistration, Depends(get_request_registration)]
+
+
+def get_confirm_registration(
+    pending: PendingRegistrationRepositoryDep,
+    users: UserRepositoryDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+) -> ConfirmRegistration:
+    """Creates the `User` and no `Login` (OQ-3: confirming does not sign in). Its handler commits
+    nothing — every writing path ends in the committing `remove` (the note above)."""
+    return ConfirmRegistration(pending, users, clock, events)
+
+
+ConfirmRegistrationDep = Annotated[ConfirmRegistration, Depends(get_confirm_registration)]
+
+
+def get_request_password_reset(
+    resets: PasswordResetRepositoryDep,
+    mail_queue: AccountMailQueueDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RequestPasswordReset:
+    """No `UserRepository` and no hasher, by construction (AC-11): the request path cannot branch on
+    whether the address has an account, because it is never given anything that could tell it."""
+    return RequestPasswordReset(
+        resets,
+        mail_queue,
+        clock,
+        reset_ttl=timedelta(minutes=settings.password_reset_ttl_minutes),
+    )
+
+
+RequestPasswordResetDep = Annotated[RequestPasswordReset, Depends(get_request_password_reset)]
+
+
+def get_reset_password(
+    users: UserRepositoryDep,
+    resets: PasswordResetRepositoryDep,
+    logins: LoginRepositoryDep,
+    hasher: PasswordHasherDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+) -> ResetPassword:
+    """**The handler commits on success** — the one route here that must (the note above)."""
+    return ResetPassword(users, resets, logins, hasher, clock, events, PasswordPolicy())
+
+
+ResetPasswordDep = Annotated[ResetPassword, Depends(get_reset_password)]

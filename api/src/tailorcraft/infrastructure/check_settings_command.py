@@ -20,6 +20,12 @@ gate can see it.
 | `TEST_REDIS_URL` sharing a live Redis database | `Settings` model validator | constructing `Settings` |
 | `TAILORING_STALE_AFTER_SECONDS` ≤ the hard limit | `tasks/limits.py` (called by `create_celery`) | `refuse_stale_windows_within_time_limit` |
 | `EXPORT_STALE_AFTER_SECONDS` ≤ the hard limit | `tasks/limits.py` (called by `create_celery`) | `refuse_stale_windows_within_time_limit` |
+| `MAIL_SMTP_HOST` empty under production (2.5) | `Settings` model validator | constructing `Settings` |
+| `MAIL_SMTP_SECURITY=none` under production (2.5) | `Settings` model validator | constructing `Settings` |
+| `MAIL_SMTP_USERNAME`/`_PASSWORD` empty under production (2.5) | `Settings` model validator | constructing `Settings` |
+| `MAIL_FROM_ADDRESS` not an email address under production (2.5) | `Settings` model validator | constructing `Settings` |
+| `PUBLIC_BASE_URL` not `https://` under production (2.5) | `Settings` model validator | constructing `Settings` |
+| `MAIL_TOTAL_DEADLINE_SECONDS` ≥ the soft limit (2.5) | `tasks/limits.py` (called by `create_celery`) | `refuse_mail_deadline_within_soft_limit` |
 
 Nothing is built: no engine, no Redis client, no Celery app, no logging configuration, no Sentry.
 
@@ -47,7 +53,10 @@ from typing import Final
 from pydantic import ValidationError
 
 from tailorcraft.infrastructure.settings import MisconfiguredSettings, get_settings
-from tailorcraft.infrastructure.tasks.limits import refuse_stale_windows_within_time_limit
+from tailorcraft.infrastructure.tasks.limits import (
+    refuse_mail_deadline_within_soft_limit,
+    refuse_stale_windows_within_time_limit,
+)
 
 EXIT_OK: Final = 0
 EXIT_REFUSED: Final = 1
@@ -63,6 +72,7 @@ def run_from_cli() -> int:
     try:
         settings = get_settings()
         refuse_stale_windows_within_time_limit(settings)
+        refuse_mail_deadline_within_soft_limit(settings)
     except MisconfiguredSettings as exc:
         print(f"{_PREFIX}: {exc}", file=sys.stderr)
         return EXIT_REFUSED

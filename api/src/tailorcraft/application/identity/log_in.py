@@ -54,7 +54,7 @@ class LogIn:
 
     Constructor arguments: the ports `users`, `logins`, `hasher`, `tokens`, `clock`, `events`,
     `failed_logins` (see the module docstring), and `refresh_lifetime` — the new `Login`'s absolute
-    lifetime, as in `RegisterUser`. **No `PasswordPolicy`**: a login checks the password against the
+    lifetime, a `timedelta`. **No `PasswordPolicy`**: a login checks the password against the
     stored hash and nothing else, so a policy tightened next year cannot lock out anybody who
     registered under this one (`PasswordPolicy`'s docstring).
 
@@ -68,6 +68,8 @@ class LogIn:
     4. `user is None` → `failed_logins.unknown_email()`, raise `InvalidCredentials()`.
        `MISMATCH` → `failed_logins.wrong_password(user.id)`, raise `InvalidCredentials()`.
        No `Login` is created and nothing is written on either.
+       Then, on a match only, `users.confirm_credential_unchanged(user.id, user.password_hash)`:
+       `False` (a reset committed during the verify) → `wrong_password`, `InvalidCredentials`.
     5. `MATCH_NEEDS_REHASH` → `user.replace_password_hash(await hasher.hash(password), now)`;
        `await users.save(user)` — in the same unit of work (I-11).
     6. `Login.start(logins.next_identity(), user.id, refresh_token_hash, now, refresh_lifetime)`;
@@ -113,6 +115,15 @@ class LogIn:
             self._failed_logins.unknown_email()
             raise InvalidCredentials()
         if verdict is PasswordVerdict.MISMATCH:
+            self._failed_logins.wrong_password(user.id)
+            raise InvalidCredentials()
+
+        # The credential re-check (slice 2.5, technical plan §0.7, ADR-0028), on the match paths only
+        # so the two refusals above keep their equal cost. A reset that committed during the verify
+        # replaced the hash just checked: the password was right a moment ago and is not now, so
+        # this is a wrong password. Otherwise the user row stays locked, and a reset arriving now
+        # waits for this login to commit and then deletes it.
+        if not await self._users.confirm_credential_unchanged(user.id, user.password_hash):
             self._failed_logins.wrong_password(user.id)
             raise InvalidCredentials()
 

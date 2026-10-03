@@ -104,3 +104,34 @@ readiness.
 - **`last_run` can go stale while the job is healthy.** A heartbeat write that fails after a
   successful purge leaves the old instant in place. That is why the runbook's first row is the
   **backlog**, not the heartbeat: `overdue` falling is the fact, `last_run` is the convenience.
+
+## Amendment: 2026-10-02, from the plan of slice 2.5 (`identity-email-verification`)
+
+Slice 2.5 adds the second scheduled job decision 6 anticipated — retention's identity token sweep
+(ADR-0018's amendment (b)). Decisions 1–6 stand.
+
+**(a) `jobs.identity_token_sweep` reports the backlog, and only the backlog.**
+
+```jsonc
+"identity_token_sweep": {
+  "scheduled": true,   // the beat entry is unconditional (it ships on); reported so jobs read alike
+  "overdue": 0         // pending registrations + password resets + logins with expires_at < now - 2h;
+                       // null (with a "detail") when the count could not be computed
+}
+```
+
+- **`overdue` counts rows expired more than two intervals ago.** A healthy hourly sweep leaves rows at
+  most one interval past their expiry, so it reads 0; a positive number means at least two ticks did
+  not run or did not finish. That is decision 4's lesson from the purge: the backlog cannot be faked by
+  a job that is not working.
+- **No `last_run`, `last_outcome` or `stale`.** Decision 6 said a job gets those *when it gets a
+  heartbeat*, and this one has none: it deletes rows nobody can use, so a missed tick costs nothing a
+  user notices and the backlog is a sufficient fact. A heartbeat can be added later under the same
+  contract without changing the meaning of `overdue`.
+- **It never changes the status code or `ready`** (decisions 1 and 2): the probe returns a
+  `JobStatus`-shaped fact, not a `ProbeResult`. A failed count degrades the field (decision 5).
+- **Cost.** Three index range scans on the three tables' `expires_at` indexes, bounded by the probe's
+  own timeout; measured at `/verify` against the same 20 ms p95 the purge's count was held to.
+- **The browser's status panel is not changed.** The field is operator JSON. The client type names
+  only `guest_purge`, optionally, so a bundle that does not know the new member ignores it, and an
+  older API that lacks it breaks nothing.

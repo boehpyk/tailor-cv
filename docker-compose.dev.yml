@@ -26,6 +26,7 @@ services:
       # instead would also turn on CORSMiddleware for that origin (main.py), which dev does not need:
       # the browser loads both the UI and /api/* from :8080 through this same nginx, so the request is
       # same-origin and no preflight/CORS path is exercised at all — only the AC-25 Origin check is.
+      # Since 2.5 the worker and beat pin it too (below): the worker builds the emailed links.
       # Same shape as APP_ENV: `environment:` outranks `env_file:`, so dev-ness follows this override
       # file rather than a value someone edited into the gitignored .env. This also happens to match
       # `Settings.public_base_url`'s own compiled-in default of "http://localhost:8080" — the .env
@@ -37,6 +38,16 @@ services:
       # address instead of the developer's — a silent single-bucket collapse, the same failure shape
       # that hit every production IP limiter from Phase 1 through 2.1's `/verify`.
       TRUSTED_PROXY_HOPS: 1
+      # Dev cannot mail strangers (2.5, AC-25): these outrank the root .env's `env_file:`, so
+      # production-shaped MAIL_* credentials in a dev .env still deliver to Mailpit and nowhere else.
+      # The sender is pinned too: the adapter refuses to render without one. The SMTP credentials
+      # are pinned EMPTY so a real relay login in a dev .env is never sent as AUTH to Mailpit.
+      MAIL_SMTP_HOST: mailpit
+      MAIL_SMTP_PORT: 1025
+      MAIL_SMTP_SECURITY: none
+      MAIL_FROM_ADDRESS: no-reply@tailorcraft.test
+      MAIL_SMTP_USERNAME: ""
+      MAIL_SMTP_PASSWORD: ""
     command: ["uvicorn", "tailorcraft.infrastructure.api.main:app",
               "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
@@ -51,6 +62,20 @@ services:
     environment:
       APP_ENV: dev
       LOG_LEVEL: debug
+      # The WORKER builds every emailed link (confirmation, reset) from PUBLIC_BASE_URL (2.5), so it
+      # needs the same pin as the api: otherwise dev mail in Mailpit links to the .env's production
+      # origin. Beat shares the image and settings, pinned for consistency.
+      PUBLIC_BASE_URL: http://localhost:8080
+      # Dev cannot mail strangers (2.5, AC-25): these outrank the root .env's `env_file:`, so
+      # production-shaped MAIL_* credentials in a dev .env still deliver to Mailpit and nowhere else.
+      # The sender is pinned too: the adapter refuses to render without one. The SMTP credentials
+      # are pinned EMPTY so a real relay login in a dev .env is never sent as AUTH to Mailpit.
+      MAIL_SMTP_HOST: mailpit
+      MAIL_SMTP_PORT: 1025
+      MAIL_SMTP_SECURITY: none
+      MAIL_FROM_ADDRESS: no-reply@tailorcraft.test
+      MAIL_SMTP_USERNAME: ""
+      MAIL_SMTP_PASSWORD: ""
     # No --max-tasks-per-child in dev: recycling hides the memory behaviour you may be trying to see.
     command: ["watchmedo", "auto-restart", "--directory=/app/src", "--pattern=*.py", "--recursive",
               "--", "celery", "-A", "tailorcraft.infrastructure.tasks.app", "worker",
@@ -66,6 +91,20 @@ services:
     environment:
       APP_ENV: dev
       LOG_LEVEL: debug
+      # The WORKER builds every emailed link (confirmation, reset) from PUBLIC_BASE_URL (2.5), so it
+      # needs the same pin as the api: otherwise dev mail in Mailpit links to the .env's production
+      # origin. Beat shares the image and settings, pinned for consistency.
+      PUBLIC_BASE_URL: http://localhost:8080
+      # Dev cannot mail strangers (2.5, AC-25): these outrank the root .env's `env_file:`, so
+      # production-shaped MAIL_* credentials in a dev .env still deliver to Mailpit and nowhere else.
+      # The sender is pinned too: the adapter refuses to render without one. The SMTP credentials
+      # are pinned EMPTY so a real relay login in a dev .env is never sent as AUTH to Mailpit.
+      MAIL_SMTP_HOST: mailpit
+      MAIL_SMTP_PORT: 1025
+      MAIL_SMTP_SECURITY: none
+      MAIL_FROM_ADDRESS: no-reply@tailorcraft.test
+      MAIL_SMTP_USERNAME: ""
+      MAIL_SMTP_PASSWORD: ""
 
   # In dev this is the Vite dev server, not a build-and-exit container. Hot reload is the whole point
   # of the frontend feedback loop (ADR-0001).
@@ -95,6 +134,15 @@ services:
   redis:
     ports:
       - "127.0.0.1:6379:6379"
+
+  # Dev mail catcher (2.5). Dev only: production's compose has no Mailpit. The web UI is published on
+  # the loopback; SMTP (1025) is NOT published at all, it is reached as mailpit:1025 on the compose
+  # network. Messages live in memory and vanish on restart, which is what a dev inbox should do.
+  mailpit:
+    image: axllent/mailpit:v1.21.8
+    ports:
+      - "127.0.0.1:8025:8025"            # web UI + HTTP API; 127.0.0.1 ONLY
+    restart: unless-stopped
 
 volumes:
   beat_state:

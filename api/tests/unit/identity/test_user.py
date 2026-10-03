@@ -28,7 +28,11 @@ from uuid import UUID
 
 import pytest
 
-from tailorcraft.domain.identity.events import UserPasswordRehashed, UserRegistered
+from tailorcraft.domain.identity.events import (
+    PasswordChangedByReset,
+    UserPasswordRehashed,
+    UserRegistered,
+)
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
 from tailorcraft.domain.shared.errors import InvariantViolated
@@ -168,3 +172,95 @@ def test_user_cannot_be_constructed_via_the_mapped_attribute_names() -> None:
     empty-looking `__init__` from being deleted as dead code."""
     with pytest.raises(TypeError):
         User(_email="placeholder")  # type: ignore[call-arg]
+
+
+# --- slice 2.5, AC-4: reset_password replaces the hash and records PasswordChangedByReset ---------
+
+
+def test_reset_password_replaces_the_hash_and_moves_password_updated_at() -> None:
+    user = _registered()
+    new_hash = _hash(_OTHER_PHC_HASH)
+    reset_at = _CREATED_AT + timedelta(days=3)
+
+    user.reset_password(new_hash, reset_at, 2)
+
+    assert user.password_hash == new_hash
+    assert user.password_updated_at == reset_at
+    assert user.created_at == _CREATED_AT
+
+
+def test_reset_password_records_exactly_one_password_changed_by_reset() -> None:
+    user = _registered()
+    user.release_events()  # discard UserRegistered
+    reset_at = _CREATED_AT + timedelta(days=3)
+
+    user.reset_password(_hash(_OTHER_PHC_HASH), reset_at, 4)
+
+    events = user.release_events()
+    assert len(events) == 1
+    event = events[0]
+    assert isinstance(event, PasswordChangedByReset)
+    assert event.user_id == _USER_ID
+    assert event.logins_revoked == 4
+    assert event.occurred_at == reset_at
+
+
+def test_reset_password_does_not_record_a_rehash_event() -> None:
+    user = _registered()
+    user.release_events()
+
+    user.reset_password(_hash(_OTHER_PHC_HASH), _CREATED_AT + timedelta(days=3), 0)
+
+    assert not any(isinstance(e, UserPasswordRehashed) for e in user.release_events())
+
+
+def test_reset_password_accepts_zero_revoked_logins() -> None:
+    user = _registered()
+    user.release_events()
+
+    user.reset_password(_hash(_OTHER_PHC_HASH), _CREATED_AT + timedelta(days=3), 0)
+
+    (event,) = user.release_events()
+    assert isinstance(event, PasswordChangedByReset)
+    assert event.logins_revoked == 0
+
+
+def test_reset_password_accepts_the_instant_the_user_was_created() -> None:
+    user = _registered()
+
+    user.reset_password(_hash(_OTHER_PHC_HASH), _CREATED_AT, 0)  # "before", not "at or before"
+
+    assert user.password_hash == _hash(_OTHER_PHC_HASH)
+
+
+def test_reset_password_refuses_an_instant_before_created_at() -> None:
+    user = _registered()
+
+    with pytest.raises(InvariantViolated):
+        user.reset_password(_hash(_OTHER_PHC_HASH), _CREATED_AT - timedelta(seconds=1), 0)
+
+
+def test_reset_password_refuses_a_negative_revoked_count() -> None:
+    user = _registered()
+
+    with pytest.raises(InvariantViolated):
+        user.reset_password(_hash(_OTHER_PHC_HASH), _CREATED_AT + timedelta(days=3), -1)
+
+
+@pytest.mark.parametrize(
+    ("at", "revoked"),
+    [
+        pytest.param(_CREATED_AT - timedelta(seconds=1), 0, id="before-creation"),
+        pytest.param(_CREATED_AT + timedelta(days=3), -1, id="negative-count"),
+    ],
+)
+def test_a_refused_reset_changes_nothing_and_records_nothing(at: datetime, revoked: int) -> None:
+    user = _registered()
+    user.release_events()
+
+    with pytest.raises(InvariantViolated):
+        user.reset_password(_hash(_OTHER_PHC_HASH), at, revoked)
+
+    assert user.password_hash == _hash(_PHC_HASH)
+    assert user.password_updated_at == _CREATED_AT
+    assert user.release_events() == ()

@@ -34,6 +34,16 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 5s --health-retries 10
 
+      # Mail catcher for the real-delivery test (2.5). A service container publishes its ports on
+      # the runner (the job runs on the host, not in a container), so SMTP is on 127.0.0.1:1025 and
+      # the HTTP API on 127.0.0.1:8025. Locally the same test reaches mailpit:1025 / http://mailpit:8025.
+      mailpit:
+        image: axllent/mailpit:v1.21.8
+        ports: ["1025:1025", "8025:8025"]
+        options: >-
+          --health-cmd "/mailpit readyz"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
     env:
       APP_ENV: test
       DATABASE_URL: "postgresql+asyncpg://tailorcraft:tailorcraft@127.0.0.1:5432/tailorcraft_test"
@@ -43,6 +53,9 @@ jobs:
       CELERY_RESULT_BACKEND: "redis://127.0.0.1:6379/2"
       JWT_SIGNING_KEY: "ci-only-not-a-real-key-0000000000"
       UPLOAD_DIR: "/tmp/tailorcraft-uploads"
+      MAILPIT_SMTP_HOST: "127.0.0.1"
+      MAILPIT_SMTP_PORT: "1025"
+      MAILPIT_API_URL: "http://127.0.0.1:8025"
       # GEMINI_API_KEY is deliberately NOT set. Tests drive the fake LlmPort (ADR-0004); a suite that
       # would silently start spending money the moment a key appeared is one secret away from a
       # surprise bill. If a test fails here for want of a key, the test is wrong, not the workflow.

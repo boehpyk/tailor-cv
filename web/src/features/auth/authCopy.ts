@@ -16,20 +16,27 @@
  */
 
 import { ApiError } from '@/api/client';
+import { CONFIRM_EMAIL_FIRST_NOTE } from '@/features/accountMail/accountMailCopy';
 
 import { isAuthErrorCode } from './types';
 
 import type { AuthErrorCode } from './types';
 
-/** Which form a refusal answered — the same code reads differently on each ("Logging in is…"). */
-export type AuthAction = 'login' | 'register' | 'logout';
+/**
+ * Which form a refusal answered — the same code reads differently on each ("Logging in is…").
+ * `password_reset` (slice 2.5) covers both reset screens: asking for a link and setting the new
+ * password are one task to the person doing it, so "not right now" names that task once.
+ */
+export type AuthAction = 'login' | 'register' | 'password_reset' | 'logout';
 
 /**
  * One notice's content. `link` is set where the notice offers a way forward in words the user can
- * click — `email_already_registered` → **Log in** (AC-40).
+ * click. `note` is a second, separate sentence — `/login`'s `invalid_credentials` hint that an
+ * account is not usable until its address is confirmed (slice 2.5, AC-49).
  */
 export interface AuthErrorCopy {
   readonly message: string;
+  readonly note?: string;
   readonly link?: { readonly to: string; readonly label: string };
 }
 
@@ -39,7 +46,6 @@ export interface AuthErrorCopy {
 export const LOGIN_SUBMIT_LABEL = 'Log in';
 export const LOGIN_PENDING_LABEL = 'Logging in…';
 export const REGISTER_SUBMIT_LABEL = 'Create account';
-export const REGISTER_PENDING_LABEL = 'Creating your account…';
 export const LOGOUT_LABEL = 'Log out';
 export const LOGOUT_PENDING_LABEL = 'Logging out…';
 
@@ -124,8 +130,13 @@ function copyForCode(
   switch (code) {
     case 'invalid_credentials':
       // One sentence for "no such email" and "wrong password" — the server made them byte-identical
-      // on purpose (AC-28), and the copy must not undo that by guessing which it was.
-      return { message: "That email and password don't match an account." };
+      // on purpose (AC-28), and the copy must not undo that by guessing which it was. Since 2.5 a
+      // third cause reads the same — an address registered but not yet confirmed has no account —
+      // so `/login` adds one static note, the same for every failure (AC-49).
+      return {
+        message: "That email and password don't match an account.",
+        ...(action === 'login' ? { note: CONFIRM_EMAIL_FIRST_NOTE } : {}),
+      };
     case 'invalid_email':
       return { message: "That doesn't look like an email address. Check it and try again." };
     case 'password_too_short':
@@ -134,11 +145,6 @@ function copyForCode(
       return { message: passwordTooLong(error) };
     case 'password_matches_email':
       return { message: "Your password can't be your email address. Choose something else." };
-    case 'email_already_registered':
-      return {
-        message: 'An account with this email already exists.',
-        link: { to: '/login', label: 'Log in' },
-      };
     case 'rate_limited':
       return { message: tooManyAttempts(error.retryAfterSeconds) };
     case 'rate_limit_unavailable':
@@ -146,7 +152,7 @@ function copyForCode(
       // Two causes (Redis down, Postgres down), one meaning for the user: "not right now". And the
       // second clause is the one that matters to someone mid-task — their guest work is fine.
       return {
-        message: `${action === 'login' ? 'Logging in' : 'Creating an account'} is unavailable right now. Anything you're doing as a guest is unaffected.`,
+        message: `${UNAVAILABLE_TASK[action]} is unavailable right now. Anything you're doing as a guest is unaffected.`,
       };
     case 'validation_error':
       return { message: 'Enter your email address and a password, then try again.' };
@@ -156,11 +162,22 @@ function copyForCode(
     case 'refresh_token_reused':
     case 'refresh_in_progress':
     case 'invalid_access_token':
-      // Answers from refresh / me, never from these two forms. Written down so the switch stays
-      // exhaustive; if one ever arrives here, "try again" is still true.
+    case 'link_invalid':
+    case 'email_already_registered':
+      // Answers from refresh / me — and, for `link_invalid` and `email_already_registered` (slice
+      // 2.5: `/register` answers 202 for every address now), from the two mail-link confirmations,
+      // whose screens have their own copy. Written down so the switch stays exhaustive; if one ever
+      // arrives here, "try again" is still true.
       return { message: 'Something went wrong. Try again.' };
   }
 }
+
+/** The task each form performs, as the 503 sentence names it. */
+const UNAVAILABLE_TASK: Readonly<Record<Exclude<AuthAction, 'logout'>, string>> = {
+  login: 'Logging in',
+  register: 'Creating an account',
+  password_reset: 'Resetting a password',
+};
 
 /** `Retry-After: 120` → "…in 2 minutes." Rounded **up**: telling someone "0 minutes" invites a 429. */
 function tooManyAttempts(retryAfterSeconds: number | null): string {

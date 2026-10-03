@@ -1,8 +1,8 @@
 """The refresh cookie: minting, hashing, reading, setting and clearing `tc_refresh` (ADR-0020).
 
 **Deliberately parallel to `guest_session.py`** — same shape, same "pure cookie mechanics" scope: this
-module knows `secrets`, `hashlib` and FastAPI's `Request`/`Response`, and nothing about `Login` the
-aggregate or `LoginRepository` the port. The route mints `(token, hash)`, hands the application only
+module knows `secrets`, the shared SHA-256 helper and FastAPI's `Request`/`Response`, and nothing
+about `Login` the aggregate or `LoginRepository` the port. The route mints `(token, hash)`, hands the application only
 the `TokenHash`, and puts the plaintext in the cookie; no plaintext refresh token ever reaches
 `application/` (AC-10), and `mypy` enforces it because every use case takes a `TokenHash`.
 
@@ -19,7 +19,6 @@ Where it deliberately **differs** from the guest cookie, each difference is a de
 
 from __future__ import annotations
 
-import hashlib
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -29,6 +28,7 @@ from typing import Final, Literal, TypedDict
 from fastapi import Request, Response
 
 from tailorcraft.domain.identity.value_objects import TokenHash
+from tailorcraft.infrastructure.identity.token_hashing import sha256_token_hash
 from tailorcraft.infrastructure.settings import Settings
 
 COOKIE_NAME: Final = "tc_refresh"
@@ -71,18 +71,10 @@ def mint_refresh_token() -> MintedRefreshToken:
     return MintedRefreshToken(token=token, token_hash=hash_refresh_token(token))
 
 
-def hash_refresh_token(token: str) -> TokenHash:
-    """Hash a plaintext refresh token for storage or lookup.
-
-    **Unsalted SHA-256, not argon2 — and that is correct, not an oversight** (ADR-0010 §3, restated by
-    ADR-0020 §7 for this token). A KDF exists to make *guessing* expensive for a low-entropy secret a
-    person chose. This token is 256 bits from a CSPRNG: there is no dictionary to run against a stolen
-    hash, so a slow hash buys nothing, while it would cost 64 MiB and ~50 ms of argon2 on every
-    refresh — every 15 minutes, per tab. A salt is the same argument one level down: it defeats
-    precomputation across many low-entropy secrets, and there is no rainbow table for a random
-    256-bit value. And a KDF with a random salt could not be *looked up* by at all.
-    """
-    return TokenHash(hashlib.sha256(token.encode("utf-8")).hexdigest())
+# The one SHA-256 helper, shared with the one-time link token (slice 2.5): a token is hashed the same
+# way at mint and at lookup, so there is one function, not two. `hash_refresh_token` stays this
+# module's public name for it (2.1's tests and the route import it); its docstring is the helper's.
+hash_refresh_token = sha256_token_hash
 
 
 def read_refresh_token(request: Request) -> PresentedRefreshToken | None:

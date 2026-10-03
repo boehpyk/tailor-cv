@@ -57,7 +57,7 @@ async def _seed_user(
     email: str = "alex@example.com",
     password_hash: PasswordHash = _OLD_HASH,
 ) -> User:
-    """A user "already in the database" — constructed directly, bypassing `RegisterUser`, with its
+    """A user "already in the database" — constructed directly, bypassing registration, with its
     creation event discarded: a user loaded by a real repository carries no buffered events, and
     this file is not testing registration."""
     user = User.register_with_password(

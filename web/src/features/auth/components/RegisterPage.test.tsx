@@ -3,14 +3,21 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router';
 
+import { CHECK_EMAIL_HEADING, SENDING_LABEL } from '@/features/accountMail/accountMailCopy';
 import { jsonResponse } from '@/test/fixtures';
 
-import { __resetForTests } from '../authStore';
+import { __resetForTests, authStore } from '../authStore';
 import { RegisterPage } from './RegisterPage';
 
 import type { ReactNode } from 'react';
 
 /**
+ * **Amended at slice 2.5's T37 RED** (AC-45, plan §7: registering no longer signs in). Four tests
+ * changed meaning and one was removed, each named in that commit's body: the pending label is
+ * "Sending…" (not "Creating your account…"); a success is a 202 that shows "Check your email" and
+ * navigates nowhere (it was a 201 that landed on `safeNext`); `email_already_registered` can no
+ * longer come from `/register`, so I-5 is deleted and the distinctness list loses its fourth case.
+ *
  * T41 RED — `/register` (AC-40, AC-43), against feature-spec.md and technical-plan.md §7's table —
  * never against `RegisterPage.tsx`'s T40 skeleton (`<h1>Create account</h1>` and nothing else).
  * Every assertion fails on missing text or a missing role, not on an `ImportError`.
@@ -75,15 +82,8 @@ function fillForm(email = 'alex@example.com', password = 'a very long real passw
 }
 
 function submitButton(): HTMLElement {
-  return screen.getByRole('button', { name: /create account|creating your account/i });
+  return screen.getByRole('button', { name: /create account|sending/i });
 }
-
-const AUTHENTICATED_RESPONSE = {
-  access_token: 'token-abc',
-  token_type: 'Bearer' as const,
-  expires_in: 900,
-  user: { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-23T10:00:00Z' },
-};
 
 beforeEach(() => {
   __resetForTests();
@@ -111,7 +111,7 @@ describe('RegisterPage', () => {
     ).toBeInTheDocument();
   });
 
-  it('AC-40 submitting: disables the button and both inputs and shows "Creating your account…"', async () => {
+  it('AC-40 submitting: disables the button and both inputs and shows "Sending…" (2.5: the account is not created yet)', async () => {
     makeFetchMock({
       'POST /api/auth/register': () => new Promise<Response>(() => undefined),
     });
@@ -121,7 +121,7 @@ describe('RegisterPage', () => {
     fireEvent.click(submitButton());
 
     await waitFor(() => {
-      expect(screen.getByText('Creating your account…')).toBeInTheDocument();
+      expect(screen.getByText(SENDING_LABEL)).toBeInTheDocument();
     });
     expect(screen.getByLabelText(/email/i)).toBeDisabled();
     expect(screen.getByLabelText(/password/i)).toBeDisabled();
@@ -141,21 +141,23 @@ describe('RegisterPage', () => {
     fireEvent.click(button);
 
     await waitFor(() => {
-      expect(screen.getByText('Creating your account…')).toBeInTheDocument();
+      expect(screen.getByText(SENDING_LABEL)).toBeInTheDocument();
     });
     expect(countRegisterPosts(fetchMock)).toBe(1);
   });
 
-  it('AC-40 success: navigates to safeNext(next) after registering', async () => {
+  it('AC-45 success: a 202 shows "Check your email" in place and signs nobody in (2.5; was: a 201 navigated to safeNext)', async () => {
     makeFetchMock({
-      'POST /api/auth/register': () => jsonResponse(201, AUTHENTICATED_RESPONSE),
+      'POST /api/auth/register': () => new Response(null, { status: 202 }),
     });
 
     renderRegisterAt('/register?next=/account');
     fillForm();
     fireEvent.click(submitButton());
 
-    expect(await screen.findByText('ACCOUNT PAGE')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: CHECK_EMAIL_HEADING })).toBeInTheDocument();
+    expect(screen.queryByText('ACCOUNT PAGE')).not.toBeInTheDocument();
+    expect(authStore.getSnapshot()).toEqual({ status: 'booting' });
   });
 
   it('I-2 password_too_short: "Use at least 13 characters." — the SERVER\'S min_length, not a hard-coded 12', async () => {
@@ -204,23 +206,6 @@ describe('RegisterPage', () => {
     expect(alert.textContent).toBeTruthy();
   });
 
-  it('I-5 email_already_registered: "An account with this email already exists." with a Log in link to /login', async () => {
-    makeFetchMock({
-      'POST /api/auth/register': () =>
-        jsonResponse(409, { error: { code: 'email_already_registered', message: 'server prose' } }),
-    });
-
-    renderRegisterAt('/register');
-    fillForm();
-    fireEvent.click(submitButton());
-
-    expect(
-      await screen.findByText('An account with this email already exists.'),
-    ).toBeInTheDocument();
-    const loginLink = screen.getByRole('link', { name: /log in/i });
-    expect(loginLink).toHaveAttribute('href', '/login');
-  });
-
   it('network failure: "Couldn\'t reach TailorCraft."', async () => {
     makeFetchMock({
       'POST /api/auth/register': () => Promise.reject(new TypeError('Failed to fetch')),
@@ -234,7 +219,7 @@ describe('RegisterPage', () => {
     expect(alert).toHaveTextContent("Couldn't reach TailorCraft.");
   });
 
-  it('password_too_short, password_too_long, password_matches_email and email_already_registered render distinct text', async () => {
+  it('password_too_short, password_too_long and password_matches_email render distinct text', async () => {
     const cases: ReadonlyArray<{ readonly stub: FetchHandler }> = [
       {
         stub: () =>
@@ -250,10 +235,6 @@ describe('RegisterPage', () => {
       },
       {
         stub: () => jsonResponse(422, { error: { code: 'password_matches_email', message: 'x' } }),
-      },
-      {
-        stub: () =>
-          jsonResponse(409, { error: { code: 'email_already_registered', message: 'x' } }),
       },
     ];
 

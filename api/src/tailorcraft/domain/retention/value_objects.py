@@ -436,3 +436,29 @@ class HistoryEntryErasureReport:
     files_unlinked: int
     unlink_failures: tuple[str, ...]
     posting_deleted: bool
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 2.5 — the identity token sweep (technical plan §0.9).
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class IdentityTokenSweepReport:
+    """What one run of the identity token sweep deleted, per kind: expired pending registrations,
+    expired password resets and expired logins (technical plan §0.9). Counts only — no id, no
+    address, no hash — and no defaults, `PurgeReport`'s rule: a default on a count is how a second
+    construction site reports a confident zero.
+
+    No file counts and no failure tuples, unlike `PurgeReport`: these rows own no files, and every
+    deletion is one statement per batch whose failure is the run's failure.
+    """
+
+    pending_registrations: int
+    password_resets: int
+    logins: int
+
+    def __post_init__(self) -> None:
+        """Refuse a negative count (`InvariantViolated`), per the plan's "counts ≥ 0"."""
+        if min(self.pending_registrations, self.password_resets, self.logins) < 0:
+            raise InvariantViolated("an identity token sweep cannot delete a negative count")

@@ -3,7 +3,7 @@ import { request } from './client';
 import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/types';
 
 /**
- * The `/api/auth/*` endpoints (2.1's five, plus 2.2's `delete-account`) — transport only.
+ * The `/api/auth/*` endpoints (2.1's, 2.2's `delete-account`, 2.5's email channel) — transport only.
  *
  * **None of these touches the auth store.** They return what the server said and throw an
  * `ApiError` keyed by `code` when it refused; deciding what a response *means* for the session
@@ -16,7 +16,7 @@ import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/t
  * `tc_refresh` to these requests without anything here asking for it — and, because of the `Path`,
  * to no other request. JavaScript never reads or writes it.
  *
- * **Origin.** `register`, `login`, `refresh` and `logout` are refused without a trusted `Origin`
+ * **Origin.** `requestRegistration`, `login`, `refresh` and `logout` are refused without a trusted `Origin`
  * (technical plan §0.5). A browser sets that header on every same-origin `POST` by itself; it is a
  * forbidden header name, so nothing here could set it even if it tried.
  *
@@ -25,26 +25,6 @@ import type { AuthenticatedResponse, Credentials, User } from '@/features/auth/t
  * *when* the token is missing or stale, so routing it through the interceptor would recurse, and
  * `logout` must work precisely when the access token has expired (its cookie names the login).
  */
-
-/**
- * Create an account and log it in: **201** with an `AuthenticatedResponse` and a fresh
- * `tc_refresh` cookie.
- *
- * Refusals (`ApiError.code`): 409 `email_already_registered`; 422 `invalid_email`,
- * `password_too_short` (`details.min_length`), `password_too_long` (`details.max_length`),
- * `password_matches_email`, `validation_error`; 429 `rate_limited` (`retryAfterSeconds`); 403
- * `origin_not_allowed`; 503 `rate_limit_unavailable` or `service_unavailable`.
- */
-export function register(
-  credentials: Credentials,
-  signal?: AbortSignal,
-): Promise<AuthenticatedResponse> {
-  return request<AuthenticatedResponse>('/api/auth/register', {
-    method: 'POST',
-    body: credentials,
-    ...(signal ? { signal } : {}),
-  });
-}
 
 /**
  * Log in: **200** with an `AuthenticatedResponse` and a fresh `tc_refresh` cookie.
@@ -136,6 +116,95 @@ export async function deleteAccount(password: string, signal?: AbortSignal): Pro
     method: 'POST',
     body: { password },
     auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}
+
+// --- Slice 2.5: the email channel (technical plan §4, §7) -----------------------------------------
+//
+// Every one of these is a cookie-less, bearer-less `POST` under `/api/auth`: none of them signs
+// anyone in, so there is no token to attach and none to receive. Each still needs the trusted
+// `Origin`, which a same-origin `fetch` sends by itself (see the module docblock).
+//
+// **A token never travels in a URL the app builds.** It arrives in the link's *fragment* (which the
+// browser never sends), is read once by `useFragmentToken`, and leaves again only here, in a JSON
+// body (AC-51).
+
+/**
+ * Ask for an account: **202, empty**, whatever the address — a new one gets a confirmation mail, a
+ * registered one gets a "you already have an account" mail, and the response cannot tell the two
+ * apart (ADR-0008 (h)). No cookie, no token: registering no longer signs in.
+ *
+ * Refusals: 422 `invalid_email`, `password_too_short` (`details.min_length`), `password_too_long`
+ * (`details.max_length`), `password_matches_email`, `validation_error`; 429 `rate_limited`
+ * (`retryAfterSeconds`); 403 `origin_not_allowed`; 503 `rate_limit_unavailable` /
+ * `service_unavailable`. `email_already_registered` is no longer possible here.
+ */
+export async function requestRegistration(
+  credentials: Credentials,
+  signal?: AbortSignal,
+): Promise<void> {
+  await request<null>('/api/auth/register', {
+    method: 'POST',
+    body: credentials,
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Turn a pending registration into an account: **204**. Does **not** sign in (plan §0.6) — the
+ * page offers **Log in**.
+ *
+ * Refusals: 400 `link_invalid` (expired, already used, or never issued — one code on purpose);
+ * 409 `email_already_registered` (the address became an account meanwhile); 422
+ * `validation_error`; 403 `origin_not_allowed`; 503 `service_unavailable`.
+ */
+export async function confirmRegistration(token: string, signal?: AbortSignal): Promise<void> {
+  await request<null>('/api/auth/registration/confirm', {
+    method: 'POST',
+    body: { token },
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Ask for a password-reset link: **202, empty**, whether or not the address has an account — the
+ * answer is the same either way (no enumeration).
+ *
+ * Refusals: 422 `invalid_email` / `validation_error`; 429 `rate_limited` (`retryAfterSeconds`);
+ * 403 `origin_not_allowed`; 503 `rate_limit_unavailable` / `service_unavailable`.
+ */
+export async function requestPasswordReset(email: string, signal?: AbortSignal): Promise<void> {
+  await request<null>('/api/auth/password-reset', {
+    method: 'POST',
+    body: { email },
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** What `confirmPasswordReset` sends: the token from the link and the new password. */
+export interface PasswordResetConfirmation {
+  readonly token: string;
+  readonly password: string;
+}
+
+/**
+ * Set a new password with a reset link's token: **204**. Every login of the account is revoked on
+ * the server (ADR-0028), this browser's included — the caller signs the tab out with reason
+ * `password_changed`; this function, like the rest of the module, does not touch the auth store.
+ *
+ * Refusals: 400 `link_invalid`; 422 `password_too_short` / `password_too_long` (with the server's
+ * bound in `details`) / `password_matches_email` / `validation_error` — the token is **not**
+ * consumed by a 422, so the same link can try again; 403 `origin_not_allowed`; 503
+ * `service_unavailable`.
+ */
+export async function confirmPasswordReset(
+  confirmation: PasswordResetConfirmation,
+  signal?: AbortSignal,
+): Promise<void> {
+  await request<null>('/api/auth/password-reset/confirm', {
+    method: 'POST',
+    body: { token: confirmation.token, password: confirmation.password },
     ...(signal ? { signal } : {}),
   });
 }

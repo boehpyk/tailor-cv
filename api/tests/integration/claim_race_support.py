@@ -34,7 +34,7 @@ from typing import Final
 from uuid import UUID
 
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.domain.export.value_objects import ExportJobId
 from tailorcraft.domain.identity.guest_session import GuestSession
@@ -92,6 +92,17 @@ async def pinned_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         factory = async_sessionmaker(bind=conn, expire_on_commit=False, autoflush=False)
         async with factory() as session:
             yield session
+
+
+async def bound_cleanup_locks(conn: AsyncConnection) -> None:
+    """`SET LOCAL lock_timeout` for a teardown that deletes committed rows on its own connection.
+
+    /verify r1: with a wrong intermediate lock mode in `save_issued` (`FOR NO KEY UPDATE`), a race
+    test failed and left a session idle-in-transaction on the user row; the fixture's `DELETE FROM
+    identity_user` then waited behind it with no `lock_timeout`, and the combined run hung for over
+    ten minutes. A hanging teardown names nothing and CI sits on it until its own timeout. Local,
+    because a bare `SET` is itself transactional and must live exactly as long as the deletes."""
+    await conn.execute(text(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT_MS}ms'"))
 
 
 async def wait_for_lock_waiter(

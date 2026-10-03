@@ -101,6 +101,8 @@ from tailorcraft.infrastructure.persistence.database import create_session_facto
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import JWT_SIGNING_KEY_MIN_BYTES, Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
+from tests.api.account_mail_support import install_recording_queue
+from tests.api.me_support import seed_user_and_sign_in
 
 REGISTER_URL = "/api/auth/register"
 LOGIN_URL = "/api/auth/login"
@@ -242,6 +244,13 @@ def _reset_redis_between_tests(clear_redis: None) -> None:
     """Applies `clear_redis` (conftest.py) to every test in this module automatically — nearly every
     test here touches a rate limiter, and CLAUDE.md is explicit that a database rollback does not
     reach Redis."""
+
+
+@pytest.fixture(autouse=True)
+def _recording_mail_queue(app: FastAPI) -> None:
+    """Slice 2.5 (T27): register now enqueues a mail task. This module never publishes to the dev
+    stack's real `mail` queue — the API is handed a recording fake (`account_mail_support`)."""
+    install_recording_queue(app)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -498,18 +507,25 @@ async def test_a_password_equal_to_the_email_is_422_password_matches_email(
 # ---------------------------------------------------------------------------------------------
 
 
-async def test_registering_an_already_taken_email_is_409(
-    client: AsyncClient, settings: Settings
+async def test_registering_an_already_registered_email_is_202_and_never_409(
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
 ) -> None:
+    """**Amended in slice 2.5 (T27, AC-28): was `..._is_409`.** Registration no longer enumerates —
+    the 409 `email_already_registered` moved to *confirmation* (ADR-0027), where the only person who
+    can see it holds a token mailed to that address. Register answers 202 for an address that has an
+    account exactly as for a new one, so a stranger typing an address learns nothing."""
+    await _seed_user(session, password_hasher, clock, email="taken@example.com")
     body = _credentials("taken@example.com", A_STRONG_PASSWORD)
 
     first = await client.post(REGISTER_URL, json=body, headers=_origin_headers(settings))
-    assert first.status_code == 201, first.text
-
     second = await client.post(REGISTER_URL, json=body, headers=_origin_headers(settings))
 
-    assert second.status_code == 409, second.text
-    assert _error_code(second) == "email_already_registered"
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
 
 
 async def test_registering_with_a_live_guest_cookie_leaves_the_guest_session_untouched(
@@ -529,7 +545,7 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_guest_session_unt
         headers=_origin_headers(settings),
     )
 
-    assert response.status_code == 201, response.text
+    assert response.status_code == 202, response.text
     assert _cookie_header_named(response, GUEST_COOKIE_NAME) is None
 
     sessions = _guest_session_repository(session)
@@ -544,21 +560,19 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_guest_session_unt
 # ---------------------------------------------------------------------------------------------
 
 
-async def test_a_successful_registration_returns_exactly_the_authenticated_response_shape(
+async def test_a_successful_registration_returns_an_empty_202_not_the_authenticated_response(
     client: AsyncClient, settings: Settings
 ) -> None:
+    """**Amended in slice 2.5 (T27, AC-27): was the 201 `AuthenticatedResponse` key-set test.**
+    Registering no longer signs anyone in, so there is no token, no user object and no body."""
     response = await client.post(
         REGISTER_URL,
         json=_credentials("shape.check@example.com", A_STRONG_PASSWORD),
         headers=_origin_headers(settings),
     )
 
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert set(body) == {"access_token", "token_type", "expires_in", "user"}
-    assert body["token_type"] == "Bearer"
-    assert set(body["user"]) == {"id", "email", "created_at"}
-    assert body["user"]["email"] == "shape.check@example.com"
+    assert response.status_code == 202, response.text
+    assert response.content == b""
 
 
 # ---------------------------------------------------------------------------------------------
@@ -713,8 +727,8 @@ async def test_more_than_the_register_ip_limit_returns_429(
     second = await attempt("b2@example.com")
     third = await attempt("b3@example.com")
 
-    assert first.status_code == 201, first.text
-    assert second.status_code == 201, second.text
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
     assert third.status_code == 429, third.text
     assert _error_code(third) == "rate_limited"
 
@@ -834,25 +848,6 @@ async def test_me_with_redis_unreachable_still_succeeds(
 # ---------------------------------------------------------------------------------------------
 # AC-24 — the refresh cookie's exact attributes
 # ---------------------------------------------------------------------------------------------
-
-
-async def test_the_registration_cookies_attributes(client: AsyncClient, settings: Settings) -> None:
-    response = await client.post(
-        REGISTER_URL,
-        json=_credentials("cookie.check@example.com", A_STRONG_PASSWORD),
-        headers=_origin_headers(settings),
-    )
-
-    assert response.status_code == 201, response.text
-    attrs = _refresh_cookie_attrs(response)
-    assert attrs["httponly"] is True
-    assert str(attrs["samesite"]).lower() == "strict"
-    assert attrs["path"] == "/api/auth"
-    assert "domain" not in attrs
-    assert "secure" not in attrs, "APP_ENV=test must never set Secure"
-    assert len(str(attrs["__value__"])) == 43
-    expected_max_age = settings.refresh_token_ttl_days * 86400
-    assert int(str(attrs["max-age"])) == expected_max_age
 
 
 async def test_a_login_cookie_is_secure_when_the_app_is_built_for_production(
@@ -1400,7 +1395,7 @@ async def test_a_successful_register_carries_cache_control_no_store(
         headers=_origin_headers(settings),
     )
 
-    assert response.status_code == 201, response.text
+    assert response.status_code == 202, response.text
     assert response.headers.get("cache-control") == "no-store"
 
 
@@ -1855,15 +1850,15 @@ DELETE_ACCOUNT_URL = "/api/auth/delete-account"
 async def _register_2_2(
     client: AsyncClient, settings: Settings, *, email: str | None = None
 ) -> tuple[str, str]:
-    email = email or f"t19-delacct-{uuid4().hex}@example.com"
-    response = await client.post(
-        REGISTER_URL,
-        json=_credentials(email, A_STRONG_PASSWORD),
-        headers=_origin_headers(settings),
+    """A signed-in account for the delete-account tests. **Re-seeded in slice 2.5 (T27):** `POST
+    /api/auth/register` no longer returns a token or sets `tc_refresh`, so the user is written through
+    the repository and signed in through the real login route (`me_support.seed_user_and_sign_in`),
+    which sets the same `tc_refresh` cookie on `client` the refresh-rotation tests below rely on. The
+    name is kept so no test body changes meaning."""
+    token, user_id = await seed_user_and_sign_in(
+        client, settings, email=email or f"t19-delacct-{uuid4().hex}@example.com"
     )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    return str(body["access_token"]), str(body["user"]["id"])
+    return token, str(user_id)
 
 
 def _delete_account_headers(settings: Settings, token: str) -> dict[str, str]:
@@ -1925,14 +1920,20 @@ async def test_delete_account_with_the_correct_password_is_204_and_clears_the_re
     assert cleared["max-age"] == "0"
 
 
-async def test_delete_account_removes_the_user_so_a_second_register_of_the_same_email_succeeds(
-    client: AsyncClient, settings: Settings
+async def test_delete_account_removes_the_user_so_the_old_credentials_no_longer_sign_in(
+    client: AsyncClient, settings: Settings, session: AsyncSession
 ) -> None:
-    """The strongest proof the row is really gone: registration enumerates (2.1's ADR-0008
-    amendment (b)), so a *second* register of the same address answering 201 rather than 409
-    `email_already_registered` means the first account no longer exists."""
+    """**Amended in slice 2.5 (T27): was `..._so_a_second_register_of_the_same_email_succeeds`.** That
+    proof read "a second register answering 201 rather than 409 means the account is gone" — and
+    registration answers 202 for every address now, so it can no longer tell a deleted account from a
+    live one. The proof of the row's absence is now the row itself, and that the old password gets
+    the unknown-email answer (401 `invalid_credentials`)."""
     email = f"t19-delacct-reuse-{uuid4().hex}@example.com"
-    token, _ = await _register_2_2(client, settings, email=email)
+    token, user_id = await _register_2_2(client, settings, email=email)
+    signed_in = await client.post(
+        LOGIN_URL, json=_credentials(email, A_STRONG_PASSWORD), headers=_origin_headers(settings)
+    )
+    assert signed_in.status_code == 200, signed_in.text  # the positive control: it did sign in
 
     deleted = await client.post(
         DELETE_ACCOUNT_URL,
@@ -1941,10 +1942,17 @@ async def test_delete_account_removes_the_user_so_a_second_register_of_the_same_
     )
     assert deleted.status_code == 204, deleted.text
 
-    second_register = await client.post(
-        REGISTER_URL, json=_credentials(email, A_STRONG_PASSWORD), headers=_origin_headers(settings)
+    after = await client.post(
+        LOGIN_URL, json=_credentials(email, A_STRONG_PASSWORD), headers=_origin_headers(settings)
     )
-    assert second_register.status_code == 201, second_register.text
+    assert after.status_code == 401, after.text
+    assert _error_code(after) == "invalid_credentials"
+    remaining = (
+        await session.execute(
+            text("SELECT count(*) FROM identity_user WHERE id = :i"), {"i": UUID(user_id)}
+        )
+    ).scalar_one()
+    assert remaining == 0
 
 
 async def test_delete_account_takes_every_row_and_file_it_owns_and_nothing_a_guest_owns(
@@ -2101,8 +2109,11 @@ def _bearer_delacct(token: str) -> dict[str, str]:
 async def test_delete_account_rate_limited_by_ip_is_429(
     client: AsyncClient, app: FastAPI, settings: Settings
 ) -> None:
-    _override_settings(app, settings, login_rate_limit_per_ip_per_hour=1)
+    # `_register_2_2` signs in through the login route (T27's re-seed), and the delete route shares
+    # that limiter's `auth:login` / `ip` counter: the sign-in spends one of the hour's attempts, so
+    # the limit is 2 — one spent by the seed, the first delete the last one allowed, the second 429.
     token, _ = await _register_2_2(client, settings)
+    _override_settings(app, settings, login_rate_limit_per_ip_per_hour=2)
 
     first = await client.post(
         DELETE_ACCOUNT_URL,

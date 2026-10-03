@@ -91,6 +91,7 @@ answers **409 `email_already_registered`**, registration is rate-limited to 5/h 
 residual risk (someone can learn whether an address has an account here) is stated rather than
 pretended away. Login keeps the promise: an unknown email and a wrong password get byte-identical
 responses, and an unknown email is verified against a decoy hash so both cost the same time.
+*(Closed in amendment (h) below: the channel exists, and registration no longer enumerates.)*
 
 **(c) The race is handled by both mechanisms this ADR offered, because each covers a race the other
 cannot.** A single-flight refresh in the client covers races *within* a tab (two components mounting,
@@ -190,3 +191,35 @@ its reason, not by its direction.**
   travels with it and ADR-0021's `Origin` check does not apply.
 
 A third route that wants both credentials is still a design question for an ADR, not a list edit.
+
+## Amendment: 2026-10-02, from the plan of slice 2.5 (`identity-email-verification`)
+
+Amendment (b) conceded that registration reveals whether an address has an account *"until an email
+channel exists"*, and named the one design that does not: *always 202, and email the address*. Slice
+2.5 builds the channel (ADR-0026) and the design (ADR-0027).
+
+**(h) Registration no longer reveals whether an address exists.**
+
+- **`POST /api/auth/register` answers 202 with an empty body and no `Set-Cookie`** for every address
+  that parses and every password the policy accepts. It creates a *pending registration*, not a
+  `User`, and never looks the address up: the worker decides whether to mail a confirmation link or
+  the account-exists notice, and the requester cannot tell which (ADR-0027 decision 2). The response
+  body, its headers and its status are byte-identical for a registered and an unknown address; the
+  request's use case makes zero `UserRepository` calls; timing is measured on the production image.
+- **409 `email_already_registered` moves to confirmation**, where the only person who can receive it
+  holds a token mailed to that address (ADR-0027 decision 3). It is no longer a response of
+  `register`.
+- **Registration does not sign in, and neither does confirmation.** The refresh cookie is set by
+  `login` alone. This changes 2.1's *"register, and you are signed in"*; the cookie's attributes,
+  rotation and the access token are untouched.
+- **(b)'s per-IP limit stays (5/h) and a per-address limit joins it (3/h)**, keyed on the HMAC of the
+  normalized address (ADR-0021 §5), checked after the address parses and before the password policy
+  runs. Both fail closed, by (e)'s rule (ADR-0021's amendment). A per-address limit answers 429 for a
+  registered and an unknown address alike, so it leaks nothing.
+- **Login is unchanged in what it reveals**: (b)'s decoy and its timing equality stand, re-measured
+  in 2.5 because login gains a credential re-check on its matching path (ADR-0028), not on the
+  unknown-email or wrong-password paths.
+- **What (b) conceded is now closed, with one residue stated elsewhere**: an attacker can register an
+  address they do not own and, if its owner clicks the confirmation, create an account in the owner's
+  name with the attacker's password. Confirmation not signing in, and the reset, are what make that
+  harmless (ADR-0027 decision 6, ADR-0028).

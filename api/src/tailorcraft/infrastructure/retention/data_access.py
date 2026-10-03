@@ -1,6 +1,7 @@
 """The purge's two data-access wrappers, shared by every root that runs a purge — and, since slice
 2.2, erasure's one (`CommittingAccountData`), which is the same durability rule on request; since
-2.3, history-entry deletion's (`CommittingHistoryEntryData`), the same rule once more.
+2.3, history-entry deletion's (`CommittingHistoryEntryData`), the same rule once more; since 2.5, the
+identity token sweep's (`CommittingExpiredIdentityTokens`), a commit per batch.
 
 Both classes lived in `infrastructure/tasks/container.py` until the CLI needed them (slice 1.6,
 T23). They moved here rather than being copied, and the reason is the thing they encode:
@@ -23,7 +24,7 @@ beside the lock and the heartbeat rather than in `domain/retention/ports.py`.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -33,6 +34,7 @@ from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.retention.ports import (
     AccountDataPort,
     ExpiredGuestDataPort,
+    ExpiredIdentityTokenPort,
     HistoryEntryDataPort,
 )
 from tailorcraft.domain.retention.value_objects import (
@@ -190,6 +192,44 @@ class CommittingHistoryEntryData:
         return deleted
 
 
+class CommittingExpiredIdentityTokens:
+    """The identity token sweep's `ExpiredIdentityTokenPort`: the ordinary one, except that **every
+    `delete_expired_*` commits** (slice 2.5, technical plan §0.9).
+
+    The port promises each batch is "durable on return", and the reason is the purge's per-session
+    commit, one level coarser: a sweep that fails part-way must keep every batch already deleted, and
+    each batch's row locks are released as soon as it is done, so a long backlog never holds a
+    reset-confirm or a refresh waiting behind a lock taken many batches ago. No file follows these
+    rows, so there is no *"then files"* half — only the boundary.
+
+    **No `expunge`**, for `CommittingExpiredGuestDataAdapter`'s reason: the sweep's adapter is Core
+    only and its roots hand it a session nothing else writes through.
+    """
+
+    def __init__(self, inner: ExpiredIdentityTokenPort, session: AsyncSession) -> None:
+        self._inner = inner
+        self._session = session
+
+    async def count_overdue(self, as_of: datetime, grace: timedelta) -> int:
+        """A read, so **no commit**."""
+        return await self._inner.count_overdue(as_of, grace)
+
+    async def delete_expired_pending(self, as_of: datetime, limit: int) -> int:
+        deleted = await self._inner.delete_expired_pending(as_of, limit)
+        await self._session.commit()
+        return deleted
+
+    async def delete_expired_resets(self, as_of: datetime, limit: int) -> int:
+        deleted = await self._inner.delete_expired_resets(as_of, limit)
+        await self._session.commit()
+        return deleted
+
+    async def delete_expired_logins(self, as_of: datetime, limit: int) -> int:
+        deleted = await self._inner.delete_expired_logins(as_of, limit)
+        await self._session.commit()
+        return deleted
+
+
 class OverdueBacklog:
     """How many guest sessions are still expired-and-present, asked with the purge's own predicate.
 
@@ -235,3 +275,8 @@ if TYPE_CHECKING:
 
     def _assert_implements_history_entry_data(adapter: CommittingHistoryEntryData) -> None:
         _: HistoryEntryDataPort = adapter
+
+    def _assert_implements_expired_identity_tokens(
+        adapter: CommittingExpiredIdentityTokens,
+    ) -> None:
+        _: ExpiredIdentityTokenPort = adapter

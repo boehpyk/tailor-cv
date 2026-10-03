@@ -29,6 +29,7 @@ from tailorcraft.infrastructure.settings import (
     JWT_SIGNING_KEY_PLACEHOLDER,
     Settings,
 )
+from tests.unit._production_mail import PRODUCTION_MAIL
 
 _TASK_TIME_LIMIT_SECONDS: Final = 180  # `infrastructure/tasks/limits.py`'s own constant, restated
 # here only as a boundary value to build test settings from — never re-derived as a rule.
@@ -85,6 +86,7 @@ def test_missing_gemini_key_in_production_exits_1_with_the_sentence(
         _provider(
             lambda: Settings(
                 app_env="production",
+                **PRODUCTION_MAIL,
                 gemini_api_key="",
                 jwt_signing_key=SecretStr(_A_STRONG_PRODUCTION_KEY),
             )
@@ -108,6 +110,7 @@ def test_placeholder_jwt_signing_key_in_production_exits_1_with_the_sentence(
         _provider(
             lambda: Settings(
                 app_env="production",
+                **PRODUCTION_MAIL,
                 gemini_api_key="a-real-key",
                 jwt_signing_key=SecretStr(JWT_SIGNING_KEY_PLACEHOLDER),
             )
@@ -134,6 +137,7 @@ def test_short_jwt_signing_key_in_production_exits_1_with_the_sentence(
         _provider(
             lambda: Settings(
                 app_env="production",
+                **PRODUCTION_MAIL,
                 gemini_api_key="a-real-key",
                 jwt_signing_key=SecretStr("too-short"),
             )

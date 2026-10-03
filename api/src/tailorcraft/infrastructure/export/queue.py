@@ -90,6 +90,10 @@ class CeleryExportQueue:
                 EXPORT_TASK_NAME,
                 args=[str(job_id.value)],
                 queue=self._queue_name,
+                # `ignore_result=True`: without it the discarded `AsyncResult` unsubscribes from
+                # Redis synchronously on the event loop when it is collected, and a burst of
+                # enqueues wedged the API process. `tailoring/queue.py` has the whole story.
+                ignore_result=True,
             )
         except Exception as exc:
             # THE CATCH-ALL FLOOR, load-bearing for the same reason the renderer's, the extractor's

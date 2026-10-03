@@ -32,6 +32,10 @@ def load_all() -> None:
     the two *is* load-bearing: `login.py` imports `user_table` for its foreign key (it would import
     it itself regardless, so the explicit order below states the dependency rather than creating it).
     Neither references `guest_session_table` — deliberately (AC-15).
+
+    Slice 2.5's `pending_registration` and `password_reset` follow, in the same reading order;
+    `password_reset.py` imports `user_table` for its foreign key, and neither references
+    `guest_session_table`.
     """
     from tailorcraft.infrastructure.persistence.mapping.identity import guest_session
     from tailorcraft.infrastructure.persistence.mapping.intake import base_cv
@@ -40,8 +44,24 @@ def load_all() -> None:
     from tailorcraft.infrastructure.persistence.mapping.export import export_job  # isort: skip
     from tailorcraft.infrastructure.persistence.mapping.identity import user  # isort: skip
     from tailorcraft.infrastructure.persistence.mapping.identity import login  # isort: skip
+    from tailorcraft.infrastructure.persistence.mapping.identity import (  # isort: skip
+        pending_registration,
+    )
+    from tailorcraft.infrastructure.persistence.mapping.identity import (  # isort: skip
+        password_reset,
+    )
 
     # Imported for their side effect (each module calls `map_imperatively` at import time); the
     # assignment silences "unused import". A module missing from this list is silently unmapped —
     # which is why the list is explicit rather than a directory scan.
-    _ = (guest_session, base_cv, job_posting, tailoring_run, export_job, user, login)
+    _ = (
+        guest_session,
+        base_cv,
+        job_posting,
+        tailoring_run,
+        export_job,
+        user,
+        login,
+        pending_registration,
+        password_reset,
+    )

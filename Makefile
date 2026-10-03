@@ -12,6 +12,9 @@ DUMP_DIR := backups
 up.dev: ## Start the full stack (dev: live mounts, hot reload, 127.0.0.1 ports)
 	$(DC_DEV) up -d --build
 
+mail.ui: ## Print the dev mail catcher's URL (Mailpit; 127.0.0.1 only)
+	@echo http://localhost:8025
+
 down.dev: ## Stop the dev stack
 	$(DC_DEV) down
 
@@ -156,6 +159,12 @@ eval: ## Run the prompt eval set against the real Gemini API, by hand (ADR-0004)
 #-----------------------------------------------------------
 # Git hooks
 #-----------------------------------------------------------
+compose.mail.check: ## Run the 2.5 mail-wiring guard on the working-tree compose files (host python3 + PyYAML)
+	python3 scripts/git-hooks/check-mail-compose.py docker-compose.yml docker-compose.dev.yml
+
+nginx.referrer.check: ## Run the 2.5 referrer-policy guard on the working-tree nginx configs and index.html
+	python3 scripts/git-hooks/check-nginx-referrer.py docker/nginx/default.conf docker/nginx/dev.conf --html web/index.html
+
 hooks.install: ## Point git at the tracked hooks in scripts/git-hooks/
 	git config core.hooksPath scripts/git-hooks
 	chmod +x scripts/git-hooks/*
@@ -168,6 +177,6 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: up.dev down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
+.PHONY: up.dev mail.ui down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
         db.dump purge.dry purge fmt lint types imports test.db test test.twice web.types web.lint \
-        web.format web.format.check web.test web.build web.check check eval hooks.install help
+        web.format web.format.check web.test web.build web.check check eval compose.mail.check nginx.referrer.check hooks.install help

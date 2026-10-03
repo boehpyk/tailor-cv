@@ -77,6 +77,19 @@ class CeleryTailoringQueue:
                 TAILORING_TASK_NAME,
                 args=[str(run_id.value)],
                 queue=self._queue_name,
+                # `ignore_result=True` is not tidiness: without it, an enqueue wedged the whole API
+                # process (slice 2.5, T41). With a Redis result backend configured, `send_task` calls
+                # `backend.on_task_call`, which SUBSCRIBES the process's one shared pub/sub
+                # connection to the task's result channel, and returns an `AsyncResult` this adapter
+                # discards. That result's `__del__` UNSUBSCRIBES, synchronously, on whichever thread
+                # drops the last reference, which is the event loop's, since `to_thread` returns it
+                # there. ~300 enqueues froze even `/health/live` for over 60 s. Nothing ever reads a
+                # task result here (the client polls rows), so nothing should be subscribed: with
+                # the flag, `send_task` skips `on_task_call`, the pub/sub connection is never
+                # opened, and `__del__`'s `cancel_for` finds no connection and does no I/O.
+                # `task_ignore_result` in the app config would NOT do this: `send_task` reads only
+                # its own kwarg (celery 5, `Celery.send_task`, read off the installed package).
+                ignore_result=True,
             )
         except Exception as exc:
             # THE CATCH-ALL FLOOR, and it is load-bearing for the same reason the extractor's and

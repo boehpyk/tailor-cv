@@ -328,12 +328,20 @@ async def _purge_batches(
 ) -> _PurgeRun:
     """Run batches until there is no more progress to make, refreshing the lock between them.
 
-    **The stop condition is `sessions_deleted == 0`, not `backlog == 0`**, and the difference is a
-    termination bug avoided. An empty backlog gives `examined == 0` and stops on the first test. But
-    a batch can also examine 100 sessions and delete none of them — one permanently refused `DELETE`
-    is counted and skipped by design (R-3), and `list_expired` is ordered oldest-first, so the very
-    same rows come back next time. Looping on "is the backlog empty?" would then spin for ever
-    against a row that can never go. A batch that deleted nothing has nothing left to try.
+    **The stop condition is `sessions_deleted + sessions_skipped == 0`, not `backlog == 0`**, and the
+    difference is a termination bug avoided. An empty backlog gives `examined == 0` and stops on the
+    first test. But a batch can also examine 100 sessions and delete none of them — one permanently
+    refused `DELETE` is counted as a failure by design (R-3), and `list_expired` is ordered
+    oldest-first, so the very same rows come back next time. Looping on "is the backlog empty?"
+    would then spin for ever against a row that can never go. A batch that neither deleted nor
+    skipped anything means the backlog is empty or everything left in it failed: nothing to try.
+
+    **A skipped session counts as progress** (AC-42). Since 2.4 a session whose `DELETE` removed
+    nothing — a user claimed it, or another run took it (ADR-0018 (a)) — is `sessions_skipped`. It
+    is gone from `identity_guest_session`, so it cannot come back in the next batch, and a batch
+    made only of such sessions says nothing about the rows behind it. Stopping on
+    `sessions_deleted == 0` alone ended the run early there, leaving the rest of the backlog for
+    the next tick.
 
     **`--limit N` runs exactly one batch of N** (AC-18). It is a deliberately small, explicit bite —
     the runbook's middle rehearsal step — and a limit that then looped would delete the whole
@@ -354,7 +362,7 @@ async def _purge_batches(
             totals.add(report)
             _print_batch_line(totals.batches, report)
             _log_batch_failures(report)
-            if limit is not None or report.sessions_deleted == 0:
+            if limit is not None or report.sessions_deleted + report.sessions_skipped == 0:
                 break
             await hold.refresh()
 

@@ -24,14 +24,17 @@ from tailorcraft.infrastructure.api.deps import ClockDep, EngineDep, SettingsDep
 from tailorcraft.infrastructure.api.schemas.health import (
     DependencyStatus,
     GuestPurgeStatus,
+    IdentityTokenSweepStatus,
     JobsStatus,
     LivenessResponse,
     ReadinessResponse,
 )
 from tailorcraft.infrastructure.health.probes import (
     JobStatus,
+    TokenSweepStatus,
     probe_celery,
     probe_guest_purge,
+    probe_identity_token_sweep,
     probe_postgres,
     probe_redis,
 )
@@ -56,22 +59,23 @@ async def ready(
     """Probe every dependency this process needs, concurrently, report each by name — and, beside
     them but never among them, report the scheduled jobs.
 
-    **Four awaitables, two lists, and the split is load-bearing.** `results` holds `ProbeResult`s
-    and only `ProbeResult`s; `guest_purge` is a `JobStatus`, which has no `healthy` attribute, so
-    the `all(...)` below cannot be widened to include it by accident — it would not type-check and
-    it would not run (ADR-0019 decision 2). The unpacking is written out for exactly that reason: a
-    single `results = await asyncio.gather(...)` of all four would put them in one list and make the
+    **Five awaitables, two lists, and the split is load-bearing.** `results` holds `ProbeResult`s
+    and only `ProbeResult`s; `guest_purge` is a `JobStatus` and `identity_token_sweep` a
+    `TokenSweepStatus`, neither of which has a `healthy` attribute, so the `all(...)` below cannot
+    be widened to include either by accident — it would not type-check and it would not run (ADR-0019 decision 2). The unpacking is written out for exactly that reason: a
+    single `results = await asyncio.gather(...)` of all five would put them in one list and make the
     mistake a one-character edit away.
 
-    All four run concurrently. The job probe costs a Redis `HGETALL` and an indexed `COUNT`, and
-    serialising it behind the three dependency probes would add its latency to an endpoint the
+    All five run concurrently. The job probes cost a Redis `HGETALL` and indexed `COUNT`s, and
+    serialising them behind the three dependency probes would add its latency to an endpoint the
     browser polls every 15 s and Traefik polls constantly.
     """
-    postgres, redis, celery, guest_purge = await asyncio.gather(
+    postgres, redis, celery, guest_purge, identity_token_sweep = await asyncio.gather(
         probe_postgres(engine),
         probe_redis(settings.redis_url),
         probe_celery(request.app.state.celery),
         probe_guest_purge(engine, settings.redis_url, settings, clock),
+        probe_identity_token_sweep(engine, clock),
     )
     results = (postgres, redis, celery)
 
@@ -86,7 +90,10 @@ async def ready(
     return ReadinessResponse(
         ready=all_healthy,
         dependencies=dependencies,
-        jobs=JobsStatus(guest_purge=_guest_purge_status(guest_purge)),
+        jobs=JobsStatus(
+            guest_purge=_guest_purge_status(guest_purge),
+            identity_token_sweep=_identity_token_sweep_status(identity_token_sweep),
+        ),
     )
 
 
@@ -114,3 +121,9 @@ def _guest_purge_status(job: JobStatus) -> GuestPurgeStatus:
         stale=job.stale,
         detail=job.detail,
     )
+
+
+def _identity_token_sweep_status(job: TokenSweepStatus) -> IdentityTokenSweepStatus:
+    """Publish the probe's answer as `jobs.identity_token_sweep` (slice 2.5, AC-43), field for
+    field, for `_guest_purge_status`'s reasons."""
+    return IdentityTokenSweepStatus(scheduled=job.scheduled, overdue=job.overdue, detail=job.detail)

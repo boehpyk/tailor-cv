@@ -22,7 +22,8 @@ export const authQueryKeyPrefix = ['auth'] as const;
 export const currentUserQueryKey = ['auth', 'me'] as const;
 
 /**
- * A login or register succeeded. **Seed the cache first, then flip the store.** The flip is what
+ * A login succeeded (since slice 2.5 the only thing that signs in by credentials: registering
+ * answers 202 and signs nobody in). **Seed the cache first, then flip the store.** The flip is what
  * enables `useCurrentUser`; if it came first, the render it triggers could find the query enabled
  * and empty and send a `GET /api/auth/me` the response in hand already answered.
  */

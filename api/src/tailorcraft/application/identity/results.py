@@ -1,9 +1,9 @@
 """`Authenticated`: what every use case that signs somebody in hands back to the route.
 
-Shared by three use cases — `RegisterUser`, `LogIn` and `RefreshLogin` — which is why it lives in its
-own module rather than beside any one of them: each of the three ends in the same place (a user, the
-login that now speaks for them, and an access token minted for this instant), and the route that
-answers all three builds the same body and the same `Set-Cookie` from it.
+Shared by two use cases — `LogIn` and `RefreshLogin` (slice 2.5 removed the third, `RegisterUser`) —
+which is why it lives in its own module rather than beside either: each ends in the same place (a
+user, the login that now speaks for them, and an access token minted for this instant), and the
+route that answers both builds the same body and the same `Set-Cookie` from it.
 
 **What it does not carry is the point.** No refresh token: the route minted the plaintext and handed
 this layer only its `TokenHash` (ADR-0010's pattern, AC-10), so the route already holds the one value

@@ -119,10 +119,10 @@ from tests.api.me_support import (
     ME_BASE_CVS,
     ME_POSTINGS,
     ME_RUNS,
-    REGISTER_URL,
     assert_test_database,
     bearer,
     new_client,
+    seed_user_and_sign_in,
 )
 from tests.api.test_export import _run_export_worker
 from tests.integration.fakes import (
@@ -337,14 +337,9 @@ async def test_ac53_no_marker_leaks_across_the_history_flow_and_the_llm_sees_onl
 
     with caplog.at_level(logging.DEBUG):
         # --- register ---------------------------------------------------------------------------
-        registered = await client.post(
-            REGISTER_URL,
-            json={"email": email, "password": A_PASSWORD},
-            headers={"Origin": settings.public_base_url},
-        )
-        assert registered.status_code == 201, registered.text
-        headers = bearer(str(registered.json()["access_token"]))
-        ids["user_id"] = str(registered.json()["user"]["id"])
+        token, seeded_id = await seed_user_and_sign_in(client, settings, email=email)
+        headers = bearer(token)
+        ids["user_id"] = str(seeded_id)
 
         # --- saved CV, labelled -----------------------------------------------------------------
         uploaded = await client.post(

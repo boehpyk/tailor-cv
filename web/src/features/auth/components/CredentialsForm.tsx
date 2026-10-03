@@ -8,7 +8,13 @@ import type { ReactNode, SyntheticEvent } from 'react';
 
 export interface CredentialsFormProps {
   /** Which form this is — decides the error copy. */
-  readonly action: Exclude<AuthAction, 'logout'>;
+  readonly action: Extract<AuthAction, 'login' | 'register'>;
+  /**
+   * What the email field starts with — `''` by default. `/register` passes the address back after
+   * **Use a different email** (slice 2.5, AC-45), so the visitor edits it rather than retyping it.
+   * Read once, as the initial state: the field is the user's from then on.
+   */
+  readonly initialEmail?: string;
   /**
    * `current-password` on `/login`, `new-password` on `/register` (AC-45). This one attribute is
    * the difference between a password manager offering to *fill* and offering to *generate*.
@@ -41,6 +47,7 @@ export interface CredentialsFormProps {
  */
 export function CredentialsForm({
   action,
+  initialEmail = '',
   passwordAutoComplete,
   submitLabel,
   pendingLabel,
@@ -50,7 +57,7 @@ export function CredentialsForm({
   onSubmit,
   children,
 }: CredentialsFormProps) {
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const baseId = useId();
   const emailId = `${baseId}-email`;

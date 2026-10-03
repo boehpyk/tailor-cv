@@ -189,3 +189,46 @@ only when it did.**
   nothing), so an old purge running beside a new API would be the unguarded one. The release stops
   `worker` and `beat` across the deploy and starts them on the new image, so that window is zero by
   the release order; 2.4 confirms this in the release script rather than assuming it.
+
+## Amendment: 2026-10-02, from the plan of slice 2.5 (`identity-email-verification`)
+
+Slice 2.5 adds rows that exist to expire — pending registrations (24 h) and password resets (60 min) —
+and ADR-0020's expired logins have been accumulating since 2.1. Retention gains its **second timer
+job**. Decisions 1–9 and amendment (a) stand.
+
+**(b) The identity token sweep is retention's second timer job, and it ships on.**
+
+- **What it deletes.** Expired pending registrations, expired password resets, and expired logins
+  (their retired refresh-token hashes by cascade; ADR-0020's amendment (a)). The predicate is
+  `expires_at <= now`, inclusive — the rule each aggregate already applies on sight. Nothing else: no
+  user, no saved CV, no history, no unexpired token. It deletes rows only; there are no files, so
+  decision 2's *rows first, then files* has nothing to order.
+- **Where it lives, and why there.** `retention` owns *deleting what has aged out*. The use case is
+  `PurgeExpiredIdentityTokens`, with its own port, `ExpiredIdentityTokenPort` (`count_overdue` and one
+  `delete_expired_*` per kind, each taking a limit), so retention's domain names no identity type
+  beyond ids and counts — the allow-list test from 2.3 holds it there. It returns an
+  `IdentityTokenSweepReport` with three counts. No aggregate and no event, for decision 1's and
+  decision 9's reasons.
+- **How it runs.** Hourly on beat, on the default `celery` queue (decision 9), in batches of 1 000
+  rows per table per statement until a batch deletes nothing, so no single statement holds locks on a
+  large backlog. It takes no user lock (ADR-0028's lock order); a reset that a completion has locked
+  makes the sweep wait, and one the completion deleted first leaves it nothing to do. The entry point
+  logs one line with the three counts and a duration; a failure logs its exception type and the next
+  tick retries.
+- **On by default — no flag, no rehearsal — unlike decision 5.** The purge ships off because it
+  deletes **a person's work**, in two systems, with no rollback; the first automated run must not be
+  the rehearsal. This sweep deletes only rows that **every code path already refuses to use**: an
+  expired confirmation or reset link is refused and deleted when presented, and an expired login is
+  deleted by `RefreshLogin` on sight. The sweep therefore changes *when* those rows go, never *whether
+  a user can still use them*. There is nothing a hand rehearsal could reveal that a test cannot prove:
+  a test with expired and unexpired rows of each kind beside a user's saved CV, history and live
+  logins asserts it deletes exactly the expired ones, with a named mutation on the boundary. A flag
+  that defaults off would, by decision 5's own argument, need a visible `scheduled: false` and a flip
+  owed in the slice — machinery for a risk this job does not carry.
+- **No lock and no heartbeat.** Two overlapping sweeps are harmless: a `DELETE` of an already-deleted
+  row affects nothing, and their counts may overlap (decision 6's reasoning, without the lock it adds
+  for the purge). The signal to trust is again the **backlog** (decision 4): `/health/ready` reports
+  how many rows expired more than two intervals ago (ADR-0019's amendment (a)).
+- **Constitution §4's `retention` row** says *"the guest 1-day purge on a timer"*; the identity token
+  sweep is a second timer of the same kind, and the row's wording, which names what retention owns
+  rather than listing its jobs, needs no change.

@@ -20,9 +20,11 @@ loading every retired hash of a long-lived login to answer a question one indexe
 foreign keys point *up* the identity chain — retired token → login → user — each `ON DELETE CASCADE`,
 which is what makes revocation a single `DELETE` of the login (ADR-0020).
 
-**No index on `expires_at`**, on purpose (technical plan §5): the expired-login sweep has no slice
-yet, and an index nobody queries is write cost on the hottest row in the schema — a login is updated
-every fifteen minutes per open tab.
+**`ix_identity_login_expires_at` arrived with the sweep** (slice 2.5, technical plan §0.9, §5). 2.1
+left it out on purpose — an index nobody queries is write cost on the hottest row in the schema, a
+login being updated every fifteen minutes per open tab — and said to build it with the sweep. The
+sweep's `ORDER BY expires_at LIMIT :n` is that query. `expires_at` never changes after the insert
+(OQ-9), so a rotation's `UPDATE` is still a HOT candidate: the index costs the insert, not the refresh.
 """
 
 from __future__ import annotations
@@ -54,8 +56,9 @@ login_table = Table(
         index=True,
     ),
     Column("created_at", TIMESTAMP(timezone=True, precision=0), nullable=False),
-    # Absolute (OQ-9): rotation never moves it.
-    Column("expires_at", TIMESTAMP(timezone=True, precision=0), nullable=False),
+    # Absolute (OQ-9): rotation never moves it. Indexed (`ix_identity_login_expires_at`, slice 2.5)
+    # for the identity token sweep — see the module docstring.
+    Column("expires_at", TIMESTAMP(timezone=True, precision=0), nullable=False, index=True),
     Column("generation", Integer, nullable=False),
     # CHAR(64), the SHA-256 hex of the current refresh token. Unique
     # (`uq_identity_login_current_token_hash`) because it is how a refresh request is resolved back

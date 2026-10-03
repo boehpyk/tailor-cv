@@ -69,10 +69,14 @@ from tailorcraft.infrastructure.persistence.mapping.identity.login import (
     login_table,
     retired_refresh_token_table,
 )
+from tailorcraft.infrastructure.persistence.mapping.identity.pending_registration import (
+    pending_registration_table,
+)
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
+from tests.api.account_mail_support import install_recording_queue
 
 REGISTER_URL = "/api/auth/register"
 REFRESH_URL = "/api/auth/refresh"
@@ -119,6 +123,9 @@ def concurrent_app(
     app.state.session_factory = create_session_factory(engine)
     app.state.celery = celery_app
     app.state.password_hasher = password_hasher
+    # Slice 2.5 (T27): register publishes a mail task. Never to the dev broker's real `mail` queue;
+    # the recording fake is reachable as `app.state.recording_mail_queue`.
+    app.state.recording_mail_queue = install_recording_queue(app)
     return app
 
 
@@ -229,13 +236,19 @@ async def identity_rig(engine: AsyncEngine) -> AsyncIterator[_CommittedIdentity]
 # --- AC-16: two concurrent registrations of one email -------------------------------------------
 
 
-async def test_two_concurrent_registrations_of_one_email_produce_one_201_one_409_one_row(
+async def test_two_concurrent_registrations_of_one_email_produce_two_202s_and_one_pending_row(
     concurrent_app: FastAPI, settings: Settings
 ) -> None:
-    """AC-16 / I-6. Two independent clients, two independent sessions, one `Origin`-trusted `POST
-    /api/auth/register` each, launched together with `asyncio.gather` so both are genuinely in
-    flight before either's `INSERT` lands — the unique index on `identity_user.email`
-    (`uq_identity_user_email`) is the referee, never a `SELECT` first (technical plan §0.4)."""
+    """AC-16 / I-6, **amended in slice 2.5 (T27, AC-17's semantics)**. It used to read "one 201, one
+    409, one `User`": the unique index on `identity_user.email` was the referee and registration
+    enumerated. Registration no longer touches `identity_user` — it **upserts one pending row** per
+    address (`uq_identity_pending_registration_email`, newest wins, plan §0.3) and answers 202 to
+    everyone, so two concurrent requests for one address are two 202s, **one** pending row, and
+    **no** `User` (nobody has confirmed). Both enqueue a delivery: the older id is superseded and its
+    task ends `MISSING` (AC-38), which is the worker's concern, not this request's.
+
+    Two independent clients, two independent sessions, launched with `asyncio.gather` so both are
+    genuinely in flight; the unique index is still the referee, never a `SELECT` first."""
     _assert_test_database(settings)
     email = f"t31-ac16-{uuid4().hex}@example.com"
     body = {"email": email, "password": A_STRONG_PASSWORD}
@@ -249,13 +262,25 @@ async def test_two_concurrent_registrations_of_one_email_produce_one_201_one_409
     try:
         codes = await asyncio.gather(_register(), _register())
 
-        assert sorted(codes) == [201, 409], codes
-        rig = _CommittedIdentity(engine=concurrent_app.state.engine)
-        assert await rig.user_count_for_email(email) == 1
+        assert sorted(codes) == [202, 202], codes
+        engine = concurrent_app.state.engine
+        async with engine.connect() as conn:
+            pending = (
+                await conn.execute(
+                    select(func.count())
+                    .select_from(pending_registration_table)
+                    .where(pending_registration_table.c.email == EmailAddress.parse(email))
+                )
+            ).scalar_one()
+        assert pending == 1
+        assert await _CommittedIdentity(engine=engine).user_count_for_email(email) == 0
+        assert len(concurrent_app.state.recording_mail_queue.registrations) == 2
     finally:
         async with concurrent_app.state.engine.begin() as conn:
             await conn.execute(
-                user_table.delete().where(user_table.c.email == EmailAddress.parse(email))
+                pending_registration_table.delete().where(
+                    pending_registration_table.c.email == EmailAddress.parse(email)
+                )
             )
 
 
@@ -539,10 +564,12 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_session_and_its_c
                 json={"email": email, "password": A_STRONG_PASSWORD},
                 headers=_origin_headers(settings),
             )
-            assert response.status_code == 201, response.text
-            set_cookie_names = {h.split("=", 1)[0] for h in response.headers.get_list("set-cookie")}
-            assert GUEST_COOKIE_NAME not in set_cookie_names, (
-                "register must never emit a Set-Cookie for tc_guest (AC-29)"
+            # Slice 2.5 (T27): 202, and *no* `Set-Cookie` at all — register sets neither `tc_refresh`
+            # (nobody is signed in) nor `tc_guest`. The guest-cookie half is the AC-29 claim; the
+            # status and the empty header list make the assertion discriminate a 202 from a 201.
+            assert response.status_code == 202, response.text
+            assert response.headers.get_list("set-cookie") == [], (
+                "register must never emit a Set-Cookie (AC-27); least of all for tc_guest (AC-29)"
             )
 
             list_response = await client.get(BASE_CVS_URL)
@@ -561,5 +588,7 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_session_and_its_c
             )
         async with concurrent_app.state.engine.begin() as conn:
             await conn.execute(
-                user_table.delete().where(user_table.c.email == EmailAddress.parse(email))
+                pending_registration_table.delete().where(
+                    pending_registration_table.c.email == EmailAddress.parse(email)
+                )
             )

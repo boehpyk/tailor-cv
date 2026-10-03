@@ -93,11 +93,11 @@ from tests.api.me_support import (
     A_PASSWORD,
     DELETE_ACCOUNT_URL,
     ME_RUNS,
-    REGISTER_URL,
     assert_test_database,
     bearer,
     build_concurrent_app,
     new_client,
+    seed_user_and_sign_in,
 )
 from tests.api.test_export import _run_export_worker
 from tests.api.test_history_privacy_markers import (
@@ -307,14 +307,9 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
         assert edited.status_code == 200, edited.text
 
         # --- register ---------------------------------------------------------------------------
-        registered = await client.post(
-            REGISTER_URL,
-            json={"email": email, "password": A_PASSWORD},
-            headers={"Origin": settings.public_base_url},
-        )
-        assert registered.status_code == 201, registered.text
-        headers = bearer(str(registered.json()["access_token"]))
-        ids["user_id"] = str(registered.json()["user"]["id"])
+        token, seeded_id = await seed_user_and_sign_in(client, settings, email=email)
+        headers = bearer(token)
+        ids["user_id"] = str(seeded_id)
 
         # --- the claim: the fake's count asserted BEFORE anything about its arguments --------------
         calls_before_the_claim = len(guest_llm.calls)
@@ -533,19 +528,14 @@ async def test_ac46_a_claim_then_a_purge_a_sweep_and_an_erasure_never_log_a_mark
     try:
         async with new_client(api) as http:
             with caplog.at_level(logging.DEBUG):
-                registered = await http.post(
-                    REGISTER_URL,
-                    json={"email": email, "password": A_PASSWORD},
-                    headers={"Origin": local_settings.public_base_url},
+                claim_token, seeded_id = await seed_user_and_sign_in(
+                    http, local_settings, email=email
                 )
-                assert registered.status_code == 201, registered.text
-                user_id = UserId(UUID(str(registered.json()["user"]["id"])))
+                user_id = UserId(seeded_id)
                 http.cookies.set(COOKIE_NAME, minted.token)
 
                 mark = len(caplog.records)
-                claimed = await http.post(
-                    CLAIM_URL, headers=bearer(str(registered.json()["access_token"]))
-                )
+                claimed = await http.post(CLAIM_URL, headers=bearer(claim_token))
                 assert claimed.status_code == 200, claimed.text
                 assert claimed.json() == {
                     "base_cvs": 1,

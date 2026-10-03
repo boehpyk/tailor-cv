@@ -59,6 +59,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
 | PDF rendering | WeasyPrint (HTML → PDF), in a Celery worker | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
 | DOCX rendering | `python-docx` | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
 | File storage | Local filesystem behind a `FileStorePort` | [0006](./adr/0006-guest-retention-and-local-file-storage.md) |
+| Account mail | SMTP submission (stdlib `smtplib`, STARTTLS required) behind an `AccountMailPort`, sent by the worker on the `mail` queue | [0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md) |
 | Auth | JWT access token + rotating refresh token in an HttpOnly cookie | [0008](./adr/0008-auth-jwt-access-plus-refresh-cookie.md) |
 | Lint + format | Ruff (`ruff check` + `ruff format`) | — |
 | Static analysis | mypy `--strict` | — |
@@ -125,7 +126,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    | `posting` | job descriptions, pasted or fetched from a URL | `JobPosting` |
    | `tailoring` | the LLM run and its output documents, owned by a guest session or a user; a user's runs are their history, read through a cross-context query port ([ADR-0023](./adr/0023-a-signed-in-users-tailoring-is-account-data-and-the-workspace-follows-the-credential.md), [ADR-0024](./adr/0024-a-read-model-that-joins-contexts-is-a-query-port-keyset-paginated.md)) | `TailoringRun` — `TailoredDocument` is a value object on it, not an aggregate ([ADR-0014 §9](./adr/0014-tailoring-runs-on-a-queue-and-is-polled.md), [ADR-0015](./adr/0015-edits-are-a-revision-on-the-run-stored-as-markdown.md)); `TailoringHistoryEntry` is a read model, not an aggregate |
    | `export` | rendering a document to PDF/DOCX/MD/TXT | `ExportJob` |
-   | `identity` | accounts, sessions, tokens, and the guest → user claim (a policy and a port, no aggregate — [ADR-0025](./adr/0025-a-guests-work-becomes-a-users-by-an-explicit-claim.md)) | `GuestSession`, `User`, `Login` — two principals, no shared base ([ADR-0010](./adr/0010-guest-session-cookie-is-an-opaque-hashed-token.md), [ADR-0020](./adr/0020-a-login-is-a-refresh-token-family-revocation-is-deletion.md)) |
+   | `identity` | accounts, pending registrations, password resets, sessions, tokens, the account mail that proves an address ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)), and the guest → user claim (a policy and a port, no aggregate — [ADR-0025](./adr/0025-a-guests-work-becomes-a-users-by-an-explicit-claim.md)) | `GuestSession`, `User`, `Login` — two principals, no shared base ([ADR-0010](./adr/0010-guest-session-cookie-is-an-opaque-hashed-token.md), [ADR-0020](./adr/0020-a-login-is-a-refresh-token-family-revocation-is-deletion.md)); `PendingRegistration` — not an account: a `User` exists only once its address is proven ([ADR-0027](./adr/0027-an-account-that-has-not-proven-its-address-does-not-exist.md)); `PasswordReset` — addressed, then issued, then deleted ([ADR-0028](./adr/0028-a-password-reset-proves-the-address-and-revokes-every-login.md)) |
    | `retention` | deleting everything an owner has, rows committed then files: the guest 1-day purge on a timer, and account erasure and history-entry deletion on request (no aggregate — a policy, use cases and ports that *return* their failures) ([ADR-0006](./adr/0006-guest-retention-and-local-file-storage.md), [ADR-0018](./adr/0018-the-guest-purge-is-a-policy-with-no-aggregate.md), [ADR-0023](./adr/0023-a-signed-in-users-tailoring-is-account-data-and-the-workspace-follows-the-credential.md)) | — |
 
    Ubiquitous language: keep a glossary in each context's spec. A **base CV** is never a "resume" in
@@ -199,6 +200,10 @@ phase that depends on it closes.
   delete guest copies on schedule (FR-6). "It's just a text file" is how leaks happen.
 - **The LLM provider sees the CV.** That is unavoidable and must be *stated to the user*, not buried.
   Nothing else is sent: no email address, no account id, no other user's content in the same prompt.
+- **The mail provider sees the address and the account mail.** That is the price of proving an
+  address, and it is *stated to the user* where the address is typed. The mail carries a one-time
+  link and nothing else — no name, no CV content, no account id — as plain text with tracking off.
+  Nothing else is ever mailed: no marketing, no notifications ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)).
 - **Untrusted input crosses a validation boundary** before touching the domain. Three inputs are
   security-critical: the **uploaded file** (type, size, and content sniffing — a "PDF" is whatever
   bytes the user sent), the **job URL** (SSRF: no localhost, no private ranges, no redirects into

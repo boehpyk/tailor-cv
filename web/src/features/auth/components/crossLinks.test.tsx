@@ -1,12 +1,19 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { CHECK_EMAIL_HEADING } from '@/features/accountMail/accountMailCopy';
 import { __resetForTests, authStore } from '@/features/auth/authStore';
 import { ok, stubAccountFetch } from '@/test/accountFetch';
 import { jsonResponse, makeRun } from '@/test/fixtures';
 import { renderWithRouter } from '@/test/render';
 
 /**
+ * **Amended at slice 2.5's T37 RED** (AC-45, AC-50): registering answers 202 and signs nobody in,
+ * so the two tests that ended on "registering lands on `next`" changed meaning. They now end on
+ * "Check your email" and carry `next` through *Already confirmed? Log in* to `/login`, where
+ * `safeNext` still judges it on arrival (the open-redirect assertion moved there, not away). Every
+ * cross-link assertion above them is untouched.
+ *
  * T30 RED — AC-36: `next` survives the `/login` ↔ `/register` cross-links, mounted through the REAL
  * route table (a bare page on its own `MemoryRouter` cannot show a navigation from one page to the
  * other). 2.1's open-redirect tests (`safeNext.test.ts`, the two pages' own `next` tests) are not
@@ -102,8 +109,8 @@ describe('The login ↔ register cross-links keep `next` (AC-36)', () => {
     expect(signInLinkOnRegister()).toHaveAttribute('href', '/login');
   });
 
-  it('the round trip: login → register → login → register keeps the same next, then registering lands on it', async () => {
-    const fetch = routes({ 'POST /api/auth/register': () => jsonResponse(201, AUTHENTICATED) });
+  it('the round trip: login → register → login → register keeps the same next, then registering shows Check your email whose Log in link still carries it', async () => {
+    const fetch = routes({ 'POST /api/auth/register': () => new Response(null, { status: 202 }) });
     const { router } = renderWithRouter(`/login?next=${ENCODED_NEXT}`);
     await screen.findByRole('region', { name: 'Log in' });
 
@@ -125,14 +132,20 @@ describe('The login ↔ register cross-links keep `next` (AC-36)', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: /^create account$/i }));
 
-    await waitFor(() => {
-      expect(router.state.location.pathname).toBe(NEXT);
-    });
+    await screen.findByRole('heading', { name: CHECK_EMAIL_HEADING });
+    expect(router.state.location.pathname).toBe('/register');
+    expect(within(screen.getByRole('main')).getByRole('link', { name: /log in/i })).toHaveAttribute(
+      'href',
+      `/login?next=${ENCODED_NEXT}`,
+    );
     expect(fetch.calls.filter((call) => call.path === '/api/auth/register')).toHaveLength(1);
   });
 
-  it('an unsafe next is carried verbatim by the link and still judged by safeNext on arrival', async () => {
-    routes({ 'POST /api/auth/register': () => jsonResponse(201, AUTHENTICATED) });
+  it('an unsafe next is carried verbatim by every link and still judged by safeNext on arrival, which is now at login', async () => {
+    routes({
+      'POST /api/auth/register': () => new Response(null, { status: 202 }),
+      'POST /api/auth/login': () => jsonResponse(200, AUTHENTICATED),
+    });
     const { router } = renderWithRouter('/login?next=%2F%2Fevil.example');
     await screen.findByRole('region', { name: 'Log in' });
 
@@ -145,6 +158,17 @@ describe('The login ↔ register cross-links keep `next` (AC-36)', () => {
       target: { value: 'a very long real password' },
     });
     fireEvent.click(screen.getByRole('button', { name: /^create account$/i }));
+    await screen.findByRole('heading', { name: CHECK_EMAIL_HEADING });
+    expect(router.state.location.pathname).toBe('/register');
+
+    fireEvent.click(within(screen.getByRole('main')).getByRole('link', { name: /log in/i }));
+    await screen.findByRole('region', { name: 'Log in' });
+    expect(new URLSearchParams(router.state.location.search).get('next')).toBe('//evil.example');
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: 'alex@example.com' } });
+    fireEvent.change(screen.getByLabelText(/password/i), {
+      target: { value: 'a very long real password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^log in$/i }));
 
     await waitFor(() => {
       expect(router.state.location.pathname).toBe('/');

@@ -76,9 +76,9 @@ from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
+from tests.api.me_support import seed_user_and_sign_in
 from tests.integration.working_copy_support import seed_working_copy
 
-REGISTER_URL = "/api/auth/register"
 ME_BASE_CVS_URL = "/api/me/base-cvs"
 DELETE_ACCOUNT_URL = "/api/auth/delete-account"
 JOB_POSTINGS_URL = "/api/job-postings"
@@ -150,16 +150,8 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
 
     with caplog.at_level(logging.DEBUG):
         # --- register --------------------------------------------------------------------------
-        register = await client.post(
-            REGISTER_URL,
-            json={"email": marker_email, "password": "correct horse battery staple 9"},
-            headers={"Origin": settings.public_base_url},
-        )
-        responses.append(register)
-        assert register.status_code == 201, register.text
-        body = register.json()
-        token = str(body["access_token"])
-        ids["user_id"] = str(body["user"]["id"])
+        token, seeded_id = await seed_user_and_sign_in(client, settings, email=marker_email)
+        ids["user_id"] = str(seeded_id)
 
         # --- upload to the account ---------------------------------------------------------------
         _mark("upload")
@@ -262,14 +254,8 @@ async def test_no_marker_leaks_across_the_full_saved_cv_flow_and_a_line_names_ev
         # erase-account's own privacy claim is a separate test, against the CLI's real entry point,
         # in test_erase_account_cli.py (module docstring). ------------------------------------------
         second_marker_email = _marker_email("second-user-email")
-        second_register = await client.post(
-            REGISTER_URL,
-            json={"email": second_marker_email, "password": "correct horse battery staple 9"},
-            headers={"Origin": settings.public_base_url},
-        )
-        responses.append(second_register)
-        assert second_register.status_code == 201, second_register.text
-        ids["second_user_id"] = str(second_register.json()["user"]["id"])
+        _, second_id = await seed_user_and_sign_in(client, settings, email=second_marker_email)
+        ids["second_user_id"] = str(second_id)
 
     # --- The actual claim: no marker anywhere it must not be ---------------------------------
     log_text = caplog.text

@@ -54,11 +54,11 @@ from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHa
 from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
+from tests.api.me_support import seed_user_and_sign_in
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "cvs"
 
 ME_BASE_CVS_URL = "/api/me/base-cvs"
-REGISTER_URL = "/api/auth/register"
 BASE_CVS_URL = "/api/base-cvs"
 
 A_PASSWORD = "correct horse battery staple 9"  # clear of the 12-char floor
@@ -175,16 +175,11 @@ def _reset_redis_between_tests(clear_redis: None) -> None:
 async def _register(
     client: AsyncClient, settings: Settings, *, email: str | None = None
 ) -> tuple[str, str]:
-    """Register a fresh user. Returns `(access_token, user_id)`."""
-    email = email or f"t19-{uuid4().hex}@example.com"
-    response = await client.post(
-        REGISTER_URL,
-        json={"email": email, "password": A_PASSWORD},
-        headers={"Origin": settings.public_base_url},
-    )
-    assert response.status_code == 201, response.text
-    body = response.json()
-    return str(body["access_token"]), str(body["user"]["id"])
+    """A fresh user with a real bearer. Returns `(access_token, user_id)`. Seeded through the
+    repository and signed in through the real login route (2.5 T7: registration no longer returns
+    a token, and these tests are about saved CVs, not about registering)."""
+    token, user_id = await seed_user_and_sign_in(client, settings)
+    return token, str(user_id)
 
 
 async def _upload_saved(

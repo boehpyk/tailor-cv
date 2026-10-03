@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import structlog
@@ -44,6 +44,7 @@ log = structlog.get_logger(__name__)
 PROBE_TIMEOUT_SECONDS = 2.0
 
 _GUEST_PURGE_FAILED_EVENT: Final = "probe.guest_purge.failed"
+_IDENTITY_SWEEP_FAILED_EVENT: Final = "probe.identity_token_sweep.failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +311,58 @@ async def _count_overdue_guest_sessions(
     except Exception as exc:
         log.warning(_GUEST_PURGE_FAILED_EVENT, field="overdue", error_type=type(exc).__name__)
         return None, f"overdue: {type(exc).__name__}"
+
+
+@dataclass(frozen=True, slots=True)
+class TokenSweepStatus:
+    """What `/health/ready` publishes about the identity token sweep (slice 2.5, ADR-0019
+    amendment (a)). A `JobStatus`'s sibling and not a `JobStatus`: this job has no heartbeat, so it
+    has no `last_run` to report, and a `JobStatus` with four permanent `None`s would read as "never
+    ran". Like `JobStatus`, **no `healthy` attribute**, so it cannot reach the status code."""
+
+    scheduled: bool
+    """Always true: the beat entry is unconditional (`tasks/app.py`). Reported so jobs read alike."""
+
+    overdue: int | None
+    """Rows of the three kinds expired more than two sweep intervals ago. `None` when the count
+    could not be taken, with the reason in `detail`."""
+
+    detail: str | None
+    """Set only when `overdue` could not be computed. An exception **type**, never a message."""
+
+
+async def probe_identity_token_sweep(engine: AsyncEngine, clock: Clock) -> TokenSweepStatus:
+    """Report the identity token sweep's backlog as a fact, never as readiness (AC-43).
+
+    `overdue` is asked through the sweep's own port (`count_overdue`), so it is the predicate the
+    sweep deletes by, not a re-derivation. The grace is two intervals, derived from the beat
+    interval, so a healthy sweep (at most one interval behind) reads 0 and a positive number means
+    at least two ticks did not run or did not finish. A failed or timed-out count degrades the field
+    (`overdue: null` plus a `detail`) and never the response (ADR-0019 decision 5).
+    """
+    # Deferred for `probe_guest_purge`'s reason: `tasks/app.py` builds the Celery app at import and
+    # carries startup refusals of its own, and the constant must be *that* one so the grace follows
+    # the interval.
+    from tailorcraft.infrastructure.persistence.retention.expired_identity_tokens import (
+        SqlAlchemyExpiredIdentityTokens,
+    )
+    from tailorcraft.infrastructure.tasks.app import IDENTITY_TOKEN_SWEEP_OVERDUE_GRACE_SECONDS
+
+    try:
+        async with asyncio.timeout(PROBE_TIMEOUT_SECONDS):
+            factory = create_session_factory(engine)
+            async with factory() as session:
+                overdue = await SqlAlchemyExpiredIdentityTokens(session).count_overdue(
+                    clock.now(), timedelta(seconds=IDENTITY_TOKEN_SWEEP_OVERDUE_GRACE_SECONDS)
+                )
+    except Exception as exc:
+        # The floor, `_count_overdue_guest_sessions`'s: a health endpoint must answer whatever the
+        # count does. The type only.
+        log.warning(_IDENTITY_SWEEP_FAILED_EVENT, field="overdue", error_type=type(exc).__name__)
+        return TokenSweepStatus(
+            scheduled=True, overdue=None, detail=f"overdue: {type(exc).__name__}"
+        )
+    return TokenSweepStatus(scheduled=True, overdue=overdue, detail=None)
 
 
 def _as_rfc3339(at: datetime) -> str:

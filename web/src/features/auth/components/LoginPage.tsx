@@ -1,6 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, useSearchParams } from 'react-router';
 
+import { FORGOT_PASSWORD_LABEL } from '@/features/accountMail/accountMailCopy';
+
 import { LOGIN_PENDING_LABEL, LOGIN_SUBMIT_LABEL } from '../authCopy';
 import { useAuth } from '../hooks/useAuth';
 import { loginMutationKey, useLogin } from '../hooks/useLogin';
@@ -21,6 +23,10 @@ import type { Credentials } from '../types';
  *
  * `next` is attacker-chosen (it arrives in a link), so it only ever reaches `Navigate` through
  * `safeNext` (AC-43).
+ *
+ * Slice 2.5 (AC-49): **Forgot your password?** → `/reset-password`, and `invalid_credentials` gains
+ * a second sentence (`authErrorCopy`'s `note`) — an address registered but not yet confirmed has no
+ * account, so it fails exactly as a wrong password does, and the note says what to do about it.
  */
 export function LoginPage() {
   const auth = useAuth();
@@ -57,6 +63,15 @@ export function LoginPage() {
         error={login.error}
         onSubmit={submit}
       >
+        <p className="text-sm text-slate-600">
+          {/* Exactly `/reset-password`, whatever `next` is: a reset ends in "log in", not in `next`. */}
+          <Link
+            to="/reset-password"
+            className="font-medium text-slate-900 underline underline-offset-2"
+          >
+            {FORGOT_PASSWORD_LABEL}
+          </Link>
+        </p>
         <p className="text-sm text-slate-600">
           New here?{' '}
           <Link

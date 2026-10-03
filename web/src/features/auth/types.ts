@@ -57,6 +57,8 @@ export const AUTH_ERROR_CODES = [
   'refresh_token_reused',
   'refresh_in_progress',
   'invalid_access_token',
+  /** Slice 2.5: a confirmation or reset link that is expired, used, or was never issued. */
+  'link_invalid',
 ] as const;
 
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];

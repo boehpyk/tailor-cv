@@ -132,6 +132,9 @@ def _worker_use_cases(settings: Settings, session: AsyncSession) -> list[object]
         container._build_export_use_case(settings, session),
         container._build_export_sweep_use_case(settings, session),
         purge,
+        container._build_registration_delivery(settings, session),
+        container._build_password_reset_delivery(settings, session),
+        container._build_identity_token_sweep(session),
     ]
 
 

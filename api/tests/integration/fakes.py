@@ -43,8 +43,9 @@ Used by:
   (one instance, one configured outcome, a `.calls` / `.enqueued` log); `MissingFileStore` is a third
   `FileStorePort` stand-in beside the pre-existing `InMemoryFileStore` and `AlwaysFailingFileStore`,
   for the one case neither covers — a `ready` job's `get` finding nothing (X-47).
-- `tests/integration/identity/{test_register_user,test_log_in,test_refresh_login,test_log_out,
-  test_get_current_user,test_revoke_all_logins}.py` (T13 — the six slice-2.1 use cases).
+- `tests/integration/identity/{test_log_in,test_refresh_login,test_log_out,
+  test_get_current_user,test_revoke_all_logins}.py` (T13 — slice 2.1's use cases;
+  `test_register_user` went with `RegisterUser` in slice 2.5).
   `FakeUserRepository` and `FakeLoginRepository` are `add`-is-the-uniqueness-check and
   revocation-is-deletion respectively (technical plan §0.4, ADR-0020), mirroring
   `FakeGuestSessionRepository`'s shape one context over. `FakeLoginRepository.
@@ -82,7 +83,9 @@ Used by:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+import copy
+import hashlib
+from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import NamedTuple, Protocol
 from uuid import UUID, uuid4
@@ -95,17 +98,23 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
+from tailorcraft.domain.identity.account_mail import AccountMail
 from tailorcraft.domain.identity.claim import ClaimedGuestWork
 from tailorcraft.domain.identity.errors import (
     AccessTokenInvalid,
     EmailAlreadyRegistered,
     GuestSessionNotFound,
     LoginConcurrentlyRotated,
+    MailNotDelivered,
+    PasswordResetAlreadyIssued,
+    PendingRegistrationAlreadyIssued,
     UserNotFound,
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.password_reset import PasswordReset
+from tailorcraft.domain.identity.pending_registration import PendingRegistration
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
@@ -113,9 +122,13 @@ from tailorcraft.domain.identity.value_objects import (
     GuestSessionId,
     IssuedAccessToken,
     LoginId,
+    MintedOneTimeToken,
+    OneTimeToken,
     Password,
     PasswordHash,
+    PasswordResetId,
     PasswordVerdict,
+    PendingRegistrationId,
     RetiredRefreshToken,
     TokenHash,
     UserId,
@@ -295,9 +308,24 @@ class FakeUserRepository:
     async def save(self, user: User) -> None:
         self._by_id[user.id] = user
 
+    async def get_for_update(self, user_id: UserId) -> User:
+        """`get`; a single-threaded fake has no row lock to take (slice 2.5, T11)."""
+        return await self.get(user_id)
+
+    async def confirm_credential_unchanged(self, user_id: UserId, seen: PasswordHash) -> bool:
+        """True iff the stored hash is still exactly `seen`; False when the user is gone. Faithful,
+        so a test can make it answer False by saving a reset before the call (slice 2.5, T11)."""
+        user = self._by_id.get(user_id)
+        return user is not None and user.password_hash == seen
+
     def all(self) -> list[User]:
         """Test-only inspection, not part of `UserRepository`."""
         return list(self._by_id.values())
+
+    def drop(self, user_id: UserId) -> None:
+        """Test-only: the row vanishes, as an account deletion committing on another connection
+        would make it. Not part of `UserRepository`."""
+        self._by_id.pop(user_id, None)
 
 
 class FakeLoginRepository:
@@ -364,6 +392,16 @@ class FakeLoginRepository:
         self._by_id.clear()
         return count
 
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        """Delete every login of `user_id` and its retired tokens; another user's are untouched."""
+        gone = [login_id for login_id, login in self._by_id.items() if login.user_id == user_id]
+        for login_id in gone:
+            del self._by_id[login_id]
+        self._retired_by_hash = {
+            h: entry for h, entry in self._retired_by_hash.items() if entry[0] not in gone
+        }
+        return len(gone)
+
     def all(self) -> list[Login]:
         """Test-only inspection, not part of `LoginRepository`."""
         return list(self._by_id.values())
@@ -415,8 +453,8 @@ class RecordingPasswordHasher:
 class FakeAccessTokenPort:
     """In-memory `AccessTokenPort` (slice 2.1, T13). `issue` mints a distinct token string per call
     and records `(user_id, at)`; `verify` looks up the id that was returned for that exact string,
-    refusing an unrecognized one. None of T13's six use cases call `verify` — only `issue`, from
-    `RegisterUser`, `LogIn` and `RefreshLogin` — but the fake still needs a working `verify` to
+    refusing an unrecognized one. None of T13's use cases call `verify` — only `issue`, from
+    `LogIn` and `RefreshLogin` — but the fake still needs a working `verify` to
     satisfy `AccessTokenPort`'s `Protocol` under `mypy --strict`; the real adapter's own decode/claim
     rules (I-32 … I-40) are T25's.
     """
@@ -1383,3 +1421,379 @@ class RecordingGuestWorkClaim:
             raise self._transfer_error
         assert self._claimed is not None, "this double was built without a transfer outcome"
         return self._claimed
+
+
+# --- Slice 2.5 (T13): the email channel's doubles -------------------------------------------------
+#
+# **One shared call log.** Every double below takes an optional `log: list[str]` and appends
+# `"<port>.<method>"` to it as it is called, so a test that hands one list to all of them can assert
+# ORDER across ports — "the row is durable before the mail goes" (AC-9) is `index("pending.save_issued")
+# < index("mail.send:ConfirmYourEmail")`, not two end-state checks that pass in either order.
+#
+# **Aggregates are deep-copied in and out** of the two row stores. A use case holds the aggregate it
+# loaded and mutates it (`issue`) *before* it asks the port to persist; a store that handed back its
+# own instance would see the row "already issued" the instant the use case issued it, and the
+# `*AlreadyIssued` guard would trip on every call. A real database row is a separate object from the
+# one in the use case's hand, and so is this one.
+
+
+class FakePendingRegistrationRepository:
+    """In-memory `PendingRegistrationRepository`. `put` is the supersede (one row per address, newest
+    wins); `save_issued` refuses a row already issued (`PendingRegistrationAlreadyIssued`) — the
+    guard a concurrent delivery trips. `race_issued=True` makes `save_issued` refuse as if another
+    delivery had won between the use case's read and its write. `save_error` is raised by
+    `save_issued` instead (a failed commit)."""
+
+    def __init__(
+        self,
+        log: list[str] | None = None,
+        *,
+        race_issued: bool = False,
+        save_error: Exception | None = None,
+    ) -> None:
+        self._log = log if log is not None else []
+        self._rows: dict[PendingRegistrationId, PendingRegistration] = {}
+        self._race_issued = race_issued
+        self._save_error = save_error
+        self.put_calls: list[PendingRegistration] = []
+
+    def next_identity(self) -> PendingRegistrationId:
+        return PendingRegistrationId(value=uuid4())
+
+    def seed(self, pending: PendingRegistration) -> None:
+        """Test-only: a row "already in the database". Logs nothing."""
+        self._rows[pending.id] = copy.deepcopy(pending)
+
+    async def put(self, pending: PendingRegistration) -> None:
+        self._log.append("pending.put")
+        self.put_calls.append(copy.deepcopy(pending))
+        for row_id, row in list(self._rows.items()):
+            if row.email == pending.email:
+                del self._rows[row_id]
+        self._rows[pending.id] = copy.deepcopy(pending)
+
+    async def get(self, pending_id: PendingRegistrationId) -> PendingRegistration | None:
+        self._log.append("pending.get")
+        row = self._rows.get(pending_id)
+        return copy.deepcopy(row) if row is not None else None
+
+    async def lock_by_token_hash(self, token_hash: TokenHash) -> PendingRegistration | None:
+        self._log.append("pending.lock_by_token_hash")
+        for row in self._rows.values():
+            if row.token_hash == token_hash:
+                return copy.deepcopy(row)
+        return None
+
+    async def save_issued(self, pending: PendingRegistration) -> None:
+        self._log.append("pending.save_issued")
+        if self._save_error is not None:
+            raise self._save_error
+        stored = self._rows.get(pending.id)
+        if self._race_issued or (stored is not None and stored.token_hash is not None):
+            raise PendingRegistrationAlreadyIssued()
+        self._rows[pending.id] = copy.deepcopy(pending)
+
+    async def remove(self, pending_id: PendingRegistrationId) -> None:
+        self._log.append("pending.remove")
+        self._rows.pop(pending_id, None)
+
+    def all(self) -> list[PendingRegistration]:
+        """Test-only inspection (copies), not part of the port."""
+        return [copy.deepcopy(r) for r in self._rows.values()]
+
+
+class FakePasswordResetRepository:
+    """In-memory `PasswordResetRepository`. `save_issued` refuses a row already issued and — the
+    port's contract — deletes every *other* reset of the same account in the same call.
+    `lose_lock=True` makes `lock_by_token_hash` answer `None` once, as if a concurrent confirm used
+    or superseded the reset between `find_by_token_hash` and the lock (`ResetPassword`'s step 4)."""
+
+    def __init__(
+        self,
+        log: list[str] | None = None,
+        *,
+        race_issued: bool = False,
+        lose_lock: bool = False,
+    ) -> None:
+        self._log = log if log is not None else []
+        self._rows: dict[PasswordResetId, PasswordReset] = {}
+        self._race_issued = race_issued
+        self._lose_lock = lose_lock
+        self.added: list[PasswordReset] = []
+
+    def next_identity(self) -> PasswordResetId:
+        return PasswordResetId(value=uuid4())
+
+    def seed(self, reset: PasswordReset) -> None:
+        """Test-only: a row "already in the database". Logs nothing."""
+        self._rows[reset.id] = copy.deepcopy(reset)
+
+    async def add(self, reset: PasswordReset) -> None:
+        self._log.append("resets.add")
+        self.added.append(copy.deepcopy(reset))
+        self._rows[reset.id] = copy.deepcopy(reset)
+
+    async def get(self, reset_id: PasswordResetId) -> PasswordReset | None:
+        self._log.append("resets.get")
+        row = self._rows.get(reset_id)
+        return copy.deepcopy(row) if row is not None else None
+
+    def _by_hash(self, token_hash: TokenHash) -> PasswordReset | None:
+        for row in self._rows.values():
+            if row.token_hash == token_hash:
+                return copy.deepcopy(row)
+        return None
+
+    async def find_by_token_hash(self, token_hash: TokenHash) -> PasswordReset | None:
+        self._log.append("resets.find_by_token_hash")
+        return self._by_hash(token_hash)
+
+    async def lock_by_token_hash(self, token_hash: TokenHash) -> PasswordReset | None:
+        self._log.append("resets.lock_by_token_hash")
+        if self._lose_lock:
+            self._lose_lock = False
+            return None
+        return self._by_hash(token_hash)
+
+    async def save_issued(self, reset: PasswordReset) -> None:
+        self._log.append("resets.save_issued")
+        stored = self._rows.get(reset.id)
+        if self._race_issued or (stored is not None and stored.token_hash is not None):
+            raise PasswordResetAlreadyIssued()
+        self._rows[reset.id] = copy.deepcopy(reset)
+        for row_id, row in list(self._rows.items()):
+            if row_id != reset.id and row.token_hash is not None and row.user_id == reset.user_id:
+                del self._rows[row_id]
+
+    async def remove(self, reset_id: PasswordResetId) -> None:
+        self._log.append("resets.remove")
+        self._rows.pop(reset_id, None)
+
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        self._log.append("resets.remove_all_for_user")
+        gone = [
+            i for i, r in self._rows.items() if r.token_hash is not None and r.user_id == user_id
+        ]
+        for row_id in gone:
+            del self._rows[row_id]
+        return len(gone)
+
+    def all(self) -> list[PasswordReset]:
+        """Test-only inspection (copies), not part of the port."""
+        return [copy.deepcopy(r) for r in self._rows.values()]
+
+
+class RecordingOneTimeTokenPort:
+    """`OneTimeTokenPort`: a distinct, valid 43-character token per call (a zero-padded counter) and
+    the SHA-256 hex of it as the hash. `minted` is the log of what it handed out."""
+
+    def __init__(self, log: list[str] | None = None) -> None:
+        self._log = log if log is not None else []
+        self.minted: list[MintedOneTimeToken] = []
+
+    def mint(self) -> MintedOneTimeToken:
+        self._log.append("tokens.mint")
+        token = OneTimeToken(value=f"{len(self.minted) + 1:043d}")
+        minted = MintedOneTimeToken(
+            token=token,
+            token_hash=TokenHash(value=hashlib.sha256(token.value.encode()).hexdigest()),
+        )
+        self.minted.append(minted)
+        return minted
+
+
+class RecordingAccountMailer:
+    """`AccountMailPort` that records what it was asked to send. `failure` is raised by `send` (after
+    the call is logged), as the real adapter's `MailNotDelivered` floor would."""
+
+    def __init__(
+        self, log: list[str] | None = None, *, failure: MailNotDelivered | None = None
+    ) -> None:
+        self._log = log if log is not None else []
+        self._failure = failure
+        self.sent: list[AccountMail] = []
+
+    async def send(self, mail: AccountMail) -> None:
+        self._log.append(f"mail.send:{type(mail).__name__}")
+        self.sent.append(mail)
+        if self._failure is not None:
+            raise self._failure
+
+
+class RecordingAccountMailQueue:
+    """`AccountMailQueuePort` that records the ids it was handed. `error` is raised after logging."""
+
+    def __init__(self, log: list[str] | None = None, *, error: Exception | None = None) -> None:
+        self._log = log if log is not None else []
+        self._error = error
+        self.registrations: list[PendingRegistrationId] = []
+        self.resets: list[PasswordResetId] = []
+
+    async def enqueue_registration(self, pending_id: PendingRegistrationId) -> None:
+        self._log.append("queue.enqueue_registration")
+        self.registrations.append(pending_id)
+        if self._error is not None:
+            raise self._error
+
+    async def enqueue_password_reset(self, reset_id: PasswordResetId) -> None:
+        self._log.append("queue.enqueue_password_reset")
+        self.resets.append(reset_id)
+        if self._error is not None:
+            raise self._error
+
+
+class LoggingUserRepository(FakeUserRepository):
+    """`FakeUserRepository` that appends `users.<method>` to a shared log. `confirm_calls` keeps the
+    arguments of every `confirm_credential_unchanged`."""
+
+    def __init__(self, log: list[str]) -> None:
+        super().__init__()
+        self._log = log
+        self.confirm_calls: list[tuple[UserId, PasswordHash]] = []
+
+    async def add(self, user: User) -> None:
+        self._log.append("users.add")
+        await super().add(user)
+
+    async def get(self, user_id: UserId) -> User:
+        self._log.append("users.get")
+        return await super().get(user_id)
+
+    async def find_by_email(self, email: EmailAddress) -> User | None:
+        self._log.append("users.find_by_email")
+        return await super().find_by_email(email)
+
+    async def save(self, user: User) -> None:
+        self._log.append("users.save")
+        await super().save(user)
+
+    async def get_for_update(self, user_id: UserId) -> User:
+        self._log.append("users.get_for_update")
+        return await super().get_for_update(user_id)
+
+    async def confirm_credential_unchanged(self, user_id: UserId, seen: PasswordHash) -> bool:
+        self._log.append("users.confirm_credential_unchanged")
+        self.confirm_calls.append((user_id, seen))
+        return await super().confirm_credential_unchanged(user_id, seen)
+
+
+class LoggingLoginRepository(FakeLoginRepository):
+    """`FakeLoginRepository` that appends `logins.<method>` to a shared log."""
+
+    def __init__(self, log: list[str]) -> None:
+        super().__init__()
+        self._log = log
+
+    async def add(self, login: Login) -> None:
+        self._log.append("logins.add")
+        await super().add(login)
+
+    async def remove_all_for_user(self, user_id: UserId) -> int:
+        self._log.append("logins.remove_all_for_user")
+        return await super().remove_all_for_user(user_id)
+
+
+class LoggingPasswordHasher(RecordingPasswordHasher):
+    """`RecordingPasswordHasher` that appends `hasher.hash` / `hasher.verify` to a shared log.
+    `hash_raises` is raised by `hash`; `after_verify`, when set, runs once `verify` has produced its
+    verdict and before it returns — the window in which a reset can commit while a login is
+    verifying (technical plan §0.7)."""
+
+    def __init__(
+        self,
+        log: list[str],
+        *,
+        verify_result: PasswordVerdict = PasswordVerdict.MATCH,
+        hash_result: PasswordHash | None = None,
+        hash_raises: Exception | None = None,
+        after_verify: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        super().__init__(verify_result=verify_result, hash_result=hash_result)
+        self._log = log
+        self._hash_raises = hash_raises
+        self._after_verify = after_verify
+
+    async def hash(self, password: Password) -> PasswordHash:
+        self._log.append("hasher.hash")
+        if self._hash_raises is not None:
+            self.hash_calls.append(password)
+            raise self._hash_raises
+        return await super().hash(password)
+
+    async def verify(self, password: Password, against: PasswordHash | None) -> PasswordVerdict:
+        verdict = await super().verify(password, against)
+        self._log.append("hasher.verify")
+        if self._after_verify is not None:
+            await self._after_verify()
+        return verdict
+
+
+class LoggingEventPublisher(RecordingEventPublisher):
+    """`RecordingEventPublisher` that appends `events.publish` to a shared log."""
+
+    def __init__(self, log: list[str]) -> None:
+        super().__init__()
+        self._log = log
+
+    async def publish(self, *events: DomainEvent) -> None:
+        self._log.append("events.publish")
+        await super().publish(*events)
+
+
+async def commit_a_reset_elsewhere(
+    users: FakeUserRepository, user: User, new_hash: PasswordHash, at: datetime
+) -> None:
+    """What a password reset committing on another connection does to the stored row: replace it
+    with a **different instance** carrying `new_hash`, so the aggregate a use case already holds
+    keeps its old hash — as a row loaded before the reset would. (Mutating `user` in place would make
+    "seen" and "stored" one object and the re-check vacuously true.)"""
+    replacement = User.register_with_password(user.id, user.email, new_hash, at=at)
+    replacement.release_events()
+    await users.save(replacement)
+
+
+class FakeExpiredIdentityTokens:
+    """In-memory `ExpiredIdentityTokenPort`: three lists of `expires_at` instants. Each
+    `delete_expired_*` removes at most `limit` rows with `expires_at <= as_of` (inclusive, as every
+    aggregate's `is_expired` is) and logs `(kind, as_of, limit, deleted)` in `calls`. `fail_with` is
+    raised by every `delete_expired_*` once `fail_after` calls have succeeded."""
+
+    def __init__(
+        self,
+        *,
+        pending: Sequence[datetime] = (),
+        resets: Sequence[datetime] = (),
+        logins: Sequence[datetime] = (),
+        fail_with: Exception | None = None,
+        fail_after: int = 0,
+    ) -> None:
+        self.pending = list(pending)
+        self.resets = list(resets)
+        self.logins = list(logins)
+        self._fail_with = fail_with
+        self._fail_after = fail_after
+        self.calls: list[tuple[str, datetime, int, int]] = []
+
+    def _delete(self, kind: str, rows: list[datetime], as_of: datetime, limit: int) -> int:
+        if self._fail_with is not None and len(self.calls) >= self._fail_after:
+            raise self._fail_with
+        doomed = [r for r in rows if r <= as_of][:limit]
+        for row in doomed:
+            rows.remove(row)
+        self.calls.append((kind, as_of, limit, len(doomed)))
+        return len(doomed)
+
+    async def count_overdue(self, as_of: datetime, grace: timedelta) -> int:
+        cutoff = as_of - grace
+        return sum(
+            1 for rows in (self.pending, self.resets, self.logins) for r in rows if r <= cutoff
+        )
+
+    async def delete_expired_pending(self, as_of: datetime, limit: int) -> int:
+        return self._delete("pending", self.pending, as_of, limit)
+
+    async def delete_expired_resets(self, as_of: datetime, limit: int) -> int:
+        return self._delete("resets", self.resets, as_of, limit)
+
+    async def delete_expired_logins(self, as_of: datetime, limit: int) -> int:
+        return self._delete("logins", self.logins, as_of, limit)

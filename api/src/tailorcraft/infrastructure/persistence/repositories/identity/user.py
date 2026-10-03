@@ -16,16 +16,17 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, cast
 
 import structlog
-from sqlalchemy import select
+from sqlalchemy import literal, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 
 from tailorcraft.domain.identity.errors import EmailAlreadyRegistered, UserNotFound
 from tailorcraft.domain.identity.user import User
-from tailorcraft.domain.identity.value_objects import EmailAddress, UserId
+from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.persistence.database import violated_constraint
+from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 
 if TYPE_CHECKING:
     from tailorcraft.domain.identity.ports import UserRepository
@@ -134,6 +135,60 @@ class SqlAlchemyUserRepository:
         """
         self._session.add(user)
         await self._session.flush()
+
+    async def get_for_update(self, user_id: UserId) -> User:
+        """`get` under `SELECT … FOR UPDATE`: the user row is locked exclusively until the end of the
+        current transaction (technical plan §0.7, §0.8). Raises `UserNotFound`.
+
+        **`populate_existing`, because the lock is the point of the read.** A `select()` whose row is
+        already in the identity map hands back the mapped instance with its *loaded* attributes kept
+        (CLAUDE.md, 2.4's `d37481f`). The statement waits for any concurrent writer and then sees the
+        latest committed row, but without `populate_existing` that row would be discarded in favour of
+        whatever this session read before it waited — a `ResetPassword` would then act on a hash a
+        concurrent change had already replaced. With it, the instance is overwritten from the row the
+        lock was taken on.
+
+        Overwriting is safe here because nothing in the session should hold an unflushed change to
+        this user: `ResetPassword` takes this lock before it touches the aggregate. A caller that
+        dirtied the user first would have that change autoflushed by this very statement, which is
+        the ordinary ORM behaviour and not a lost update.
+        """
+        result = await self._session.execute(
+            select(User)
+            .where(_USER_ID == user_id)  # noqa: SIM300 -- column first, see the casts
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        found = result.scalar_one_or_none()
+        if found is None:
+            raise UserNotFound(f"no User with id {user_id!r}") from None
+        return found
+
+    async def confirm_credential_unchanged(self, user_id: UserId, seen: PasswordHash) -> bool:
+        """`SELECT 1 FROM identity_user WHERE id = :u AND password_hash = :seen FOR SHARE`.
+
+        **The shared lock is held until the end of the current transaction** — that is what makes a
+        reset's `get_for_update` wait for this login to commit, so the reset then deletes the `Login`
+        it wrote (technical plan §0.7, ADR-0028). Only `LogIn` calls it: account deletion re-checks
+        under `get_for_update` instead, since a shared lock upgraded to an exclusive one by two
+        concurrent deletions deadlocks.
+
+        Core, against the table, never the ORM: the answer must come from the row as it is *now*,
+        and an identity-map hit would answer from the hash this session loaded before verifying —
+        the very value being checked. Under READ COMMITTED a `FOR SHARE` that waited on a concurrent
+        writer re-evaluates its `WHERE` against the newly committed row, so a reset that committed
+        while this waited yields no row → `False`. No row also when the user is gone.
+
+        Compared on the hash, which `PasswordHashType` binds exactly as it stores it; the hash is a
+        credential and is never logged here.
+        """
+        result = await self._session.execute(
+            select(literal(1))
+            .select_from(user_table)
+            .where(user_table.c.id == user_id, user_table.c.password_hash == seen)
+            .with_for_update(read=True)
+        )
+        return result.first() is not None
 
 
 if TYPE_CHECKING:
