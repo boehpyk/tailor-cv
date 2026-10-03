@@ -20,7 +20,11 @@ PINNED = {
     "MAIL_SMTP_HOST": "mailpit",
     "MAIL_SMTP_PORT": "1025",
     "MAIL_SMTP_SECURITY": "none",
+    # Credentials pinned EMPTY: a real relay login in a dev .env must never be sent as AUTH to Mailpit.
+    "MAIL_SMTP_USERNAME": "",
+    "MAIL_SMTP_PASSWORD": "",
 }
+LOCAL_ORIGINS = ("http://localhost", "http://127.0.0.1")
 
 
 def load(path: str) -> dict:
@@ -57,8 +61,13 @@ def main(prod_path: str, dev_path: str) -> list[str]:
 
     for name in ("api", "worker", "beat"):
         env = env_of(dev_services.get(name) or {})
+        base = env.get("PUBLIC_BASE_URL", "")
+        if not any(base == o or base.startswith(o + ":") or base.startswith(o + "/") for o in LOCAL_ORIGINS):
+            errors.append(f"{dev_path}: {name} must pin PUBLIC_BASE_URL to an http://localhost or http://127.0.0.1 "
+                          f"origin in environment: (found {base!r}). The worker builds every emailed link from it; "
+                          "otherwise dev mail links to the .env's production origin.")
         for key, want in PINNED.items():
-            if env.get(key) != want:
+            if key not in env or env.get(key) != want:
                 errors.append(f"{dev_path}: {name} must pin {key}: {want} in environment: (found {env.get(key)!r}). "
                               "Otherwise a production-shaped .env delivers dev mail to real addresses.")
         if not env.get("MAIL_FROM_ADDRESS", "").strip():

@@ -1056,7 +1056,7 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   dev-ness follows the override file you load rather than a value someone remembered to change.
   **The same holds for `PUBLIC_BASE_URL`**, the origin 2.1's `Origin` check trusts: the root `.env`
   carried a production-shaped value, so every auth `POST` from `:8080` was 403
-  `origin_not_allowed`. `docker-compose.dev.yml` pins `PUBLIC_BASE_URL: http://localhost:8080`.
+  `origin_not_allowed`. `docker-compose.dev.yml` pins `PUBLIC_BASE_URL: http://localhost:8080`. Since 2.5 the **worker and beat** pin it too: the worker builds every emailed link from it, and `check-mail-compose.py` requires the pin (and empty `MAIL_SMTP_USERNAME`/`PASSWORD`) on all three.
   Recreating `api` to pick that up then died on `ModuleNotFoundError: jwt`: `make deps` syncs a
   *running* container, and a recreate goes back to the image, which predated the dependency. After
   a dependency lands, it is `up -d --build api worker beat`.
