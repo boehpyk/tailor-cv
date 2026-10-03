@@ -1052,6 +1052,17 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   true and hid the order. **Confirm a release-order claim by reading the script, every slice that
   relies on it.** A run uses the workflow from its own commit, so the fix takes effect with 2.4's
   own release.
+- **A single-file bind mount is pinned to the inode at container create, and `scp`/`rsync` replace
+  the file under a new inode.** The deploy synced `docker/nginx/default.conf` and ran
+  `docker compose up -d api nginx`; the nginx service spec had not changed, so nginx was not
+  recreated and kept serving the first release's file. Measured 2026-10-03: host inode 258354,
+  container inode 274226, `Referrer-Policy` count 0 in the container — **no nginx change reached
+  production between 2026-09-22 and 2.5's release**, and nothing errored. The release now runs
+  `up -d --force-recreate --no-deps nginx` and then compares the running container's config to the
+  shipped file and greps `nginx -T` for `Referrer-Policy`, under `set -euo pipefail`. Confirm what
+  the running process serves, not what was shipped. (Rejected: mounting a directory — `dev.conf`
+  shares `docker/nginx/`, and it would also need a reload.)
+
 - **`env_file:` outranks the image's `ENV`, so the root `.env` decides `APP_ENV` on a real box.**
   `.env.example` therefore defaults to `APP_ENV=production` (the safe value) and
   `docker-compose.dev.yml` pins `APP_ENV: dev` in `environment:` (which outranks `env_file:`), so

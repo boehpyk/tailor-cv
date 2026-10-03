@@ -127,7 +127,15 @@ jobs:
 
             # Publish the new frontend bundle, then bring up the API.
             docker compose up -d web
-            docker compose up -d api nginx
+            docker compose up -d api
+
+            # nginx is force-recreated EVERY release. Its conf is a single-file bind mount, which is
+            # pinned to the inode present at container create, and the scp step above replaces the
+            # file under a NEW inode. `up -d nginx` sees an unchanged service spec and leaves the
+            # container serving the first release's config for ever (measured 2026-10-03: no nginx
+            # change had reached production since 2026-09-22). --no-deps: api/web were just handled.
+            # Cost: a sub-second connection blip at the proxy.
+            docker compose up -d --force-recreate --no-deps nginx
 
             docker compose exec -T api alembic upgrade head
             # Started last, on the new image, against the migrated schema.
@@ -143,6 +151,14 @@ jobs:
                 exit 1
               fi
             done
+
+            # The same lesson for config: confirm what the RUNNING nginx loaded, not what was shipped.
+            # Byte-identical to the shipped file (catches any stale mount), and the Referrer-Policy
+            # header (AC-53, one-time tokens ride the URL) present in the loaded configuration.
+            docker compose exec -T nginx cat /etc/nginx/conf.d/default.conf | cmp - docker/nginx/default.conf \
+              || { echo "::error::nginx is serving a config that differs from the shipped one"; exit 1; }
+            docker compose exec -T nginx nginx -T 2>/dev/null | grep -q 'Referrer-Policy' \
+              || { echo "::error::loaded nginx config has no Referrer-Policy"; exit 1; }
 
             # Right image is half of it: a worker that consumes the wrong queues is green on
             # /health/ready (it still answers ping) while every run or export queues for ever.
