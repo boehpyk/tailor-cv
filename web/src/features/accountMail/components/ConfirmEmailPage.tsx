@@ -18,7 +18,7 @@ import {
   LOG_IN_LABEL,
   RESET_PASSWORD_LINK_LABEL,
 } from '../accountMailCopy';
-import { useFragmentToken } from '../fragmentToken';
+import { useFragmentLink } from '../fragmentToken';
 import {
   confirmRegistrationMutationKey,
   useConfirmRegistration,
@@ -58,8 +58,8 @@ function classify(error: Error): ConfirmFailure {
 }
 
 /**
- * `/confirm-email` (AC-46) — public. Reads the token from the link's fragment once
- * (`useFragmentToken`) and strips it before paint.
+ * `/confirm-email` (AC-46) — public. Reads the token from the link's fragment once per link
+ * (`useFragmentLink`) and strips it; a second link followed in this tab starts from idle again.
  *
  * - **Empty:** no token → *"This link is incomplete. …"* and no button; no request (V-62, V-63).
  * - **Idle:** **Confirm my email address** — confirmation waits for a click (OQ-4), so a mail
@@ -76,10 +76,26 @@ function classify(error: Error): ConfirmFailure {
  * no auth state: a visitor signed in as someone else stays exactly that (V-65).
  */
 export function ConfirmEmailPage(): React.JSX.Element {
-  const token = useFragmentToken();
+  const link = useFragmentLink();
+  const headingId = useId();
+
+  return (
+    <section aria-labelledby={headingId} className={sectionClass}>
+      <h2 id={headingId} className={headingClass}>
+        {CONFIRM_EMAIL_HEADING}
+      </h2>
+      {/* Keyed on the link, not the token: a second link followed in this tab (a `hashchange`)
+          remounts the outcome with a fresh mutation observer, so the last link's answer is gone and
+          the button is offered for the new one. React's own "reset state on identity" tool — no
+          effect, no `reset()` call to remember. */}
+      <ConfirmEmailOutcome key={link.generation} token={link.token} />
+    </section>
+  );
+}
+
+function ConfirmEmailOutcome({ token }: { readonly token: string | null }): React.JSX.Element {
   const confirm = useConfirmRegistration();
   const queryClient = useQueryClient();
-  const headingId = useId();
 
   function submit(presented: string): void {
     // 2.1's I-53 trap: the mutation cache, not `isPending`, holds inside a single tick.
@@ -95,11 +111,7 @@ export function ConfirmEmailPage(): React.JSX.Element {
     !confirm.isSuccess && failure !== 'link_invalid' && failure !== 'already_registered';
 
   return (
-    <section aria-labelledby={headingId} className={sectionClass}>
-      <h2 id={headingId} className={headingClass}>
-        {CONFIRM_EMAIL_HEADING}
-      </h2>
-
+    <>
       {token === null && <p className="text-sm text-slate-700">{LINK_INCOMPLETE}</p>}
 
       {confirm.isSuccess && (
@@ -129,7 +141,7 @@ export function ConfirmEmailPage(): React.JSX.Element {
           {confirm.isPending ? CONFIRMING_LABEL : CONFIRM_EMAIL_LABEL}
         </button>
       )}
-    </section>
+    </>
   );
 }
 

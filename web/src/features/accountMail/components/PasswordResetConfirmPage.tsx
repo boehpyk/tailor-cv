@@ -17,7 +17,7 @@ import {
   RESET_LINK_INVALID,
   SEND_NEW_LINK_LABEL,
 } from '../accountMailCopy';
-import { useFragmentToken } from '../fragmentToken';
+import { useFragmentLink } from '../fragmentToken';
 import {
   confirmPasswordResetMutationKey,
   useConfirmPasswordReset,
@@ -53,11 +53,27 @@ import type { SyntheticEvent } from 'react';
  *   (a 422 does not consume it) and the form stays.
  * - **503 / network:** distinct from pending; the button returns.
  *
- * The token is the `useFragmentToken` value for the page's whole life — in memory only, sent in a
- * JSON body only, never in a URL, a query key or storage (AC-51).
+ * The token is the current link's `useFragmentLink` value — in memory only, sent in a JSON body
+ * only, never in a URL, a query key or storage (AC-51). A second link followed in this tab replaces
+ * it and resets the form (/verify r1).
  */
 export function PasswordResetConfirmPage(): React.JSX.Element {
-  const token = useFragmentToken();
+  const link = useFragmentLink();
+
+  return (
+    // Not `aria-labelledby` the heading, unlike the other three screens: "Choose a new password"
+    // would then also be an accessible *label*, and a section labelled like the field inside it
+    // makes "the new-password field" ambiguous to anyone finding it by its label.
+    <section className={sectionClass}>
+      <h2 className={headingClass}>{RESET_CONFIRM_HEADING}</h2>
+      {/* Keyed on the link, as on /confirm-email: a second link in this tab remounts the form with
+          a fresh mutation observer and an empty field, so the last link's outcome is gone. */}
+      <PasswordResetForm key={link.generation} token={link.token} />
+    </section>
+  );
+}
+
+function PasswordResetForm({ token }: { readonly token: string | null }): React.JSX.Element {
   const [password, setPassword] = useState('');
   const reset = useConfirmPasswordReset();
   const queryClient = useQueryClient();
@@ -145,13 +161,5 @@ export function PasswordResetConfirmPage(): React.JSX.Element {
     );
   }
 
-  return (
-    // Not `aria-labelledby` the heading, unlike the other three screens: "Choose a new password"
-    // would then also be an accessible *label*, and a section labelled like the field inside it
-    // makes "the new-password field" ambiguous to anyone finding it by its label.
-    <section className={sectionClass}>
-      <h2 className={headingClass}>{RESET_CONFIRM_HEADING}</h2>
-      {body()}
-    </section>
-  );
+  return body();
 }
