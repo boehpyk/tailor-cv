@@ -18,7 +18,8 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: ten slices shipped (1.1–1.6, 2.1–2.4); slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> **Status: eleven slices shipped (1.1–1.6, 2.1–2.5); Phase 2 is closed, its gate met on 2026-10-03; Phase 3
+> is next. Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -29,11 +30,14 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was verified on 2026-10-01
 > (reviewer PASS in round 1, plus a real-Gemini manual pass), merged as PR #16 (`2427b67`) and
 > released the same day** (deploy run 36920406580). **Slice 2.5 `identity-email-verification` was
-> verified on 2026-10-03** (reviewer PASS in round 2, HEAD `e415e1e`, plus a manual `:8080` pass with
-> Mailpit). The canary (T0b), the production read (T46), Resend's DNS and the box's `MAIL_SMTP_*`
-> are done. Still open: `check-settings` with the 2.5 image on the box, which now gates **deploy
-> approval, not the merge** (the image exists only after the merge, and the deploy waits for the
-> required reviewer); T44's tracking-off and test-send; T49 after the release. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> verified on 2026-10-03 (reviewer PASS in round 2, plus a manual `:8080` pass with Mailpit), merged
+> as PR #17 (`eeec430`) and released the same day** (deploy run 37136396246). `check-settings` on
+> the 2.5 image gates **deploy approval, not the merge** (the image exists only after the merge).
+> Mail is delivered by Resend with `spf/dkim/dmarc=pass`, tracking off (ADR-0026's T44 amendment;
+> retention not yet read). **PR #18 (`dbeb328`)** fixed the deploy so nginx is recreated every
+> release and its *loaded* config verified: no nginx change had reached production since the first
+> release (footgun below). **Phase 2's gate is met** (clause 1 closed by a canary account that
+> crossed `03494836ce30` → `b1b518fe84b1`). Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -280,8 +284,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   "refused" test goes red on `DID NOT RAISE` rather than on the skeleton's `NotImplementedError`
 >   (T5's red was the latter, accepted on 2.3's precedent).
 >
-> - **2.5 `identity-email-verification`** (branch `feature/identity-email-verification`,
->   **verified 2026-10-03**, not yet merged) — the first **outbound channel**: account mail.
+> - **2.5 `identity-email-verification`** (PR #17, `eeec430`, **verified, merged, released
+>   2026-10-03**) — the first **outbound channel**: account mail.
 >   Registration stops enumerating and a forgotten password can be reset. Three ADRs: **ADR-0026**
 >   (account mail is a port, `AccountMailPort`, sent by the worker over SMTP submission on the
 >   standard library, STARTTLS required, not a guarded egress), **ADR-0027** (a pending

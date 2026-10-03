@@ -4656,8 +4656,8 @@ confirms the address and creates the account. *Forgot your password?* sends a re
 resetting signs every device out. It ships as `feature/identity-email-verification`: **3612 backend
 and 1021 frontend tests**, three new ADRs (0026, 0027, 0028), six amended ones, one migration
 (`b1b518fe84b1`), a fourth Celery queue, a new dev container (Mailpit, a fake post office), and the
-first `retention` job that runs **on by default**. It is implemented and **not yet verified**:
-`/verify` is next, and the vendor, the DNS records and the box's `.env` are still to come.
+first `retention` job that runs **on by default**. (How `/verify` and the release went is told at the
+end of this chapter: two review rounds, then three things that broke only in production.)
 
 ## A waiting room, not a half-built house
 
@@ -4896,16 +4896,102 @@ because the hash is committed before the mail leaves. And where something genuin
 impossible (a login racing a reset), the check happens at the last possible moment, under a lock,
 and the lock is the strongest one needed, taken first.
 
+## `/verify`: two rounds, and the bugs were not where the code was
+
+The reviewer's first pass found one MAJOR, and it was the same *kind* of bug as the deadlock story
+above, in a place nobody had drawn on the lock table. Mailing a reset link "issues" the reset row:
+an `UPDATE` that writes the token's hash and attaches the account. That `UPDATE` locks the **reset
+row** first, and only then does the foreign key's hidden trigger reach over and take a share lock
+on the **user row**. Account erasure goes the other way: user row first, then a `DELETE` of every
+reset for that address. Two people, two doors, each holding one and reaching for the other. A test
+on two real connections reproduced it four times out of four, with Postgres's own deadlock counter
+ticking each time. The fix is one line before the `UPDATE`: lock the user first, explicitly, like
+every other actor already did. The lesson is uncomfortable: **a lock order is only as good as the
+list of everyone who takes the locks, and a foreign key is someone.** The plan's own table had the
+delivery row in the wrong order, and nobody saw it because the trigger never appears in the code.
+
+There was a small trap inside the fix. SQLAlchemy's `with_for_update(key_share=True)` reads like
+"take a key-share lock", and on PostgreSQL it renders `FOR NO KEY UPDATE`, a *stronger* lock. You
+need `read=True` as well. The first draft fell into it and hung a test for ten minutes, and while
+checking that, the agent found that 2.3's run insert had been taking the stronger lock since 2.3
+shipped. It is still correct (the stronger lock still blocks the thing it was meant to block), so
+it stays, written down. **Compile the query and read the SQL; a keyword argument's name is not
+documentation.**
+
+Then the manual pass, which is where this round earned its keep. Four things no test had seen:
+
+- **The test suite was posting work to the dev worker.** Every `make check` quietly delivered about
+  150 Celery tasks (tailoring runs, PDF renders, mails) to the dev worker, which looked each id up
+  in the dev database, found nothing and shrugged. One test had been *written* to be isolated: it
+  built its own Celery app pointed at a spare Redis database and even asserted that the URL didn't
+  collide with a live one. But Celery prefers the `CELERY_BROKER_URL` environment variable over the
+  URL you hand its constructor, so the "isolated" app talked to the real broker, and the guard
+  checked a URL Celery never used. This is the `clear_redis` story from 1.6 again, one datastore
+  over: **isolation you can trust is a property of the connection you actually hold, not of the
+  string you passed in.** The guard now checks the URL Celery *uses*, and a recorder stands in for
+  publishing during tests. Dev-worker deliveries per suite run went from 150 to 0.
+- **A second link in the same tab did nothing.** Open an expired link, see "this link has expired",
+  then paste the fresh link into the same tab. The page kept the old message, the confirm button
+  never came back, and the token sat in the address bar, unstripped. Changing only the `#fragment`
+  is not a page load, so nothing re-read it. The hook now listens for `hashchange`, and each screen
+  keys its outcome on a counter (never on the token itself), so a new link gets a fresh screen.
+- **Dev mail linked to a domain we don't own.** The API's `PUBLIC_BASE_URL` was pinned to
+  `localhost:8080` in the dev override, but since 2.5 it is the *worker* that builds links, and the
+  worker read `.env`'s `https://tailorcraft.app`. Pinned now for worker and beat too, and the
+  pre-commit guard checks it.
+- **A race test could hang instead of failing**: a cleanup `DELETE` waited for ever behind a
+  session the failed test had abandoned. It now times out. A hanging test is worse than a red one,
+  because it says nothing at all.
+
+Round two: **PASS**. `make check` green three times, **3615 backend and 1027 frontend tests**.
+
+## The release, or: three ways to be "deployed" and not working
+
+2.5 merged as **PR #17 (`eeec430`)** and went live the same day. The code was fine. The release
+still taught three lessons, none of them about code:
+
+- **The settings check moved from "before merge" to "before approval".** The plan said
+  `check-settings` must pass on the 2.5 image before the merge. But the image is only built *by*
+  the merge. The real safety point is the manual approval that the deploy waits on, so the check
+  runs between the two. It did its job straight away: it refused the first sender address.
+- **A dead key looks exactly like a broken feature.** Every mail failed with SMTP **535**:
+  authentication refused. The key had been rotated after it leaked earlier in the day, and the copy
+  on the box was the old one. One bare login attempt from the box (no message, just `AUTH`)
+  separated "the key is wrong" from "the code is wrong" in a second. Then the new key didn't take
+  either, because `docker compose restart` does not re-read `env_file:`; only recreating the
+  container does. That footgun was already in CLAUDE.md, from 1.6. It still bit.
+- **nginx had been serving its first-day config for eleven days.** 2.5 added a `Referrer-Policy`
+  header to nginx, and production didn't send it. nginx mounts its config as a single file, and a
+  single-file bind mount is pinned to the file's *inode* when the container is created. The deploy
+  copies the config with `scp`, which writes a new file (a new inode), and then `docker compose up
+  -d` saw no change in the service definition and left nginx alone. So the container kept reading
+  the original file, and **no nginx change had reached production since the first release**. 2.5's
+  header was simply the first one anybody checked. **PR #18** recreates nginx on every release and
+  then checks the config nginx has actually *loaded*, failing the deploy if it differs from what
+  was shipped. That is the image-verification lesson from the very first slice, applied to config:
+  **check what is running, not what you sent.**
+
+## Phase 2, closed
+
+Phase 2's gate had three clauses. Two were met on 2026-10-01 by proof. The third, *an account
+survives a full deploy and migration cycle*, had no evidence, because no account existed on the
+box during any release. So before 2.5 shipped, a canary account was made in production under 2.4:
+one saved CV, one tailored run, three downloaded files. The release migrated the database from
+`03494836ce30` to `b1b518fe84b1`. Afterwards the owner signed in with the old password, re-opened
+the history entry and downloaded the files; then registered the same address and got *"You already
+have an account"*, confirmed, reset the password by mail, and every message arrived with
+`spf=pass dkim=pass dmarc=pass`. An hour later the token sweep's backlog read 0.
+
+**Phase 2 is done**: registration, saved CVs, history, the guest-to-account claim, and now mail.
+Five slices, five releases, and the gate met with evidence from production rather than from a test
+alone.
+
 ## What's next
 
-- **`/verify`** (T48), including a manual walk on `:8080` with Mailpit: register, confirm, log in,
-  claim; register an existing address; *Send it again*; reuse a link; reset with a second tab open;
-  then grep every log line for the address and the tokens.
-- **Before the merge:** the canary account on `cv.samolit.com` under 2.4's code (it closes Phase 2's
-  open gate clause after the release), the mail provider and its SPF/DKIM/DMARC records, and the
-  box's `.env` gaining `MAIL_*`. Without those, `check-settings` refuses and the API never starts,
-  which is the point.
-- **The numbers, for the record:** register p95 60 ms against a 300 ms budget; a sweep of 30,000
-  expired rows in 0.17 s against 2 s. Every budget held, comfortably. The bug they found was not a
-  budget at all.
-- **The Redis result backend** is now unused; removing it is a decision for the owner.
+- **Phase 1's gate is still unrecorded** (OQ-7): someone who is not the owner tailors a real CV
+  against a real posting and downloads a PDF. It is the one gate left open behind us.
+- **Phase 3** starts with `/plan`: an application-tracking board (3.1, built on 2.3's history),
+  a few PDF layout templates (3.2), and clearer rate-limit feedback in the UI (3.3).
+- **Small, owned, triggered:** Resend's retention value goes into ADR-0026 when it's read; the
+  `LogIn` rehash lock upgrade must be fixed before the argon2 parameters ever change; the Redis
+  result backend is unused now, and removing it is the owner's call.
