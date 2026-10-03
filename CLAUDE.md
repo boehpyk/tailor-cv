@@ -18,7 +18,7 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: nine slices shipped (1.1–1.6, 2.1–2.3); slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> **Status: ten slices shipped (1.1–1.6, 2.1–2.4); slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -26,8 +26,12 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (deploy run 36265111930; the box's api/worker/beat all read `4c18557` on 2026-09-30). **Slice 2.3
 > `tailoring-application-history` was verified (three review rounds plus a real-browser pass and
 > one real-Gemini run, 2026-09-30), merged as PR #15 (`0b01537`) and released the same day**
-> (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was implemented and verified
-> on 2026-10-01 (reviewer PASS in round 1, plus a real-Gemini manual pass) and is open as PR #16.** Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was verified on 2026-10-01
+> (reviewer PASS in round 1, plus a real-Gemini manual pass), merged as PR #16 (`2427b67`) and
+> released the same day** (deploy run 36920406580). **Slice 2.5 `identity-email-verification` is
+> implemented (T1–T43, T47; 2026-10-03) and NOT yet verified** — `/verify` (T48) is next; the
+> canary (T0b), the mail vendor and DNS (T44), the box's `MAIL_*` `.env` (T45) and the production
+> read (T46) are still open, and T45 gates the merge. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -225,7 +229,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   in `test_me_history_delete.py` has no timeout, and eleven seed comments still say the refusal
 >   is "through the request route's composition root".
 >
-> - **2.4 `workspace-registration-cta`** (PR #16, **verified 2026-10-01**, awaiting merge) —
+> - **2.4 `workspace-registration-cta`** (PR #16, `2427b67`, **verified, merged, released 2026-10-01**) —
 >   a guest who tailored and then registers or signs in **keeps the work** (**ADR-0025**), by an
 >   explicit offer that names it (*Keep them in my account* / *Not now*) and never automatically: a
 >   guest cookie identifies a browser, not a person. `POST /api/me/guest-work/claim`, no body: the
@@ -267,12 +271,63 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   byte-identical by sha256 and inode) → *Not now* → second claim → the other tab's history link →
 >   account deletion (every row and file gone); 1 797 log lines, zero PII markers, both
 >   `identity.guest_work_claimed` lines captured and neither carrying a session id. **Carried:** the
->   purge CLI stops on `sessions_deleted == 0`, so a batch that only skipped ends a run early (safe;
->   `deleted + skipped == 0` next time `purge_command.py` is touched); OQ-12 (`__Host-tc_guest`) is
+>   purge CLI stopped on `sessions_deleted == 0`, so a batch that only skipped ended a run early
+>   (**fixed in 2.5**, T6 `8714389`: it stops on `deleted + skipped == 0`); OQ-12 (`__Host-tc_guest`) is
 >   recorded, not fixed; a guest refetch after claiming a run still *in flight* is untested (none on
 >   a succeeded run). **From 2.5, a value object's skeleton gets a no-op `__post_init__`**, so a
 >   "refused" test goes red on `DID NOT RAISE` rather than on the skeleton's `NotImplementedError`
 >   (T5's red was the latter, accepted on 2.3's precedent).
+>
+> - **2.5 `identity-email-verification`** (branch `feature/identity-email-verification`,
+>   **implemented 2026-10-03, not yet verified**) — the first **outbound channel**: account mail.
+>   Registration stops enumerating and a forgotten password can be reset. Three ADRs: **ADR-0026**
+>   (account mail is a port, `AccountMailPort`, sent by the worker over SMTP submission on the
+>   standard library, STARTTLS required, not a guarded egress), **ADR-0027** (a pending
+>   registration, confirmed by a one-time link) and **ADR-0028** (a reset proves the address and
+>   revokes every login). Amended: ADR-0005 (four queues), 0008 (h) (register 202 for every
+>   address; 409 moves to confirmation), 0018 (b) (a second timer job, on by default), 0019 (a)
+>   (`jobs.identity_token_sweep`), 0020 (sweep + reset revocation), 0021 (the `Origin` set is
+>   **eight**; the new limiters fail closed). **An unconfirmed sign-up is not an unverified
+>   `User`**: it is a `PendingRegistration` in its own table (one per address, newest wins by
+>   `ON CONFLICT (email) DO UPDATE`, ≤ 24 h), so "every `User` proved its address" is true by
+>   construction and "what may an unverified account do?" has the answer *nothing*. **Register has
+>   no branch**: Origin → per-IP → parse → per-address (3/h) → policy → one argon2 hash → one upsert
+>   → enqueue the **id** → 202, empty, no cookie — the same statements for every address, with zero
+>   `UserRepository` calls (structural test, mutation-proven). The **worker** looks the address up
+>   and sends either *Confirm your email* or *You already have an account* (no token). Reset-request
+>   is the same shape with no hash at all. **The worker mints the token** (256 bits, 43 chars,
+>   SHA-256 at rest, in the URL **fragment**, masked `OneTimeToken(***)`), so no credential rides
+>   the broker, and **commits the hash, then sends**: a crash between the two leaves no mail rather
+>   than a dead link, and the issued-once guard (`token_hash IS NULL`) makes a redelivery `SKIPPED`.
+>   Confirmation needs an explicit click (mail scanners fetch links) and **does not sign in** (the
+>   pre-hijack). Reset-confirm replaces the hash and **deletes every `Login` and reset** in one
+>   transaction, signing nobody in; React signs the tab out as `password_changed` and broadcasts.
+>   **The login/reset race**: `LogIn` re-checks `SELECT 1 … WHERE password_hash = :seen FOR SHARE`
+>   after its verify, so a reset committed mid-verify is `InvalidCredentials` and a login first
+>   makes the reset wait and then delete it; `DeleteOwnAccount` re-checks under **`FOR UPDATE`**
+>   (`get_for_update`; see the lock-upgrade footgun). Lock order: the **user before any reset**,
+>   everywhere. **The identity token sweep** (`retention.sweep_expired_identity_tokens`, hourly,
+>   unconditional, batches of 1 000, inclusive expiry) deletes expired pending rows, resets and
+>   logins — **on by default**, unlike the purge, because every code path already refuses those
+>   rows; `/health/ready` reports `jobs.identity_token_sweep.overdue` (rows expired > two intervals
+>   ago) as a fact. **A fourth queue, `mail`**: four kombu members, the release check lists four.
+>   **Mailpit** in dev (UI `127.0.0.1:8025`) and CI; the dev override pins `MAIL_SMTP_*` in
+>   `environment:` so a real `.env` cannot mail strangers. React: `features/accountMail/`
+>   (`/confirm-email`, `/reset-password`, `/reset-password/confirm`, *Check your email* with *Send
+>   it again*), the fragment read once and stripped, `Referrer-Policy: no-referrer` on the SPA.
+>   Migration **`b1b518fe84b1`** (expand-only, two tables plus `ix_identity_login_expires_at`; the
+>   downgrade refuses nothing — the rows are one-time and ≤ 24 h). `check-settings` has **eleven**
+>   refusals. **3612 backend and 1021 frontend tests.** Measured: T42 on the production image with
+>   production argon2, n = 200 interleaved: register new vs. existing Δ **0.56 %**, reset-request
+>   known vs. unknown Δ **1.63 %**, login wrong-password vs. unknown-email Δ **0.42 %** (≤ 10 %);
+>   T41's burst after the `ignore_result` fix: 2 × 3 600 resets, 0 probe timeouts, `/health/live`
+>   p50 **3.9 ms** (AC-56/AC-57's own numbers are not yet in the task list). **AC-62 holds**:
+>   `git diff main --stat` over `infrastructure/llm`, `domain/tailoring` and
+>   `application/tailoring` is empty (`infrastructure/tailoring/queue.py` changed — the enqueue
+>   fix, outside the LLM boundary). Spec rows amended during `/implement`: AC-5 (`MailNotDelivered`
+>   carries `smtp_code`), V-23 (`SENT` has no reply code), AC-14 (`FOR UPDATE`, not `FOR SHARE`),
+>   AC-32 (eight `Origin` routes — the spec's "seven" missed `delete-account`), AC-41 (the
+>   mutation is `<=` → `<`; the spec had it backwards).
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -685,6 +740,14 @@ python -m tailorcraft.cli erase-account --user-id <uuid>
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
 # deliberately NO setting that weakens the SSRF address policy.
 
+# Account mail (slice 2.5). Dev and CI deliver to Mailpit, never to a real inbox: the dev override
+# pins MAIL_SMTP_HOST=mailpit / PORT=1025 / SECURITY=none in environment:, outranking .env.
+make mail.ui             # prints the Mailpit UI URL (127.0.0.1:8025; SMTP is unpublished)
+make compose.mail.check  # the dev mail-wiring guard (also a pre-commit check on staged compose files)
+make nginx.referrer.check  # Referrer-Policy: no-referrer on the SPA + the meta tag (also pre-commit)
+# The identity token sweep runs hourly on beat, always on. Its fact, like the purge's:
+curl -s localhost:8080/health/ready | jq .jobs.identity_token_sweep   # overdue should read 0
+
 # LLM evaluation — NOT a test. Calls the real API, costs money, is not in `make check`.
 make eval
 
@@ -881,6 +944,21 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   wiped during the boot refresh" had no `booting` branch to remount in the current code. AC-51 was
   committed as a regression guard **with no recorded red** (`2c01310`), and the real-browser
   attempt moved to `/verify`.
+- **A test that pins the Alembic head as a revision id breaks on the next migration** (2.5,
+  `0cc192c`) — red on the revision alone while every schema fact still holds. "At head" means
+  `ScriptDirectory.from_config(…).get_current_head()`; pin a revision id only where the test is
+  about *that* revision.
+- **A race test's staging seam must survive the fix** (2.5, `672c5a5`). The lock-upgrade test first
+  hooked `confirm_credential_unchanged` — the very method the fix stopped calling — so its "was the
+  race staged?" guard failed against the correct code. Stage at the *moment* the spec names (after
+  the verify, before the first lock), wrapping every entry point that can occupy it.
+- **A spy installed before the test's setup records the setup** (2.5, `feec266`). A
+  `replaceState` spy saw the harness's own `openLink()` put the token in the URL. Clear the spy
+  after setup, and give the absence assertion a positive control (the app made ≥ 2 calls).
+- **pytest in the api container cannot see repo-root files** (2.5). Compose and nginx config checks
+  live in `scripts/git-hooks/` as Python checks run by pre-commit on the **staged** content, plus a
+  make target (`compose.mail.check` `252baa8`, `nginx.referrer.check` `6471056`). CI does not run
+  hook checks — a known gap, chosen by the owner.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
@@ -901,6 +979,9 @@ a hurry. Constitution §8 applies to every slice:
   line.
 - The LLM provider sees the CV. That is unavoidable and is **stated to the user**, not buried.
   Nothing else is sent: no email, no account id, no other user's content in the same prompt.
+- **The mail provider sees the address** and a plain-text message carrying at most a one-time link
+  (2.5, ADR-0026): no CV, no name, no HTML, tracking off. A plaintext token exists in one worker's
+  memory and one mail, never in the broker, a log line or a row (only its SHA-256 is stored).
 - **Guest data lives ≤ 24 h** and a scheduled job enforces it (FR-6,
   [ADR-0006](./docs/adr/0006-guest-retention-and-local-file-storage.md)). Registered users' data is
   never touched by that job, and the test proving it is written in the same slice as the job.
@@ -949,11 +1030,12 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   happened to an agent that already knew about this trap. After any change to `task_queues`, compare
   the broker's binding sets against the new declarations — but read them correctly: kombu names a
   binding set after the **exchange**, not the queue, so with all queues on the one default `celery`
-  exchange (`task_default_exchange`, unchanged through slice 1.5's third queue), the healthy state is
-  **three members in the single set `_kombu.binding.celery`** — `_kombu.binding.tailoring` and
-  `_kombu.binding.export` do not exist at all, and finding "one member each in three sets" describes a
-  broker with three exchanges, not this one. A stale binding is a **fourth** member of
-  `_kombu.binding.celery`, which is exactly the shape the `SREM` example above deletes. Also:
+  exchange (`task_default_exchange`, unchanged through slice 2.5's fourth queue), the healthy state is
+  **four members in the single set `_kombu.binding.celery`** (`celery`, `tailoring`, `export`,
+  `mail` since 2.5) — `_kombu.binding.tailoring` and friends do not exist at all, and finding "one
+  member each in four sets" describes a broker with four exchanges, not this one. A stale binding is
+  a **fifth** member of `_kombu.binding.celery`, which is exactly the shape the `SREM` example above
+  deletes. Also:
   `CELERY_BROKER_URL` is db `/1` — `redis-cli` without `-n 1` reads db `0`, where every set is empty,
   which reads as a clean broker for the wrong reason.
 - **Every container running application code appears in the deploy's `pull` list and in the
@@ -1167,6 +1249,23 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   (constraint `NOT VALID`, commit, then `VALIDATE`; `CONCURRENTLY` indexes in a non-transactional
   revision) and set a `lock_timeout`, so a busy table fails the deploy fast rather than queueing
   every writer behind it.
+- **A `FOR SHARE` re-check followed by `FOR UPDATE` on the same row in one transaction is a lock
+  upgrade, and two concurrent callers deadlock on it** (2.5, T14 → `643f701`). `DeleteOwnAccount`
+  re-checked the credential `FOR SHARE`, then erasure took the user row `FOR UPDATE`: two correct
+  deletions both held SHARE and both waited for UPDATE — one 503 (`deadlock_detected`), and a loser
+  arriving after the winner's commit read 403 instead of 401. **Take the strongest lock you will
+  need first.** The re-check is now `get_for_update` plus a hash comparison; `LogIn`, which never
+  upgrades, keeps `FOR SHARE`.
+- **`AsyncResult.__del__` unsubscribes synchronously on whichever thread drops it** (2.5,
+  `74e793e`). With a Redis result backend, `send_task` subscribes the process's one shared PubSub
+  connection to the task's result channel (from the `to_thread` worker) and returns an
+  `AsyncResult` the adapter discards; its `__del__` then unsubscribes **on the event loop**, two
+  threads drive one non-thread-safe connection, and the loop blocks on the socket — a burst of
+  reset requests wedged the production API for > 60 s, `/health/live` included. **Every
+  `send_task` from the API passes `ignore_result=True`**: `send_task` reads only its own kwarg and
+  never the app's `task_ignore_result`, so the config key would not have fixed it. Visible only
+  under concurrent enqueue bursts on the production image (faulthandler found the frame). Nothing
+  reads a task result any more, so the result backend is unused — dropping it is the owner's call.
 - **`base64.urlsafe_b64decode` silently discards characters outside its alphabet**, so
   `"not-base64!!"` decodes. Anything decoded from a client (the history cursor) uses
   `b64decode(s, altchars=b"-_", validate=True)`. Parse integers from it as digits only, because

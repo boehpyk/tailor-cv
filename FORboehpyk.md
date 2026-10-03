@@ -4636,3 +4636,274 @@ the run.
 - **2.5** brings an email channel, and with it registration that stops revealing which emails exist.
 - **Still owed by the owner:** Phase 1's gate (OQ-7), and now Phase 2's: *a guest → registered
   upgrade loses nothing* is proven (AC-34, and the manual walk), ready to be recorded.
+
+---
+
+# Slice 2.5 — the post office, or: proving you live at the address
+
+First, a postscript to 2.4's "what's next": it shipped. `/verify` passed in one round on 2026-10-01,
+it merged as PR #16 (`2427b67`) and it was released the same day.
+
+Since 2.1, registering has had an awkward honesty problem. Type an email address that already has
+an account and the form said so: **409, "an account with this email already exists"**. That's a
+free oracle. Anyone could feed it a list of addresses and learn who uses a CV-tailoring site, which
+says something about who might be looking for a new job. 2.1 knew this and wrote it down as a
+conceded weakness in ADR-0008, with a promise: *when there's an email channel, registration stops
+telling.* And without a way to send mail, a forgotten password was simply the end of the account.
+
+Slice 2.5 builds the channel. Registering now ends with *"Check your inbox"*. A link in the mail
+confirms the address and creates the account. *Forgot your password?* sends a reset link, and
+resetting signs every device out. It ships as `feature/identity-email-verification`: **3612 backend
+and 1021 frontend tests**, three new ADRs (0026, 0027, 0028), six amended ones, one migration
+(`b1b518fe84b1`), a fourth Celery queue, a new dev container (Mailpit, a fake post office), and the
+first `retention` job that runs **on by default**. It is implemented and **not yet verified**:
+`/verify` is next, and the vendor, the DNS records and the box's `.env` are still to come.
+
+## A waiting room, not a half-built house
+
+The obvious design is a boolean. Add `email_verified` to the user table, create the user straight
+away, flip the flag when the link is clicked. Every tutorial does this.
+
+Then try to answer the question the flag creates: *what may an unverified user do?* Sign in? Tailor?
+Save CVs? Claim guest work? Every route has to ask, every answer is a policy decision, and every
+forgotten check is a hole. Worse, the row **holds the address**. An attacker registers
+`you@example.com` with their own password, never confirms, and now you can't register at all until
+something cleans it up. And cleaning up means a job that deletes `User` rows automatically, which
+would be the first robot in this codebase allowed to delete accounts.
+
+2.5 doesn't build a half-finished house and put a "do not enter" sign on it. It has a **waiting
+room**. A sign-up is a `PendingRegistration`, in its own table, at most one per address, newest
+wins, gone in 24 hours. The `User` table is untouched until someone clicks the link. So the
+capability question has a one-word answer: an unverified account may do **nothing**, because there
+isn't one. "Every user proved their address" stops being a rule someone has to remember to check
+and becomes a fact about how users come into existence.
+
+**Lesson:** *state that would be a boolean is often a different thing.* When a flag would split an
+entity into two kinds with different rules, ask whether the second kind is really the same entity
+at all. Here it wasn't: a request to become a user is not a user.
+
+## The receptionist who says the same thing to everyone
+
+2.1's login already defends against enumeration with a decoy. It has to look the account up, so
+when the email is unknown it verifies the password against a fake hash anyway, and both answers
+cost the same ~50 ms of argon2. That works, but it's an equaliser: two different paths, carefully
+padded to look alike, which a future edit can quietly un-pad.
+
+Registration doesn't need to look anything up, so 2.5 makes it **not branch at all**. Every
+acceptable address runs exactly the same statements: check the origin, the per-IP limit, parse the
+address, the per-address limit, the password policy, **one** argon2 hash, **one** upsert, enqueue
+an id, answer `202` with an empty body. There's nothing to equalise because there's only one path.
+The decision ("is this a new person, or do they already have an account?") moves to the **worker**,
+which runs later, in another process, where nobody can time it. The worker sends either *"Confirm
+your email"* or *"You already have an account — sign in or reset your password"*. Only the owner of
+the inbox learns which.
+
+Think of a hotel receptionist asked "is Ms Smith staying here?". The bad receptionist checks the
+register and says yes or no. The good one says the same sentence to everyone: "I'll pass a message
+to the room." If there's a Ms Smith, she gets it.
+
+This is proved three ways, because "the code has no branch" is the kind of promise that erodes:
+**structurally** (the use case is not even given a `UserRepository`, and a test reads its
+constructor and its source to make sure), **behaviourally** (a recording double counts zero calls,
+paired with a positive check that the upsert and the enqueue really happened, so a do-nothing
+skeleton can't pass), and **by timing** on the production image with production argon2. Two
+hundred interleaved requests each: register for a new vs. an existing address, medians within
+**0.56 %**. Password-reset requests follow the same rule with no hash at all (**1.63 %**), and
+2.1's login equality survived 2.5's changes (**0.42 %**). The budget was 10 %.
+
+## The key is cut at the post office, not in the lobby
+
+A confirmation link carries a secret: a 256-bit random token. Where should it be made?
+
+If the web request made it, the plaintext would travel to the worker inside the Celery message,
+sitting in Redis next to an email address until a worker picked it up. That's a live credential in
+a store nobody thinks of as a credential store. So the request puts only an **id** on the queue,
+and the **worker** mints the token, stores its SHA-256, and mails the plaintext. The secret exists
+in one process's memory and one email. The database never sees it, the broker never sees it, and
+the token type prints itself as `OneTimeToken(***)` in case anything ever tries to log it. The
+link even carries it in the URL **fragment** (`#token=…`), which browsers don't send to servers;
+the page reads it once, strips it from the address bar, and the site sends
+`Referrer-Policy: no-referrer` so it can't leak onwards either.
+
+Then the worker has to do two things, store the hash and send the mail, and it can crash between
+them. Which goes first?
+
+- **Send, then commit**: a crash leaves a mail in your inbox whose link the database never heard
+  of. You click a link that says "invalid". That's a broken promise, delivered.
+- **Commit, then send** (chosen): a crash leaves a stored hash and no mail. The redelivered task
+  finds the row already issued and does nothing (`SKIPPED`), so no duplicate is ever sent, and the
+  user's *Send it again* button starts a fresh registration that supersedes the stuck one.
+
+The rule underneath: **every link that is mailed works.** A missing mail is annoying and
+recoverable with one click. A mailed link that doesn't work makes the product look broken and
+teaches people to distrust its mail, which is the one thing a password-reset channel can't afford.
+
+Confirming also takes an **explicit button press**, not just opening the link, because corporate
+mail scanners open links to check them, and some run JavaScript. And confirming **does not sign
+you in**. If it did, an attacker could register your address with *their* password, you'd click
+the confirmation you got, and you'd be signed into an account a stranger knows the password to,
+ready to upload your CV into it. Because confirmation stops at "account created, now log in", you
+can't log in with a password you don't know; you reset it instead, and the reset evicts everyone.
+
+## Fifty milliseconds is a long time
+
+A password reset replaces the hash and **deletes every login** of the account in one transaction.
+Whoever had your password is signed out on every device, at the next refresh.
+
+Except for a gap. `LogIn` reads the user, verifies the password (about 50 ms of argon2 on a worker
+thread), then creates a login. If a reset commits *inside those 50 ms*, the login finishes with the
+**old** password and its fresh login survives the reset. That's exactly the attacker the reset
+exists to throw out, getting back in through a revolving door.
+
+The fix is to check again at the moment it matters: after the verify, before any write, `LogIn`
+runs `SELECT 1 … WHERE id = :user AND password_hash = :the_one_I_verified FOR SHARE`. If a reset
+got there first, the hash no longer matches and the login fails as a wrong password. If the login
+got there first, its lock makes the reset **wait**, and when the reset proceeds it deletes the
+brand-new login along with the rest. Either order, the attacker ends up outside. It compares the
+**hash**, not a timestamp: timestamps here are whole seconds, and two password changes in one
+second would compare equal, while argon2's random salt makes every hash different.
+
+Two real database connections race each other in the proof, in both orders, and the overlap is
+read from `pg_stat_activity` so we know they really collided. Delete the re-check by hand and the
+test goes red with an attacker's `200`.
+
+## War stories
+
+### The deadlock that a stronger lock fixed
+
+`DeleteOwnAccount` has the same shape as login: verify the password, then act. So it got the same
+re-check, `FOR SHARE`. Then erasure ran and locked the same user row `FOR UPDATE`, in the same
+transaction. That's a **lock upgrade**, and it's a classic trap.
+
+Picture two people each holding one of the two keys to a safe, each refusing to let go of theirs
+until they get the other. Two concurrent deletions of one account (two tabs, a double click) both
+took the shared lock, then both asked for the exclusive one, and each waited for the other to let
+go. Postgres noticed the cycle and killed one: **503**. In the other interleaving, a loser arriving
+just after the winner's commit got **403 "wrong password"** for an account that no longer existed,
+instead of 2.2's documented **401**.
+
+The red test was staged deterministically, three runs out of three, with the database's own deadlock
+counter confirmed to move. The fix is the rule in its plainest form: **take the strongest lock you
+will need first.** The re-check is now `FOR UPDATE` straight away, the same lock erasure takes
+anyway, followed by a comparison of hashes. Login keeps `FOR SHARE`, because it never upgrades.
+
+There was a twist in the test, too. The first version of the race test staged the collision by
+wrapping `confirm_credential_unchanged`, the method the `FOR SHARE` re-check called. The fix
+stopped calling that method. So against the **correct** code, the wrapper never ran, the race was
+never staged, and the test's "did we actually collide?" guard failed. The test was right about the
+spec and wrong about the mechanism. It was corrected in its own commit to wrap *every* way into the
+moment that matters (after the verify, before the first lock). **A race test should be pinned to
+the moment the spec names, not to whichever function happens to occupy that moment today.**
+Otherwise the fix is exactly the change that breaks it.
+
+### The event loop wedged by a piece of garbage
+
+The measurement task (T41) ran bursts of password-reset requests against the **production image**:
+two uvicorn workers, three concurrent clients, while a probe hit `/health/live` every 100 ms.
+`/health/live` does no I/O at all. It timed out 14 times out of 22. The API process didn't come back
+after the burst ended. It was simply stuck.
+
+`faulthandler` dumped every thread's stack, and the event-loop thread was sitting inside a
+**Redis unsubscribe**, called from `AsyncResult.__del__`. Here's the chain, and it's a good one.
+When Celery has a Redis result backend, `send_task` quietly **subscribes** the process's single
+shared Redis pub/sub connection to the new task's result channel (from the worker thread that sent
+it), and returns an `AsyncResult`. Our adapter ignores that object, because nothing here ever waits
+for a task's result. When Python garbage-collects it, its destructor **unsubscribes**, synchronously,
+on whatever thread dropped the last reference, which was the event loop. Now two threads were
+talking over one connection that isn't thread-safe, and the loop blocked on a socket read that would
+never complete.
+
+It's a bit like a hotel where every guest who checks in is automatically subscribed to the
+newsletter, and every unsubscribe is handled by stopping the front desk until the mail room
+answers. With one guest a day you'd never notice.
+
+The fix is one keyword: `ignore_result=True` on every `send_task` from the API (tailoring, export
+and mail). The surprise was in Celery's source: `send_task` reads only **its own** argument and
+never the app-wide `task_ignore_result` setting, so the config change everyone would try first
+would have done nothing. After the fix, two runs of 3,600 resets each: zero timeouts, `/health/live`
+p50 **3.9 ms**.
+
+Why had it never shown up before? Tailoring and exports enqueue one task per click, a person's pace.
+Only a **burst** of concurrent enqueues, on the **production image** with real worker processes,
+makes the garbage collector land on the loop often enough to collide. The dev stack, a unit test or a
+single click can't reproduce it. **This is why we measure on the production image under load: some
+bugs are a property of the traffic, not of the code you read.** One side effect: nothing in the
+codebase reads a task result now, so the Redis result backend does no work. Whether to remove it is
+left to the owner.
+
+### The mutation that pointed the wrong way
+
+AC-41 proves the sweep deletes exactly the expired rows. Expiry here is **inclusive**: a token that
+expires at 12:00:00 is dead at 12:00:00, the same rule `Login` uses. So the code says
+`expires_at <= now`. A mutation test breaks the code on purpose and expects red; the obvious
+mutation is `<=` → `<`, which would spare the row expiring exactly now.
+
+The spec had it the other way round, asking to mutate towards the code as it already was. A
+"mutation" that leaves the behaviour unchanged can't go red, and an author following the spec
+literally would have concluded either that the test was weak or that the proof had passed. The
+implementer noticed, ran the right mutation (red: *"the row expiring exactly at as_of is expired
+and must be swept"*) plus a second one (`<= now + 1s`, red: the count was 3, not 2), and the spec
+row was corrected in writing. **A mutation is only a proof if it changes the behaviour. Before
+running one, ask what the mutated code would do differently.**
+
+### Seven routes that were eight
+
+The spec said the `Origin` check now covers **seven** endpoints: 2.1's four, plus the three new
+ones. The test that pins the set found **eight**. Account deletion has carried the check since 2.2,
+and the spec's author had counted from 2.1's list and added 2.5's, skipping the slice in between.
+The code was right, the test said so, and the spec and ADR-0021 were amended to eight. It's a small
+thing. It's also the reason the walker test reads the routes rather than trusting a number someone
+wrote down: **a count in a document is a belief about the code, and the code can always be asked.**
+
+### Smaller ones
+
+- **The spy that recorded its own setup.** A test spied on `history.replaceState` to prove no token
+  ever went into a URL. It failed, because the *test's own helper* put the token in the URL to
+  simulate opening the mail link. The spy is now cleared after setup, and a positive control checks
+  the app did call it (at least twice), so the assertion can't pass by watching nothing.
+- **The test that pinned a revision id.** Three 2.3 tests checked that the database was "at head" by
+  comparing it with `03494836ce30`. The next migration would turn them red with every schema fact
+  still true. They now ask Alembic for the current head.
+- **The tests that couldn't see the file.** pytest runs inside the api container, which can't see
+  the repo root, so it can't read `docker-compose.dev.yml` or the nginx config. The checks that
+  Mailpit is wired correctly and that `Referrer-Policy` is set live in the git hooks instead, as
+  small Python scripts that read the **staged** files, plus `make` targets to run them by hand.
+- **Register's contract changed under eight test files.** Many old tests used `POST /register` only
+  to get a signed-in user. Before the contract changed, one commit moved them to a helper that
+  seeds a user directly and logs in through the real route, with no assertion changing meaning, so
+  the RED and GREEN commits only touched tests that are actually about registration.
+
+## The numbers
+
+- **Enumeration timing** (production image, production argon2, n = 200 interleaved): register new
+  vs. existing, medians 53.84 / 53.54 ms, Δ **0.56 %**; reset request known vs. unknown 6.00 / 6.10
+  ms, Δ **1.63 %**; login wrong password vs. unknown email 51.74 / 51.96 ms, Δ **0.42 %**. Budget
+  10 %.
+- **The enqueue burst** after the fix: 2 × 3,600 resets, 0 probe timeouts, `/health/live` p50
+  **3.9 ms**, max 13.4 ms. Before: 14 of 22 probes timed out and the process stayed stuck.
+- **The LLM path didn't change**: the diff of the Gemini adapter and both tailoring layers against
+  `main` is empty, so no paid re-measure is owed. One file with "tailoring" in its path did change,
+  the queue adapter, for the `ignore_result` fix. That's how a run is *posted*, not how it's
+  generated.
+
+## The common thread, a fourteenth time
+
+2.4 said *when ownership changes, change the name, not the thing.* 2.5 says something close: **make
+the dangerous state impossible instead of guarding it.** An unverified account can't misbehave
+because it doesn't exist. Registration can't leak through timing because it has no branch to time.
+A token can't leak from the broker because it's never put there. A mailed link can't be dead
+because the hash is committed before the mail leaves. And where something genuinely can't be made
+impossible (a login racing a reset), the check happens at the last possible moment, under a lock,
+and the lock is the strongest one needed, taken first.
+
+## What's next
+
+- **`/verify`** (T48), including a manual walk on `:8080` with Mailpit: register, confirm, log in,
+  claim; register an existing address; *Send it again*; reuse a link; reset with a second tab open;
+  then grep every log line for the address and the tokens.
+- **Before the merge:** the canary account on `cv.samolit.com` under 2.4's code (it closes Phase 2's
+  open gate clause after the release), the mail provider and its SPF/DKIM/DMARC records, and the
+  box's `.env` gaining `MAIL_*`. Without those, `check-settings` refuses and the API never starts,
+  which is the point.
+- **Owed to the task list:** T41's dev-stack latencies and the 10,000-row sweep timing.
+- **The Redis result backend** is now unused; removing it is a decision for the owner.
