@@ -28,6 +28,7 @@ from tailorcraft.infrastructure.persistence.mapping.identity.password_reset impo
     password_reset_table,
     target_columns,
 )
+from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -96,8 +97,13 @@ class SqlAlchemyPasswordResetRepository:
         return result.scalar_one_or_none()
 
     async def save_issued(self, reset: PasswordReset) -> None:
-        """Persist the issue, then supersede the account's other resets — one unit, two statements.
+        """Lock the account, persist the issue, then supersede the account's other resets — one
+        unit, three statements.
 
+        0. `SELECT 1 FROM identity_user WHERE id = :u FOR KEY SHARE` — **the user first** (§0.8).
+           No row → `PasswordResetAlreadyIssued`: the account was erased while this delivery ran,
+           and its erasure took this reset with it (by address) or is about to (the cascade), so
+           there is nothing left to issue — the use case's `SKIPPED`, nothing sent.
         1. `UPDATE … SET email, user_id, token_hash, issued_at WHERE id = :id AND token_hash IS
            NULL` — the address cleared and the account set together (`target_columns`), which is what
            `ck_identity_password_reset_exactly_one_target` and `…_issued_with_account` demand of the
@@ -108,9 +114,17 @@ class SqlAlchemyPasswordResetRepository:
            deleted: they have not been matched to an account yet, and their own delivery will
            supersede this one in turn (newest delivered wins).
 
-        Lock order (§0.8): the `UPDATE`'s FK check takes `FOR KEY SHARE` on the user row; nothing
-        here takes the user `FOR UPDATE`, so a `ResetPassword` or an erasure holding it makes this
-        wait rather than cycle.
+        **Why step 0 exists** (`/verify` r1, `test_reset_delivery_vs_erasure_lock_order.py`): without
+        it the `UPDATE` locks the reset row first and only then takes `FOR KEY SHARE` on the user,
+        through the FK's RI trigger — reset, then user. Erasure holds the user `FOR UPDATE` and then
+        deletes resets by address, reaching this very row — user, then reset. Opposite orders, so a
+        cycle: `deadlock_detected`, reproduced 4/4. Taking the user's `FOR KEY SHARE` explicitly,
+        before any reset row, makes delivery user-first like every other actor. `FOR KEY SHARE` is
+        the weakest lock that conflicts with erasure's `FOR UPDATE`; it does not conflict with
+        itself, so it costs a concurrent `LogIn` (`FOR SHARE`) nothing. Against a `ResetPassword`
+        (user `FOR UPDATE`) or an erasure, delivery now **waits on the user** while holding no reset
+        lock, and either proceeds once they commit or finds the user gone. The `UPDATE`'s own FK
+        check then re-takes the lock this transaction already holds.
 
         **Expunged first**, for `SqlAlchemyPendingRegistrationRepository.save_issued`'s reason. Here
         it is doubly needed: the mapper does not see `_target` change, so a flush of the dirty
@@ -120,6 +134,14 @@ class SqlAlchemyPasswordResetRepository:
         if reset in self._session:
             self._session.expunge(reset)
         email, user_id = target_columns(reset.target)
+        account = await self._session.execute(
+            # `read=True` as well: `key_share=True` alone renders `FOR NO KEY UPDATE` on PostgreSQL.
+            select(user_table.c.id)
+            .where(user_table.c.id == user_id)
+            .with_for_update(read=True, key_share=True)
+        )
+        if account.first() is None:
+            raise PasswordResetAlreadyIssued
         result = await self._session.execute(
             update(_table)
             .where(_table.c.id == reset.id, _table.c.token_hash.is_(None))

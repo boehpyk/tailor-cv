@@ -489,7 +489,9 @@ class PasswordResetRepository(Protocol):
         one unit, durable on return (§0.4's *commit*; one live reset link per account).
 
         Writes only over a row that is not yet issued. Raises `PasswordResetAlreadyIssued` when the
-        stored row was issued meanwhile (a concurrent delivery won), so a redelivery sends nothing.
+        stored row was issued meanwhile (a concurrent delivery won), so a redelivery sends nothing —
+        and also when the account it was matched to is gone (erased while this delivery ran, taking
+        this reset with it): either way there is nothing left to issue.
         """
         ...
 
