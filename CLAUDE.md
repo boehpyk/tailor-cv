@@ -28,10 +28,12 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > one real-Gemini run, 2026-09-30), merged as PR #15 (`0b01537`) and released the same day**
 > (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was verified on 2026-10-01
 > (reviewer PASS in round 1, plus a real-Gemini manual pass), merged as PR #16 (`2427b67`) and
-> released the same day** (deploy run 36920406580). **Slice 2.5 `identity-email-verification` is
-> implemented (T1–T43, T47; 2026-10-03) and NOT yet verified** — `/verify` (T48) is next; the
-> canary (T0b), the mail vendor and DNS (T44), the box's `MAIL_*` `.env` (T45) and the production
-> read (T46) are still open, and T45 gates the merge. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
+> released the same day** (deploy run 36920406580). **Slice 2.5 `identity-email-verification` was
+> verified on 2026-10-03** (reviewer PASS in round 2, HEAD `e415e1e`, plus a manual `:8080` pass with
+> Mailpit). The canary (T0b), the production read (T46), Resend's DNS and the box's `MAIL_SMTP_*`
+> are done. Still open: `check-settings` with the 2.5 image on the box, which now gates **deploy
+> approval, not the merge** (the image exists only after the merge, and the deploy waits for the
+> required reviewer); T44's tracking-off and test-send; T49 after the release. Slice 1.6 was verified, rehearsed on real data, switched on and merged as
 > PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
 > `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
 > roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
@@ -279,7 +281,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (T5's red was the latter, accepted on 2.3's precedent).
 >
 > - **2.5 `identity-email-verification`** (branch `feature/identity-email-verification`,
->   **implemented 2026-10-03, not yet verified**) — the first **outbound channel**: account mail.
+>   **verified 2026-10-03**, not yet merged) — the first **outbound channel**: account mail.
 >   Registration stops enumerating and a forgotten password can be reset. Three ADRs: **ADR-0026**
 >   (account mail is a port, `AccountMailPort`, sent by the worker over SMTP submission on the
 >   standard library, STARTTLS required, not a guarded egress), **ADR-0027** (a pending
