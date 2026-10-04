@@ -799,6 +799,9 @@ async def test_refresh_with_redis_unreachable_still_succeeds_with_a_valid_cookie
     _login, raw_token = await _seed_login(session, user, clock)
     client.cookies.set(REFRESH_COOKIE_NAME, raw_token)
     _override_settings(app, settings, redis_url="redis://127.0.0.1:1/0")
+    # Judge expiry by the seeding clock, not the wall clock: the login is seeded at the fixed
+    # 2026-09-04 with a 30-day TTL, so without this the test began failing on 2026-10-04.
+    app.dependency_overrides[get_clock] = lambda: clock
 
     response = await client.post(REFRESH_URL, headers=_origin_headers(settings))
 
@@ -1400,6 +1403,7 @@ async def test_a_successful_register_carries_cache_control_no_store(
 
 
 async def test_a_successful_refresh_carries_cache_control_no_store(
+    app: FastAPI,
     client: AsyncClient,
     settings: Settings,
     session: AsyncSession,
@@ -1409,6 +1413,9 @@ async def test_a_successful_refresh_carries_cache_control_no_store(
     user = await _seed_user(session, password_hasher, clock)
     _login, raw_token = await _seed_login(session, user, clock)
     client.cookies.set(REFRESH_COOKIE_NAME, raw_token)
+    # Judge expiry by the seeding clock, not the wall clock: the login is seeded at the fixed
+    # 2026-09-04 with a 30-day TTL, so without this the test began failing on 2026-10-04.
+    app.dependency_overrides[get_clock] = lambda: clock
 
     response = await client.post(REFRESH_URL, headers=_origin_headers(settings))
 
