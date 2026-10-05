@@ -4,10 +4,6 @@ Composes `RecordsEvents` and shares **no** base class with `TailoringRun`, altho
 `version` and an `expected_version` guard (plan §0.6). Their rules differ — a run is revisable only
 when `succeeded`, a card always — and a base class would have to guess which rule it enforces. Two
 short guards, each pointing at the other, is the house rule (CLAUDE.md).
-
-This module is at its **skeleton** step (T3): real signatures, real attribute names (the imperative
-mapping at T14 targets them), and `NotImplementedError` bodies, so that `qa`'s T4 tests fail on their
-assertions rather than on an `ImportError`. T5 fills the bodies in.
 """
 
 from __future__ import annotations
@@ -15,7 +11,14 @@ from __future__ import annotations
 from datetime import datetime
 
 from tailorcraft.domain.identity.value_objects import UserId
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
+from tailorcraft.domain.tracking.errors import TrackedApplicationVersionConflict
+from tailorcraft.domain.tracking.events import (
+    ApplicationStageChanged,
+    ApplicationTracked,
+    ApplicationUntracked,
+)
 from tailorcraft.domain.tracking.value_objects import (
     ApplicationStage,
     ApplicationTitle,
@@ -119,7 +122,26 @@ class TrackedApplication(RecordsEvents):
         succeeded, user-owned run" is checked by the use case before this is called: the aggregate
         cannot see a run (`domain/tracking` imports no sibling context).
         """
-        raise NotImplementedError
+        _require_clock_instant(at)
+        card = cls()
+        card._id = id
+        card._user_id = user_id
+        card._tailoring_run_id = tailoring_run_id
+        card._stage = stage
+        card._title = title
+        card._tracked_at = at
+        card._stage_changed_at = at
+        card._version = 1
+        card.record(
+            ApplicationTracked(
+                occurred_at=at,
+                tracked_application_id=id,
+                user_id=user_id,
+                tailoring_run_id=tailoring_run_id,
+                stage=stage,
+            )
+        )
+        return card
 
     def move_to(self, stage: ApplicationStage, *, expected_version: int, at: datetime) -> None:
         """Move the card to `stage` — from any stage (TA-2).
@@ -132,7 +154,28 @@ class TrackedApplication(RecordsEvents):
         The version guard is written here and again in `TailoringRun._guard_revisable`, on purpose:
         same shape, different rules around it (plan §0.6).
         """
-        raise NotImplementedError
+        self._guard_version(expected_version)
+        if stage is self._stage:
+            return
+        _require_clock_instant(at)
+        if at < self._stage_changed_at:
+            raise InvariantViolated(
+                "a tracked application's stage cannot change before it last did"
+            )
+
+        previous = self._stage
+        self._stage = stage
+        self._stage_changed_at = at
+        self._version += 1
+        self.record(
+            ApplicationStageChanged(
+                occurred_at=at,
+                tracked_application_id=self._id,
+                user_id=self._user_id,
+                from_stage=previous,
+                to_stage=stage,
+            )
+        )
 
     def retitle(
         self, title: ApplicationTitle | None, *, expected_version: int, at: datetime
@@ -143,42 +186,75 @@ class TrackedApplication(RecordsEvents):
         1`. **Records no event** — an event would have to carry the title, which no event may — and
         **does not touch `stage_changed_at`**: a renamed card has not moved.
         """
-        raise NotImplementedError
+        self._guard_version(expected_version)
+        if title == self._title:
+            return
+        # `at` is validated though nothing stores it: the method's contract is the same as
+        # `move_to`'s, and a caller handing a naive instant here would hand one there too.
+        _require_clock_instant(at)
+
+        self._title = title
+        self._version += 1
 
     def untrack(self, at: datetime) -> None:
         """Record `ApplicationUntracked` (AC-6). Deleting the row is the repository's job; the use
         case publishes the event only if that deletion removed something."""
-        raise NotImplementedError
+        _require_clock_instant(at)
+        self.record(
+            ApplicationUntracked(
+                occurred_at=at, tracked_application_id=self._id, user_id=self._user_id
+            )
+        )
+
+    def _guard_version(self, expected_version: int) -> None:
+        # The same compare `TailoringRun._guard_revisable` makes, written twice on purpose: the rules
+        # around it differ (a run is revisable only when `succeeded`, a card always), so a shared
+        # helper would have to guess which one it enforces (plan §0.6).
+        if expected_version != self._version:
+            raise TrackedApplicationVersionConflict(
+                expected_version=expected_version, current_version=self._version
+            )
 
     @property
     def id(self) -> TrackedApplicationId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def user_id(self) -> UserId:
         """The user this card belongs to — a `UserId`, never an `Owner` (class docstring)."""
-        raise NotImplementedError
+        return self._user_id
 
     @property
     def tailoring_run_id(self) -> TrackedRunRef:
-        raise NotImplementedError
+        return self._tailoring_run_id
 
     @property
     def stage(self) -> ApplicationStage:
-        raise NotImplementedError
+        return self._stage
 
     @property
     def title(self) -> ApplicationTitle | None:
-        raise NotImplementedError
+        return self._title
 
     @property
     def tracked_at(self) -> datetime:
-        raise NotImplementedError
+        return self._tracked_at
 
     @property
     def stage_changed_at(self) -> datetime:
-        raise NotImplementedError
+        return self._stage_changed_at
 
     @property
     def version(self) -> int:
-        raise NotImplementedError
+        return self._version
+
+
+def _require_clock_instant(at: datetime) -> None:
+    """TA-3: every instant a card holds is timezone-aware and whole-second (the `Clock` contract,
+    ADR-0007), so a database round trip can never change it."""
+    # `utcoffset() is None` rather than `tzinfo is None`: a tzinfo may still decline an offset, and
+    # such a datetime is naive for every comparison that matters (`HistoryCursor`'s reason).
+    if at.utcoffset() is None:
+        raise InvariantViolated("a tracked application's instants must be timezone-aware")
+    if at.microsecond != 0:
+        raise InvariantViolated("a tracked application's instants must be whole-second")

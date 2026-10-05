@@ -8,9 +8,9 @@ codes and `code`s (plan §4, the failure contract's T-rows).
 Ids, counts, versions and a closed status value only (Constitution §8): an exception is caught,
 logged and re-raised by code that has no idea what is in its message.
 
-This module imports `value_objects` at the top, so `ApplicationTitle.__post_init__` must import
-`InvalidApplicationTitle` **inside** the method when it gains its body (T5) — the deferred import
-`BaseCvLabel` uses for the same module-cycle reason.
+This module imports `value_objects` at the top, so `ApplicationTitle.__post_init__` imports
+`InvalidApplicationTitle` **inside** the method — the deferred import `BaseCvLabel` uses for the same
+module-cycle reason.
 """
 
 from __future__ import annotations

@@ -4,12 +4,10 @@ its title.
 The house rule, as in every other context: a field with a rule gets its own type, frozen and slotted,
 validating in `__post_init__`, compared by value — never Pydantic (ADR-0002).
 
-Three of the four types here have nothing to enforce and are complete as written: two typed UUIDs
-and a closed enum. `ApplicationTitle` is the one with rules, and at the skeleton step (T3) its
-`__post_init__` is a deliberate **no-op**, not a `NotImplementedError`: AC-2's "refused" tests must
-go red on `DID NOT RAISE`, which only discriminates if constructing a title succeeds (2.4's lesson —
-a raising stub turns every refusal test green for the wrong reason, because `NotImplementedError` is
-a `RuntimeError` and is caught by nothing the test meant).
+Three of the four types here have nothing to enforce: two typed UUIDs and a closed enum.
+`ApplicationTitle` is the one with rules. (At the skeleton step its `__post_init__` was a deliberate
+no-op rather than a `NotImplementedError`, so AC-2's "refused" tests went red on `DID NOT RAISE` —
+2.4's lesson.)
 
 **Ids are frozen dataclasses with one `value: UUID`, not `typing.NewType`.** ADR-0029 decision 1
 and the technical plan §1 describe `TrackedRunRef` as "a `NewType` over `UUID`", and the plan
@@ -23,6 +21,7 @@ identical either way: `TrackedRunRef(some_uuid)`.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
@@ -97,7 +96,28 @@ class ApplicationTitle:
     value: str
 
     def __post_init__(self) -> None:
-        """Trim, then refuse empty, over-length and control characters (T5).
+        """Trim, then refuse empty, over-length and control characters. No message quotes the
+        value: it is user text, and an exception's message reaches logs (AC-2)."""
+        # Deferred: `errors` imports this module at its top, so a module-level import here would be
+        # a cycle — `BaseCvLabel.__post_init__` defers for the same reason.
+        from tailorcraft.domain.tracking.errors import InvalidApplicationTitle
 
-        A **no-op** at the skeleton step, on purpose — see the module docstring.
-        """
+        title = self.value.strip()
+
+        if not title:
+            raise InvalidApplicationTitle("an application title must not be empty")
+        # Code points, not bytes: `len` on a `str` is what a user means by "120 characters".
+        if len(title) > self.MAX_LENGTH:
+            raise InvalidApplicationTitle(
+                f"an application title must be at most {self.MAX_LENGTH} characters"
+            )
+        # Category `Cc` is the whole control set — C0 (NUL, TAB, LF, CR, …), DEL and C1 — the
+        # rule `BaseCvLabel` takes, for its reason: a display string has no use for any of them.
+        if any(unicodedata.category(char) == "Cc" for char in title):
+            raise InvalidApplicationTitle(
+                "an application title must not contain control characters"
+            )
+
+        # A frozen dataclass's own `__setattr__` refuses; `object.__setattr__` is the sanctioned
+        # way for `__post_init__` to store the normalized value, and works on a slotted class.
+        object.__setattr__(self, "value", title)
