@@ -170,6 +170,14 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoringRunId,
     TailoringRunStatus,
 )
+from tailorcraft.domain.tracking.board import ApplicationBoard, BoardCard
+from tailorcraft.domain.tracking.errors import (
+    ApplicationAlreadyTracked,
+    TrackedApplicationConcurrentlyModified,
+    TrackedApplicationNotFound,
+)
+from tailorcraft.domain.tracking.tracked_application import TrackedApplication
+from tailorcraft.domain.tracking.value_objects import TrackedApplicationId, TrackedRunRef
 from tailorcraft.infrastructure.clock import FixedClock
 
 # A `NULL`-`started_at` stand-in for `FakeTailoringRunRepository.list_stale_running`'s sort key:
@@ -1804,3 +1812,129 @@ class FakeExpiredIdentityTokens:
 
     async def delete_expired_logins(self, as_of: datetime, limit: int) -> int:
         return self._delete("logins", self.logins, as_of, limit)
+
+
+# --- Tracking (slice 3.1, T11) -------------------------------------------------------------------
+
+
+class FakeTrackedApplicationRepository:
+    """In-memory `TrackedApplicationRepository`, faithful where the real adapter's constraints are.
+
+    - **One card per run**: `add` raises `ApplicationAlreadyTracked(winner's id)` for a second card
+      over the same run, as the unique index does (the use case's own `find_for_run` check is the
+      ordinary path; this is the race's).
+    - `get` raises `TrackedApplicationNotFound` and **does not check ownership** (the port's rule).
+    - `find_for_run` and `count_for_user` are scoped to the user; nothing else is.
+    - `conflict_on_save=N` raises `TrackedApplicationConcurrentlyModified` on the next N `save`s;
+      `lose_on_remove=True` is a concurrent removal that wins: the row goes and `remove` answers
+      `False` (the port's documented outcome).
+
+    `calls` is every port method called, in order, by name — what "the user was resolved before any
+    card was read" and "no `save`" are asserted against. `seed` places a card **without** logging, so
+    a test's arrangement never shows up as the use case's behaviour. `added` / `saved` / `removed`
+    record what each successful write was handed.
+    """
+
+    def __init__(self, *, conflict_on_save: int = 0, lose_on_remove: bool = False) -> None:
+        self._by_id: dict[TrackedApplicationId, TrackedApplication] = {}
+        self._conflict_on_save = conflict_on_save
+        self._lose_on_remove = lose_on_remove
+        self.calls: list[str] = []
+        self.added: list[TrackedApplication] = []
+        self.saved: list[TrackedApplication] = []
+        self.removed: list[TrackedApplicationId] = []
+
+    def seed(self, card: TrackedApplication) -> None:
+        """Arrange a card without it counting as a call. The card must hold no pending event."""
+        self._by_id[card.id] = card
+
+    def all(self) -> Sequence[TrackedApplication]:
+        return tuple(self._by_id.values())
+
+    def next_identity(self) -> TrackedApplicationId:
+        return TrackedApplicationId(value=uuid4())
+
+    async def add(self, card: TrackedApplication) -> None:
+        self.calls.append("add")
+        for existing in self._by_id.values():
+            if existing.tailoring_run_id == card.tailoring_run_id:
+                raise ApplicationAlreadyTracked(existing.id)
+        self._by_id[card.id] = card
+        self.added.append(card)
+
+    async def get(self, card_id: TrackedApplicationId) -> TrackedApplication:
+        self.calls.append("get")
+        try:
+            return self._by_id[card_id]
+        except KeyError:
+            raise TrackedApplicationNotFound(str(card_id.value)) from None
+
+    async def find_for_run(self, user_id: UserId, run: TrackedRunRef) -> TrackedApplication | None:
+        self.calls.append("find_for_run")
+        for card in self._by_id.values():
+            if card.user_id == user_id and card.tailoring_run_id == run:
+                return card
+        return None
+
+    async def count_for_user(self, user_id: UserId) -> int:
+        self.calls.append("count_for_user")
+        return sum(1 for card in self._by_id.values() if card.user_id == user_id)
+
+    async def save(self, card: TrackedApplication) -> None:
+        self.calls.append("save")
+        if self._conflict_on_save > 0:
+            self._conflict_on_save -= 1
+            raise TrackedApplicationConcurrentlyModified(str(card.id.value))
+        self._by_id[card.id] = card
+        self.saved.append(card)
+
+    async def remove(self, card_id: TrackedApplicationId) -> bool:
+        self.calls.append("remove")
+        existed = self._by_id.pop(card_id, None) is not None
+        if self._lose_on_remove:
+            # A concurrent removal won the race: the row is gone either way, and this call did not
+            # remove it.
+            return False
+        if existed:
+            self.removed.append(card_id)
+        return existed
+
+
+class InMemoryApplicationBoardQuery:
+    """In-memory `ApplicationBoardQuery` over `FakeTrackedApplicationRepository`, honouring AC-30's
+    contract: only `user_id`'s cards, `stage_changed_at DESC, id DESC` (a `UUID` compares by its
+    128-bit integer, PostgreSQL's byte-wise order, so a same-instant tie breaks as the index does).
+
+    The three joins are `None` — joining is the SQL adapter's, proven at T17; what this double
+    exists for is the use case's obligations and the ordering. `calls` records every `user_id` asked
+    for; `last_board` is the exact object last returned, so "returned unchanged" is an identity.
+    """
+
+    def __init__(self, cards: FakeTrackedApplicationRepository) -> None:
+        self._cards = cards
+        self.calls: list[UserId] = []
+        self.last_board: ApplicationBoard | None = None
+
+    async def board_for_user(self, user_id: UserId) -> ApplicationBoard:
+        self.calls.append(user_id)
+        mine = [card for card in self._cards.all() if card.user_id == user_id]
+        mine.sort(key=lambda card: (card.stage_changed_at, card.id.value), reverse=True)
+        board = ApplicationBoard(
+            cards=tuple(
+                BoardCard(
+                    id=card.id,
+                    tailoring_run_id=card.tailoring_run_id,
+                    stage=card.stage,
+                    title=card.title.value if card.title is not None else None,
+                    tracked_at=card.tracked_at,
+                    stage_changed_at=card.stage_changed_at,
+                    version=card.version,
+                    run=None,
+                    posting=None,
+                    base_cv=None,
+                )
+                for card in mine
+            )
+        )
+        self.last_board = board
+        return board
