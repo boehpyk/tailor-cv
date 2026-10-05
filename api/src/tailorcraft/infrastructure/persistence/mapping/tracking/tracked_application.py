@@ -23,11 +23,6 @@ the domain refuses: `stage_known` (TA-2), `title_length` (TA-5's bound — the c
 stays in `ApplicationTitle` and is re-checked on every load by `ApplicationTitleType`), and
 `stage_changed_after_tracked` (TA-3, as `tailoring_run`'s timestamp CHECKs mirror TR-2).
 
-**At this commit (T13) the module declares the `Table` and maps nothing.** The migration lands
-first (a mapped table the database lacks breaks every load), but the autogenerate-is-empty tests
-compare the head schema against `metadata`, so the `Table` must be on `metadata` in the same commit
-as the revision. T14 adds the `map_imperatively` call.
-
 The authoritative migration is `alembic/versions/…_add_tracking_application.py`; this `Table` must
 stay identical to it, which `alembic check` (autogenerate producing nothing) proves.
 """
@@ -37,8 +32,9 @@ from __future__ import annotations
 from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, Integer, Table, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
+from tailorcraft.domain.tracking.tracked_application import TrackedApplication
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
-from tailorcraft.infrastructure.persistence.registry import metadata
+from tailorcraft.infrastructure.persistence.registry import mapper_registry, metadata
 from tailorcraft.infrastructure.persistence.types.identity import UserIdType
 from tailorcraft.infrastructure.persistence.types.tracking import (
     ApplicationStageType,
@@ -107,4 +103,22 @@ tracked_application_table = Table(
         text("stage_changed_at DESC"),
         text("id DESC"),
     ),
+)
+
+mapper_registry.map_imperatively(
+    TrackedApplication,
+    tracked_application_table,
+    properties={
+        "_id": tracked_application_table.c.id,
+        # A `UserId`, never an `Owner` — see the `user_id` column's comment above.
+        "_user_id": tracked_application_table.c.user_id,
+        "_tailoring_run_id": tracked_application_table.c.tailoring_run_id,
+        "_stage": tracked_application_table.c.stage,
+        "_title": tracked_application_table.c.title,
+        "_tracked_at": tracked_application_table.c.tracked_at,
+        "_stage_changed_at": tracked_application_table.c.stage_changed_at,
+        "_version": tracked_application_table.c.version,
+    },
+    version_id_col=tracked_application_table.c.version,
+    version_id_generator=False,
 )
