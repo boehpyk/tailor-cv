@@ -83,4 +83,6 @@ class EraseAccount:
             # Every key this erasure tried — saved-CV files and derived export files — so
             # `files_unlinked` and `unlink_failures` read against it.
             files=len(refs),
+            # The account's cards, counted before the delete like the rest (slice 3.1, AC-13).
+            tracked_applications=counts.tracked_applications,
         )
