@@ -57,10 +57,11 @@ _BOUND_ELSEWHERE: dict[str, str] = {
         "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "
         "behind a route (ADR-0018)."
     ),
-    # TEMPORARY (slice 3.1): the tracking ports exist (T6) but their adapters and the API wiring
-    # land at T18, which removes these two entries. Until then nothing can bind them.
-    "TrackedApplicationRepository": "unbound until slice 3.1's wiring; bound at T18 (remove then).",
-    "ApplicationBoardQuery": "unbound until slice 3.1's wiring; bound at T18 (remove then).",
+    # TEMPORARY (slice 3.1): the tracking ports exist (T6) and their providers are wired in
+    # `deps.py` (T18), but this walker sees a provider only through a route's dependency graph, and
+    # the board's router lands at T20 — which removes these two entries.
+    "TrackedApplicationRepository": "provider wired at T18; no route depends on it until T20.",
+    "ApplicationBoardQuery": "provider wired at T18; no route depends on it until T20.",
 }
 
 

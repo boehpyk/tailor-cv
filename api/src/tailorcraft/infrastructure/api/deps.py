@@ -61,6 +61,11 @@ from tailorcraft.application.tailoring.list_tailoring_history import ListTailori
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
+from tailorcraft.application.tracking.move_tracked_application import MoveTrackedApplication
+from tailorcraft.application.tracking.retitle_tracked_application import RetitleTrackedApplication
+from tailorcraft.application.tracking.show_application_board import ShowApplicationBoard
+from tailorcraft.application.tracking.track_application import TrackApplication
+from tailorcraft.application.tracking.untrack_application import UntrackApplication
 from tailorcraft.domain.export.ports import (
     DocumentRendererPort,
     ExportJobRepository,
@@ -98,6 +103,7 @@ from tailorcraft.domain.tailoring.ports import (
     TailoringQueuePort,
     TailoringRunRepository,
 )
+from tailorcraft.domain.tracking.ports import ApplicationBoardQuery, TrackedApplicationRepository
 from tailorcraft.infrastructure.api.errors import (
     GUEST_SESSION_EXPIRED_DETAIL,
     ORIGIN_NOT_ALLOWED_DETAIL,
@@ -1615,3 +1621,135 @@ def get_reset_password(
 
 
 ResetPasswordDep = Annotated[ResetPassword, Depends(get_reset_password)]
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 3.1 — the application board (ADR-0029, technical plan §3 "Wiring"). Deferred imports
+# throughout, for the mapper-configuration reason `get_base_cv_repository` documents. Every route
+# that uses these answers to the bearer alone; nothing here reads a guest cookie.
+# --------------------------------------------------------------------------------------------------
+
+
+def get_tracked_application_repository(session: SessionDep) -> TrackedApplicationRepository:
+    """Binds `TrackedApplicationRepository` -> `SqlAlchemyTrackedApplicationRepository` (ADR-0007).
+
+    The **bare** adapter: the unit of work is the request, and every board write commits in its
+    handler (the FastAPI 0.141 teardown footgun). `add` refuses a run deleted after it was
+    authorized (`TailoringRunNotFound`) itself, by the post-INSERT `FOR KEY SHARE` — the track half
+    of plan §0.7's two locks — unconditionally; there is nothing to switch on here.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.tracking.tracked_application import (
+        SqlAlchemyTrackedApplicationRepository,
+    )
+
+    return SqlAlchemyTrackedApplicationRepository(session)
+
+
+TrackedApplicationRepositoryDep = Annotated[
+    TrackedApplicationRepository, Depends(get_tracked_application_repository)
+]
+
+
+def get_application_board_query(session: SessionDep) -> ApplicationBoardQuery:
+    """Binds `ApplicationBoardQuery` -> `SqlAlchemyApplicationBoardQuery` (ADR-0024 and its
+    amendment (a)): a read-side port, one Core statement over the request's session."""
+    from tailorcraft.infrastructure.persistence.queries.application_board import (
+        SqlAlchemyApplicationBoardQuery,
+    )
+
+    return SqlAlchemyApplicationBoardQuery(session)
+
+
+ApplicationBoardQueryDep = Annotated[ApplicationBoardQuery, Depends(get_application_board_query)]
+
+
+def get_track_application(
+    users: UserRepositoryDep,
+    get_tailoring_run: GetTailoringRunDep,
+    cards: TrackedApplicationRepositoryDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> TrackApplication:
+    """The `GetTailoringRun` *use case*, not a repository, for `get_erase_history_entry`'s reason:
+    authorizing a run (and its 404 collapse) is tailoring's rule, inherited rather than written
+    again. The cap is `MAX_TRACKED_APPLICATIONS_PER_USER` (plan §0.9)."""
+    return TrackApplication(
+        users,
+        get_tailoring_run,
+        cards,
+        events,
+        clock,
+        cap=settings.max_tracked_applications_per_user,
+    )
+
+
+TrackApplicationDep = Annotated[TrackApplication, Depends(get_track_application)]
+
+
+def get_move_tracked_application(
+    users: UserRepositoryDep,
+    cards: TrackedApplicationRepositoryDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> MoveTrackedApplication:
+    return MoveTrackedApplication(users, cards, events, clock)
+
+
+MoveTrackedApplicationDep = Annotated[MoveTrackedApplication, Depends(get_move_tracked_application)]
+
+
+def get_retitle_tracked_application(
+    users: UserRepositoryDep,
+    cards: TrackedApplicationRepositoryDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> RetitleTrackedApplication:
+    return RetitleTrackedApplication(users, cards, events, clock)
+
+
+RetitleTrackedApplicationDep = Annotated[
+    RetitleTrackedApplication, Depends(get_retitle_tracked_application)
+]
+
+
+def get_untrack_application(
+    users: UserRepositoryDep,
+    cards: TrackedApplicationRepositoryDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> UntrackApplication:
+    return UntrackApplication(users, cards, events, clock)
+
+
+UntrackApplicationDep = Annotated[UntrackApplication, Depends(get_untrack_application)]
+
+
+def get_show_application_board(
+    users: UserRepositoryDep, board: ApplicationBoardQueryDep
+) -> ShowApplicationBoard:
+    return ShowApplicationBoard(users, board)
+
+
+ShowApplicationBoardDep = Annotated[ShowApplicationBoard, Depends(get_show_application_board)]
+
+
+def get_tracking_write_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Bounds board writes per signed-in user (slice 3.1, plan §0.9). **Fails open** —
+    `fail_open=True`.
+
+    The rule from 1.1 (OQ-7), once more: *fail open when the cost is ours and bounded; fail closed
+    when the cost is money or somebody else's infrastructure.* Track, move, retitle and untrack are
+    each one small write to our own database, and Redis being down must not stop someone moving a
+    card. `get_tailoring_revise_rate_limiter`'s direction, not `get_login_ip_rate_limiter`'s.
+
+    User scope only: the routes answer to the bearer, so the user id is the principal. One budget
+    shared by the four writes; the router keys it with `tracking_write_rate_limit_per_hour` (600/h
+    by default). The board's `GET` has no limiter, as history's has none.
+    """
+    return RedisFixedWindowRateLimiter(redis, namespace="tracking:write", fail_open=True)
+
+
+TrackingWriteRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_tracking_write_rate_limiter)
+]
