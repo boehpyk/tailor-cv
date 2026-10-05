@@ -262,14 +262,6 @@ async def test_add_inserts_then_takes_the_runs_row_for_key_share_scoped_to_the_u
     assert await _count(session, id=card.id.value) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="FINDING (T19): `.with_for_update(key_share=True)` alone renders `FOR NO KEY UPDATE` on "
-    "PostgreSQL; AC-17 and the module docstring say `FOR KEY SHARE`, which needs `read=True` as "
-    "well (password_reset.py:138 already knows). Same defect in tailoring_run.py:186. The "
-    "deletion race (AC-18) still holds - NO KEY UPDATE conflicts with DELETE - but the lock is "
-    "stronger than specified. Remove this marker when production renders FOR KEY SHARE.",
-)
 async def test_add_locks_the_run_in_the_mode_the_spec_names(
     session: AsyncSession, connection: AsyncConnection, clock: FixedClock
 ) -> None:

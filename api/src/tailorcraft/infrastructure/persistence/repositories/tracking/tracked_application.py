@@ -147,7 +147,8 @@ class SqlAlchemyTrackedApplicationRepository:
                             tailoring_run_table.c.id == TailoringRunId(run.value),
                             tailoring_run_table.c.user_id == user_id,
                         )
-                        .with_for_update(key_share=True)
+                        # `read=True` as well: `key_share=True` alone renders `FOR NO KEY UPDATE`.
+                        .with_for_update(read=True, key_share=True)
                     )
                 ).scalar_one_or_none()
                 if run_still_exists is None:
