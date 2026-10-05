@@ -1,9 +1,6 @@
 """The `MoveTrackedApplication` use case: move a card to another stage (slice 3.1, technical plan §2,
 AC-9, AC-11).
 
-**SKELETON (T10).** The constructor and the command are real; `__call__` raises
-`NotImplementedError` until T12.
-
 Flow: ``resolve_existing_user`` (`UserNotFound`) → ``cards.get`` (`TrackedApplicationNotFound`) →
 ``card.user_id != user_id`` ⇒ `TrackedApplicationNotFound` from `TrackedApplicationNotOwnedByUser` →
 ``card.move_to(stage, expected_version=…, at=clock.now())`` (`TrackedApplicationVersionConflict`
@@ -15,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tailorcraft.application.identity.resolve_existing_user import resolve_existing_user
+from tailorcraft.application.tracking.owned_card import load_owned_card
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.shared.clock import Clock
@@ -51,7 +50,17 @@ class MoveTrackedApplication:
         self._clock = clock
 
     async def __call__(self, cmd: MoveTrackedApplicationCommand) -> TrackedApplication:
-        raise NotImplementedError
+        await resolve_existing_user(self._users, cmd.user_id)
+        card = await load_owned_card(self._cards, cmd.id, cmd.user_id)
+        card.move_to(cmd.stage, expected_version=cmd.expected_version, at=self._clock.now())
+        events = card.release_events()
+        if not events:
+            # The card already stands in `cmd.stage` (AC-11): nothing changed, so nothing is written.
+            return card
+        await self._cards.save(card)
+        # After the write: a save that lost the race raised above, and a lost write announces nothing.
+        await self._events.publish(*events)
+        return card
 
 
 __all__ = ["MoveTrackedApplication", "MoveTrackedApplicationCommand"]
