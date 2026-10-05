@@ -1,5 +1,5 @@
 """`DomainError` -> `HTTPException` translation for this API's whole HTTP surface — `identity`,
-`intake`, `posting`, `tailoring` and `export`.
+`intake`, `posting`, `tailoring`, `export` and `tracking`.
 
 The domain never raises `HTTPException` and never carries a status code (CLAUDE.md, ADR-0004) — this
 is the one module that assigns one, for every `DomainError` this slice's use cases can raise.
@@ -84,6 +84,15 @@ from tailorcraft.domain.tailoring.errors import (
     TailoringRunNotEditable,
     TailoringRunNotFound,
     TooManyTailoringRuns,
+)
+from tailorcraft.domain.tracking.errors import (
+    ApplicationAlreadyTracked,
+    InvalidApplicationTitle,
+    TailoringRunNotTrackable,
+    TooManyTrackedApplications,
+    TrackedApplicationConcurrentlyModified,
+    TrackedApplicationNotFound,
+    TrackedApplicationVersionConflict,
 )
 
 # Shared by `deps.py::require_guest_session` (which never reaches a use case at all — it raises
@@ -510,6 +519,26 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
             },
         )
 
+    # -- tracking: the application board (slice 3.1, technical plan §4) --------------------------
+    # The union is the specification of what the board's use cases and repository can raise across
+    # HTTP. Two tracking-adjacent errors are absent on purpose:
+    # - `TrackedApplicationNotOwnedByUser` is only ever a `__cause__`: the use cases raise
+    #   `TrackedApplicationNotFound` from it, so "not yours" and "not there" are one 404,
+    #   byte-identical (AC-23). Reaching the floor with it is a bug, and a 500 is the honest answer.
+    # - A run that is not the user's is `TailoringRunNotFound`, raised by tailoring's own
+    #   `GetTailoringRun` and already mapped above (T-13) — the tracking context adds no second 404.
+    if isinstance(
+        exc,
+        TrackedApplicationNotFound
+        | ApplicationAlreadyTracked
+        | TailoringRunNotTrackable
+        | TooManyTrackedApplications
+        | TrackedApplicationVersionConflict
+        | TrackedApplicationConcurrentlyModified
+        | InvalidApplicationTitle,
+    ):
+        return _tracking_error_to_http(exc)
+
     # -- export (slice 1.5, ADR-0016 / ADR-0017) ------------------------------------------------
     # Again a branch in the SAME function, for the reason this module's docstring gives: `deps.py`
     # and all four routers share one mapping, and one mapping is what keeps four 401s from becoming
@@ -889,6 +918,100 @@ def _export_error_to_http(exc: DomainError) -> HTTPException:
     # plausible 4xx for the reason `domain_error_to_http_exception`'s own floor gives: a type this
     # mapping does not know about is a bug, and a real 500 is the honest answer to it.
     raise exc
+
+
+def _tracking_error_to_http(exc: DomainError) -> HTTPException:
+    """The board's failure contract (feature spec T-12 … T-23), one branch per row.
+
+    **No message is `str(exc)`** — every one is a fixed sentence, so a title (user text) can never
+    reach a response body whatever a future domain message includes (T-16)."""
+    if isinstance(exc, TrackedApplicationNotFound):
+        # T-22 / T-23: one body for "does not exist" and "is another user's" (AC-23).
+        return HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "tracked_application_not_found",
+                "message": "We couldn't find that application on your board.",
+            },
+        )
+
+    if isinstance(exc, ApplicationAlreadyTracked):
+        # T-14 / T-19. The existing card's id is the point, `tailoring_already_running`'s reason:
+        # the client treats a repeat as success and shows the card it already has (AC-38).
+        # Stringified because `JSONResponse` has no `UUID` encoder.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "application_already_tracked",
+                "message": "This application is already on your board.",
+                "tracked_application_id": str(exc.existing_id.value),
+            },
+        )
+
+    if isinstance(exc, TailoringRunNotTrackable):
+        # T-12. 409, `tailoring_run_not_editable`'s reasoning: a well-formed request for a run the
+        # caller owns, refused because of the run's state. §4 gives the body no `status` field.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_run_not_trackable",
+                "message": "Only a finished tailored application can go on your board.",
+            },
+        )
+
+    if isinstance(exc, TooManyTrackedApplications):
+        # T-15. The number comes from the error's payload (the setting the use case read), so it
+        # lives in one place rather than as a literal that ages separately from the rule.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_tracked_applications",
+                "message": (
+                    f"Your board holds {exc.cap} applications — remove some you no longer need."
+                ),
+            },
+        )
+
+    if isinstance(exc, TrackedApplicationVersionConflict):
+        # T-20 — the aggregate's own compare; the body carries the number the card is at.
+        return _tracked_application_version_conflict(current_version=exc.current_version)
+
+    if isinstance(exc, TrackedApplicationConcurrentlyModified):
+        # T-21 — the repository's translation of `StaleDataError`. Same code as T-20, but
+        # `current_version` is `null`: the aggregate this request holds is the stale copy, and the
+        # true number (if the row still exists at all) is one it has just been told it does not
+        # have — `TailoringRunConcurrentlyModified`'s reasoning (E-9).
+        return _tracked_application_version_conflict(current_version=None)
+
+    if isinstance(exc, InvalidApplicationTitle):
+        # T-16. The boundary's own 422 shape (`main.py`'s `validation_error`), with a fixed
+        # sentence: the refused title is never echoed (AC-25).
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "validation_error",
+                "message": (
+                    "A title must be 1 to 120 characters, with no line breaks or control "
+                    "characters."
+                ),
+            },
+        )
+
+    # Every member of the union at the call site is handled above; anything else here is a bug.
+    raise exc
+
+
+def _tracked_application_version_conflict(*, current_version: int | None) -> HTTPException:
+    """409 `tracked_application_version_conflict` from either of its two sources (T-20 with the
+    number, T-21 with `null`) — one builder, one code, one message, so the client has one branch."""
+    return HTTPException(
+        status.HTTP_409_CONFLICT,
+        detail={
+            "code": "tracked_application_version_conflict",
+            "message": "This application was changed elsewhere. Reload your board.",
+            "current_version": current_version,
+        },
+    )
 
 
 def _document_invalid(problem: str, message: str) -> HTTPException:
