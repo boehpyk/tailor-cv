@@ -334,7 +334,7 @@ async def test_t16_a_title_that_is_refused_is_never_echoed(
     )
     control = await client.post(
         ME_TRACKED,
-        json={"tailoring_run_id": str(entry.run_id.value), "title": marker + "\n"},
+        json={"tailoring_run_id": str(entry.run_id.value), "title": marker + "\nx"},
         headers=account.headers,
     )
 
@@ -684,7 +684,7 @@ async def test_t16_a_refused_retitle_never_echoes_the_title(
     marker = f"QA31RETITLE-{uuid4().hex}"
 
     response = await client.put(
-        card.title_url, json={"title": marker + "\n", "version": 1}, headers=account.headers
+        card.title_url, json={"title": marker + "\nx", "version": 1}, headers=account.headers
     )
 
     assert response.status_code == 422, response.text
