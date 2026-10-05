@@ -174,6 +174,8 @@ def _log_entry_erasure(
         files_unlinked=report.files_unlinked,
         files_failed=len(report.unlink_failures),
         posting_deleted=report.posting_deleted,
+        # Slice 3.1 (T-32, AC-24): whether the entry's card went with it. A bool.
+        tracked_application_deleted=report.tracked_application_deleted,
     )
     for error_type in report.unlink_failures:
         log.warning(
