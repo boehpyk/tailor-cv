@@ -91,8 +91,12 @@ class _OrderRecordingEntries(RecordingHistoryEntryData):
         runs: FakeTailoringRunRepository,
         jobs: FakeExportJobRepository,
         postings: FakeJobPostingRepository,
+        *,
+        tracked_application_deleted: bool = False,
     ) -> None:
-        super().__init__(runs, jobs, postings)
+        super().__init__(
+            runs, jobs, postings, tracked_application_deleted=tracked_application_deleted
+        )
         self._order = order
 
     async def delete_history_entry(
@@ -136,6 +140,7 @@ class _World:
         runs: FakeTailoringRunRepository | None = None,
         fail_delete: Exception | None = None,
         fail_delete_keys: set[str] | None = None,
+        tracked_application_deleted: bool = False,
     ) -> None:
         self.clock = clock
         self.order: list[str] = []
@@ -144,7 +149,13 @@ class _World:
         self.runs = runs if runs is not None else _OrderRecordingRuns(self.order)
         self.jobs = FakeExportJobRepository()
         self.postings = FakeJobPostingRepository()
-        self.entries = _OrderRecordingEntries(self.order, self.runs, self.jobs, self.postings)
+        self.entries = _OrderRecordingEntries(
+            self.order,
+            self.runs,
+            self.jobs,
+            self.postings,
+            tracked_application_deleted=tracked_application_deleted,
+        )
         self.files = _OrderRecordingFiles(
             self.order, fail_delete=fail_delete, fail_delete_keys=fail_delete_keys
         )
@@ -199,6 +210,35 @@ async def test_a_finished_entry_is_deleted_rows_first_then_each_file(clock: Fixe
     assert set(w.files.delete_calls) == set(refs)
     assert all(ref.key not in w.files.data for ref in refs)
     assert await w.runs.find(run.id) is None
+
+
+async def test_the_report_carries_tracked_application_deleted_true_from_the_port(
+    clock: FixedClock,
+) -> None:
+    """AC-13: the flag the port reports reaches the use case's report (planted True, so a use case
+    that drops it and leaves the default False fails here)."""
+    w = _World(clock, tracked_application_deleted=True)
+    user = await w.user()
+    run, _ = await w.entry(user)
+
+    report = await w.use_case()(user.user_id, run.id)
+
+    assert report.tracked_application_deleted is True
+    assert report.export_jobs == 2  # the rest of the report is the port's too
+
+
+async def test_the_report_says_no_tracked_application_when_the_port_says_none(
+    clock: FixedClock,
+) -> None:
+    """AC-13's pair: an entry with no tracked application reports False."""
+    w = _World(clock, tracked_application_deleted=False)
+    user = await w.user()
+    run, _ = await w.entry(user)
+
+    report = await w.use_case()(user.user_id, run.id)
+
+    assert report.tracked_application_deleted is False
+    assert report.export_jobs == 2
 
 
 @pytest.mark.parametrize("build", [succeeded_run, failed_run], ids=["succeeded", "failed"])
