@@ -1119,7 +1119,9 @@ class FakeAccountDataPort:
         logins_by_user: dict[UserId, int] | None = None,
         export_files_by_user: dict[UserId, Sequence[FileRef]] | None = None,
         history_by_user: dict[UserId, AccountHistory] | None = None,
+        tracked_applications_by_user: dict[UserId, int] | None = None,
     ) -> None:
+        self._tracked_applications_by_user = dict(tracked_applications_by_user or {})
         self._files_by_user = dict(files_by_user or {})
         self._logins_by_user = dict(logins_by_user or {})
         self._export_files_by_user = dict(export_files_by_user or {})
@@ -1166,6 +1168,7 @@ class FakeAccountDataPort:
             tailoring_runs=history.tailoring_runs,
             job_postings=history.job_postings,
             export_jobs=len(export_files),
+            tracked_applications=self._tracked_applications_by_user.get(user_id, 0),
         )
 
 
@@ -1288,10 +1291,13 @@ class RecordingHistoryEntryData:
         runs: FakeTailoringRunRepository,
         jobs: FakeExportJobRepository,
         postings: FakeJobPostingRepository,
+        *,
+        tracked_application_deleted: bool = False,
     ) -> None:
         self._runs = runs
         self._jobs = jobs
         self._postings = postings
+        self._tracked_application_deleted = tracked_application_deleted
         self.calls: list[tuple[UserId, UUID]] = []
 
     async def delete_history_entry(
@@ -1324,6 +1330,7 @@ class RecordingHistoryEntryData:
             export_files=tuple(job.storage_ref for job in jobs),
             export_jobs=len(jobs),
             posting_deleted=posting_deleted,
+            tracked_application_deleted=self._tracked_application_deleted,
         )
 
 

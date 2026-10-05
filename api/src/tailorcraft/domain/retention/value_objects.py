@@ -379,6 +379,11 @@ class AccountErasureReport:
     job_postings: int
     export_jobs: int
     files: int
+    # Slice 3.1 (T7). A deliberate exception to this class's "no defaults" rule: the default lets the
+    # field land before anything fills it, so every existing report stays valid and behaviour is
+    # unchanged. The adapter fills it from T17, and `EraseAccount` passes it through from T9.
+    # The account's tracked applications (cards) the erasure deleted. A count, never a tracking type.
+    tracked_applications: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -398,6 +403,10 @@ class AccountCounts:
     tailoring_runs: int
     job_postings: int
     export_jobs: int
+    # Slice 3.1 (T7): the account's tracked applications (cards). Defaulted so the field lands before
+    # anything fills it; `AccountDataPort.count_account`'s adapter fills it from T17. A count, never a
+    # tracking type.
+    tracked_applications: int = 0
 
 
 # --------------------------------------------------------------------------------------------------
@@ -419,6 +428,10 @@ class DeletedHistoryEntry:
     export_files: tuple[FileRef, ...]
     export_jobs: int
     posting_deleted: bool
+    # Slice 3.1 (T7): whether the run's tracked application (card) went with it — at most one per run.
+    # Defaulted so the field lands before anything fills it; the adapter's `DELETE` fills it from T17.
+    # A bool, never a tracking type.
+    tracked_application_deleted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -436,6 +449,12 @@ class HistoryEntryErasureReport:
     files_unlinked: int
     unlink_failures: tuple[str, ...]
     posting_deleted: bool
+    # Slice 3.1 (T7). A deliberate exception to this class's "no defaults" rule: the default lets the
+    # field land before anything fills it, so every existing report stays valid and behaviour is
+    # unchanged. The adapter fills it from T17, and `EraseHistoryEntry` passes it through from T9.
+    # Whether the run's tracked application (card) was deleted with the entry. A bool, never a
+    # tracking type.
+    tracked_application_deleted: bool = False
 
 
 # --------------------------------------------------------------------------------------------------
