@@ -60,7 +60,7 @@ export function AuthStatus() {
       );
     case 'authenticated':
       return (
-        <nav aria-label="Account" className="flex items-center gap-4 text-sm">
+        <nav aria-label="Account" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
           {auth.user !== undefined && <span className="text-slate-600">{auth.user.email}</span>}
           <Link to="/history" className={linkClass}>
             History
