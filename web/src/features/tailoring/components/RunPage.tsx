@@ -6,7 +6,8 @@ import { SessionEndedHistoryNote } from '@/features/claim/components/SessionEnde
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
 import { ExportBar } from '@/features/export/components/ExportBar';
 import { runLink } from '@/features/scope/scopeMap';
-import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
+import { TrackButton } from '@/features/tracking/components/TrackButton';
 import { ProgressStepper } from '@/features/workspace/components/ProgressStepper';
 import { progressOfRun } from '@/features/workspace/progress';
 
@@ -111,6 +112,7 @@ export function RunPage(): React.JSX.Element {
   // The route's scope (slice 2.3): which words the page uses and where its links go. The hooks
   // above already read and write in it.
   const map = useScopeMap();
+  const scope = useWorkspaceScope();
 
   if (runId === null || documentSegment === null) {
     return <NotFoundPage />;
@@ -201,6 +203,12 @@ export function RunPage(): React.JSX.Element {
         document={documentSegment}
         runStatus={watched.data?.status ?? null}
       />
+
+      {/* Slice 3.1 (AC-38): a finished account run can go on the board. A guest's run cannot — the
+          board is account data — and the scope, not "is someone signed in?", says which this is. */}
+      {view.kind === 'succeeded' && scope.kind === 'account' && (
+        <TrackButton userId={scope.userId} runId={runId} />
+      )}
 
       {/* `succeeded` implies the detail query answered (a list summary cannot show the documents,
           so the view never says `succeeded` from one), hence `data` is set; the narrowing is for

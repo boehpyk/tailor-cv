@@ -12,6 +12,7 @@ import { HistoryPage } from './features/history/components/HistoryPage';
 import { AccountScope } from './features/scope/AccountScope';
 import { NotFoundPage } from './features/tailoring/components/NotFoundPage';
 import { RunPage } from './features/tailoring/components/RunPage';
+import { BoardPage } from './features/tracking/components/BoardPage';
 import { WorkspacePage } from './features/workspace/components/WorkspacePage';
 
 import type { RouteObject } from 'react-router';
@@ -35,6 +36,7 @@ import type { RouteObject } from 'react-router';
  * | `/history`                | `RequireAuth` → `AccountScope` → `HistoryPage` (2.3) |
  * | `/history/:runId`         | redirect → `/history/:runId/cv` (2.3)                 |
  * | `/history/:runId/:document` | `RequireAuth` → `AccountScope` → `RunPage` (2.3)    |
+ * | `/board`                  | `RequireAuth` → `AccountScope` → `BoardPage` (3.1)    |
  * | `*`                       | `NotFoundPage` (E-28)         |
  *
  * `App` is the layout route: every page renders through its `<Outlet />`, between the header and
@@ -118,6 +120,14 @@ export const routes: RouteObject[] = [
             ],
           },
         ],
+      },
+      {
+        path: 'board',
+        element: (
+          <RequireAuth>
+            <AccountScope>{(userId) => <BoardPage userId={userId} />}</AccountScope>
+          </RequireAuth>
+        ),
       },
       { path: '*', element: <NotFoundPage /> },
     ],

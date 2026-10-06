@@ -33,7 +33,7 @@ export const POSTING_MISSING_NOTE = 'Job posting unavailable';
 
 export const DELETE_ENTRY_DIALOG_TITLE = 'Delete tailored application';
 export const DELETE_ENTRY_MESSAGE =
-  "Delete this tailored application? This removes its tailored CV and cover letter, any files you exported, and the job posting if nothing else uses it. This can't be undone.";
+  "Delete this tailored application? This removes its tailored CV and cover letter, any files you exported, and the job posting if nothing else uses it, and its card on your board. This can't be undone.";
 export const DELETE_ENTRY_CONFIRM_LABEL = 'Delete';
 export const DELETE_ENTRY_CANCEL_LABEL = 'Cancel';
 export const DELETE_ENTRY_PENDING_LABEL = 'Deleting…';

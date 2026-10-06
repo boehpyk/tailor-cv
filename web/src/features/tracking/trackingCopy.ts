@@ -1,4 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unused-vars -- T26 SKELETON: the parameters are the signatures qa's T27 tests compile against; T28 uses them and deletes this line. */
+import { ApiError } from '@/api/client';
+
 import type { BoardCard, Stage } from './types';
 
 /**
@@ -6,9 +7,17 @@ import type { BoardCard, Stage } from './types';
  * changes in one place and a test can name the constant it asserts.
  *
  * The constants are the spec's sentences verbatim. The functions build a sentence from data (a
- * count, a date, a title, an error's `code`). SKELETON (T26): every function returns `''`; T28
- * writes them.
+ * count, a date, a title, an error's `code`).
+ *
+ * **Error copy branches on `ApiError.code`, never on `message`** — `code` is the contract, `message`
+ * is prose that may be reworded. The one exception is a 422 on a title, whose message *is* the
+ * boundary's explanation (it never echoes the title), shown under the field as the spec asks.
  */
+
+/** The `code` of an API refusal, or `null` for anything else (a network failure, a bug). */
+function codeOf(error: unknown): string | null {
+  return error instanceof ApiError ? error.code : null;
+}
 
 // --- The page -----------------------------------------------------------------------------------
 
@@ -38,9 +47,9 @@ export const STAGE_LABELS: Readonly<Record<Stage, string>> = {
   withdrawn: 'Withdrawn',
 };
 
-/** A column's heading, its count included — *"Applied (3)"* (AC-32). SKELETON: `''`. */
-export function columnHeading(_stage: Stage, _count: number): string {
-  return '';
+/** A column's heading, its count included — *"Applied (3)"* (AC-32). */
+export function columnHeading(stage: Stage, count: number): string {
+  return `${STAGE_LABELS[stage]} (${String(count)})`;
 }
 
 // --- A card ---------------------------------------------------------------------------------------
@@ -51,23 +60,41 @@ export const CV_DELETED_NOTE = 'CV deleted';
 export const OPEN_DOCUMENTS_LABEL = 'Open tailored CV';
 /** The posting's own page, an external link — only when `source_url` is `http(s)` (AC-40). */
 export const OPEN_POSTING_LABEL = 'Job posting';
+/**
+ * The last fallback of a card's name: no title of its own and no posting to borrow one from — a
+ * card whose run row is missing (T-36), which the server's locks prevent and the board still lists.
+ */
+export const UNTITLED_CARD = 'Untitled application';
 
 /**
  * The card's name: its own title → else the posting's title → else the posting's preview (AC-32).
- * Read from the card, never stored. SKELETON: `''`.
+ * Read from the card, never stored.
  */
-export function cardDisplayTitle(_card: BoardCard): string {
-  return '';
+export function cardDisplayTitle(card: BoardCard): string {
+  return card.title ?? card.posting?.title ?? card.posting?.preview ?? UNTITLED_CARD;
 }
 
-/** The card's CV line: the label → else the filename → else *"CV deleted"* (AC-32). SKELETON: `''`. */
-export function cardCvLine(_card: BoardCard): string {
-  return '';
+/** The card's CV line: the label → else the filename → else *"CV deleted"* (AC-32). */
+export function cardCvLine(card: BoardCard): string {
+  return card.base_cv === null
+    ? CV_DELETED_NOTE
+    : (card.base_cv.label ?? card.base_cv.original_filename);
 }
 
-/** *"since 5 Oct 2026"* — from `stage_changed_at`, in UTC (AC-32). SKELETON: `''`. */
-export function sinceCopy(_stageChangedAt: string): string {
-  return '';
+/** *"since 5 Oct 2026"* — from `stage_changed_at`, in UTC (AC-32). */
+export function sinceCopy(stageChangedAt: string): string {
+  // Reassembled from parts, like `features/intake/format.ts`: 'en-US' supplies the token spellings
+  // only ("Sep", where en-GB says "Sept"), the order is ours, and UTC keeps one card reading the
+  // same date for everyone.
+  const parts = new Intl.DateTimeFormat('en-US', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    timeZone: 'UTC',
+  }).formatToParts(new Date(stageChangedAt));
+  const find = (type: Intl.DateTimeFormatPartTypes): string =>
+    parts.find((part) => part.type === type)?.value ?? '';
+  return `since ${find('day')} ${find('month')} ${find('year')}`;
 }
 
 // --- Move (AC-33, AC-34) -----------------------------------------------------------------------
@@ -81,17 +108,26 @@ export const MOVE_GONE_NOTE = 'This application is no longer on your board.';
 export const MOVE_RATE_LIMITED_NOTE = 'Too many changes — wait a moment and try again.';
 export const MOVE_FAILED_NOTE = 'Not moved — try again.';
 
-/** The polite live region after a move: *"Moved {title} to {stage}."* (AC-33). SKELETON: `''`. */
-export function movedAnnouncement(_title: string, _stage: Stage): string {
-  return '';
+/** The polite live region after a move: *"Moved {title} to {stage}."* (AC-33). */
+export function movedAnnouncement(title: string, stage: Stage): string {
+  return `Moved ${title} to ${STAGE_LABELS[stage]}.`;
 }
 
 /**
  * Why a move was refused, by `code` (AC-34): 409 conflict, 404 gone, 429 rate limited, anything
- * else (503, a network failure) *"Not moved — try again."*. Never silent. SKELETON: `''`.
+ * else (503, a network failure) *"Not moved — try again."*. Never silent.
  */
-export function moveFailureCopy(_error: unknown): string {
-  return '';
+export function moveFailureCopy(error: unknown): string {
+  switch (codeOf(error)) {
+    case 'tracked_application_version_conflict':
+      return MOVE_CONFLICT_NOTE;
+    case 'tracked_application_not_found':
+      return MOVE_GONE_NOTE;
+    case 'rate_limited':
+      return MOVE_RATE_LIMITED_NOTE;
+    default:
+      return MOVE_FAILED_NOTE;
+  }
 }
 
 // --- Retitle (AC-36) -------------------------------------------------------------------------------
@@ -103,20 +139,34 @@ export const SAVE_TITLE_LABEL = 'Save';
 export const CANCEL_TITLE_LABEL = 'Cancel';
 export const CLEAR_TITLE_LABEL = 'Clear title';
 export const RETITLE_PENDING_LABEL = 'Saving…';
+/** A retitle refused for a reason other than the title itself, a race or the rate limit (503, network). */
+export const RETITLE_FAILED_NOTE = 'Title not saved — try again.';
 /** Not the rule (the server's `ApplicationTitle` is) — only the counter's denominator. */
 export const TITLE_MAX_CHARACTERS = 120;
 
-/** The visible counter, *"12 / 120"* (AC-36). SKELETON: `''`. */
-export function titleCounter(_length: number): string {
-  return '';
+/** The visible counter, *"12 / 120"* (AC-36). */
+export function titleCounter(length: number): string {
+  return `${String(length)} / ${String(TITLE_MAX_CHARACTERS)}`;
 }
 
 /**
  * Why a retitle was refused: 422 → the boundary's own message (it never echoes the title); 409, 404,
- * 429, 503 → as a move's (AC-34). SKELETON: `''`.
+ * 429, 503 → as a move's (AC-34).
  */
-export function retitleFailureCopy(_error: unknown): string {
-  return '';
+export function retitleFailureCopy(error: unknown): string {
+  switch (codeOf(error)) {
+    case 'validation_error':
+      // `codeOf` returned a code, so this is an `ApiError`; the narrowing is for the type.
+      return error instanceof ApiError ? error.message : RETITLE_FAILED_NOTE;
+    case 'tracked_application_version_conflict':
+      return MOVE_CONFLICT_NOTE;
+    case 'tracked_application_not_found':
+      return MOVE_GONE_NOTE;
+    case 'rate_limited':
+      return MOVE_RATE_LIMITED_NOTE;
+    default:
+      return RETITLE_FAILED_NOTE;
+  }
 }
 
 // --- Untrack (AC-37) -------------------------------------------------------------------------------
@@ -135,17 +185,30 @@ export const TRACK_NOT_TRACKABLE_NOTE =
 export const TRACK_TOO_MANY_NOTE =
   'Your board holds 500 applications — remove some you no longer need.';
 export const TRACK_FAILED_NOTE = 'Not added — try again.';
+/** 404 `tailoring_run_not_found`: the history entry was deleted (or was never this account's). */
+export const TRACK_GONE_NOTE = 'This tailored application no longer exists.';
 
-/** *"On your board · To apply"*, a link to `/board` (AC-38). SKELETON: `''`. */
-export function onBoardLabel(_stage: Stage): string {
-  return '';
+/** *"On your board · To apply"*, a link to `/board` (AC-38). */
+export function onBoardLabel(stage: Stage): string {
+  return `On your board · ${STAGE_LABELS[stage]}`;
 }
 
 /**
  * Why *Add to board* was refused: 409 not trackable, 409 too many, 429, anything else (503, a
  * network failure). A 409 `application_already_tracked` is a success and never reaches here.
- * SKELETON: `''`.
+ *
  */
-export function trackFailureCopy(_error: unknown): string {
-  return '';
+export function trackFailureCopy(error: unknown): string {
+  switch (codeOf(error)) {
+    case 'tailoring_run_not_trackable':
+      return TRACK_NOT_TRACKABLE_NOTE;
+    case 'too_many_tracked_applications':
+      return TRACK_TOO_MANY_NOTE;
+    case 'tailoring_run_not_found':
+      return TRACK_GONE_NOTE;
+    case 'rate_limited':
+      return MOVE_RATE_LIMITED_NOTE;
+    default:
+      return TRACK_FAILED_NOTE;
+  }
 }

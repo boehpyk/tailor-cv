@@ -6,6 +6,7 @@ import { exportJobsQueryKey } from '@/features/export/hooks/useExportJobs';
 import { jobPostingsKey } from '@/features/posting/hooks/useJobPostings';
 import { scopeMap } from '@/features/scope/scopeMap';
 import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun';
+import { boardKey } from '@/features/tracking/hooks/trackingKeys';
 
 import { deleteHistoryEntryMutationKey, historyRootKey } from './historyKeys';
 
@@ -29,7 +30,10 @@ export type DeleteHistoryEntryOutcome = 'deleted' | 'already_gone';
  * - the account's job postings are **invalidated**. The deletion may have taken the posting with it
  *   (a posting survives only while some run still references it), and the server alone knows
  *   whether it did, so the picker re-reads rather than guessing;
- * - the history root is invalidated: every page and the workspace's latest-run card.
+ * - the history root is invalidated: every page and the workspace's latest-run card;
+ * - the board is **marked** stale (slice 3.1, AC-39) — the deletion took the run's card with it — but
+ *   not re-read here (`refetchType: 'none'`): on this page the deleted row is gone with the history
+ *   re-read, so no badge here can show the card, and `/board` re-reads a stale board when it mounts.
  *
  * Every key comes from the builder its reader uses, parameterized by the account `ScopeMap`. A key
  * written out here by hand would be a second spelling that can drift from the first, and a removal
@@ -71,6 +75,7 @@ export function useDeleteHistoryEntry(
       return Promise.all([
         queryClient.invalidateQueries({ queryKey: jobPostingsKey(map) }),
         queryClient.invalidateQueries({ queryKey: historyRootKey(userId) }),
+        queryClient.invalidateQueries({ queryKey: boardKey(userId), refetchType: 'none' }),
       ]);
     },
   });
