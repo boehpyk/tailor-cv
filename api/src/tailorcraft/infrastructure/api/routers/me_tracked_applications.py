@@ -178,10 +178,14 @@ def _title(raw: str | None) -> ApplicationTitle | None:
 def _refuse(exc: DomainError, user_id: UserId) -> NoReturn:
     """A domain refusal as this router's `HTTPException`, raised `from None` so the frame holding the
     request body is unreachable from a report. `UserNotFound` (a valid token for an erased account,
-    AC-28) is 2.1's 401 `not_signed_in`, with 2.1's line: the id, nothing else."""
+    AC-28) is 2.1's 401 `not_signed_in`, with 2.1's line: the id, nothing else. A refusal the handler
+    raises is a response it builds, so it carries `no-store` too — two of them name account data
+    (`tracked_application_id`, `current_version`); 2.4's claim does the same."""
     if isinstance(exc, UserNotFound):
         log.info(EVENT_USER_MISSING, user_id=str(user_id.value))
-    raise domain_error_to_http_exception(exc) from None
+    refusal = domain_error_to_http_exception(exc)
+    refusal.headers = {**(refusal.headers or {}), "Cache-Control": _NO_STORE}
+    raise refusal from None
 
 
 def _card_to_response(card: TrackedApplication) -> TrackedApplicationResponse:
