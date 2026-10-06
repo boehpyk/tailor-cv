@@ -4,7 +4,7 @@ import { ApiError } from '@/api/client';
 import { retitleTrackedApplication } from '@/api/trackedApplications';
 import { historyRootKey } from '@/features/history/hooks/historyKeys';
 
-import { mergeApplication, withCard } from './boardCache';
+import { invalidateBoardUnlessMoving, mergeApplication, withCard } from './boardCache';
 import { boardKey, retitleTrackedApplicationMutationKey } from './trackingKeys';
 
 import type { Board, TrackedApplication } from '../types';
@@ -22,7 +22,7 @@ export interface RetitleVariables {
  * **Not optimistic**: the server normalizes the title (trims it), so the card shows what it stored,
  * not what was typed. On success the server's card is written into the board and the board and the
  * history root are invalidated; a 409 or a 404 re-reads the board — it holds a newer version, or no
- * card at all.
+ * card at all. Either board re-read waits for any move in flight (`invalidateBoardUnlessMoving`).
  *
  * Each `CardTitleEditor` owns its own observer of this mutation, so "which card is saving" and
  * "why that one failed" are per card without any bookkeeping here.
@@ -41,7 +41,7 @@ export function useRetitleTrackedApplication(
           ? board
           : withCard(board, id, (card) => mergeApplication(card, application)),
       );
-      void queryClient.invalidateQueries({ queryKey: key });
+      invalidateBoardUnlessMoving(queryClient, userId);
       void queryClient.invalidateQueries({ queryKey: historyRootKey(userId) });
     },
     onError: (error) => {
@@ -50,7 +50,7 @@ export function useRetitleTrackedApplication(
         (error.code === 'tracked_application_version_conflict' ||
           error.code === 'tracked_application_not_found')
       ) {
-        void queryClient.invalidateQueries({ queryKey: key });
+        invalidateBoardUnlessMoving(queryClient, userId);
       }
     },
   });

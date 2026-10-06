@@ -8,10 +8,31 @@ export interface MoveAnnouncer {
    * focus onto that card's Move control (AC-33).
    */
   readonly announceMove: (cardId: string, message: string) => void;
+  /**
+   * After a refused move: once the card is back in its column and its control enabled, focus that
+   * control — the one the user chose from, which the optimistic move had unmounted.
+   */
+  readonly returnFocus: (cardId: string) => void;
   /** Announce without moving focus — *"Removed from your board…"* (AC-37). */
   readonly announce: (message: string) => void;
   /** A callback ref for one card's Move control, so focus can find it after the card moves. */
   readonly moveControlRef: (cardId: string) => React.RefCallback<HTMLSelectElement>;
+}
+
+/** The attribute `BoardCard` puts on its root, so a control can find the card it belongs to. */
+const BOARD_CARD_ATTRIBUTE = 'data-board-card';
+
+/**
+ * Whether focus is somewhere the user did not choose: on `<body>` (or nowhere), or still inside
+ * the card whose control is owed it. Anywhere else, the user put it there.
+ */
+function focusIsLost(control: HTMLElement): boolean {
+  const active = control.ownerDocument.activeElement;
+  if (active === null || active === control.ownerDocument.body) {
+    return true;
+  }
+  const card = control.closest(`[${BOARD_CARD_ATTRIBUTE}]`);
+  return card !== null && card.contains(active);
 }
 
 /**
@@ -26,8 +47,13 @@ export interface MoveAnnouncer {
  * `disabled` (T-39), and a disabled element cannot take focus. So the focus *target* is kept in a ref
  * until the control can take it.
  *
+ * **Only if focus is still lost.** The debt is paid only when focus sits on `<body>` (where the
+ * unmount dropped it) or inside the moved card itself. If the user has gone on to something else
+ * while the move was on the wire — another card's title field, say — the debt is dropped: taking
+ * focus from where a person put it is worse than not restoring it.
+ *
  * The one honest `useEffect`: after every commit, if a focus is owed and the card's control exists
- * and is enabled, focus it and clear the debt. That is synchronizing with the DOM, which is what
+ * and is enabled, pay or drop the debt. That is synchronizing with the DOM, which is what
  * effects are for; it runs no state update, so it cannot loop. The control elements live in a ref
  * map filled by per-card callback refs, each cached so React does not detach and re-attach it on
  * every render, and each returning a React 19 ref cleanup.
@@ -44,15 +70,22 @@ export function useMoveAnnouncer(): MoveAnnouncer {
       return;
     }
     const control = controls.current.get(cardId);
-    if (control !== undefined && !control.disabled) {
+    if (control === undefined || control.disabled) {
+      return;
+    }
+    owedFocus.current = null;
+    if (focusIsLost(control)) {
       control.focus();
-      owedFocus.current = null;
     }
   });
 
   const announceMove = useCallback((cardId: string, text: string) => {
     owedFocus.current = cardId;
     setMessage(text);
+  }, []);
+
+  const returnFocus = useCallback((cardId: string) => {
+    owedFocus.current = cardId;
   }, []);
 
   const announce = useCallback((text: string) => {
@@ -79,5 +112,5 @@ export function useMoveAnnouncer(): MoveAnnouncer {
     return callback;
   }, []);
 
-  return { message, announceMove, announce, moveControlRef };
+  return { message, announceMove, returnFocus, announce, moveControlRef };
 }

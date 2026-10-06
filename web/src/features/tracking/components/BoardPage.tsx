@@ -92,13 +92,18 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
   const [moveFailure, setMoveFailure] = useState<string | null>(null);
   const moveMutationKey = moveTrackedApplicationMutationKey(userId);
 
-  const { announceMove, announce } = announcer;
+  const { announceMove, announce, returnFocus } = announcer;
   const move = useMoveTrackedApplication(userId, {
     onMoved: (card, stage) => {
       announceMove(card.id, movedAnnouncement(cardDisplayTitle(card), stage));
     },
-    onRefused: (error) => {
+    onRefused: (error, card) => {
       setMoveFailure(moveFailureCopy(error));
+      // The card is back where it was, but the control the user chose from was unmounted by the
+      // optimistic move: hand focus back to it. A card that is gone (404) has no control to return to.
+      if (card.restored) {
+        returnFocus(card.id);
+      }
     },
   });
   const untrack = useUntrackApplication(userId, {

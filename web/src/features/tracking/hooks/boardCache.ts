@@ -2,8 +2,9 @@ import { queryOptions } from '@tanstack/react-query';
 
 import { fetchBoard } from '@/api/trackedApplications';
 
-import { boardKey } from './trackingKeys';
+import { boardKey, moveTrackedApplicationMutationKey } from './trackingKeys';
 
+import type { QueryClient } from '@tanstack/react-query';
 import type { Board, BoardCard, TrackedApplication } from '../types';
 
 /**
@@ -74,4 +75,19 @@ export function variablesNameId(variables: unknown, id: string): boolean {
   return (
     typeof variables === 'object' && variables !== null && 'id' in variables && variables.id === id
   );
+}
+
+/**
+ * Re-read the board after a write that is not a move (a removal, a retitle) — **unless a move is in
+ * flight**. A refetch then would land the server's board, which has not seen that move yet, on top
+ * of its optimistic state: the moving card would flicker back to its old column. The write's own
+ * answer is already in the cache entry, and the last move to settle re-reads the board for
+ * everything that happened meanwhile (`useMoveTrackedApplication`'s `onSettled`), so deferring
+ * loses nothing and costs exactly one read.
+ */
+export function invalidateBoardUnlessMoving(queryClient: QueryClient, userId: string): void {
+  if (queryClient.isMutating({ mutationKey: moveTrackedApplicationMutationKey(userId) }) > 0) {
+    return;
+  }
+  void queryClient.invalidateQueries({ queryKey: boardKey(userId) });
 }

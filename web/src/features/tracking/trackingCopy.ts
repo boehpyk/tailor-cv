@@ -10,8 +10,10 @@ import type { BoardCard, Stage } from './types';
  * count, a date, a title, an error's `code`).
  *
  * **Error copy branches on `ApiError.code`, never on `message`** — `code` is the contract, `message`
- * is prose that may be reworded. The one exception is a 422 on a title, whose message *is* the
- * boundary's explanation (it never echoes the title), shown under the field as the spec asks.
+ * is prose that may be reworded. Two exceptions: a 422 on a title, whose message *is* the
+ * boundary's explanation (it never echoes the title), shown under the field as the spec asks; and
+ * 409 `too_many_tracked_applications`, whose message carries the cap — a setting only the server
+ * knows (T-15).
  */
 
 /** The `code` of an API refusal, or `null` for anything else (a network failure, a bug). */
@@ -182,8 +184,6 @@ export const TRACK_LABEL = 'Add to board';
 export const TRACK_PENDING_LABEL = 'Adding…';
 export const TRACK_NOT_TRACKABLE_NOTE =
   'Only a finished tailored application can go on your board.';
-export const TRACK_TOO_MANY_NOTE =
-  'Your board holds 500 applications — remove some you no longer need.';
 export const TRACK_FAILED_NOTE = 'Not added — try again.';
 /** 404 `tailoring_run_not_found`: the history entry was deleted (or was never this account's). */
 export const TRACK_GONE_NOTE = 'This tailored application no longer exists.';
@@ -194,16 +194,19 @@ export function onBoardLabel(stage: Stage): string {
 }
 
 /**
- * Why *Add to board* was refused: 409 not trackable, 409 too many, 429, anything else (503, a
- * network failure). A 409 `application_already_tracked` is a success and never reaches here.
- *
+ * Why *Add to board* was refused: 409 not trackable, 409 too many (the server's own sentence, which
+ * carries the real cap), 429, anything else (503, a network failure). A 409
+ * `application_already_tracked` is a success and never reaches here.
  */
 export function trackFailureCopy(error: unknown): string {
   switch (codeOf(error)) {
     case 'tailoring_run_not_trackable':
       return TRACK_NOT_TRACKABLE_NOTE;
     case 'too_many_tracked_applications':
-      return TRACK_TOO_MANY_NOTE;
+      // The cap is a setting (`MAX_TRACKED_APPLICATIONS_PER_USER`), so only the server knows the
+      // number: its sentence is shown as written. A client copy with a number in it is wrong the
+      // day the setting changes. `codeOf` returned a code, so this is an `ApiError`.
+      return error instanceof ApiError ? error.message : TRACK_FAILED_NOTE;
     case 'tailoring_run_not_found':
       return TRACK_GONE_NOTE;
     case 'rate_limited':

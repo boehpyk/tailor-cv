@@ -22,6 +22,12 @@ export interface MoveContext {
   readonly previous: Board | undefined;
 }
 
+/** Which card a refusal was about, and whether it is back on the board. */
+export interface RefusedCard {
+  readonly id: string;
+  readonly restored: boolean;
+}
+
 /**
  * What the page hears about **every** move, not only the latest one.
  *
@@ -33,8 +39,11 @@ export interface MoveContext {
 export interface MoveEvents {
   /** The server accepted: `card` as it was before the move, `stage` where it went. */
   readonly onMoved?: (card: BoardCard, stage: Stage) => void;
-  /** The server (or the network) refused; the card has already been put back or removed. */
-  readonly onRefused?: (error: Error) => void;
+  /**
+   * The server (or the network) refused; the card has already been put back (`restored: true`) or
+   * removed (a 404, `restored: false`).
+   */
+  readonly onRefused?: (error: Error, card: RefusedCard) => void;
 }
 
 function isGone(error: Error): boolean {
@@ -86,6 +95,7 @@ export function useMoveTrackedApplication(
       return { previous };
     },
     onError: (error, { id }, context) => {
+      let restored = false;
       if (isGone(error)) {
         queryClient.setQueryData<Board>(key, (board) =>
           board === undefined ? board : withoutCard(board, id),
@@ -96,9 +106,10 @@ export function useMoveTrackedApplication(
           queryClient.setQueryData<Board>(key, (board) =>
             board === undefined ? board : withCard(board, id, () => before),
           );
+          restored = true;
         }
       }
-      events.onRefused?.(error);
+      events.onRefused?.(error, { id, restored });
     },
     onSuccess: (application, { id, stage }, context) => {
       const before = context.previous?.items.find((card) => card.id === id);

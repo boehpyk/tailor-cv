@@ -36,6 +36,8 @@ export function BoardColumn({
       role="region"
       aria-labelledby={headingId}
       data-stage={stage}
+      // The drop indication as a fact, not only a colour: a test (and a stylesheet) can read it.
+      data-drop-target={isDropTarget ? 'true' : 'false'}
       {...dropProps}
       className={`min-h-24 rounded-lg border p-3 lg:w-60 lg:shrink-0 ${
         isDropTarget ? 'border-slate-900 bg-slate-100' : 'border-slate-200 bg-slate-50'

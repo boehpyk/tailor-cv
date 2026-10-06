@@ -4,7 +4,7 @@ import { ApiError } from '@/api/client';
 import { untrackApplication } from '@/api/trackedApplications';
 import { historyRootKey } from '@/features/history/hooks/historyKeys';
 
-import { withoutCard } from './boardCache';
+import { invalidateBoardUnlessMoving, withoutCard } from './boardCache';
 import { boardKey, untrackApplicationMutationKey } from './trackingKeys';
 
 import type { Board } from '../types';
@@ -27,7 +27,8 @@ export interface UntrackEvents {
  * **No optimistic removal** (2.2's rule for what cannot be taken back): the card reads
  * *"Removing…"* until the server has answered. Then — and only then — the card is dropped from the
  * cache entry (the server said it is gone, so this is a fact, not a hope; a failed re-read must not
- * bring it back), and the board and the history root (badges) are invalidated.
+ * bring it back), and the board and the history root (badges) are invalidated — the board only when
+ * no move is in flight (`invalidateBoardUnlessMoving`); otherwise the last move's settle re-reads it.
  */
 export function useUntrackApplication(
   userId: string,
@@ -52,7 +53,7 @@ export function useUntrackApplication(
       queryClient.setQueryData<Board>(key, (board) =>
         board === undefined ? board : withoutCard(board, id),
       );
-      void queryClient.invalidateQueries({ queryKey: key });
+      invalidateBoardUnlessMoving(queryClient, userId);
       void queryClient.invalidateQueries({ queryKey: historyRootKey(userId) });
       events.onRemoved?.(outcome);
     },

@@ -86,6 +86,8 @@ export function BoardCard({
 
   return (
     <li
+      // Where focus-after-move looks for "still inside this card" (`useMoveAnnouncer`).
+      data-board-card=""
       {...dragProps}
       className="space-y-2 rounded-md border border-slate-200 bg-white p-3 shadow-sm"
     >
@@ -123,6 +125,7 @@ export function BoardCard({
         applicationId={card.id}
         title={card.title}
         version={card.version}
+        movePending={movePending}
         describedBy={titleId}
       />
       <div className="text-sm">

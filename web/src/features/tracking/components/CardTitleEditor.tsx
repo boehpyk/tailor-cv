@@ -25,6 +25,11 @@ export interface CardTitleEditorProps {
   readonly title: string | null;
   /** The `version` the board shows — sent with the `PUT`. */
   readonly version: number;
+  /**
+   * The card's own move is on the wire. *Edit title*, **Save** and **Clear title** are disabled: a
+   * retitle sent now would carry the pre-move `version` and be refused as a conflict.
+   */
+  readonly movePending?: boolean;
   /** The card's title element, so *Edit title* says which card it edits. */
   readonly describedBy?: string;
 }
@@ -53,6 +58,7 @@ export function CardTitleEditor({
   applicationId,
   title,
   version,
+  movePending = false,
   describedBy,
 }: CardTitleEditorProps): React.JSX.Element {
   const retitle = useRetitleTrackedApplication(userId);
@@ -91,7 +97,7 @@ export function CardTitleEditor({
       mutationKey,
       predicate: (mutation) => variablesNameId(mutation.state.variables, applicationId),
     });
-    if (inFlight > 0) {
+    if (inFlight > 0 || movePending) {
       return;
     }
     retitle.mutate({ id: applicationId, title: next, version }, { onSuccess: close });
@@ -103,10 +109,11 @@ export function CardTitleEditor({
         ref={editButton}
         type="button"
         aria-describedby={describedBy}
+        disabled={movePending}
         onClick={() => {
           setDraft(title ?? '');
         }}
-        className="text-sm text-slate-700 underline underline-offset-2"
+        className="text-sm text-slate-700 underline underline-offset-2 disabled:text-slate-400 disabled:no-underline"
       >
         {EDIT_TITLE_LABEL}
       </button>
@@ -154,12 +161,12 @@ export function CardTitleEditor({
         </p>
       )}
       <div className="flex flex-wrap gap-2">
-        <button type="submit" disabled={retitle.isPending} className={BUTTON_CLASS}>
+        <button type="submit" disabled={retitle.isPending || movePending} className={BUTTON_CLASS}>
           {retitle.isPending ? RETITLE_PENDING_LABEL : SAVE_TITLE_LABEL}
         </button>
         <button
           type="button"
-          disabled={retitle.isPending}
+          disabled={retitle.isPending || movePending}
           onClick={() => {
             save(null);
           }}
