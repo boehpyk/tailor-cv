@@ -199,5 +199,9 @@ export function signedInRoutes(user: User): Record<string, RouteHandler> {
     // Slice 2.4: the claim offer reads the guest CV list beside the run list, on `/` and on a
     // guest run page. Empty, so a test about something else sees no offer.
     'GET /api/base-cvs': ok({ items: [] }),
+    // Slice 3.1: a succeeded history row and an account run page read the board for their
+    // "On your board" badge. Empty, so a test about something else sees "Add to board" and nothing
+    // else. A test about the board overrides it.
+    'GET /api/me/board': ok({ items: [] }),
   };
 }
