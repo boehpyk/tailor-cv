@@ -5006,11 +5006,12 @@ columns, one card per application, move the card when life moves. TailorCraft al
 CVs and cover letters a user had tailored (2.3's history), so 3.1 lets them pin any succeeded run to
 a board at `/board` and push it from column to column.
 
-It ships on `feature/tracking-application-board` as **4094 backend and 1124 frontend tests**, one
+It ships on `feature/tracking-application-board` as **4095 backend and 1137 frontend tests**, one
 new ADR (0029), three amended ones (0024, 0023, 0006), one migration (`7e43a47327ec`) and no new
-container, queue, volume or setting the box has to know about. At the time of writing it is
-**implemented and waiting for `/verify`**, so the review and release stories belong to the next
-version of this chapter.
+container, queue, volume or setting the box has to know about. It was **verified on 2026-10-06**
+(the reviewer passed it in round 2, and a manual pass in a real browser found four things no test
+had), and its PR is next. The review and the manual pass get their own section near the end,
+because the most interesting bug of the slice was found there.
 
 ## Whose fact is it?
 
@@ -5236,7 +5237,138 @@ Measured at T30, at the 500-card cap:
 - **Deleting a history entry** with its card and 20 files: **22.3 ms** (budget 250).
 - **Bundle**: **+4.96 kB** gzipped (budget 15), no new dependency.
 - **The LLM path didn't change**: the diff of the Gemini adapter and both tailoring layers against
-  `main` is empty. The board makes no LLM call and queues no task. It works with the worker stopped.
+  `main` is empty. The board makes no LLM call and queues no task. It works with the worker stopped
+  (measured in T33: a move answered 200 in 51 ms with `worker` down).
+- **In the browser, at 500 cards, production bundle** (T33, after the fix below): an optimistic move
+  commits in p50 **23 ms**, p95 **51.9 ms** (budget 50, so the p95 is about 2 ms over, written down
+  as measured rather than rounded into a pass); first paint, commit plus layout, p50 **245 ms**,
+  p95 **270 ms** (budget 300).
+
+## `/verify` and the manual pass
+
+### The overlap nobody tested
+
+The optimistic-update section above describes two careful decisions: roll back **only your own
+card**, and refetch only when the **last** move settles. Both were implemented correctly. The
+reviewer's round 1 asked a nasty question: *would any test notice if they weren't?* It mutated the
+code both ways ("restore the whole snapshot on a refusal", "refetch on every settle") and the suite
+stayed green both times. Every test moved **one** card. The decisions only matter when two moves
+overlap, and no test overlapped them.
+
+That's the one MAJOR (0 CRITICAL, 9 MINOR). It's a pattern worth naming: **a rule that exists for
+the concurrent case needs a concurrent test, or it's a comment.** The fix (`471ad69`) holds card B's
+request open, refuses card A's with a 409 and then a 503, and checks that B stays where it was put
+and that no refetch fires while B is in flight. The three mutations (M1, M2, M3) were run against it
+and each went red, which is the only proof the test can tell the difference.
+
+The nine MINORs were small and real: refusals raised by a handler were missing `Cache-Control:
+no-store`; the "board full" message hard-coded *500* instead of using the server's sentence; focus
+could be stolen from wherever the user was, and a refused move didn't hand it back to the card's
+*Move to* control; removing or retitling a card refetched
+the board while a move was still in flight (the very jump the last-settle rule prevents, by another
+door; now `invalidateBoardUnlessMoving`); *Edit title* stayed clickable while its own card was
+moving; and the drop target had no hook a test could find. Round 2 passed clean. The suite went
+green twice in a row (4095 backend, 1137 frontend), every RED commit carries the assertion failure it
+recorded, and no GREEN commit touched a test. The two times a RED test itself was wrong
+(`a437aca`, `ead86c4`), the correction got its own commit.
+
+### A thousand renders to move one card
+
+AC-44 says a move should show on screen within 50 ms at the 500-card cap. No unit test can check
+that: jsdom has no layout, no paint and no real clock. So T33 measured it in Chromium, on the
+**production** bundle, with 500 cards. **p50 162 ms, p95 179 ms.** Three times over budget.
+
+First question: is it the network? Hold the `PUT` for two full seconds and measure again: still about
+135 ms. The server wasn't even involved yet. It was all React. A temporary render counter gave the
+answer: one move re-rendered **every card on the board**, all 500, *twice* (1000 renders), and then
+500 more when the move settled.
+
+There were two causes. The small one was ordinary: `BoardCard` wasn't wrapped in `memo`, and each
+card got fresh inline callbacks and objects on every render, so even a memoized card would have
+seen "new props" every time. The big one was hiding inside TanStack Query.
+
+TanStack has a feature called **structural sharing**. When new data arrives, it compares it with the
+old and keeps the old objects wherever nothing changed, so `memo` can skip them. It's a great
+feature. But for arrays it compares **by position**: item 0 with item 0, item 1 with item 1. Picture
+a theatre where the ushers check tickets by seat number, not by face. One person in row 3 stands up
+and moves to row 9, everyone behind them shuffles one seat along, and the usher, walking the rows
+with his seat-number list, decides that everyone from row 3 onwards is a stranger and checks every
+ticket again. Moving one card re-sorts the board, so every card after it shifted position and came
+back as a "new" object, and `memo` dutifully re-rendered all of them.
+
+The fix (`54fae03`) tells the board query to recognise cards by face: a `structuralSharing`
+function, `shareCardsById`, keeps each unchanged card's object across optimistic edits and
+refetches. Add `memo(BoardCard)`, callbacks that take a card id and are created once, cached drag
+props, and constant "removal" states. Result: **2 renders per move and 1 on settle**, instead of
+1000 and 500. The move commits in p50 **23 ms**. The p95 is **51.9 ms**, about 2 ms over the
+budget. It's written down as exactly that, not rounded into a pass.
+
+### The stopwatch that slept
+
+Measuring this nearly went wrong in a sneaky way. The usual trick for timing "until the browser
+painted" is `requestAnimationFrame`. The first numbers for the board's first paint came out at about
+**1.8 seconds**, absurdly slow, even though the page reported `visibilityState: visible`.
+
+It turned out the browser window was **covered by other windows** on the desktop. Chromium throttles
+`requestAnimationFrame` to about once a second for an occluded window, and it does this *without*
+changing `visibilityState`. So the stopwatch was mostly measuring how long Chromium let it sleep.
+The fix was to stop asking the browser "tell me when you paint" and instead watch for the DOM to
+change (a `MutationObserver` fires at commit), then force the browser to do its style and layout work
+right there (read `offsetHeight`) and time that too. Commit + layout at 500 cards: p50 **245 ms**,
+p95 **270 ms**, inside the 300 ms budget. (The dev build gave 640–730 ms for the same thing, which
+tells you nothing about production: development React does a lot of extra checking on purpose.)
+
+The general lesson: **before you trust a timing, check what the clock itself is doing.** That's
+1.6's event-loop lesson again, one floor up: the measurement can be blind to the thing it's
+measuring.
+
+### Sixteen pixels
+
+Adding a *Board* link to the header made the signed-in navigation 16 px wider than a 360 px phone
+screen, once the scrollbar took its share: `scrollWidth` 361 against a `clientWidth` of 345. Every
+page that scrolled had a little sideways wobble. No test looks at pixel widths at 360 px; a person
+dragging a window narrow does. The nav now wraps (`c1ac844`).
+
+### The drag that grabbed the wrong card
+
+This one is a good detective story, because the suspect was innocent. Dragging the **first** of two
+cards in a column moved the **second** one. Three times out of three. That looks like a serious bug:
+the board moving someone's application to the wrong column.
+
+But a stepwise drag, moving the mouse by hand in small steps, moved the right card every time. So
+what was different? Playwright's `dragTo` presses the mouse on card A, and **then** scrolls the page
+(about 191 px here) to bring the tall target column into view. Chromium starts an HTML5 drag from
+wherever the pointer is when the drag actually begins, and after that scroll the pointer was sitting
+on card B. The robot's hand slipped; the app did what it was told.
+
+The lesson: **verify the harness's gesture before you blame the app.** If the "user" is a script, the
+script is a suspect too. Real Firefox drag wasn't exercised in this pass (the harness only had
+Chromium), and that's written down rather than assumed.
+
+### The 500 that the seed caused
+
+Near the end, deleting the test account failed with a 500. Panic for a second: account erasure is
+the most important delete in the product. But the culprit was the **seed script**, which had put
+`file_key = 't33/<uuid>'` into a saved CV row to save time. The domain's `FileRef` type has a strict
+grammar for file keys, and it refuses that one when the row is loaded. Real uploads can never
+produce such a key. Repaired by id, the deletion answered 204 and every row was gone: user, cards,
+runs, postings, CVs, logins.
+
+The lesson is short: **seed data has to obey the same rules as real data.** Build it with the
+domain's own value objects, or you're testing your shortcut instead of your code.
+
+### The rest of the walk
+
+Everything else behaved: register and confirm through Mailpit; two real Gemini runs (the second
+about 5.1 s end to end); *Add to board* from the run page and from history; a drag sending exactly
+`{"stage":"applied","version":1}`; a keyboard move with focus following the card and the live region
+saying *"Moved … to Offer."*; a second tab winning a race and the stale tab getting the 409 and the
+message *"This application changed in another tab — your board is up to date."*; *CV deleted* on the
+cards after the saved CV went; a history delete taking its card; a removed card leaving its history
+entry. Afterwards, 16 997 log lines from api, worker, beat and nginx were searched for the email, the
+card titles, the posting text, the CV's filename and its body: **zero hits**. And because a search
+that finds nothing proves nothing on its own, the positive controls were checked too: the user id
+appeared 100 times and there were 90 tracking event lines, so the logs were really being read.
 
 ## The common thread, a fifteenth time
 
@@ -5249,10 +5381,15 @@ the select the real control. *What does the database actually receive?* caught a
 stronger than its name. Each question took a minute, and each would have cost a slice to answer the
 other way round.
 
+`/verify` added one more question, and it's the one that found the most: *how would I know?* A
+rollback rule nobody overlapped, a render budget only a browser can see, a stopwatch that slept, a
+robot's hand that slipped. In every case the code or the claim looked fine until something checked
+it in the conditions it was written for.
+
 ## What's next
 
-- **`/verify`** for 3.1: the reviewer, a manual pass on `:8080` (drag, keyboard moves, two tabs
-  racing a move), and then a PR.
+- **The PR for 3.1**, then its release. Firefox drag is still unexercised, and AC-44's p95 sits
+  about 2 ms over its budget; both are written down.
 - **Owned and written down:** 2.3's posting lock still renders `FOR NO KEY UPDATE`; the
   `__Host-tc_guest` cookie becomes its own small security slice before 3.2 merges (OQ-14); Phase 1's
   gate is still unrecorded and production's purge is still off (OQ-15).

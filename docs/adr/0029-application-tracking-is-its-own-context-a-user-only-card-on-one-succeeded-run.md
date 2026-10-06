@@ -139,3 +139,13 @@ The decision itself is unchanged: `domain/tracking` still imports no sibling con
 contexts' types still meet at exactly one seam in `application/tracking/`, which is now spelled
 `TrackedRunRef(run.id.value)`. The column holding it maps through its own `TrackedRunRefType`
 decorator, not tailoring's `TailoringRunId` one.
+
+## Note: 2026-10-06, from slice 3.1's manual pass (T33)
+
+The first optimistic update met a cost the decision did not foresee. TanStack Query's default
+structural sharing matches array items **by index**, so a move, which re-sorts the board, handed
+every shifted card back as a new object and `memo` re-rendered all 500 (AC-44 measured p50 162 ms
+against 50). The board query now passes `structuralSharing: shareCardsById`, keeping each unchanged
+card's identity by id, beside `memo(BoardCard)` and stable id-taking callbacks (`54fae03`). Measured
+after: p50 23 ms, p95 51.9 ms. The decision is unchanged; any future list that re-sorts under an
+optimistic write needs the same.

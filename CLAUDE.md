@@ -19,7 +19,8 @@ mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · Re
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
 > **Status: eleven slices shipped (1.1–1.6, 2.1–2.5); Phase 2 is closed, its gate met on 2026-10-03; Phase 3
-> has begun: slice 3.1 `tracking-application-board` is implemented and `/verify` is pending.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> has begun: slice 3.1 `tracking-application-board` is verified (reviewer PASS round 2, 2026-10-06;
+> manual pass T33); its PR is pending.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -335,8 +336,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   AC-32 (eight `Origin` routes — the spec's "seven" missed `delete-account`), AC-41 (the
 >   mutation is `<=` → `<`; the spec had it backwards).
 >
-> - **3.1 `tracking-application-board`** (branch `feature/tracking-application-board`, **implemented
->   2026-10-06, not yet verified** — `/verify` pending, nothing merged or released) — a signed-in
+> - **3.1 `tracking-application-board`** (branch `feature/tracking-application-board`, **verified
+>   (reviewer PASS round 2, 2026-10-06; manual pass T33)**, PR pending, nothing merged or released)
+>   — a signed-in
 >   user's job search on a board. A **seventh bounded context, `tracking`** (**ADR-0029**), chosen
 >   by whose fact it is: a run's status is a fact about a paid call, a card's stage is a fact about
 >   the user's life. One `TrackedApplication` aggregate per **succeeded, user-owned run**, referenced
@@ -369,8 +371,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   enhancement** sending the identical request. **The codebase's first optimistic update**: a move
 >   snapshots, writes the stage, rolls back **only its own card** on refusal, moves focus to the
 >   card's control in its new column, and invalidates the board only when the **last** move in
->   flight settles. Retitle, untrack and track are not optimistic. **4094 backend and 1124 frontend
->   tests.** Measured (T30): board at the 500 cap p95 **48.0 ms** (budget 150), body **330 KiB**
+>   flight settles. Retitle, untrack and track are not optimistic. **4095 backend and 1137 frontend
+>   tests** after `/verify` (4094/1124 at implement), green twice in a row. Measured (T30): board at the 500 cap p95 **48.0 ms** (budget 150), body **330 KiB**
 >   (400 KB); track **17.8 ms**, move **8.4**, retitle **7.6**, untrack **7.5**; deleting a history
 >   entry with a card and 20 files **22.3 ms** (250); main bundle **+4.96 kB gzip** (15). T31: no
 >   container, queue, volume, beat entry or `.env` change; `deploy.yml` stops worker and beat at
@@ -378,6 +380,49 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   `infrastructure/llm`, `domain/tailoring` and `application/tailoring` is empty; the board makes
 >   no LLM call and queues no task. Found on the way: the `FOR KEY SHARE` lock-mode bug (below),
 >   fixed for tracking in `e93f4fd` and **still present in 2.3's posting lock, left for the owner**.
+>   **`/verify` took two rounds.** Round 1 NEEDS CHANGES (0 CRITICAL, 1 MAJOR, 9 MINOR). The MAJOR:
+>   **overlapping moves were untested** — the mutations "restore the whole snapshot on a refusal" and
+>   "refetch on every settle" both left the suite green; `471ad69` stages two cards, A refused
+>   (409/503) while B is held, and records M1/M2/M3 red. MINORs fixed: `no-store` on handler-raised
+>   refusals (`1721ea2` RED → `d2cce6d`); the cap copy from the server's message, not a hard-coded
+>   500; a board-retention note on `/account`; focus never stolen and returned to the Move control on
+>   refusal; untrack/retitle skip the board refetch while a move is in flight
+>   (`invalidateBoardUnlessMoving`); *Edit title* disabled during the card's own move;
+>   `data-drop-target` (`ae139b2` RED → `ead86c4`, a stale-row correction in its own commit →
+>   `93b8f79`). Round 2 **PASS** (0 CRITICAL, 0 MAJOR). Every RED carries a recorded assertion
+>   failure, no GREEN edited a test, and the two RED corrections (`a437aca`, `ead86c4`) are each
+>   their own commit.
+>   **T33's manual pass (2026-10-06, `:8080`, Chromium via Playwright):** register + confirm through
+>   Mailpit; two **real-Gemini** runs (the second ~5.1 s end to end); *Add to board* from the run page
+>   and from history (badge *On your board · To apply*); `/board`'s six regions; a drag To apply →
+>   Applied sends `{"stage":"applied","version":1}`; a keyboard *Move to* (focus follows into the new
+>   column; live region *Moved … to Offer.*); a second tab's move, then the stale tab's → 409
+>   `tracked_application_version_conflict` with `no-store`, the alert *This application changed in
+>   another tab — your board is up to date.*, refetched; retitle and clear; **with the worker
+>   stopped** a move is 200 in 51 ms (T-6); a deleted saved CV → *CV deleted* on the cards; a
+>   tracked history entry's deletion (the dialog names "its card on your board") → card gone; a
+>   removed card → its history entry stays, *Add to board* back; `erase-account --dry-run` prints
+>   `…; tracking: 500 tracked application(s)`; account deletion → 204 and every row gone (user,
+>   cards, runs, postings, CVs, logins = 0). 16 997 log lines (api/worker/beat/nginx) grepped for the
+>   email, the marker tag, posting text, card titles, CV filename and CV body: **0 hits**; positive
+>   controls: the user id 100 hits, 90 tracking event lines. **Firefox drag not exercised** (only
+>   Chromium was available to the harness).
+>   **Found in T33, by no test:** (1) **AC-44 failed, then was fixed** (`54fae03`): at 500 cards on
+>   the production bundle an optimistic move committed in p50 162 / p95 179 ms (budget 50), still
+>   ~135 ms with the PUT held 2 s — pure render cost: **1000 `BoardCard` renders per move** and 500
+>   more on settle. Two causes: inline per-card props on an unmemoized `BoardCard`, and mainly
+>   **TanStack's structural sharing matching array items by index**, so a re-sort handed every
+>   shifted card back as a new object (Conventions, React). Fix: `memo(BoardCard)`, stable id-taking
+>   callbacks, cached drag props, constant removal states, `structuralSharing: shareCardsById`.
+>   After: 2 renders per move, 1 on settle; optimistic move p50 **23 ms**, p95 **51.9 ms**, max 53.3
+>   (n=20) — p50 well inside, **p95 ~2 ms over the 50 ms budget, recorded as measured**. First paint
+>   at 500 cards: commit p50 135 ms; commit + forced style/layout p50 **245 ms**, p95 **270 ms**
+>   (budget 300). The dev build measured 640–730 ms, which says nothing about the budget. (2) The
+>   Board link made the signed-in header **16 px too wide at 360 px** (scrollWidth 361 > clientWidth
+>   345 beside the scrollbar); the nav now wraps (`c1ac844`). (3) A drag that moved the **wrong card**
+>   3/3 was Playwright's `dragTo`, not the app (Conventions). (4) A 500 on account deletion was the
+>   **seed script's** `file_key = 't33/<uuid>'`, which `FileRef` refuses on load; repaired by id, the
+>   deletion answered 204 (Conventions).
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -835,6 +880,11 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   uses `gcTime: Infinity` and asserts both halves (`['auth','me']` gone, the guest query kept). And `isPending` updates on the next notify, so a
   same-tick double click reads `false` twice: guard a submit with
   `queryClient.isMutating({ mutationKey }) > 0`, which `mutate()` updates synchronously.
+  **TanStack's default structural sharing matches array items by index (3.1, `54fae03`).** Data
+  that re-sorts (a moved card) gets every shifted item back as a new object, so `memo` on the item
+  component re-renders them all: 1000 `BoardCard` renders per move at 500 cards. Keep identity by
+  id with a `structuralSharing` function (`shareCardsById`), and give the memoized item stable,
+  id-taking callbacks and no inline object props.
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
   **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
@@ -1025,6 +1075,22 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
 - **An `EXPLAIN` over a table holding only one user's rows correctly seq-scans** (3.1, AC-31).
   The planner is right that a scan is cheaper than the index when every row matches. To assert
   index use, seed other users' rows first, so the predicate is selective.
+- **A performance budget on a list is measured on the production bundle in a real browser** (3.1,
+  T33). AC-44 passed every unit render test and failed in Chromium at 500 cards (p50 162 ms vs.
+  50); the dev build's 640–730 ms first paint said nothing either way. Serve the production
+  bundle on `:8080` through Playwright route interception (origin and cookies unchanged).
+  **`requestAnimationFrame` is throttled to ~1 Hz on an occluded desktop window even while
+  `document.visibilityState` reads `visible`**, so a rAF-based paint timer read ~1.8 s; time a
+  commit with a `MutationObserver`, then force style/layout (`offsetHeight`) and time that too.
+- **Verify a harness's gesture before blaming the app** (3.1, T33). Playwright's `dragTo`
+  presses the mouse on the source, **then scrolls the target into view**; Chromium starts an HTML5
+  drag from wherever the pointer is *then*. With a tall target column (~191 px of scroll) the drag
+  picked up the card below the intended one, 3/3. Stepwise `mouse.move` drags always moved the
+  right card.
+- **Seed data goes through the domain's grammars** (3.1, T33). A seed wrote
+  `intake_base_cv.file_key = 't33/<uuid>'`; `FileRef` refuses that on load, so account erasure
+  500'd on a row real data can never produce. Build seeded values with the value objects (or copy
+  their grammar), or the erasure path tests the seed.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
