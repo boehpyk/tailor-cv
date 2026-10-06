@@ -1,4 +1,4 @@
-import { queryOptions } from '@tanstack/react-query';
+import { queryOptions, replaceEqualDeep } from '@tanstack/react-query';
 
 import { fetchBoard } from '@/api/trackedApplications';
 
@@ -22,7 +22,48 @@ export function boardQueryOptions(userId: string) {
   return queryOptions({
     queryKey: boardKey(userId),
     queryFn: ({ signal }): Promise<Board> => fetchBoard(signal),
+    structuralSharing: shareCardsById,
   });
+}
+
+/**
+ * Narrows a cache value to a `Board`. TanStack hands `structuralSharing` `unknown`; the only values
+ * ever written under the board key are `fetchBoard`'s and this module's edits, so this is a type
+ * narrowing for the compiler, not a validation of the wire (the API client owns that).
+ */
+function isBoard(value: unknown): value is Board {
+  return (
+    typeof value === 'object' && value !== null && 'items' in value && Array.isArray(value.items)
+  );
+}
+
+/**
+ * **Structural sharing by card id, not by position** (AC-44). TanStack's default,
+ * `replaceEqualDeep`, compares arrays index by index — and a move re-sorts the board, so every card
+ * between the moved card's old and new place sits at a new index and comes back as a fresh copy.
+ * `BoardCard` is memoized on its `card` object, so a fresh copy re-renders it: a move on a 500-card
+ * board re-rendered all 500. Matching each card to the previous card with its id keeps every
+ * unchanged card the very object it was — through an optimistic edit and through a refetch alike —
+ * so a move re-renders only the card that changed.
+ *
+ * Each pair is still shared deeply (`replaceEqualDeep`), and the whole previous board is returned
+ * when nothing changed, so an identical refetch notifies nobody — the default's guarantee, kept.
+ */
+export function shareCardsById(previous: unknown, next: unknown): unknown {
+  if (!isBoard(previous) || !isBoard(next)) {
+    return replaceEqualDeep(previous, next);
+  }
+  const previousById = new Map(previous.items.map((card) => [card.id, card]));
+  let unchanged = previous.items.length === next.items.length;
+  const items = next.items.map((card, index) => {
+    const before = previousById.get(card.id);
+    const shared = before === undefined ? card : replaceEqualDeep(before, card);
+    if (shared !== previous.items[index]) {
+      unchanged = false;
+    }
+    return shared;
+  });
+  return unchanged ? previous : { ...next, items };
 }
 
 /** The server's order: `stage_changed_at` newest first, then `id` descending. */

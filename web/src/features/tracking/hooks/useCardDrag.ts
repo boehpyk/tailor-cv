@@ -18,7 +18,10 @@ export interface ColumnDropProps {
 }
 
 export interface CardDrag {
-  /** The props for one card. Its stage is how a drop on its own column is told apart (AC-35). */
+  /**
+   * The props for one card. Its stage is how a drop on its own column is told apart (AC-35). The
+   * same object for the same id and stage, so a memoized card is not re-rendered by a new one.
+   */
   readonly cardProps: (card: Pick<BoardCard, 'id' | 'stage'>) => CardDragProps;
   /** The props for one column. */
   readonly columnProps: (stage: Stage) => ColumnDropProps;
@@ -47,21 +50,32 @@ export function useCardDrag(onMove: (cardId: string, stage: Stage) => void): Car
   const dragged = useRef<Dragged | null>(null);
   const [overStage, setOverStage] = useState<Stage | null>(null);
 
-  const cardProps = useCallback(
-    (card: Dragged): CardDragProps => ({
+  // One props object per (card, stage), kept: `BoardCard` is memoized, and a fresh object on every
+  // render would re-render all 500 cards on a move (AC-44). The handlers read only the id and the
+  // stage, so an entry never goes stale; at most six entries per card.
+  const cardPropsCache = useRef(new Map<string, CardDragProps>());
+  const cardProps = useCallback((card: Dragged): CardDragProps => {
+    const { id, stage } = card;
+    const cacheKey = `${stage}:${id}`; // a stage never contains ":"
+    const cached = cardPropsCache.current.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const props: CardDragProps = {
       draggable: true,
       onDragStart: (event) => {
-        dragged.current = { id: card.id, stage: card.stage };
+        dragged.current = { id, stage };
         event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', card.id);
+        event.dataTransfer.setData('text/plain', id);
       },
       onDragEnd: () => {
         dragged.current = null;
         setOverStage(null);
       },
-    }),
-    [],
-  );
+    };
+    cardPropsCache.current.set(cacheKey, props);
+    return props;
+  }, []);
 
   const columnProps = useCallback(
     (stage: Stage): ColumnDropProps => ({

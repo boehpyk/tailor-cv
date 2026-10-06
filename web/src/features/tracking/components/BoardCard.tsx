@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { memo, useCallback, useId } from 'react';
 import { Link } from 'react-router';
 
 import { runLink } from '@/features/scope/scopeMap';
@@ -27,19 +27,31 @@ import type { BoardCard as BoardCardData, Stage } from '../types';
 export type CardRemoval =
   { readonly kind: 'idle' } | { readonly kind: 'removing' } | { readonly kind: 'failed' };
 
+/** The three removals as constants: a page hands these, never a fresh literal, so `memo` holds. */
+export const CARD_REMOVAL = {
+  idle: { kind: 'idle' },
+  removing: { kind: 'removing' },
+  failed: { kind: 'failed' },
+} as const satisfies Record<CardRemoval['kind'], CardRemoval>;
+
 export interface BoardCardProps {
   /** The signed-in user — `CardTitleEditor`'s mutation key is rooted on it. */
   readonly userId: string;
   readonly card: BoardCardData;
   /** The card's move is on the wire: the Move control reads *"Saving…"*, disabled (T-39). */
   readonly movePending: boolean;
-  /** Move this card to `stage` — the page's optimistic mutation (AC-33). */
-  readonly onMove: (stage: Stage) => void;
+  /**
+   * Move a card to `stage` — the page's optimistic mutation (AC-33). Takes the card's id, so the
+   * page hands every card the **same** function and `memo` can skip the cards a move did not touch.
+   */
+  readonly onMove: (cardId: string, stage: Stage) => void;
   /** `useMoveAnnouncer().moveControlRef(card.id)` — so focus can follow the card (AC-33). */
   readonly moveControlRef: React.RefCallback<HTMLSelectElement>;
+  /** One of `CARD_REMOVAL`'s constants, so an unchanged removal is the same object (`memo`). */
   readonly removal: CardRemoval;
-  readonly onRemove: () => void;
-  /** `useCardDrag().cardProps(card)`. */
+  /** Remove a card from the board — one function for every card, like `onMove`. */
+  readonly onRemove: (cardId: string) => void;
+  /** `useCardDrag().cardProps(card)` — the same object for the same id and stage. */
   readonly dragProps: CardDragProps;
 }
 
@@ -68,8 +80,13 @@ function safePostingUrl(card: BoardCardData): string | null {
  *
  * A card whose run row is missing (T-36) has no documents to open, so it gets no link; it can still
  * be moved, retitled and removed.
+ *
+ * **Memoized** (AC-44: an optimistic move commits in ≤ 50 ms at 500 cards). A move rewrites one
+ * card in the cache entry and keeps every other card object as it was, and every other prop here is
+ * stable per card (the page's callbacks take the card id; the ref and drag props are cached per id),
+ * so a move re-renders the moved card and nothing else — not all 500.
  */
-export function BoardCard({
+export const BoardCard = memo(function BoardCard({
   userId,
   card,
   movePending,
@@ -83,6 +100,16 @@ export function BoardCard({
   const removeNoteId = useId();
   const scope = useScopeMap();
   const postingUrl = safePostingUrl(card);
+  const cardId = card.id;
+  const moveThis = useCallback(
+    (stage: Stage) => {
+      onMove(cardId, stage);
+    },
+    [onMove, cardId],
+  );
+  const removeThis = useCallback(() => {
+    onRemove(cardId);
+  }, [onRemove, cardId]);
 
   return (
     <li
@@ -116,7 +143,7 @@ export function BoardCard({
       <MoveToControl
         stage={card.stage}
         pending={movePending}
-        onMove={onMove}
+        onMove={moveThis}
         ref={moveControlRef}
         describedBy={titleId}
       />
@@ -131,7 +158,7 @@ export function BoardCard({
       <div className="text-sm">
         <button
           type="button"
-          onClick={onRemove}
+          onClick={removeThis}
           disabled={removal.kind === 'removing'}
           aria-describedby={removal.kind === 'failed' ? `${titleId} ${removeNoteId}` : titleId}
           className="text-red-700 underline underline-offset-2 disabled:text-slate-400 disabled:no-underline"
@@ -146,4 +173,4 @@ export function BoardCard({
       </div>
     </li>
   );
-}
+});

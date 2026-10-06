@@ -1,11 +1,12 @@
 import { useMutationState, useQueryClient } from '@tanstack/react-query';
-import { useCallback, useId, useState } from 'react';
+import { useCallback, useId, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 
-import { BoardCard } from './BoardCard';
+import { BoardCard, CARD_REMOVAL } from './BoardCard';
 import { BoardColumn } from './BoardColumn';
 import { variablesNameId } from '../hooks/boardCache';
 import {
+  boardKey,
   moveTrackedApplicationMutationKey,
   untrackApplicationMutationKey,
 } from '../hooks/trackingKeys';
@@ -30,7 +31,7 @@ import {
 import { STAGES } from '../types';
 
 import type { CardRemoval } from './BoardCard';
-import type { BoardCard as BoardCardData, Stage } from '../types';
+import type { Board, BoardCard as BoardCardData, Stage } from '../types';
 
 export interface BoardPageProps {
   /** The signed-in user — handed down by `AccountScope`, and the root of every tracking key. */
@@ -119,11 +120,30 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
     select: (mutation) => mutation.state.variables,
   });
 
-  const cards = view.status === 'ready' ? view.cards : null;
+  // The ids of the cards whose move is on the wire, as a set the cards read a boolean from.
+  const movingIdSet = useMemo(() => {
+    const ids = new Set<string>();
+    for (const variables of movingIds) {
+      if (typeof variables === 'object' && variables !== null && 'id' in variables) {
+        const { id } = variables;
+        if (typeof id === 'string') {
+          ids.add(id);
+        }
+      }
+    }
+    return ids;
+  }, [movingIds]);
+
+  // **Stable across a move** (AC-44): every card gets this one function, so a memoized `BoardCard`
+  // is not re-rendered because its callback is new. The card is read from the cache entry at call
+  // time — the same entry `useBoard` renders — rather than closed over, which would make the
+  // function change with every move.
   const { mutate: mutateMove } = move;
   const moveCard = useCallback(
     (id: string, stage: Stage) => {
-      const card = cards?.find((candidate) => candidate.id === id);
+      const card = queryClient
+        .getQueryData<Board>(boardKey(userId))
+        ?.items.find((candidate) => candidate.id === id);
       if (card === undefined || card.stage === stage) {
         return;
       }
@@ -139,19 +159,23 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
       setMoveFailure(null);
       mutateMove({ id, stage, version: card.version });
     },
-    [cards, queryClient, userId, mutateMove],
+    [queryClient, userId, mutateMove],
   );
   const drag = useCardDrag(moveCard);
 
-  function removeCard(id: string): void {
-    const inFlight = queryClient.isMutating({
-      mutationKey: untrackApplicationMutationKey(userId),
-      predicate: (mutation) => variablesNameId(mutation.state.variables, id),
-    });
-    if (inFlight === 0) {
-      untrack.mutate(id);
-    }
-  }
+  const { mutate: mutateUntrack } = untrack;
+  const removeCard = useCallback(
+    (id: string) => {
+      const inFlight = queryClient.isMutating({
+        mutationKey: untrackApplicationMutationKey(userId),
+        predicate: (mutation) => variablesNameId(mutation.state.variables, id),
+      });
+      if (inFlight === 0) {
+        mutateUntrack(id);
+      }
+    },
+    [queryClient, userId, mutateUntrack],
+  );
 
   const liveRegion = (
     <p aria-live="polite" aria-atomic="true" className="min-h-5 text-sm text-slate-600">
@@ -204,14 +228,15 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
     );
   }
 
+  // A constant, never a fresh literal: `BoardCard` is memoized (AC-44).
   function removalOf(card: BoardCardData): CardRemoval {
     if (untrack.variables !== card.id) {
-      return { kind: 'idle' };
+      return CARD_REMOVAL.idle;
     }
     if (untrack.isPending) {
-      return { kind: 'removing' };
+      return CARD_REMOVAL.removing;
     }
-    return untrack.isError ? { kind: 'failed' } : { kind: 'idle' };
+    return untrack.isError ? CARD_REMOVAL.failed : CARD_REMOVAL.idle;
   }
 
   return (
@@ -234,15 +259,11 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
                 key={card.id}
                 userId={userId}
                 card={card}
-                movePending={movingIds.some((variables) => variablesNameId(variables, card.id))}
-                onMove={(next) => {
-                  moveCard(card.id, next);
-                }}
+                movePending={movingIdSet.has(card.id)}
+                onMove={moveCard}
                 moveControlRef={announcer.moveControlRef(card.id)}
                 removal={removalOf(card)}
-                onRemove={() => {
-                  removeCard(card.id);
-                }}
+                onRemove={removeCard}
                 dragProps={drag.cardProps(card)}
               />
             ))}
