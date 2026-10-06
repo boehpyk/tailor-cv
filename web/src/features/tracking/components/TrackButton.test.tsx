@@ -18,7 +18,7 @@ import {
   makeCard,
   newClient,
 } from '../test/support';
-import { TRACK_FAILED_NOTE, TRACK_NOT_TRACKABLE_NOTE, TRACK_TOO_MANY_NOTE } from '../trackingCopy';
+import { TRACK_FAILED_NOTE, TRACK_NOT_TRACKABLE_NOTE } from '../trackingCopy';
 
 import type { BoardCard } from '../types';
 import type { RouteHandler } from '@/test/accountFetch';
@@ -158,7 +158,8 @@ describe('TrackButton — Add to board (AC-38)', () => {
     [
       '409 too_many_tracked_applications',
       () => apiError(409, 'too_many_tracked_applications'),
-      TRACK_TOO_MANY_NOTE,
+      // T-15: the server's sentence, which carries the configured cap (TrackButton.cap.test.tsx).
+      'fixture: too_many_tracked_applications',
     ],
     ['503 service_unavailable', () => apiError(503, 'service_unavailable'), TRACK_FAILED_NOTE],
   ])('%s: its own sentence as an alert, and the button is back', async (_name, response, copy) => {
