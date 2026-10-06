@@ -176,3 +176,18 @@ ADR-0024's query-port pattern. `tailoring_run` does not grow those columns.
   row with no file. **Trigger:** a user-owned export row with no run found in production.
 - **Unused account postings** (captured, never tailored) accumulate with no per-item delete: capped at
   500, erased with the account. **Trigger:** any user above 100 unused postings.
+
+## Amendment: 2026-10-04, from the plan of slice 3.1 (`tracking-application-board`)
+
+**Decision 8 is executed by ADR-0029**, which narrows it in two ways:
+
+- **A card references a run, never a posting.** Decision 8 left *"a run or a posting"* open. The run
+  is the documents the user sent and the history entry is already the user-visible unit; a posting is
+  neither, and its deletion rule (*"deleted with its last run"*) would gain a second condition.
+- **Notes and dates are not on the card.** Decision 8 anticipated *"notes and dates"*. 3.1 keeps the
+  card to a stage, an optional 120-character title and two timestamps; notes are a future decision
+  with its own privacy check (ADR-0029 decision 2).
+
+**Decision 5 gains a table.** Deleting a history entry also deletes its card, in the same
+transaction, as a separate statement after the run's `DELETE` (ADR-0029 decision 6). An entry with no
+card is deleted exactly as before. `tailoring_run` grows no columns, as decision 8 required.

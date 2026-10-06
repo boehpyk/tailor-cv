@@ -3,8 +3,9 @@ import { Link } from 'react-router';
 
 import { formatStoredUntil } from '@/features/intake/format';
 import { runLink } from '@/features/scope/scopeMap';
-import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
 import { isActiveTailoringRunStatus } from '@/features/tailoring/types';
+import { TrackButton } from '@/features/tracking/components/TrackButton';
 
 import {
   CV_DELETED_NOTE,
@@ -43,7 +44,8 @@ const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
 /**
  * One history entry (AC-44) — **presentational**: the posting's title, else its preview; the CV's
  * label, else its filename, else *"CV deleted"*; the status in words (incl. `base_cv_deleted`); the
- * requested date; the *Edited* badge; **Open** (a link to `/history/{id}`) and **Delete**.
+ * requested date; the *Edited* badge; **Open** (a link to `/history/{id}`), **Add to board** on a
+ * succeeded entry (slice 3.1 — or *"On your board · {stage}"* when it is there) and **Delete**.
  *
  * Open is built by `runLink` from the scope's map, never by hand: a hand-built path bypasses the
  * scope, which is how `DocumentTabs` once sent a history run's tab to the guest route (T32).
@@ -60,6 +62,7 @@ export function HistoryEntryRow({
 }: HistoryEntryRowProps): React.JSX.Element {
   const reasonId = useId();
   const scope = useScopeMap();
+  const workspace = useWorkspaceScope();
   const stillRunning = isActiveTailoringRunStatus(entry.status);
   const note =
     stillRunning || (deletion.kind === 'failed' && deletion.reason === 'in_progress')
@@ -96,6 +99,10 @@ export function HistoryEntryRow({
         <Link to={runLink(scope, entry.id)} className={LINK_CLASS}>
           {OPEN_ENTRY_LABEL}
         </Link>
+        {/* Slice 3.1 (AC-38): only a finished run can go on the board, and only an account has one. */}
+        {workspace.kind === 'account' && entry.status === 'succeeded' && (
+          <TrackButton userId={workspace.userId} runId={entry.id} />
+        )}
         <button
           type="button"
           onClick={onDelete}

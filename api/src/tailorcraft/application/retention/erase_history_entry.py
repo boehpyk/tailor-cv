@@ -86,6 +86,8 @@ class EraseHistoryEntry:
             files_unlinked=unlinked,
             unlink_failures=tuple(failures),
             posting_deleted=deleted.posting_deleted,
+            # The run's card went with it (slice 3.1, AC-13): a bool, never a tracking type.
+            tracked_application_deleted=deleted.tracked_application_deleted,
         )
 
 

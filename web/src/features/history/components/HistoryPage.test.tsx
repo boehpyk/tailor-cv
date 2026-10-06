@@ -33,7 +33,7 @@ import type { RouteHandler } from '@/test/accountFetch';
  */
 
 const DELETE_MESSAGE =
-  "Delete this tailored application? This removes its tailored CV and cover letter, any files you exported, and the job posting if nothing else uses it. This can't be undone.";
+  "Delete this tailored application? This removes its tailored CV and cover letter, any files you exported, and the job posting if nothing else uses it, and its card on your board. This can't be undone.";
 
 function history(pages: Record<string, RouteHandler>) {
   return stubAccountFetch({ ...signedInRoutes(USER_A), ...pages });

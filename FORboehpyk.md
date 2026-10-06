@@ -4995,3 +4995,402 @@ alone.
 - **Small, owned, triggered:** Resend's retention value goes into ADR-0026 when it's read; the
   `LogIn` rehash lock upgrade must be fixed before the argon2 parameters ever change; the Redis
   result backend is unused now, and removing it is the owner's call.
+
+---
+
+# Slice 3.1 — the corkboard, or: whose fact is it?
+
+Phase 3 opens with the thing every job seeker ends up building in a spreadsheet: a list of where
+they applied and how it's going. *To apply, applied, interviewing, offer, rejected, withdrawn.* Six
+columns, one card per application, move the card when life moves. TailorCraft already knew which
+CVs and cover letters a user had tailored (2.3's history), so 3.1 lets them pin any succeeded run to
+a board at `/board` and push it from column to column.
+
+It ships on `feature/tracking-application-board` as **4095 backend and 1137 frontend tests**, one
+new ADR (0029), three amended ones (0024, 0023, 0006), one migration (`7e43a47327ec`) and no new
+container, queue, volume or setting the box has to know about. It was **verified on 2026-10-06**
+(the reviewer passed it in round 2, and a manual pass in a real browser found four things no test
+had), and its PR is next. The review and the manual pass get their own section near the end,
+because the most interesting bug of the slice was found there.
+
+## Whose fact is it?
+
+The quickest way to build this would have been two columns on `tailoring_run`: `stage` and
+`stage_changed_at`. The run already exists, it already belongs to the user, the history page already
+lists it. Done by lunch.
+
+ADR-0023 had already said no, and 3.1 is where that "no" had to be justified with code. The test it
+used is worth stealing: **ask whose fact a piece of data is.** A run's status (`queued`, `running`,
+`succeeded`, `failed`) is a fact about a **paid call to Gemini**. Each value records money that was
+or wasn't spent, and the rules around it are strict because of that. A card's stage is a fact about
+**the user's life**: they sent the application, a recruiter called, they got turned down. Nobody
+spent anything; somebody's week changed.
+
+Two facts with different owners and different rules don't belong in one row, any more than your
+bank statement should have a column for how you felt about each purchase. So `tracking` became the
+codebase's **seventh bounded context**. It has its own aggregate, `TrackedApplication`, its own table
+and its own little board.
+
+There was a second, more practical reason. Every Phase 2 slice proved its privacy promise partly by
+showing that `domain/tailoring`, `application/tailoring` and the Gemini adapter **didn't change**: an
+empty `git diff`. If the board had moved into `tailoring`, that proof would have ended, and the
+context that owns the most sensitive call in the product would have started owning a job search
+too. That's how god-objects are born: one convenient column at a time. (3.1's diff over those three
+paths is still empty. That's AC-41, and it holds.)
+
+The owner tightened it further at approval: **`domain/tracking` imports no sibling context at
+all**, not even tailoring's `TailoringRunId`. A card holds tracking's *own* reference to a run,
+`TrackedRunRef`, and the two types meet in exactly one place, in the application layer:
+`TrackedRunRef(run.id.value)`. Think of it as a library card catalogue that writes down a book's
+shelf number but never keeps a copy of the book. An AST test pins the domain's imports to the
+standard library, `domain/shared` and `domain/identity`, so the rule can't drift.
+
+(A small honest footnote: ADR-0029 described those ids as `NewType`s. The code made them frozen
+dataclasses, like every other id in the codebase, because a `NewType` would have been the odd one
+out. The ADR now carries a dated correction rather than quietly disagreeing with the code.)
+
+## A permissive machine next to a strict one
+
+`TailoringRun` is a strict state machine. `queued` → `running` → `succeeded` or `failed`, and nothing
+else; you cannot un-fail a run. That strictness is correct for it, because each state is a record of
+something that happened to money.
+
+A card is the opposite. **Any stage may move to any other.** *Rejected* back to *interviewing*?
+Yes, recruiters do call back. *Offer* to *withdrawn* to *offer*? People change their minds, and
+people misclick. A strict machine here would invent rules the user's life doesn't follow and turn
+every correction into a support request. The board is a record of what the user **believes**, and
+belief gets corrected.
+
+So what does the aggregate still guard, if not order? **Time and concurrency.** `stage_changed_at`
+never runs backwards and is never earlier than `tracked_at`. Every write carries the `version` the
+client saw, and a stale one is refused. Moving a card to the column it's already in is a no-op: no
+version bump, no event. And the order of those checks matters: the version is checked *before* the
+no-op rule, so a stale tab is told it's stale instead of being told "fine, nothing to do".
+
+The two aggregates look alike (both have a `version`, both refuse a stale write) and the temptation
+is a shared base class. The codebase's rule says no: **shared shape is not shared behaviour.** A run
+is editable only when it succeeded; a card always is. Each keeps its own six-line guard, and the card
+carries a comment at the point of contradiction explaining why it isn't `TailoringRun`'s table, so
+the next reader who spots the inconsistency finds a reason instead of "fixing" it.
+
+## `UserId`, not `Owner`
+
+Since 2.2, every table that holds user data has two owner columns, a guest one and a user one, with
+a CHECK that exactly one is set; in Python that's the sum type `GuestOwner | UserOwner`. The board
+breaks that pattern on purpose. Its owner is a plain **`UserId`**, and the table has **no
+`guest_session_id` column at all**.
+
+A guest session lives 24 hours. A job search lasts weeks. A guest card would be deleted before the
+first recruiter called back, so the feature is for accounts only. The tempting design keeps the
+shared shape anyway and has the use case refuse guests. But then the type allows a case that must
+never happen, and the 24-hour purge has a column it must be **trusted** not to reach.
+
+Without the column, the purge *cannot* reach a card, and 2.4's claim has nothing to re-key. Account
+erasure is just the user row's `ON DELETE CASCADE`, under the lock it already takes. A test asserts
+the column is absent. It's the 2.5 lesson again: **make the dangerous state impossible instead of
+guarding it.**
+
+## Deleting a history entry takes the card, with no foreign key
+
+If you delete a history entry (2.3), its card should go too; a card pointing at documents that no
+longer exist is a lie. The obvious tool is a foreign key from the card to the run with
+`ON DELETE CASCADE`. The codebase deliberately doesn't fuse two contexts' tables with foreign keys
+(ADR-0014, ADR-0016), so retention's history-entry adapter runs one more statement:
+`DELETE FROM tracking_application … RETURNING id`.
+
+Without an FK there's a race. A track request and a history delete can arrive together, and the
+card could be inserted for a run that's being deleted. 2.3 met exactly this shape (a `NOT EXISTS`
+can't see an uncommitted `INSERT`) and found the cure: **two locks, in the right order.** The
+tracking repository INSERTs the card **first**, then locks the run `FOR KEY SHARE` and refuses if
+it's gone. The history delete's run `DELETE` waits on that lock, and its card `DELETE`, a *separate*
+statement, gets a fresh snapshot after the wait, so it sees the card that just committed. Why
+INSERT first? The INSERT's foreign key to the user has already locked the user row, which is the
+same row account erasure locks first. Lock the run first and you have two people reaching for each
+other's keys again. Both orders are staged on two real database connections, with the overlap read
+from `pg_stat_activity`, not assumed.
+
+## The first optimistic update
+
+Until now, every button in TailorCraft waited for the server before showing anything. That's
+honest, and it's right for anything that costs money or deletes data. Moving a card is neither, and
+a board where the card hangs in mid-air for 100 ms after you drop it feels broken. So 3.1 has **the
+codebase's first optimistic update**: the card moves at once, and if the server refuses, it moves
+back.
+
+That one sentence hides four decisions, and each fixes a bug the naive version has.
+
+- **Snapshot, then roll back only *your* card.** Before the move, the hook cancels in-flight board
+  reads (so a late answer can't overwrite the optimistic stage) and snapshots the board. On refusal,
+  the obvious move is to restore the whole snapshot. But suppose you moved card A, then card B, and
+  A's move is refused. Restoring A's snapshot, taken *before B moved*, silently undoes B too. So
+  the rollback takes **only card A** from the snapshot. A 404 removes the card instead (it's gone),
+  and a 409 re-reads the board.
+- **Report per move, not per hook.** TanStack's `mutate(…, { onError })` callbacks and
+  `mutation.error` follow only the **latest** call of that hook. So if A is refused after B was
+  issued, A snaps back with no message at all. Each move now carries its own "moved" and "refused"
+  events.
+- **Focus follows the card.** A keyboard user who moves a card with the *Move to* control has just
+  had that control unmounted from one column and remounted in another. Focus would fall to the page
+  body, and the user would have to tab through the whole board to find their place. The hook keeps
+  "focus is owed to card X" in a ref, and an effect pays the debt once X's control exists in its new
+  column **and is enabled**. That second condition was a real bug: the control is disabled while
+  its move is in flight, and a disabled `<select>` can't take focus. A polite live region announces
+  the move.
+- **Refetch only when the last move settles.** After a move, you want to re-read the board from the
+  server to be sure. But if you refetch when A settles while B is still in flight, the server's
+  answer doesn't include B yet, and B's card visibly jumps back and then forward again. So
+  `onSettled` invalidates the board only when it is the last move in flight
+  (`isMutating === 1`). Nothing is awaited there either, so a slow refetch can't hold back the
+  refusal message.
+
+Retitling, removing and adding a card are **not** optimistic. Removal waits for the server on
+purpose: a card that vanishes and then reappears is worse than one that takes 100 ms to leave.
+
+## Drag is an enhancement; the select is the real control
+
+Everybody pictures a Kanban board as drag-and-drop. But drag-and-drop is a mouse gesture. It's poor
+on touch screens, useless to a keyboard, and hard to make sense of with a screen reader. WCAG 2.2
+even has a rule for it (SC 2.5.7): anything you can do by dragging, you must be able to do without
+dragging.
+
+So the design starts from the other end. **Moving a card is a command**: "put card X in column Y,
+I last saw version N". Every card has an always-visible **Move to** control, a native `<select>`,
+which works for keyboards, screen readers and thumbs, for free, because browsers have spent twenty
+years making `<select>` accessible. Then, **on top**, native HTML5 drag-and-drop lets a mouse user
+drag the card to a column, and the drop sends the **identical request**. Dropping a card on its own
+column sends nothing; a test proves that by pairing it with a drop that does send one, so it can't
+pass by sending nothing ever.
+
+The serious library option, `@dnd-kit`, was weighed and declined. It solves keyboard and touch
+dragging, which the select already solves more plainly, and its other strength, reordering within
+a column, is something this board doesn't have. The ADR records the trigger for revisiting it:
+within-column reordering gets approved. It's a good habit in general: **build the plain, robust
+control first, and treat the fancy gesture as a shortcut to it.** The fancy part can then break
+without taking the feature with it. The whole board cost **4.96 kB gzipped** against a 15 kB budget,
+with no new dependency.
+
+## War stories
+
+### The lock that was stronger than its name
+
+The plan says the tracking repository takes the run `FOR KEY SHARE`, the weakest row lock
+PostgreSQL has. It blocks deletion, and nothing else. The code said
+`.with_for_update(key_share=True)`, which reads like exactly that.
+
+It isn't. On PostgreSQL, `key_share=True` alone renders **`FOR NO KEY UPDATE`**, a much stronger
+lock. You only get `FOR KEY SHARE` with `read=True` as well. If that sounds familiar, it should:
+2.5's `/verify` hit the same trap, and this file even said *"compile the query and read the SQL"*.
+3.1 fell in anyway, because a keyword argument's name feels like documentation.
+
+What caught it was the right kind of test. `qa`'s T19 didn't just run the race and check the
+outcome (the outcome was fine: the stronger lock still blocks deletion). It **captured the SQL
+statements** the repository actually sent and compared the lock clause to the spec. The behaviour
+was right and the mechanism was wrong. The mechanism mattered too: under the stronger lock, a user
+editing a run's documents would have waited on someone tracking it. A test of the outcome alone
+would have passed for ever.
+
+There's a process detail worth keeping, too. `qa` writes tests and **never edits production code**,
+so it couldn't fix the bug it found. It committed the test as `xfail(strict=True)`, a holding pen
+that says "this is expected to fail, and if it ever passes, that's an error", and wrote the finding
+into the commit body. The fix (`e93f4fd`) added `read=True` and removed only the marker. The same
+defect still sits in 2.3's posting lock in `tailoring_run.py`. It's harmless there, only stronger
+than it needs to be, and it's outside this slice, so it is **written down for the owner** rather than
+fixed in passing.
+
+### The RED test the implementer refused to satisfy
+
+Two of the HTTP tests checked that a refused title is never echoed back. They sent a marker string
+plus a newline, `marker + "\n"`, and expected a 422. But the spec (AC-2) says a title is **trimmed
+first**, then refused if it contains a control character. Trim `"marker\n"` and you get `"marker"`,
+a perfectly good title. The test was asking for a refusal the spec never promised.
+
+The implementer had an easy way out at GREEN: make `ApplicationTitle` refuse before trimming, or
+special-case newlines, and watch the test go green. That would have bent the domain to fit a wrong
+test, the very failure red-first exists to prevent. Instead it **reported the conflict**, and the
+correction landed in its own commit (`a437aca`): an **interior** newline, `marker + "\nx"`, which
+trimming can't remove. The assertions didn't change, the tests stayed red against the skeleton, and
+GREEN then edited no test. Same rule as always: **when a test and the spec disagree, fix one of them
+on purpose, in the open, and never in the commit that makes it pass.**
+
+### Smaller ones
+
+- **An `EXPLAIN` that "failed" correctly.** The board-query test asked PostgreSQL to prove it would
+  use the new index. With only one user's rows in the table, it chose a sequential scan, and it was
+  right: when every row matches, reading the table is cheaper than the index. The test now seeds
+  other users' rows first, so the predicate is actually selective.
+- **`make test file=…` on a lone integration file** can die at collection with `ExportJob has no
+  attribute '_id'`, because the fixture that loads the mappings never runs. `k=` works. And
+  `make web.test file=…` quietly ignores `file=` and runs everything.
+- **Two existing tests broke on a table that didn't exist yet.** The "autogenerate produces an empty
+  diff" tests compare the migrated schema to SQLAlchemy's `metadata`, so the migration's commit had
+  to land the `Table` definition too, or every commit in between would be red. The plan's order was
+  rearranged on purpose and the commit says so.
+
+## The numbers
+
+Measured at T30, at the 500-card cap:
+
+- **Board read**: p95 **48.0 ms** (budget 150); body **330 KiB** (budget 400 KB). This is the one to
+  watch: the board is deliberately unpaginated (ADR-0024 amendment (a)), and the ADR says to add
+  pages if the cap rises or the payload passes 400 KB.
+- **Writes**: track **17.8 ms**, move **8.4 ms**, retitle **7.6 ms**, untrack **7.5 ms**.
+- **Deleting a history entry** with its card and 20 files: **22.3 ms** (budget 250).
+- **Bundle**: **+4.96 kB** gzipped (budget 15), no new dependency.
+- **The LLM path didn't change**: the diff of the Gemini adapter and both tailoring layers against
+  `main` is empty. The board makes no LLM call and queues no task. It works with the worker stopped
+  (measured in T33: a move answered 200 in 51 ms with `worker` down).
+- **In the browser, at 500 cards, production bundle** (T33, after the fix below): an optimistic move
+  commits in p50 **23 ms**, p95 **51.9 ms** (budget 50, so the p95 is about 2 ms over, written down
+  as measured rather than rounded into a pass); first paint, commit plus layout, p50 **245 ms**,
+  p95 **270 ms** (budget 300).
+
+## `/verify` and the manual pass
+
+### The overlap nobody tested
+
+The optimistic-update section above describes two careful decisions: roll back **only your own
+card**, and refetch only when the **last** move settles. Both were implemented correctly. The
+reviewer's round 1 asked a nasty question: *would any test notice if they weren't?* It mutated the
+code both ways ("restore the whole snapshot on a refusal", "refetch on every settle") and the suite
+stayed green both times. Every test moved **one** card. The decisions only matter when two moves
+overlap, and no test overlapped them.
+
+That's the one MAJOR (0 CRITICAL, 9 MINOR). It's a pattern worth naming: **a rule that exists for
+the concurrent case needs a concurrent test, or it's a comment.** The fix (`471ad69`) holds card B's
+request open, refuses card A's with a 409 and then a 503, and checks that B stays where it was put
+and that no refetch fires while B is in flight. The three mutations (M1, M2, M3) were run against it
+and each went red, which is the only proof the test can tell the difference.
+
+The nine MINORs were small and real: refusals raised by a handler were missing `Cache-Control:
+no-store`; the "board full" message hard-coded *500* instead of using the server's sentence; focus
+could be stolen from wherever the user was, and a refused move didn't hand it back to the card's
+*Move to* control; removing or retitling a card refetched
+the board while a move was still in flight (the very jump the last-settle rule prevents, by another
+door; now `invalidateBoardUnlessMoving`); *Edit title* stayed clickable while its own card was
+moving; and the drop target had no hook a test could find. Round 2 passed clean. The suite went
+green twice in a row (4095 backend, 1137 frontend), every RED commit carries the assertion failure it
+recorded, and no GREEN commit touched a test. The two times a RED test itself was wrong
+(`a437aca`, `ead86c4`), the correction got its own commit.
+
+### A thousand renders to move one card
+
+AC-44 says a move should show on screen within 50 ms at the 500-card cap. No unit test can check
+that: jsdom has no layout, no paint and no real clock. So T33 measured it in Chromium, on the
+**production** bundle, with 500 cards. **p50 162 ms, p95 179 ms.** Three times over budget.
+
+First question: is it the network? Hold the `PUT` for two full seconds and measure again: still about
+135 ms. The server wasn't even involved yet. It was all React. A temporary render counter gave the
+answer: one move re-rendered **every card on the board**, all 500, *twice* (1000 renders), and then
+500 more when the move settled.
+
+There were two causes. The small one was ordinary: `BoardCard` wasn't wrapped in `memo`, and each
+card got fresh inline callbacks and objects on every render, so even a memoized card would have
+seen "new props" every time. The big one was hiding inside TanStack Query.
+
+TanStack has a feature called **structural sharing**. When new data arrives, it compares it with the
+old and keeps the old objects wherever nothing changed, so `memo` can skip them. It's a great
+feature. But for arrays it compares **by position**: item 0 with item 0, item 1 with item 1. Picture
+a theatre where the ushers check tickets by seat number, not by face. One person in row 3 stands up
+and moves to row 9, everyone behind them shuffles one seat along, and the usher, walking the rows
+with his seat-number list, decides that everyone from row 3 onwards is a stranger and checks every
+ticket again. Moving one card re-sorts the board, so every card after it shifted position and came
+back as a "new" object, and `memo` dutifully re-rendered all of them.
+
+The fix (`54fae03`) tells the board query to recognise cards by face: a `structuralSharing`
+function, `shareCardsById`, keeps each unchanged card's object across optimistic edits and
+refetches. Add `memo(BoardCard)`, callbacks that take a card id and are created once, cached drag
+props, and constant "removal" states. Result: **2 renders per move and 1 on settle**, instead of
+1000 and 500. The move commits in p50 **23 ms**. The p95 is **51.9 ms**, about 2 ms over the
+budget. It's written down as exactly that, not rounded into a pass.
+
+### The stopwatch that slept
+
+Measuring this nearly went wrong in a sneaky way. The usual trick for timing "until the browser
+painted" is `requestAnimationFrame`. The first numbers for the board's first paint came out at about
+**1.8 seconds**, absurdly slow, even though the page reported `visibilityState: visible`.
+
+It turned out the browser window was **covered by other windows** on the desktop. Chromium throttles
+`requestAnimationFrame` to about once a second for an occluded window, and it does this *without*
+changing `visibilityState`. So the stopwatch was mostly measuring how long Chromium let it sleep.
+The fix was to stop asking the browser "tell me when you paint" and instead watch for the DOM to
+change (a `MutationObserver` fires at commit), then force the browser to do its style and layout work
+right there (read `offsetHeight`) and time that too. Commit + layout at 500 cards: p50 **245 ms**,
+p95 **270 ms**, inside the 300 ms budget. (The dev build gave 640–730 ms for the same thing, which
+tells you nothing about production: development React does a lot of extra checking on purpose.)
+
+The general lesson: **before you trust a timing, check what the clock itself is doing.** That's
+1.6's event-loop lesson again, one floor up: the measurement can be blind to the thing it's
+measuring.
+
+### Sixteen pixels
+
+Adding a *Board* link to the header made the signed-in navigation 16 px wider than a 360 px phone
+screen, once the scrollbar took its share: `scrollWidth` 361 against a `clientWidth` of 345. Every
+page that scrolled had a little sideways wobble. No test looks at pixel widths at 360 px; a person
+dragging a window narrow does. The nav now wraps (`c1ac844`).
+
+### The drag that grabbed the wrong card
+
+This one is a good detective story, because the suspect was innocent. Dragging the **first** of two
+cards in a column moved the **second** one. Three times out of three. That looks like a serious bug:
+the board moving someone's application to the wrong column.
+
+But a stepwise drag, moving the mouse by hand in small steps, moved the right card every time. So
+what was different? Playwright's `dragTo` presses the mouse on card A, and **then** scrolls the page
+(about 191 px here) to bring the tall target column into view. Chromium starts an HTML5 drag from
+wherever the pointer is when the drag actually begins, and after that scroll the pointer was sitting
+on card B. The robot's hand slipped; the app did what it was told.
+
+The lesson: **verify the harness's gesture before you blame the app.** If the "user" is a script, the
+script is a suspect too. Real Firefox drag wasn't exercised in this pass (the harness only had
+Chromium), and that's written down rather than assumed.
+
+### The 500 that the seed caused
+
+Near the end, deleting the test account failed with a 500. Panic for a second: account erasure is
+the most important delete in the product. But the culprit was the **seed script**, which had put
+`file_key = 't33/<uuid>'` into a saved CV row to save time. The domain's `FileRef` type has a strict
+grammar for file keys, and it refuses that one when the row is loaded. Real uploads can never
+produce such a key. Repaired by id, the deletion answered 204 and every row was gone: user, cards,
+runs, postings, CVs, logins.
+
+The lesson is short: **seed data has to obey the same rules as real data.** Build it with the
+domain's own value objects, or you're testing your shortcut instead of your code.
+
+### The rest of the walk
+
+Everything else behaved: register and confirm through Mailpit; two real Gemini runs (the second
+about 5.1 s end to end); *Add to board* from the run page and from history; a drag sending exactly
+`{"stage":"applied","version":1}`; a keyboard move with focus following the card and the live region
+saying *"Moved … to Offer."*; a second tab winning a race and the stale tab getting the 409 and the
+message *"This application changed in another tab — your board is up to date."*; *CV deleted* on the
+cards after the saved CV went; a history delete taking its card; a removed card leaving its history
+entry. Afterwards, 16 997 log lines from api, worker, beat and nginx were searched for the email, the
+card titles, the posting text, the CV's filename and its body: **zero hits**. And because a search
+that finds nothing proves nothing on its own, the positive controls were checked too: the user id
+appeared 100 times and there were 90 tracking event lines, so the logs were really being read.
+
+## The common thread, a fifteenth time
+
+2.5 said *make the dangerous state impossible instead of guarding it*, and 3.1 leans on that twice:
+no guest column means no purge can reach a card, and no sibling import means the domain can't grow a
+dependency on tailoring by accident. But the slice's own lesson is about **asking the right
+question before writing the first line**. *Whose fact is this?* put the board in its own context.
+*What does the user's life actually allow?* made the machine permissive. *Who can't use a drag?* made
+the select the real control. *What does the database actually receive?* caught a lock that was
+stronger than its name. Each question took a minute, and each would have cost a slice to answer the
+other way round.
+
+`/verify` added one more question, and it's the one that found the most: *how would I know?* A
+rollback rule nobody overlapped, a render budget only a browser can see, a stopwatch that slept, a
+robot's hand that slipped. In every case the code or the claim looked fine until something checked
+it in the conditions it was written for.
+
+## What's next
+
+- **The PR for 3.1**, then its release. Firefox drag is still unexercised, and AC-44's p95 sits
+  about 2 ms over its budget; both are written down.
+- **Owned and written down:** 2.3's posting lock still renders `FOR NO KEY UPDATE`; the
+  `__Host-tc_guest` cookie becomes its own small security slice before 3.2 merges (OQ-14); Phase 1's
+  gate is still unrecorded and production's purge is still off (OQ-15).
+- **Then 3.2**: a small set of PDF layout templates, chosen rather than a layout engine.

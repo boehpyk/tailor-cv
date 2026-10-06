@@ -113,3 +113,29 @@ page **their own** history differently: the `WHERE r.user_id = :u` is not in it.
 - **A read model can drift from the aggregates it projects.** It is not re-validated, so a column
   renamed on a write-side mapping must be renamed here too. The statement-capture test and the
   mapping round-trip tests are what catch it; nothing in the type system will.
+
+## Amendment: 2026-10-04, from the plan of slice 3.1 (`tracking-application-board`)
+
+Slice 3.1's board (ADR-0029) is a cross-context projection, so decisions 1–3 apply to it as written:
+`ApplicationBoardQuery` in `domain/tracking/ports.py`, Core SQL under
+`infrastructure/persistence/queries/`, three `LEFT JOIN`s with the owner in every join condition, no
+document column, the posting preview `left(text, 140)` in SQL. Decision 4 does not fit it, and this
+amendment says when it need not.
+
+**(a) A bounded projection that must be seen whole may be returned whole.** Keyset paging (decision 4)
+is the default. A cross-context read model may instead return every row in one response when **all
+three** conditions hold:
+
+1. **It is bounded at write time** — a cap enforced by the use case that creates the rows (here
+   `MAX_TRACKED_APPLICATIONS_PER_USER = 500`), not a `LIMIT` on the read that silently hides rows.
+2. **It is measured at the bound** — a p95 and a response size at the cap, recorded in the slice
+   (here ≤ 150 ms and ≤ 400 KB for 500 cards), with an `EXPLAIN` showing an index scan.
+3. **The reader needs it whole** — a Kanban shows every column at once, and a drag target that is
+   not loaded cannot be dropped on. Paging it per column means six cursors for one screen.
+
+A list that is merely *usually* small does not qualify; history (decision 4's case) does not, because
+it is read a page at a time. **Trigger for paging after all:** the cap rises above its measured value,
+or the measured payload exceeds the recorded size.
+
+The Consequence *"Phase 3's tracking board reads this way … keyset pages"* is corrected: the board
+reads through a query port, **whole, under (a)**.

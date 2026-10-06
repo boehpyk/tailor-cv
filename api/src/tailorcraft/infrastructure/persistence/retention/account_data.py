@@ -11,6 +11,10 @@ an export format and counts.
 postings and export jobs cascade from `identity_user` with its saved CVs, and its export files are
 collected beside the CVs' — each key derived from its job's `(id, format)`, the purge's rule.
 
+**Since slice 3.1 an account is also its board** (plan §0.7, T-34): `tracking_application` cascades
+from `identity_user` through `fk_tracking_application_user_id_identity_user`. A card names no file,
+so `files_of_account` is unchanged; `count_account` counts the cards for the dry run and the report.
+
 **Nothing here logs**, as in the purge's adapter: the one line per erasure is the entry point's, built
 from the `AccountErasureReport` the use case returns.
 
@@ -47,6 +51,9 @@ from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_c
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
+)
+from tailorcraft.infrastructure.persistence.mapping.tracking.tracked_application import (
+    tracked_application_table,
 )
 
 if TYPE_CHECKING:
@@ -136,9 +143,10 @@ class SqlAlchemyAccountData:
         `identity_login` (and through it `identity_retired_refresh_token`), since 2.5 its *issued*
         `identity_password_reset` rows, `intake_base_cv`, and since slice 2.3 the account's
         history — `tailoring_run`, `posting_job_posting` and `export_job`, each through its own
-        `fk_<table>_user_id_identity_user`. Three independent cascades from the user row, not a
-        chain: there is no FK between those three tables (ADR-0014, ADR-0016). Rows only — never a
-        file; `files_of_account` collected the export keys first.
+        `fk_<table>_user_id_identity_user` — and since slice 3.1 its board, `tracking_application`
+        (`fk_tracking_application_user_id_identity_user`). Independent cascades from the user row,
+        not a chain: there is no FK between those tables (ADR-0014, ADR-0016, ADR-0029). Rows only —
+        never a file; `files_of_account` collected the export keys first, and a card has none.
 
         The row count is read from the statement itself, on the session's connection, rather than
         from a check beforehand: `False` means a concurrent erasure deleted it first, and a check
@@ -190,6 +198,10 @@ class SqlAlchemyAccountData:
         (slice 2.3, AC-36) — the same two sets `files_of_account` returns, filtered by the same
         `_QUEUED_FORMATS`, so a dry run and the real run agree on the number. That is the day 2.2's
         docstring predicted `files` and `base_cvs` would stop being the same number.
+
+        Since slice 3.1, `tracked_applications` counts the account's cards (AC-28) — one more scalar
+        subquery, over `ix_tracking_application_user_id_stage_changed_at`'s leading `user_id`. A
+        card has no file, so `files` is unchanged by it.
         """
 
         def count_of(table_user_id: ColumnElement[UserId | None]) -> ScalarSelect[int]:
@@ -217,6 +229,7 @@ class SqlAlchemyAccountData:
                     count_of(tailoring_run_table.c.user_id).label("tailoring_runs"),
                     count_of(job_posting_table.c.user_id).label("job_postings"),
                     count_of(export_job_table.c.user_id).label("export_jobs"),
+                    count_of(tracked_application_table.c.user_id).label("tracked_applications"),
                 ).where(user_table.c.id == user_id)
             )
         ).one_or_none()
@@ -229,6 +242,7 @@ class SqlAlchemyAccountData:
             tailoring_runs=row.tailoring_runs,
             job_postings=row.job_postings,
             export_jobs=row.export_jobs,
+            tracked_applications=row.tracked_applications,
         )
 
 

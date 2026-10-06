@@ -7,6 +7,7 @@ import {
   LOGOUT_PENDING_LABEL,
 } from '../authCopy';
 import { SavedBaseCvsSection } from '@/features/savedCvs/components/SavedBaseCvsSection';
+import { BOARD_RETENTION_NOTE } from '@/features/tracking/trackingCopy';
 
 import { useCurrentUser } from '../hooks/useCurrentUser';
 import { useLogout } from '../hooks/useLogout';
@@ -105,6 +106,10 @@ function AccountBody({ query }: { readonly query: ReturnType<typeof useCurrentUs
         </dd>
       </dl>
       <p className="text-sm text-slate-500">{ACCOUNT_NEXT_RELEASE_NOTE}</p>
+      {/* What the board keeps, and for how long (slice 3.1's Privacy section): `/account` is where a
+          person looks to learn what the product holds about them. The board's own sentence, not a
+          second copy of it. */}
+      <p className="text-sm text-slate-500">{BOARD_RETENTION_NOTE}</p>
     </div>
   );
 }

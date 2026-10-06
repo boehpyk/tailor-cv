@@ -221,6 +221,38 @@ async def test_the_report_counts_the_accounts_history_and_every_file_it_tried() 
     )
 
 
+async def test_the_report_carries_the_accounts_tracked_application_count() -> None:
+    """AC-13: `AccountCounts.tracked_applications` reaches `AccountErasureReport.tracked_applications`
+    (planted 3, so a use case that drops it and leaves the default 0 fails here)."""
+    user_id = UserId(value=uuid4())
+    cv_refs = [_numbered_ref(1)]
+    accounts = FakeAccountDataPort({user_id: cv_refs}, tracked_applications_by_user={user_id: 3})
+    files = InMemoryFileStore()
+    await files.put(cv_refs[0], b"bytes")
+
+    report = await EraseAccount(accounts, files)(user_id)
+
+    assert report.tracked_applications == 3
+    assert report.base_cvs == 1
+
+
+async def test_an_account_with_no_tracked_applications_reports_zero() -> None:
+    """AC-13's pair: the count is the account's own, not a constant."""
+    user_id = UserId(value=uuid4())
+    other = UserId(value=uuid4())
+    cv_refs = [_numbered_ref(1)]
+    accounts = FakeAccountDataPort(
+        {user_id: cv_refs, other: []}, tracked_applications_by_user={other: 3}
+    )
+    files = InMemoryFileStore()
+    await files.put(cv_refs[0], b"bytes")
+
+    report = await EraseAccount(accounts, files)(user_id)
+
+    assert report.tracked_applications == 0
+    assert report.base_cvs == 1
+
+
 async def test_export_files_are_unlinked_after_the_rows_are_deleted() -> None:
     """The order is unchanged (collect → delete committed → unlink) and now covers the export keys:
     every one of the five keys is unlinked, each after `delete_account` returned."""

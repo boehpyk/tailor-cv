@@ -1,6 +1,8 @@
 import { useId } from 'react';
 import { Link, useMatch } from 'react-router';
 
+import { BOARD_NAV_LABEL } from '@/features/tracking/trackingCopy';
+
 import { AuthErrorNotice } from './AuthErrorNotice';
 import {
   AUTH_BOOTING_NOTE,
@@ -21,7 +23,8 @@ const linkClass = 'font-medium text-slate-900 underline underline-offset-2';
  *   only. **No "Log in" flicker**: showing the anonymous links for the instant before the boot
  *   refresh answers tells a logged-in user they were logged out.
  * - `anonymous` — the empty state: **Log in** · **Create account**.
- * - `authenticated` — the email, **History** (slice 2.3, AC-44), **Account** and **Log out**. The
+ * - `authenticated` — the email, **History** (slice 2.3, AC-44), **Board** (slice 3.1, AC-32),
+ *   **Account** and **Log out**. The
  *   email comes from `['auth', 'me']` and can be absent for the instant before the seed lands; the
  *   links cannot, so they render alone. Log out is here so it is one click from every page — a
  *   history run included (AC-43) — except `/account`, whose own Log out already sits in the page:
@@ -57,10 +60,13 @@ export function AuthStatus() {
       );
     case 'authenticated':
       return (
-        <nav aria-label="Account" className="flex items-center gap-4 text-sm">
+        <nav aria-label="Account" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
           {auth.user !== undefined && <span className="text-slate-600">{auth.user.email}</span>}
           <Link to="/history" className={linkClass}>
             History
+          </Link>
+          <Link to="/board" className={linkClass}>
+            {BOARD_NAV_LABEL}
           </Link>
           <Link to="/account" className={linkClass}>
             Account

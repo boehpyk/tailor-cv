@@ -737,6 +737,8 @@ def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
         files=report.files,
         files_unlinked=report.files_unlinked,
         files_failed=len(report.unlink_failures),
+        # Slice 3.1 (T-34): the account's cards, gone by the cascade. A count.
+        tracked_applications=report.tracked_applications,
     )
     for error_type in report.unlink_failures:
         log.warning(

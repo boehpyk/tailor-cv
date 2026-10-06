@@ -2,9 +2,10 @@
 
 Deleting one entry of a signed-in user's history is retention's shape — *delete what an owner has for
 X, rows committed, then files* — over three contexts' tables, so it is Core SQL here rather than a
-`remove` on `TailoringRunRepository`. Four statements, one transaction, the owner in every `WHERE`:
+`remove` on `TailoringRunRepository`. Five statements, one transaction, the owner in every `WHERE`:
 
     DELETE FROM tailoring_run WHERE id = :r AND user_id = :u RETURNING job_posting_id;  -- 0 rows → None
+    DELETE FROM tracking_application WHERE tailoring_run_id = :r AND user_id = :u RETURNING id;
     DELETE FROM export_job WHERE tailoring_run_id = :r AND user_id = :u RETURNING id, format;
     SELECT id FROM posting_job_posting WHERE id = :p AND user_id = :u FOR UPDATE;
     DELETE FROM posting_job_posting
@@ -31,6 +32,28 @@ a separate statement with a fresh READ COMMITTED snapshot, so it sees the new ru
 posting. The run request, for its part, refuses with `JobPostingNotFound` if the posting is already
 gone by the time it locks it. Between the two, no run can reference a deleted posting.
 
+**Since slice 3.1 the entry's tracked application (its card) goes with it** (plan §0.7, AC-24) — a
+card about documents that no longer exist is worth nothing, and refusing the deletion while the run
+is tracked would put an unexpected 409 on a privacy action. Retention owns "delete everything an
+owner has for X"; the card is one more table in X. **There is no FK `tracking_application.
+tailoring_run_id → tailoring_run`** (ADR-0014/0016/0023 decline cross-context FKs), so the race a
+track request could run against this deletion is closed by 2.3's two-lock pattern, copied rather than
+invented. `SqlAlchemyTrackedApplicationRepository.add` INSERTs the card and **then** takes the run
+`FOR KEY SHARE` (its INSERT's FK check already holds the user row, so account erasure — user row
+first — meets it there and no lock cycle exists). This module's run `DELETE` conflicts with that
+`KEY SHARE`:
+
+- **track first:** the run `DELETE` waits for the track to commit; the card `DELETE` that follows is
+  a **separate statement**, so under READ COMMITTED it takes a fresh snapshot after the wait and
+  sees the committed card, and deletes it.
+- **delete first:** the track's `KEY SHARE` waits for this transaction; once it commits the run row
+  is gone, and the track refuses `TailoringRunNotFound` (its SAVEPOINT, card and all, rolled back).
+
+Folding the card `DELETE` into the run's statement (a CTE, a `USING`) would read the pre-wait
+snapshot and miss a card committed while the run's `DELETE` waited — CLAUDE.md's `NOT EXISTS`
+footgun in another shape. An untracked entry's card `DELETE` matches nothing and changes nothing
+else: its report reads `tracked_application_deleted=False`, as every 2.3 report implicitly did.
+
 **Nothing here logs and nothing here commits.** `CommittingHistoryEntryData`
 (`infrastructure/retention/data_access.py`) commits after this returns — which is what makes the
 unlinks that follow in `EraseHistoryEntry` safe — and the entry point logs from the report.
@@ -54,10 +77,15 @@ from tailorcraft.domain.retention.value_objects import DeletedHistoryEntry
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
+from tailorcraft.domain.tracking.tracked_application import TrackedApplication
+from tailorcraft.domain.tracking.value_objects import TrackedApplicationId, TrackedRunRef
 from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
+)
+from tailorcraft.infrastructure.persistence.mapping.tracking.tracked_application import (
+    tracked_application_table,
 )
 
 if TYPE_CHECKING:
@@ -81,14 +109,14 @@ class SqlAlchemyHistoryEntryData:
     async def delete_history_entry(
         self, user_id: UserId, run_id: UUID
     ) -> DeletedHistoryEntry | None:
-        """The port's contract; the four statements are the module docstring's.
+        """The port's contract; the five statements are the module docstring's.
 
         **Loaded aggregates leave the identity map first**, by identity: `EraseHistoryEntry` loaded
         the run through `GetTailoringRun` to authorize it, and a Core `DELETE` does not tell the ORM
         the row went — a later flush of that instance would target a row that no longer exists (2.2's
-        `delete_account` precedent). The run is expunged before its `DELETE`; the jobs and the
-        posting, which no caller loads today, are expunged by the identities the statements return,
-        so the same holds the day one does.
+        `delete_account` precedent). The run is expunged before its `DELETE`; the card, the jobs and
+        the posting, which no caller loads today, are expunged by the identities the statements
+        return, so the same holds the day one does.
         """
         typed_run_id = TailoringRunId(run_id)
         self._expunge(TailoringRun, typed_run_id)
@@ -106,6 +134,26 @@ class SqlAlchemyHistoryEntryData:
         ).scalar_one_or_none()
         if posting_id is None:
             return None
+
+        # Slice 3.1 (plan §0.7): the entry's card, if the run was tracked — at most one, by
+        # `uq_tracking_application_tailoring_run_id`. Its own statement, after the run's, never
+        # folded into it: the run `DELETE` may have waited on a track request's `FOR KEY SHARE`,
+        # and only a new statement's fresh READ COMMITTED snapshot sees the card that request
+        # committed while we waited (module docstring).
+        card_ids: list[TrackedApplicationId] = list(
+            (
+                await connection.execute(
+                    delete(tracked_application_table)
+                    .where(
+                        tracked_application_table.c.tailoring_run_id == TrackedRunRef(run_id),
+                        tracked_application_table.c.user_id == user_id,
+                    )
+                    .returning(tracked_application_table.c.id)
+                )
+            ).scalars()
+        )
+        for card_id in card_ids:
+            self._expunge(TrackedApplication, card_id)
 
         jobs = (
             await connection.execute(
@@ -162,6 +210,7 @@ class SqlAlchemyHistoryEntryData:
             export_files=tuple(export_files),
             export_jobs=len(jobs),
             posting_deleted=posting_deleted,
+            tracked_application_deleted=bool(card_ids),
         )
 
     def _expunge(self, cls: type[object], ident: object) -> None:

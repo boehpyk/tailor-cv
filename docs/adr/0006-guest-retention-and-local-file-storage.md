@@ -184,3 +184,23 @@ stated.
 - **The guest session ends with the claim.** Its row is deleted in the claim's transaction and its
   cookie cleared (ADR-0010's amendment), so nothing is left for the purge to find; the purge's own
   rule for a session a claim got to first is in ADR-0018's amendment.
+
+## Amendment: 2026-10-04, from the plan of slice 3.1 (`tracking-application-board`)
+
+Slice 3.1 adds tracked applications (ADR-0029): which of the user's tailored applications they have
+sent, and at what stage. It is a new kind of account data, so it gets its own sentence here.
+
+**(f) Tracked applications are kept until the user removes them, deletes their history entry, or
+erases the account; they are never guest data.**
+
+- **Three ways out, all on request.** Removing a card deletes its row. Deleting the history entry it
+  references deletes the card in the same transaction (ADR-0023's amendment). Account erasure takes
+  every card by the `user_id` cascade, under the user-row lock (c) already holds, and
+  `erase-account --dry-run` counts them.
+- **No files.** A card is one row with no file of its own, so §2's *rows committed, then files* has
+  nothing to unlink and the orphan sweep is unaffected.
+- **Never guest data, by schema.** The table has no `guest_session_id` column, so the guest purge
+  cannot reach it and the claim (e) has nothing to re-key. A guest cannot create a card.
+- **Stated where it happens.** The history-entry delete dialog says the card goes with the entry.
+  The card holds a stage, an optional title of at most 120 characters typed by the user, and two
+  timestamps; no notes, salary, contacts or dates.

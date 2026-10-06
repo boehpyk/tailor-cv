@@ -624,6 +624,19 @@ class Settings(BaseSettings):
     password_reset_rate_limit_per_ip_per_hour: int = Field(default=10, ge=1)
     password_reset_rate_limit_per_email_per_hour: int = Field(default=3, ge=1)
 
+    # -- The application board (slice 3.1, ADR-0029, technical plan §0.9) ----------------------
+    # Cards a signed-in user may keep — one per succeeded run at most, so it matches
+    # `max_tailoring_runs_per_user` and is reached only by someone who tracked every run they made.
+    # It is also what bounds the board, which is unpaginated on purpose (ADR-0024 amendment (a));
+    # raising it is the trigger for revisiting that. Enforced in `TrackApplication` (soft: it spans
+    # rows). In-code default, so the box's `.env` needs no edit.
+    max_tracked_applications_per_user: int = Field(default=500, ge=1)
+    # Track / move / retitle / untrack per user per hour, one shared budget. Fails OPEN
+    # (`get_tracking_write_rate_limiter`): no money is at stake, so 1.4's save limiter's rule
+    # applies. 600/h allows a vigorous re-sort while bounding a runaway script. Not on the board's
+    # GET, as history's GET has none. `ge=1`: `0` would refuse every write.
+    tracking_write_rate_limit_per_hour: int = Field(default=600, ge=1)
+
     @model_validator(mode="after")
     def _refuse_to_boot_without_a_key_in_production(self) -> Settings:
         """AC-32/G-32: `APP_ENV=production` with an empty `GEMINI_API_KEY` must not start.

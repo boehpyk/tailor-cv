@@ -351,3 +351,45 @@ describe('AC-45: features/claim/ never renders raw HTML or reaches into browser 
     expect(findNonCommentOccurrences(needle, collectFeatureLines('claim'))).toEqual([]);
   });
 });
+
+/**
+ * Slice 3.1 (T29, AC-40): `features/tracking/` — a card's title, a posting's text and URL and a CV's
+ * label are strangers' words, and none of them is rendered as HTML or written to browser storage.
+ * Same shape as the folders above: a positive control that the scan reads production files there
+ * (so a renamed folder cannot pass by scanning nothing), and a discrimination control.
+ *
+ * Mutations (restored byte-exact): `window.localStorage.setItem('k', 'v')` added to
+ * `features/tracking/components/BoardCard.tsx` → the `localStorage` case red, naming that line;
+ * `dangerouslySetInnerHTML` added to `BoardColumn.tsx` → its case red; `sessionStorage` and
+ * `indexedDB` likewise in `hooks/useBoard.ts`; `document.cookie` in `trackingCopy.ts`.
+ */
+describe('AC-40: features/tracking/ never renders raw HTML or reaches into browser storage', () => {
+  it('the scan reads production files in this folder, components and hooks included (positive control)', () => {
+    const paths = new Set(collectFeatureLines('tracking').map((line) => line.path));
+
+    expect(paths.size).toBeGreaterThan(0);
+    expect([...paths].some((path) => path.endsWith('BoardCard.tsx'))).toBe(true);
+    expect([...paths].some((path) => /[\\/]hooks[\\/]/.test(path))).toBe(true);
+  });
+
+  it('the search finds a hit when one exists (discrimination control)', () => {
+    const planted: SourceLine[] = [
+      { path: 'features/tracking/x.tsx', lineNumber: 1, text: '<p dangerouslySetInnerHTML={h} />' },
+      { path: 'features/tracking/x.tsx', lineNumber: 2, text: "indexedDB.open('b');" },
+      { path: 'features/tracking/x.tsx', lineNumber: 3, text: '// indexedDB in a comment' },
+    ];
+
+    expect(findNonCommentOccurrences('dangerouslySetInnerHTML', planted)).toHaveLength(1);
+    expect(findNonCommentOccurrences('indexedDB', planted)).toHaveLength(1);
+  });
+
+  it.each([
+    'dangerouslySetInnerHTML',
+    'localStorage',
+    'sessionStorage',
+    'indexedDB',
+    'document.cookie',
+  ])('%s never appears in its production code', (needle) => {
+    expect(findNonCommentOccurrences(needle, collectFeatureLines('tracking'))).toEqual([]);
+  });
+});
