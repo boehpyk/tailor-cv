@@ -320,6 +320,9 @@ describe('A refused move rolls back with its own copy (AC-34)', () => {
     const server = boardServer({ 'user-a': [makeCard(), otherCard(2)] });
     stubAccountFetch({
       ...server.routes(),
+      // The refetch hangs (as in the cases above): only `onError` itself can remove the card.
+      // Mutation-checked: restoring the snapshot instead of `withoutCard` leaves it on the board.
+      [`GET ${BOARD_PATH}`]: (call, n) => (n === 1 ? server.getBoard(call, n) : hang()),
       [STAGE_PATH]: () => {
         server.cardsOf('user-a').splice(0, 1);
         return apiError(404, 'tracked_application_not_found');
@@ -339,6 +342,106 @@ describe('A refused move rolls back with its own copy (AC-34)', () => {
     });
     expect(screen.getByText('Card number 2')).toBeInTheDocument();
   });
+});
+
+describe('Overlapping moves: one refusal never disturbs the other card (AC-34, T-39)', () => {
+  const OTHER = 'Card number 2';
+
+  /**
+   * Two cards, each move held on its **own** gate, so the order of settling is the test's. `refuseA`
+   * answers card A's `PUT`; card B's is answered by the stateful fake once released.
+   *
+   * Guards (slice 3.1 `/verify` round 1, MAJOR) — each mutation-checked against
+   * `hooks/useMoveTrackedApplication.ts`, restored byte-exact:
+   * - M1: `onError` restores the whole `context.previous` instead of only the refused card. Red
+   *   (both cases, 2 failed | 16 passed): "Unable to find an element with the text: Card number 2"
+   *   in the Offer column — B was put back while its own request was still pending.
+   * - M2: `onSettled` invalidates unconditionally (`if (true)` for the `=== 1` guard). Red (both
+   *   cases, 2 failed | 16 passed): the same "Card number 2" error — A's refusal refetched, and a
+   *   server that had not seen B's move overwrote B's optimistic state.
+   * - M3 (the 404 case below): `onError` restores the card instead of `withoutCard`. Red (1 failed |
+   *   17 passed): "expected document not to contain element" — the card stays on the board.
+   */
+  function serveOverlap(refuseA: () => Response) {
+    const gateA = deferred<null>();
+    const gateB = deferred<null>();
+    const server = boardServer({ 'user-a': [makeCard(), otherCard(2)] });
+    const fetch = stubAccountFetch({
+      ...server.routes(),
+      [STAGE_PATH]: async (call, n) => {
+        if (call.path === `${APPLICATIONS_PATH}/app-1/stage`) {
+          await gateA.promise;
+          return refuseA();
+        }
+        await gateB.promise;
+        return server.move(call, n);
+      },
+    });
+    return {
+      fetch,
+      releaseA: () => {
+        gateA.resolve(null);
+      },
+      releaseB: () => {
+        gateB.resolve(null);
+      },
+    };
+  }
+
+  const settle = () =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+    });
+
+  it.each([
+    [
+      '409 version conflict',
+      () => apiError(409, 'tracked_application_version_conflict', { current_version: 9 }),
+      'This application changed in another tab — your board is up to date.',
+    ],
+    [
+      '503 service_unavailable',
+      () => apiError(503, 'service_unavailable'),
+      'Not moved — try again.',
+    ],
+  ])(
+    "%s on card A while card B's move is pending: A goes back with its message, B stays moved, and no board GET goes out until B settles",
+    async (_name, refuseA, copy) => {
+      const { fetch, releaseA, releaseB } = serveOverlap(refuseA);
+      const user = userEvent.setup();
+      renderBoard();
+      await screen.findByText(TITLE);
+      expect(callsTo(fetch, 'GET', BOARD_PATH)).toHaveLength(1);
+
+      await user.selectOptions(moveControlOf(cardWithText(TITLE)), 'Interviewing');
+      await user.selectOptions(moveControlOf(cardWithText(OTHER)), 'Offer');
+      await within(regionOf('Offer')).findByText(OTHER);
+      await within(regionOf('Interviewing')).findByText(TITLE);
+
+      releaseA();
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(copy);
+      await waitFor(() => {
+        expect(within(regionOf('To apply')).getByText(TITLE)).toBeInTheDocument();
+      });
+      expect(within(regionOf('Interviewing')).queryByText(TITLE)).not.toBeInTheDocument();
+      expect(within(regionOf('Offer')).getByText(OTHER)).toBeInTheDocument();
+      expect(within(regionOf('To apply')).queryByText(OTHER)).not.toBeInTheDocument();
+      await settle();
+      expect(callsTo(fetch, 'GET', BOARD_PATH)).toHaveLength(1);
+      expect(within(regionOf('Offer')).getByText(OTHER)).toBeInTheDocument();
+
+      releaseB();
+
+      await waitFor(() => {
+        expect(callsTo(fetch, 'GET', BOARD_PATH)).toHaveLength(2);
+      });
+      await settle();
+      expect(callsTo(fetch, 'GET', BOARD_PATH)).toHaveLength(2);
+      expect(within(regionOf('Offer')).getByText(OTHER)).toBeInTheDocument();
+      expect(within(regionOf('To apply')).getByText(TITLE)).toBeInTheDocument();
+    },
+  );
 });
 
 describe('A 401 mid-move is refreshed once and retried (T-42)', () => {
