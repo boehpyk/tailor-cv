@@ -14,9 +14,11 @@ earlier step having worked.
 
 Spec ambiguities resolved here, on the plan's §4 rather than on any observed behaviour:
 
-- `Cache-Control: no-store` is asserted on the **success** responses (201, 200, 204) — the ones the
-  handler builds. Error bodies are built by the exception handlers; 2.4's AC-24 wording (the
-  responses the *handler* builds) is followed, not widened.
+- `Cache-Control: no-store` is asserted on the **success** responses (201, 200, 204) and, since
+  `/verify` round 1, on the **refusals the handler body raises** (404, both 409s, a title 422) —
+  2.4's precedent (`me_guest_work.py`) adds the header to those. It is still not asserted on what
+  the dependencies and app-level handlers build (the 401 from `require_user`, Pydantic's own 422
+  before a handler runs, the 503): they carry no account data.
 - A retitle does not move a card: `stage_changed_at` is unchanged (the aggregate's docstring).
 - The message text is pinned only where the spec quotes it (T-12).
 """
@@ -209,6 +211,61 @@ async def test_t12_a_run_that_has_not_succeeded_is_409_not_trackable_and_writes_
         "Only a finished tailored application can go on your board."
     )
     assert await card_count(session, account.user_id.value) == 0
+
+
+async def test_verify_r1_refusals_raised_by_the_handler_carry_no_store(
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    clock: FixedClock,
+) -> None:
+    """404 `tracked_application_not_found`, 409 version conflict (carries `current_version`), 409
+    `application_already_tracked` (names a card) and a title 422 are all raised in the handler body
+    through `_refuse`; each can name the user's own data, so none may be cached."""
+    account = await register(client, settings)
+    entry = await seed_entry(session, settings, account.owner, at=_earlier(clock), ready_formats=())
+    created = await client.post(
+        ME_TRACKED, json={"tailoring_run_id": str(entry.run_id.value)}, headers=account.headers
+    )
+    assert created.status_code == 201, created.text
+    card_url = f"{ME_TRACKED}/{created.json()['id']}/stage"
+
+    not_found = await client.put(
+        f"{ME_TRACKED}/{uuid4()}/stage",
+        json={"stage": "applied", "version": 1},
+        headers=account.headers,
+    )
+    conflict = await client.put(
+        card_url, json={"stage": "applied", "version": 99}, headers=account.headers
+    )
+    already = await client.post(
+        ME_TRACKED, json={"tailoring_run_id": str(entry.run_id.value)}, headers=account.headers
+    )
+    bad_title = await client.put(
+        f"{ME_TRACKED}/{created.json()['id']}/title",
+        json={"title": "x" * 121, "version": 1},
+        headers=account.headers,
+    )
+
+    assert (not_found.status_code, error_code(not_found)) == (404, "tracked_application_not_found")
+    assert (conflict.status_code, error_code(conflict)) == (
+        409,
+        "tracked_application_version_conflict",
+    )
+    assert "current_version" in error_body(conflict)
+    assert (already.status_code, error_code(already)) == (409, "application_already_tracked")
+    assert (bad_title.status_code, error_code(bad_title)) == (422, "validation_error")
+    cached = {
+        name: response.status_code
+        for name, response in (
+            ("not_found", not_found),
+            ("version_conflict", conflict),
+            ("already_tracked", already),
+            ("title_422", bad_title),
+        )
+        if response.headers.get("cache-control") != "no-store"
+    }
+    assert cached == {}, f"refusals missing Cache-Control: no-store: {cached}"
 
 
 async def test_t14_tracking_a_run_twice_is_409_naming_the_existing_card_and_adds_no_row(
