@@ -19,7 +19,7 @@ mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · Re
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
 > **Status: eleven slices shipped (1.1–1.6, 2.1–2.5); Phase 2 is closed, its gate met on 2026-10-03; Phase 3
-> is next. Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> has begun: slice 3.1 `tracking-application-board` is implemented and `/verify` is pending.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -335,6 +335,50 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   AC-32 (eight `Origin` routes — the spec's "seven" missed `delete-account`), AC-41 (the
 >   mutation is `<=` → `<`; the spec had it backwards).
 >
+> - **3.1 `tracking-application-board`** (branch `feature/tracking-application-board`, **implemented
+>   2026-10-06, not yet verified** — `/verify` pending, nothing merged or released) — a signed-in
+>   user's job search on a board. A **seventh bounded context, `tracking`** (**ADR-0029**), chosen
+>   by whose fact it is: a run's status is a fact about a paid call, a card's stage is a fact about
+>   the user's life. One `TrackedApplication` aggregate per **succeeded, user-owned run**, referenced
+>   through tracking's own **`TrackedRunRef`**: `domain/tracking` imports **no sibling context**
+>   (owner's T0 amendment; an AST allow-list pins it to the standard library, `domain/shared` and
+>   `domain/identity`), "only a succeeded run" is the use case's rule, and the one seam is
+>   `TrackedRunRef(run.id.value)` in `application/tracking/`. (ADR-0029 said `NewType`; the ids are
+>   frozen dataclasses like every other id — a dated correction is in the ADR.) The owner is a
+>   **`UserId`, not ADR-0022's `Owner`**: `user_id NOT NULL → identity_user ON DELETE CASCADE` and
+>   **no guest column**, so the purge and the claim cannot reach a card by schema (a test asserts
+>   the column is absent). A card holds a stage, an optional `ApplicationTitle` (trimmed, 1–120,
+>   no `Cc`), `tracked_at`, `stage_changed_at` and `version` — no notes, salary or dates. **Six
+>   stages, any → any** (a permissive machine, unlike `TailoringRun`'s strict one; the aggregate
+>   says why at the point of contradiction); the invariants are time and **optimistic concurrency by
+>   `version`**, checked before the no-op rule, plus the mapper's `version_id_col`. The board is a
+>   **read model behind an unpaginated query port** bounded by the 500-card cap (**ADR-0024
+>   amendment (a)**): one Core statement, three LEFT JOINs with the owner in every join condition,
+>   `left(text, 140)`, no document column. **Deleting a history entry takes its card** by its own
+>   `DELETE … RETURNING` in `retention` (ADR-0023, ADR-0006 (f) amended); **account erasure** takes
+>   cards by the FK cascade. **No FK on the run**: the race is closed by 2.3's pattern — `add`
+>   INSERTs, **then** takes the run `FOR KEY SHARE` and refuses if it is gone; the history delete's
+>   card `DELETE` is a separate statement with a fresh snapshot (both orders staged on real
+>   connections). Migration **`7e43a47327ec`** (expand-only, one table; the **downgrade refuses**
+>   while any row exists). Settings, in-code defaults: `MAX_TRACKED_APPLICATIONS_PER_USER=500`,
+>   `TRACKING_WRITE_RATE_LIMIT_PER_HOUR=600` (user scope, fails open); no new `check-settings`
+>   refusal. Five bearer-only routes under `/api/me/` (`GET /board`, `POST /tracked-applications`,
+>   `PUT …/{id}/stage`, `PUT …/{id}/title`, `DELETE …/{id}`), `no-store`, no transfer route. React:
+>   `features/tracking/`, **`/board`** (six labelled columns), an *Add to board* button on succeeded
+>   account runs and history rows, and a **Move to** native `<select>` with **native HTML5 drag as an
+>   enhancement** sending the identical request. **The codebase's first optimistic update**: a move
+>   snapshots, writes the stage, rolls back **only its own card** on refusal, moves focus to the
+>   card's control in its new column, and invalidates the board only when the **last** move in
+>   flight settles. Retitle, untrack and track are not optimistic. **4094 backend and 1124 frontend
+>   tests.** Measured (T30): board at the 500 cap p95 **48.0 ms** (budget 150), body **330 KiB**
+>   (400 KB); track **17.8 ms**, move **8.4**, retitle **7.6**, untrack **7.5**; deleting a history
+>   entry with a card and 20 files **22.3 ms** (250); main bundle **+4.96 kB gzip** (15). T31: no
+>   container, queue, volume, beat entry or `.env` change; `deploy.yml` stops worker and beat at
+>   line 126, before the migration at line 140. **AC-41 holds**: `git diff main --stat` over
+>   `infrastructure/llm`, `domain/tailoring` and `application/tailoring` is empty; the board makes
+>   no LLM call and queues no task. Found on the way: the `FOR KEY SHARE` lock-mode bug (below),
+>   fixed for tracking in `e93f4fd` and **still present in 2.3's posting lock, left for the owner**.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -576,7 +620,7 @@ strictly ordered dependencies:
 Enforced by **import-linter** in CI and by a **PreToolUse hook that blocks the write** before you get
 that far (`.claude/hooks/domain-purity-guard.sh`). Ports are `typing.Protocol`s in
 `domain/<context>/ports.py`; adapters live in `infrastructure/`. Bounded contexts: `intake`,
-`posting`, `tailoring`, `export`, `identity`, `retention` — see Constitution §4.
+`posting`, `tailoring`, `export`, `identity`, `retention`, `tracking` (3.1) — see Constitution §4.
 
 Canonical order to add a feature: **domain** (value objects → aggregate → events → port) →
 **application** (use case) → **infrastructure** (mapping, repository, migration, adapter, router,
@@ -733,9 +777,10 @@ python -m tailorcraft.cli check-settings                  # every startup refusa
 # the rows and orphans every saved file. Dry run first. No make target, like revoke-logins.
 python -m tailorcraft.cli erase-account --user-id <uuid> --dry-run   # counts; deletes nothing
 python -m tailorcraft.cli erase-account --user-id <uuid>
-# Since 2.3 the account's history goes too, and each line appends it after 2.2's unchanged prefix:
-#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s)
-#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all
+# Since 2.3 the account's history goes too, and each line appends it after 2.2's unchanged prefix;
+# since 3.1 the board's cards are appended after that (no files, so N file(s) is unchanged):
+#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s); tracking: N tracked application(s)
+#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all; tracking: N tracked application(s)
 # The dry run's file count includes derived export files. A history entry a user deletes in the UI
 # goes the same way (rows committed, then files); an unlink that fails leaves an orphan for the sweep.
 # Exit: 0 erased (incl. with unlink failures — stderr names the orphan sweep) · 1 no such account,
@@ -965,6 +1010,21 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   live in `scripts/git-hooks/` as Python checks run by pre-commit on the **staged** content, plus a
   make target (`compose.mail.check` `252baa8`, `nginx.referrer.check` `6471056`). CI does not run
   hook checks — a known gap, chosen by the owner.
+- **A RED test that disagrees with the spec is corrected, not satisfied** (3.1, `a437aca`). Two
+  T21 tests sent `marker + "\n"` as a title and expected 422, but AC-2 trims *first* and then
+  refuses `Cc`, so that title trims to a valid one. The implementer reported it at T23 instead of
+  bending `ApplicationTitle` to pass; the correction (an **interior** LF, `marker + "\nx"`) landed
+  in its own commit, assertions unchanged, still red, before GREEN — so GREEN edited no test.
+- **A strict xfail is the holding pen for a production defect `qa` finds** (3.1, `d380d4b` →
+  `e93f4fd`). `qa` never edits production code, so the lock-mode test went in as
+  `xfail(strict=True)` with the finding in the commit body; the fix's commit removed only the
+  marker. Strict matters: a fix that lands without removing it turns the suite red (XPASS).
+- **`make test file=<one integration file>` can fail at collection** with `ExportJob has no
+  attribute '_id'`: the mappings are loaded by a fixture the lone file never reaches. Select with
+  `k=` instead. And **`make web.test file=` ignores `file=`** — it runs the whole Vitest suite.
+- **An `EXPLAIN` over a table holding only one user's rows correctly seq-scans** (3.1, AC-31).
+  The planner is right that a scan is cheaper than the index when every row matches. To assert
+  index use, seed other users' rows first, so the predicate is selective.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
@@ -1283,6 +1343,15 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   never the app's `task_ignore_result`, so the config key would not have fixed it. Visible only
   under concurrent enqueue bursts on the production image (faulthandler found the frame). Nothing
   reads a task result any more, so the result backend is unused — dropping it is the owner's call.
+- **`.with_for_update(key_share=True)` alone renders `FOR NO KEY UPDATE` on PostgreSQL**, a
+  *stronger* lock; `FOR KEY SHARE` needs `read=True` as well (`.with_for_update(read=True,
+  key_share=True)`). 2.5's `/verify` noticed it; 3.1 fell into it again in the tracking repository
+  and a **statement-capture** test found it (T19, held as a strict xfail; fixed in `e93f4fd`). Under
+  the stronger lock the deletion race still held, but a concurrent edit of the run would have waited
+  on a track. **The same defect remains in 2.3's
+  `infrastructure/persistence/repositories/tailoring/tailoring_run.py:186`** (the posting lock) —
+  still correct, only stronger than intended, and **left for the owner**. Compile the query and read
+  the SQL; a keyword argument's name is not documentation.
 - **`base64.urlsafe_b64decode` silently discards characters outside its alphabet**, so
   `"not-base64!!"` decodes. Anything decoded from a client (the history cursor) uses
   `b64decode(s, altchars=b"-_", validate=True)`. Parse integers from it as digits only, because

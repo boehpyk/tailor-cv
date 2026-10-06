@@ -36,7 +36,8 @@ Five forces:
 **1. `tracking` is a seventh bounded context.** It owns the user's tracked applications and the
 board that lists them. The import direction is one-way, and **`domain/tracking` imports no sibling
 context**: the run a card references is held as tracking's own `TrackedRunRef` (a `NewType` over
-`UUID`), and *"only a succeeded run is trackable"* is enforced by the use case. `tailoring`'s types
+`UUID`; implemented as a frozen dataclass, see the correction below), and *"only a succeeded run
+is trackable"* is enforced by the use case. `tailoring`'s types
 (`TailoringRunId`, `TailoringRunStatus`, `GetTailoringRun`) appear only in `application/tracking/`,
 which converts at the seam. Nothing in `tailoring` imports `tracking`. An AST allow-list pins
 `domain/tracking` to the standard library, `domain/shared` and `domain/identity`.
@@ -126,3 +127,15 @@ native drag-and-drop handles well.
   column someone adds.
 - **What to watch:** the board is unpaginated and bounded by the 500-card cap (ADR-0024 amendment
   (a)). If the cap rises, or the measured payload passes 400 KB, page it.
+
+## Correction: 2026-10-06, from the implementation of slice 3.1 (`tracking-application-board`)
+
+Decision 1 calls `TrackedRunRef` a `NewType` over `UUID`. The implementation uses a **frozen
+dataclass with one `value: UUID` field** instead, for `TrackedApplicationId` and `TrackedRunRef`
+alike, the same shape as `TailoringRunId` and every other id in the codebase. A `NewType` would have
+been the only id of its kind, and it is erased at runtime (`TrackedRunRef(u)` would simply be `u`).
+
+The decision itself is unchanged: `domain/tracking` still imports no sibling context, and the two
+contexts' types still meet at exactly one seam in `application/tracking/`, which is now spelled
+`TrackedRunRef(run.id.value)`. The column holding it maps through its own `TrackedRunRefType`
+decorator, not tailoring's `TailoringRunId` one.
