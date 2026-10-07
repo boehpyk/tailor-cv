@@ -200,3 +200,44 @@ full, and this paragraph is the pointer to it.
   (`document`, `format`, `character_count`), `export.render_succeeded` (`format`, `byte_size`,
   `duration_ms`), `export.render_failed` (`format`, `reason`, `error_type`, `duration_ms`) and
   `export.url_fetch_refused` (**the scheme only** — a URL the user typed can carry their name).
+
+## Amendment: 2026-10-08, from the plan of slice 3.2 (`export-pdf-layout-templates`)
+
+Slice 3.2 adds PDF layouts (ADR-0030). §1–§4 and §6's frame discipline stand unchanged — the parse,
+the normalization, the three walkers, `nh3` on the allow-list, and the fetcher that refuses every
+URL. Two sections change, and one trigger is recorded as not pulled.
+
+**(a) §5 becomes "one stylesheet constant per layout, in one module".** `infrastructure/export/layouts.py`
+holds `CLASSIC_STYLESHEET` — 1.5's constant **moved verbatim**, pinned by a SHA-256 recorded from
+`main` before the move — beside `MODERN_STYLESHEET` and `FORMAL_STYLESHEET`, and
+`stylesheet_for(layout) -> str`, an exhaustive `match` closed by `assert_never`. `render_pdf` takes
+the stylesheet as an argument instead of reading a module constant. `html.py` is not edited: every
+layout styles the same eleven tags.
+
+The grep widens with the count: **no stylesheet contains `@import`, `url(`, `@font-face`, `src:` or
+`http`**, asserted over every member of `LayoutTemplate`, and `layouts.py` builds no strings — nothing
+is interpolated into a stylesheet. §5's sentence *"until then a template is not a setting"* still
+holds after then: a layout is chosen from a closed enum, never supplied.
+
+**Fonts are still the system's.** The families are `"Liberation Sans", "DejaVu Sans", sans-serif`
+(Classic, Modern) and `"Liberation Serif", "DejaVu Serif", serif` (Formal), from `fonts-liberation`
+and `fonts-dejavu-core`, which the Dockerfile and CI already install. **No package is added**, so the
+two lists stay in step without an edit. Because fontconfig substitutes a missing face silently, the
+Consequence's embedded-font assertion is extended per layout: Formal must embed a serif, and the test
+runs on CI and inside the production image.
+
+**(b) §6: the port gains `layout_template`, and its docstring changes one word.**
+`DocumentRendererPort.render(markdown, *, document, format, layout_template: LayoutTemplate | None)`,
+a required keyword with no default. The docstring's list of absences — *"No CSS, no stylesheet, no
+template, no font, …"* — loses **"no template"** and keeps **"no CSS, no stylesheet, no font"**, with
+a paragraph saying why: a layout is **domain language** (which look the person chose, as `format` is
+which file), and the stylesheet that realizes it is one adapter's implementation. The rule §6
+states — no HTML, no CSS, no page size, no font in the signature — is unchanged; a CSS string in the
+port would still be the violation. A PDF request reaching the adapter with no layout fails through
+the existing `except Exception` floor as `render_error`; the adapter does not re-check DOCX, which
+is the aggregate's and the CHECK's invariant.
+
+**(c) §7's trigger is not pulled.** *"The day this changes: a template with a remote font or a remote
+image."* None of the three layouts has one, and ADR-0030 rejects a local-font `@font-face` with a
+permissive fetcher for the reason the Alternatives here rejected `base_url`. ADR-0012 stays closed.
+This paragraph is where the next person proposing a webfont should start.
