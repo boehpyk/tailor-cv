@@ -1285,9 +1285,7 @@ async def test_more_than_the_per_ip_hourly_limit_returns_429(
 # ---------------------------------------------------------------------------------------------
 
 
-async def test_guest_cookie_attributes_in_non_production(
-    client: AsyncClient, settings: Settings
-) -> None:
+async def test_guest_cookie_attributes(client: AsyncClient, settings: Settings) -> None:
     response = await client.post(
         "/api/base-cvs", files=_file_part("sample.txt", _read_fixture("sample.txt"), "text/plain")
     )
@@ -1299,8 +1297,8 @@ async def test_guest_cookie_attributes_in_non_production(
     assert "Path=/" in cookie
     assert f"Max-Age={settings.guest_retention_hours * 3600}" in cookie
     assert "samesite=lax" in cookie.lower()
-    # APP_ENV=test in this fixture (conftest.py's `settings`), never production.
-    assert "Secure" not in cookie
+    # `__Host-` requires `Secure`, so it is on in every environment (AC-1), test included.
+    assert "Secure" in cookie
 
     token = _guest_cookie_value(response)
     assert token is not None

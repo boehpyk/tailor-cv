@@ -151,7 +151,7 @@ def _assert_cookie_cleared(response: Response, settings: Settings) -> None:
     assert cookie.get("path") == "/"
     assert "httponly" in cookie
     assert cookie.get("samesite", "").lower() == "lax"
-    assert ("secure" in cookie) is settings.is_production
+    assert ("secure" in cookie) is True  # a __Host- clear without Secure is ignored (AC-4)
 
     # The deletion must name the attributes the cookie was SET with, or a browser keeps the original.
     reference = FastApiResponse()
