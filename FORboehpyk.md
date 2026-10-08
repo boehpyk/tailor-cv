@@ -5438,8 +5438,9 @@ On release day there are live guests holding `tc_guest`. Three ways to treat the
 2. **Read the old one only to migrate it**: see `tc_guest`, re-issue it as `__Host-tc_guest`, clear
    the old. This sounds clever and is the worst option. It **launders** a planted cookie: the attacker's
    token goes in under the weak name and comes out under the strong one, now protected by the very
-   prefix meant to stop it. And the server can't even delete the planted original, because it was
-   set with a `Domain` the server would have to name.
+   prefix meant to stop it. And the server can't clean up after it either: a request's `Cookie`
+   header carries only names and values, so the server can't see which `Domain` or `Path` the
+   planted cookie used, and the sibling can simply plant it again.
 3. **Hard cut.** From release on, `tc_guest` means nothing. A guest mid-session loses a workspace
    that was going to be deleted within 24 hours anyway.
 

@@ -15,8 +15,10 @@ to carry `Domain=samolit.com`, which the prefix forbids.
 - **Never pass `domain=`.** Any `Domain` attribute, even this host's own name, makes a browser
   refuse the whole cookie: the guest would silently get a new session on every request.
 - **A hard cut, not a migration.** The legacy `tc_guest` is never read (ADR-0010 (c)). Reading it,
-  even to migrate it, would promote a planted token into the prefixed cookie, and the server cannot
-  delete a planted `Domain=` cookie anyway. A guest holding only `tc_guest` starts a new session.
+  even to migrate it, would promote a planted token into the prefixed cookie. Clearing a planted
+  cookie is no control either: the `Cookie` header carries no attributes, so the server cannot see
+  which `Domain`/`Path` it was set with, and a sibling host can re-plant it at will. A guest holding
+  only `tc_guest` starts a new session.
 
 This module is pure cookie mechanics — it knows about `secrets`, `hashlib`, and FastAPI's
 `Request`/`Response`, and nothing about `GuestSession` the aggregate or `GuestSessionRepository` the

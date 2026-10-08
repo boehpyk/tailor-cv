@@ -279,8 +279,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   account deletion (every row and file gone); 1 797 log lines, zero PII markers, both
 >   `identity.guest_work_claimed` lines captured and neither carrying a session id. **Carried:** the
 >   purge CLI stopped on `sessions_deleted == 0`, so a batch that only skipped ended a run early
->   (**fixed in 2.5**, T6 `8714389`: it stops on `deleted + skipped == 0`); OQ-12 (`__Host-tc_guest`) is
->   recorded, not fixed; a guest refetch after claiming a run still *in flight* is untested (none on
+>   (**fixed in 2.5**, T6 `8714389`: it stops on `deleted + skipped == 0`); OQ-12
+>   (`__Host-tc_guest`) was recorded, not fixed (closed by the `__Host-tc_guest` slice,
+>   2026-10-08); a guest refetch after claiming a run still *in flight* is untested (none on
 >   a succeeded run). **From 2.5, a value object's skeleton gets a no-op `__post_init__`**, so a
 >   "refused" test goes red on `DID NOT RAISE` rather than on the skeleton's `NotImplementedError`
 >   (T5's red was the latter, accepted on 2.3's precedent).
