@@ -101,6 +101,15 @@ function pdfJob(id: string, layout: LayoutTemplate, overrides: Partial<ExportJob
   return makeExportJob({ id, format: 'pdf', layout_template: layout, ...overrides });
 }
 
+/** The control exists disabled while the export list loads (AC-32); wait until it is usable. */
+async function enabledButton(name: string): Promise<HTMLElement> {
+  const button = await screen.findByRole('button', { name });
+  await waitFor(() => {
+    expect(button).not.toBeDisabled();
+  });
+  return button;
+}
+
 function radio(name: RegExp): HTMLInputElement {
   return screen.getByRole<HTMLInputElement>('radio', { name });
 }
@@ -225,7 +234,10 @@ describe('AC-31 — the PDF control follows the selected layout', () => {
     stubJobs([pdfJob('c1', 'classic', { status: 'ready', byte_size: 1 })]);
     renderBar({ layout: 'modern' });
 
-    expect(await screen.findByRole('button', { name: 'PDF' })).toBeEnabled();
+    const pdf = await screen.findByRole('button', { name: 'PDF' });
+    await waitFor(() => {
+      expect(pdf).toBeEnabled();
+    });
   });
 
   it('a ready, current job for the layout: "Download PDF — Modern layout"', async () => {
@@ -378,7 +390,10 @@ describe('AC-32 — loading, error, empty, success', () => {
     stubJobs([]);
     renderBar();
 
-    expect(await screen.findByRole('button', { name: 'PDF' })).toBeEnabled();
+    const pdf = await screen.findByRole('button', { name: 'PDF' });
+    await waitFor(() => {
+      expect(pdf).toBeEnabled();
+    });
     expect(radio(/Classic/)).toBeChecked();
   });
 
@@ -421,7 +436,7 @@ describe('AC-33 — the request body', () => {
   it('a PDF request carries the selected layout_template', async () => {
     const fetchMock = stubJobs([]);
     renderBar({ layout: 'formal' });
-    fireEvent.click(await screen.findByRole('button', { name: 'PDF' }));
+    fireEvent.click(await enabledButton('PDF'));
 
     await waitFor(() => {
       expect(postBodies(fetchMock)).toHaveLength(1);
@@ -441,7 +456,7 @@ describe('AC-33 — the request body', () => {
     await waitFor(() => {
       expect(radio(/Modern/)).toBeChecked();
     });
-    fireEvent.click(await screen.findByRole('button', { name: 'PDF' }));
+    fireEvent.click(await enabledButton('PDF'));
 
     await waitFor(() => {
       expect(postBodies(fetchMock)).toHaveLength(1);
@@ -453,7 +468,7 @@ describe('AC-33 — the request body', () => {
     const fetchMock = stubJobs([]);
     renderBar({ layout: 'formal' });
     // Positive control first: the PDF request does carry it, so the absence below can fail.
-    fireEvent.click(await screen.findByRole('button', { name: 'PDF' }));
+    fireEvent.click(await enabledButton('PDF'));
     await waitFor(() => {
       expect(postBodies(fetchMock)).toHaveLength(1);
     });
@@ -475,7 +490,7 @@ describe('AC-33 — the request body', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     const fetchMock = stubJobs([]);
     renderBar({ layout: 'formal' });
-    fireEvent.click(await screen.findByRole('button', { name: 'Markdown' }));
+    fireEvent.click(await enabledButton('Markdown'));
     await waitFor(() => {
       expect(fetchMock.mock.calls.some((c) => String(c[0]).includes('format=md'))).toBe(true);
     });
