@@ -18,7 +18,7 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.events import DocumentRenderedInline
 from tailorcraft.domain.export.ports import DocumentRendererPort
-from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat
+from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat, LayoutTemplate
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -180,7 +180,13 @@ class RenderDocumentInline:
         # the shape ADR-0013 rejected for a failed fetch. The router maps the two reasons the
         # boundary can see: `DocumentRenderError` → 500 (X-5), `DocumentRenderTimedOut` → 503 (X-6).
         # An application test asserts the **propagation**, so catching it here turns that test red.
-        data = await self._renderer.render(source.value, document=cmd.document, format=cmd.format)
+        data = await self._renderer.render(
+            source.value,
+            document=cmd.document,
+            format=cmd.format,
+            # T10 replaces this
+            layout_template=LayoutTemplate.CLASSIC if cmd.format is ExportFormat.PDF else None,
+        )
 
         # Step 6. Published **after** the render, never before: a publish on the way in would
         # announce a rendering that a `DocumentRenderFailed` is about to make untrue, and nothing

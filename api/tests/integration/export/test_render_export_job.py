@@ -571,10 +571,17 @@ async def test_mark_started_is_committed_before_the_renderer_is_ever_called(
 
     class _ObservingRenderer(FakeDocumentRenderer):
         async def render(
-            self, markdown: str, *, document: TailoredDocumentKind, format: ExportFormat
+            self,
+            markdown: str,
+            *,
+            document: TailoredDocumentKind,
+            format: ExportFormat,
+            layout_template: LayoutTemplate | None,
         ) -> bytes:
             observed_status_at_render.append((await jobs.get(job.id)).status)
-            return await super().render(markdown, document=document, format=format)
+            return await super().render(
+                markdown, document=document, format=format, layout_template=layout_template
+            )
 
     renderer = _ObservingRenderer(b"data")
     files = InMemoryFileStore()

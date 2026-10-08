@@ -64,7 +64,7 @@ from tailorcraft.domain.export.errors import (
     DocumentRenderOutputTooLarge,
     DocumentRenderTimedOut,
 )
-from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat
+from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat, LayoutTemplate
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 from tailorcraft.infrastructure.export.docx import DOCX_DOCUMENT_ERRORS, render_docx
 from tailorcraft.infrastructure.export.html import (
@@ -117,7 +117,12 @@ class MarkdownDocumentRenderer:
         self._sanitize = sanitize
 
     async def render(
-        self, markdown: str, *, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        markdown: str,
+        *,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,  # T13 honours this; Classic until then
     ) -> bytes:
         """Render one document into one format's bytes.
 

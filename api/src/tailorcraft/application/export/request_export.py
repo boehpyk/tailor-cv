@@ -194,7 +194,11 @@ class RequestExport:
         # `was_requested_for` is as far as the aggregate can go. Soft on purpose (X-23): two
         # genuinely concurrent requests may both miss, which is cheaper than a lock on a render
         # nobody paid for.
-        existing = await self._jobs.find_latest_for_key(run.id, cmd.document, cmd.format)
+        # T10 replaces this
+        layout_template = None if cmd.format is ExportFormat.DOCX else LayoutTemplate.CLASSIC
+        existing = await self._jobs.find_latest_for_key(
+            run.id, cmd.document, cmd.format, layout_template
+        )
         if (
             existing is not None
             and existing.status is not ExportJobStatus.FAILED
@@ -234,8 +238,7 @@ class RequestExport:
             tailoring_run_id=run.id,
             document=cmd.document,
             format=cmd.format,
-            # T10 replaces this
-            layout_template=None if cmd.format is ExportFormat.DOCX else LayoutTemplate.CLASSIC,
+            layout_template=layout_template,
             run_version=run.version,
             requested_at=self._clock.now(),
         )

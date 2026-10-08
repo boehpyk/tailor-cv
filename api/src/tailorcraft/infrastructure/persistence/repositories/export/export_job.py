@@ -40,7 +40,12 @@ from tailorcraft.domain.export.errors import (
     ExportJobNotFound,
 )
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
+from tailorcraft.domain.export.value_objects import (
+    ExportFormat,
+    ExportJobId,
+    ExportJobStatus,
+    LayoutTemplate,
+)
 from tailorcraft.domain.identity.errors import GuestSessionNotFound, UserNotFound
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
@@ -261,7 +266,11 @@ class SqlAlchemyExportJobRepository:
         return result.scalars().all()
 
     async def find_latest_for_key(
-        self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        run_id: TailoringRunId,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,  # T12 honours this
     ) -> ExportJob | None:
         """The most recently requested job for the (run, document, format) key, or `None`.
 

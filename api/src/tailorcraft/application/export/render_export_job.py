@@ -21,8 +21,10 @@ from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import DocumentRendererPort, ExportJobRepository
 from tailorcraft.domain.export.value_objects import (
     ExportFailureReason,
+    ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -339,7 +341,13 @@ class RenderExportJob:
         started = time.perf_counter()
         try:
             data = await self._renderer.render(
-                source.value, document=job.document, format=job.format
+                source.value,
+                document=job.document,
+                format=job.format,
+                # T10 replaces this
+                layout_template=(
+                    LayoutTemplate.CLASSIC if job.format is ExportFormat.PDF else None
+                ),
             )
         except DocumentRenderFailed as exc:
             await self._record_failure(job, exc.reason, self._clock.now())

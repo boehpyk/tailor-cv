@@ -924,7 +924,10 @@ async def _render_until_enough_samples(
     costs at most one extra render per worker, not a torn result."""
     while not enough.is_set():
         result = await renderer.render(
-            document, document=TailoredDocumentKind.CV, format=ExportFormat.TXT
+            document,
+            document=TailoredDocumentKind.CV,
+            format=ExportFormat.TXT,
+            layout_template=None,
         )
         assert isinstance(result, bytes)
         assert len(result) > 0
