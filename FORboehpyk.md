@@ -5394,3 +5394,96 @@ it in the conditions it was written for.
   `__Host-tc_guest` cookie becomes its own small security slice before 3.2 merges (OQ-14); Phase 1's
   gate is still unrecorded and production's purge is still off (OQ-15).
 - **Then 3.2**: a small set of PDF layout templates, chosen rather than a layout engine.
+
+---
+
+# The `__Host-` slice — the cookie, or: who else can write on your door?
+
+This is the smallest slice in the project so far, and it closes a hole that had been open since the
+very first one. It is a cookie rename. It also teaches more per line of diff than anything since 1.6.
+
+## The hole
+
+Since slice 1.1, a guest's workspace has been named by a cookie called `tc_guest`. ADR-0010 made it
+host-only (no `Domain` attribute), so the browser never *sends* it to a sibling site like
+`blog.samolit.com`. That sounds like isolation, and it is half of it.
+
+The other half is who may **write** it. Cookies are older than the same-origin policy and much
+looser: any page on `anything.samolit.com` may set a cookie with `Domain=samolit.com`, and the
+browser will then send that cookie to `cv.samolit.com` too, right beside our own. So an attacker
+with a foothold on any sibling host (an XSS on a marketing page is plenty) can plant
+`tc_guest=<a session the attacker owns>` in your browser. You arrive, upload your CV, and it lands
+in *their* guest workspace, which they can open with the same token. That is **session fixation**:
+the attacker doesn't steal your key, they hand you theirs before you lock the door.
+
+The analogy that sticks: host-only stops your mail being delivered next door. It does nothing about
+next door taping a fake key under your mat.
+
+2.4's review wrote the finding down (ADR-0010 (b)) and gave it a trigger. 3.1's owner turned the
+trigger into a merge order: this slice lands before 3.2.
+
+## The fix is one word long
+
+Browsers give a name prefix a meaning. A cookie whose name starts with **`__Host-`** is accepted
+only if it is `Secure`, has `Path=/`, and has **no** `Domain`. So it can only have been set by this
+exact host, over a secure origin, and no sibling can ever write it. The rename *is* the security
+control: `__Host-tc_guest`.
+
+## The interesting part: how to cross over
+
+On release day there are live guests holding `tc_guest`. Three ways to treat them:
+
+1. **Read both names for a day, then drop the old one.** Kind to the guests, and it keeps the hole
+   exactly as wide as before for that whole day, because a planted `tc_guest` still works.
+2. **Read the old one only to migrate it**: see `tc_guest`, re-issue it as `__Host-tc_guest`, clear
+   the old. This sounds clever and is the worst option. It **launders** a planted cookie: the attacker's
+   token goes in under the weak name and comes out under the strong one, now protected by the very
+   prefix meant to stop it. And the server can't even delete the planted original, because it was
+   set with a `Domain` the server would have to name.
+3. **Hard cut.** From release on, `tc_guest` means nothing. A guest mid-session loses a workspace
+   that was going to be deleted within 24 hours anyway.
+
+We chose 3. The lesson generalises: **a migration path is also an attack path.** Any code that
+upgrades an old credential into a new one has to ask who else could have written the old one.
+
+## A test can't fail on a rename it imports
+
+Most existing tests said `COOKIE_NAME`, the constant. Change the constant and they follow it
+happily, so they can never catch "we renamed it to the wrong thing" or "we forgot". The RED tests
+spell the literal `"__Host-tc_guest"`. That's the same idea as asserting a URL path as a string
+rather than building it from the router: **a test that computes its expectation from the code under
+test agrees with the code by construction.**
+
+## The jar that kept the cookie and never returned it
+
+`__Host-` forces `Secure` in every environment, including tests, which run over plain HTTP. httpx's
+cookie jar does something sneaky with that: it **stores** a `Secure` cookie set over `http://` and
+then silently never sends it back. No error. The second request just looks like a stranger. The
+planner measured this in the container before believing it, and switching every test client to
+`https://testserver` was its own commit (green on the old code, because a non-`Secure` cookie travels
+over https too). The positive control: undo that switch on the finished code and **186 tests go
+red**. A switch you can't show mattering is a switch you can't show is needed.
+
+## What about dev on `http://localhost:8080`?
+
+`Secure` sounds like it should break local development over plain HTTP. It doesn't, because
+browsers treat `localhost` and `127.0.0.1` as **secure contexts**. We didn't assume that: a probe in
+Chromium 145 set and read `__Host-` cookies on three dev origins, then a full guest → tailor →
+register → claim walk watched the real cookie appear, survive a reload, and vanish at the claim.
+Then a hand-planted `tc_guest` beside a fresh `__Host-tc_guest`: only the prefixed session's work
+showed. Firefox wasn't available to the harness, which is written down rather than assumed.
+
+## The sibling we left for later
+
+Planning this found the same weakness in `tc_refresh`, and it's nastier: a planted refresh cookie
+signs *you* into *the attacker's account*, and everything you upload is theirs to read.
+`SameSite=Strict` doesn't help, because the cookie is genuinely set for our host. The fix is the same
+prefix, but `__Host-` demands `Path=/`, and the refresh cookie is deliberately scoped to
+`/api/auth`. That's a design decision, not a rename, so it is roadmap OQ-16 with the same trigger,
+not a drive-by.
+
+## The common thread, a sixteenth time
+
+Ask **who else can write this**, not just who can read it. The cookie was safe to read and open to
+write; a migration that looked kind was a laundering service; a test that imported its expectation
+could never disagree. The smallest diff in the project, and three questions worth keeping.

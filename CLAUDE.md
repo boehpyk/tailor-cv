@@ -424,6 +424,22 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   **seed script's** `file_key = 't33/<uuid>'`, which `FileRef` refuses on load; repaired by id, the
 >   deletion answered 204 (Conventions).
 >
+> - **`identity-host-prefixed-guest-cookie`** (branch of the same name, **implemented 2026-10-08,
+>   `/verify` pending**; it merges before 3.2, whose AC-44 it satisfies) — the guest cookie is
+>   **`__Host-tc_guest`**: `Secure` in every environment, `Path=/`, no `Domain` (**ADR-0010 (c)**,
+>   discharging (b)'s session-fixation finding). A **hard cut**: `tc_guest` is never read again, because
+>   a dual-read window keeps honouring a planted cookie and migrate-on-read would promote one into the
+>   protected name. A guest mid-session at release loses that ≤ 24 h workspace. One constant and one
+>   attribute dict in `guest_session.py`; `clear_guest_cookie(response)` lost its `settings`. Dev on
+>   plain-HTTP `:8080` works because browsers treat `localhost` as a secure context (Chromium 145,
+>   probed and walked end to end; Firefox not exercised). **Every test client is `https://testserver`**:
+>   httpx stores a `Secure` cookie over `http://` and never sends it back, so reverting that switch
+>   turns **186** tests red. The RED tests spell the literal `"__Host-tc_guest"`, since a test that
+>   imports `COOKIE_NAME` cannot fail on a rename. `secure=False` mutated → 7 red. No migration,
+>   setting or `.env` change. **Carried (roadmap OQ-16): `tc_refresh` has the same exposure** — a
+>   sibling host can plant a refresh cookie that signs the victim into the attacker's account; its
+>   `Path=/api/auth` cannot take `__Host-`, so it is its own slice, on OQ-12's trigger.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -747,8 +763,8 @@ lives.
 answers to the bearer **or** the guest cookie. A transfer route carries data between the two
 principals: it reads both, and **each authorizes only its own half** — nothing ever asks "a user
 *or* a guest?". The one there is, 2.4's `POST /api/me/guest-work/claim`, takes the bearer as a
-dependency (the destination, authorized first) and reads `tc_guest` **in the handler body** (the
-source): never through `require_guest_session`, whose 401 would break the claim's idempotency, and
+dependency (the destination, authorized first) and reads `__Host-tc_guest` **in the handler body**
+(the source): never through `require_guest_session`, whose 401 would break the claim's idempotency, and
 never through `resolve_or_start_guest_session` — **a transfer route never mints**. The dependency
 walker cannot see a call inside a body, so an **AST scan** of `routers/*.py` pins the exception set
 to exactly `{POST /api/me/guest-work/claim}`. 2.2's copy route, the first member, was retired in 2.4
@@ -1460,7 +1476,9 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   its own tag, or it measures the wrong thing and supplies confidence anyway.
 - **httpx's cookie jar will not send a `Secure` cookie over plain HTTP**, so a production-mode app
   measured without TLS never gets `tc_refresh` back and every refresh reads as "not signed in".
-  Parse `Set-Cookie` and re-attach it by hand in such a script.
+  Parse `Set-Cookie` and re-attach it by hand in such a script. The same jar *stores* a `Secure`
+  cookie set over `http://` and silently never sends it back, so since the `__Host-tc_guest` slice
+  every test client's base URL is `https://testserver` (reverting it: 186 tests red).
 
 ## SDLC
 
