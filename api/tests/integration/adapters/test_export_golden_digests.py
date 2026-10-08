@@ -23,9 +23,7 @@ import pytest
 from tailorcraft.domain.export.value_objects import ExportFormat
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 from tailorcraft.infrastructure.export.html import wrap_in_document
-
-# T13: import CLASSIC_STYLESHEET from layouts.py instead.
-from tailorcraft.infrastructure.export.pdf import STYLESHEET as CLASSIC_STYLESHEET
+from tailorcraft.infrastructure.export.layouts import CLASSIC_STYLESHEET
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.settings import Settings
 from tests.fixtures.documents import MARKDOWN_FIXTURE_CORPUS

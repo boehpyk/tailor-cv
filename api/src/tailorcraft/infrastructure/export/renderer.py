@@ -72,6 +72,7 @@ from tailorcraft.infrastructure.export.html import (
     sanitize_html,
     wrap_in_document,
 )
+from tailorcraft.infrastructure.export.layouts import stylesheet_for
 from tailorcraft.infrastructure.export.pdf import (
     PDF_DOCUMENT_ERRORS,
     UrlFetcher,
@@ -102,6 +103,16 @@ _DOCUMENT_ERRORS: Final[tuple[type[BaseException], ...]] = (
 )
 
 
+class LayoutTemplateMissing(Exception):
+    """A PDF handed to the renderer with `layout_template=None` (L-30).
+
+    Unreachable: `ExportJob` refuses a PDF without a layout (AC-3) and the CHECK refuses the row
+    (AC-12). Raised rather than defaulted, because a silent Classic would hide the caller that
+    forgot; a plain `Exception`, so it lands on the floor below and is recorded `render_error`.
+    Private to this module — it never reaches the domain.
+    """
+
+
 class MarkdownDocumentRenderer:
     """Turn one document's Markdown into one format's bytes, or into a failure the domain names."""
 
@@ -122,7 +133,7 @@ class MarkdownDocumentRenderer:
         *,
         document: TailoredDocumentKind,
         format: ExportFormat,
-        layout_template: LayoutTemplate | None,  # T13 honours this; Classic until then
+        layout_template: LayoutTemplate | None,
     ) -> bytes:
         """Render one document into one format's bytes.
 
@@ -133,23 +144,27 @@ class MarkdownDocumentRenderer:
         """
         timeout_seconds = self._timeout_for(format)
         started_at = time.perf_counter()
+        # The id or `None` on every line of this render (AC-20) — a closed set's spelling, never CSS.
+        layout = layout_template.value if layout_template is not None else None
         # `character_count`, never the characters. The size of a CV is an operational fact; its text
         # is the thing this whole module is built around not writing down (AC-32).
         log.info(
             _EVENT_STARTED,
             document=document.value,
             format=format.value,
+            layout_template=layout,
             character_count=len(markdown),
         )
 
         rendered = await self._render_bounded(
-            markdown, document, format, started_at, timeout_seconds
+            markdown, document, format, layout_template, started_at, timeout_seconds
         )
-        self._refuse_oversized_output(rendered, format, started_at)
+        self._refuse_oversized_output(rendered, format, layout, started_at)
 
         log.info(
             _EVENT_SUCCEEDED,
             format=format.value,
+            layout_template=layout,
             byte_size=len(rendered),
             duration_ms=_elapsed_ms(started_at),
         )
@@ -160,6 +175,7 @@ class MarkdownDocumentRenderer:
         markdown: str,
         document: TailoredDocumentKind,
         format: ExportFormat,
+        layout_template: LayoutTemplate | None,
         started_at: float,
         timeout_seconds: int,
     ) -> bytes:
@@ -168,9 +184,12 @@ class MarkdownDocumentRenderer:
         `asyncio.CancelledError` matches none of them and is therefore not caught — it is a
         `BaseException`, and a worker shutting down is not a render failure (X-36).
         """
+        layout = layout_template.value if layout_template is not None else None
         try:
             return await asyncio.wait_for(
-                asyncio.to_thread(self._render_in_thread, markdown, document, format),
+                asyncio.to_thread(
+                    self._render_in_thread, markdown, document, format, layout_template
+                ),
                 timeout_seconds,
             )
         except TimeoutError as exc:
@@ -189,22 +208,31 @@ class MarkdownDocumentRenderer:
             # stale window has to sit above the hard limit, and why `create_celery` refuses to start
             # when it does not (AC-20, X-26).
             self._log_failure(
-                "render_timed_out", format, exc, started_at, timeout_seconds=timeout_seconds
+                "render_timed_out",
+                format,
+                layout,
+                exc,
+                started_at,
+                timeout_seconds=timeout_seconds,
             )
             raise DocumentRenderTimedOut() from None
         except _DOCUMENT_ERRORS as exc:
-            self._log_failure("render_failed", format, exc, started_at)
+            self._log_failure("render_failed", format, layout, exc, started_at)
             raise DocumentRenderFailedOnDocument() from None
         except Exception as exc:
             # **THE FLOOR** (X-37). Four libraries sit under this one port and the surface beneath it
             # is every way any of them can fail on a document a stranger wrote. This is what makes
             # `DocumentRendererPort`'s promise true by construction; the clause above is only ever
             # an improvement on the reason, never the thing that keeps the promise.
-            self._log_failure("render_error", format, exc, started_at)
+            self._log_failure("render_error", format, layout, exc, started_at)
             raise DocumentRenderError() from None
 
     def _render_in_thread(
-        self, markdown: str, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        markdown: str,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> bytes:
         """The `match` that is the whole of this adapter's per-format logic (ADR-0017 §1).
 
@@ -222,6 +250,12 @@ class MarkdownDocumentRenderer:
             case ExportFormat.DOCX:
                 return render_docx(self._tokens(markdown), document)
             case ExportFormat.PDF:
+                # The layout picks a checked-in constant and nothing else (AC-16). `None` cannot
+                # be ignored and is not defaulted: it fails through the floor (L-30). "No layout
+                # for DOCX" is not re-checked here — that is the aggregate's and the CHECK's.
+                if layout_template is None:
+                    raise LayoutTemplateMissing()
+                stylesheet = stylesheet_for(layout_template)
                 fragment = render_body_fragment(self._tokens(markdown))
                 # **Sanitize the fragment, then wrap it.** Not `sanitize(render_html(...))`, which
                 # was measured at I3 to delete the document shell and keep the title's *text* — a
@@ -230,7 +264,7 @@ class MarkdownDocumentRenderer:
                 # technical plan's step 3 is corrected in place; `html.render_body_fragment` carries
                 # the full account.
                 html = wrap_in_document(self._sanitize(fragment), document)
-                return render_pdf(html, url_fetcher=self._url_fetcher)
+                return render_pdf(html, stylesheet=stylesheet, url_fetcher=self._url_fetcher)
             case _:
                 assert_never(format)
 
@@ -255,7 +289,7 @@ class MarkdownDocumentRenderer:
                 assert_never(format.delivery)
 
     def _refuse_oversized_output(
-        self, rendered: bytes, format: ExportFormat, started_at: float
+        self, rendered: bytes, format: ExportFormat, layout: str | None, started_at: float
     ) -> None:
         """X-27, checked on the **produced bytes** — the only number here that is a fact.
 
@@ -273,6 +307,7 @@ class MarkdownDocumentRenderer:
         log.warning(
             _EVENT_FAILED,
             format=format.value,
+            layout_template=layout,
             reason="output_too_large",
             error_type=None,
             duration_ms=_elapsed_ms(started_at),
@@ -285,6 +320,7 @@ class MarkdownDocumentRenderer:
         self,
         reason: str,
         format: ExportFormat,
+        layout: str | None,
         exc: BaseException,
         started_at: float,
         **extra: object,
@@ -298,6 +334,7 @@ class MarkdownDocumentRenderer:
         log.warning(
             _EVENT_FAILED,
             format=format.value,
+            layout_template=layout,
             reason=reason,
             error_type=_qualified_type(exc),
             duration_ms=_elapsed_ms(started_at),

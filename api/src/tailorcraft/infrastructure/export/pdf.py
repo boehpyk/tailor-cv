@@ -1,4 +1,4 @@
-"""The PDF stage: one stylesheet, one fetcher that refuses everything. ADR-0017 §2 (4) and §5.
+"""The PDF stage: a stylesheet chosen by the caller, one fetcher that refuses everything. ADR-0017.
 
 WeasyPrint parses an HTML string, resolves CSS against it, and — left to itself — **fetches**
 whatever the document points at: images, stylesheets, imported sheets, font sources. Every one of
@@ -18,9 +18,13 @@ is the pointer to it.
 `base_url=None` is the other half of the same guarantee: with no base, a relative reference in the
 document cannot be resolved into a local file path either.
 
-`STYLESHEET` is a constant for the same reason `GRAMMAR_RULES` is: it carries no `@import`, no
-`url()` and no `@font-face`, so the one document WeasyPrint is handed points at nothing remote
-before a stranger's Markdown is even added to it.
+**The stylesheets live in `layouts.py`**, one checked-in constant per `LayoutTemplate` (ADR-0030,
+ADR-0017 §5 as amended in 3.2); `render_pdf` takes the one to use as a required keyword and holds no
+default, so no caller renders "whatever this module happened to have". They are constants for the
+same reason `GRAMMAR_RULES` is: none carries an `@import`, a `url()` or an `@font-face`, so the one
+document WeasyPrint is handed points at nothing remote before a stranger's Markdown is even added to
+it. The stylesheet is the *other* thing WeasyPrint would go looking for, and one assembled from
+input would be an egress with a policy rather than no egress at all.
 
 **This module is the only one allowed to import `weasyprint`** (ADR-0017's adapter table), which is
 why `PDF_DOCUMENT_ERRORS` — the library's own exception types, swept from the installed version —
@@ -63,93 +67,6 @@ class UrlFetchRefused(Exception):
     decides between per-resource and fatal by reading an attribute off the fetcher, and a bare
     function does not have it. Read that class before changing anything here.
     """
-
-
-# The one stylesheet, the one constant, in the one module (ADR-0017 §5). A4, 18 mm margins, the
-# family stack, 10.5 pt, headings scaled, lists indented, links underlined.
-#
-# It names **no external resource**: no at-rule that pulls in another sheet, and no CSS function
-# that takes a location. Asserted by a grep test, because that property is what keeps the fetcher's
-# refusal from ever being load-bearing on the honest path — the stylesheet is the *other* thing
-# WeasyPrint would go looking for, and a template that could be edited would be an egress with a
-# policy rather than no egress at all. Phase 3.2's templates replace this constant in code; until
-# then a template is not a setting.
-#
-# Liberation first, DejaVu second, generic `sans-serif` last, and the order matters operationally:
-# WeasyPrint's import succeeds on a box with no fonts installed and the *first render* produces a
-# page of boxes, in the worker, where nobody is watching. Two families that real Linux images
-# actually ship give that failure two chances not to happen, and AC-46 asserts an embedded font so
-# it fails as a red test instead of as a PDF a human has to open.
-STYLESHEET: Final[str] = """
-@page {
-    size: A4;
-    margin: 18mm;
-}
-
-html {
-    font-family: "Liberation Sans", "DejaVu Sans", sans-serif;
-    font-size: 10.5pt;
-    line-height: 1.45;
-    color: #111111;
-}
-
-body {
-    margin: 0;
-}
-
-h1, h2, h3 {
-    font-weight: 700;
-    margin: 0 0 0.4em;
-    page-break-after: avoid;
-}
-
-h1 {
-    font-size: 17pt;
-    margin-top: 0;
-}
-
-h2 {
-    font-size: 13pt;
-    margin-top: 1.1em;
-}
-
-h3 {
-    font-size: 11.5pt;
-    margin-top: 0.9em;
-}
-
-p {
-    margin: 0 0 0.6em;
-    orphans: 2;
-    widows: 2;
-}
-
-ul, ol {
-    margin: 0 0 0.6em;
-    padding-left: 6mm;
-}
-
-li {
-    margin: 0 0 0.15em;
-}
-
-li > ul, li > ol {
-    margin: 0.15em 0 0;
-}
-
-strong {
-    font-weight: 700;
-}
-
-em {
-    font-style: italic;
-}
-
-a {
-    color: inherit;
-    text-decoration: underline;
-}
-"""
 
 
 def refuse_every_url(url: str, timeout: float | None = None) -> NoReturn:
@@ -248,8 +165,11 @@ PDF_DOCUMENT_ERRORS: Final[tuple[type[BaseException], ...]] = (
 )
 
 
-def render_pdf(html: str, *, url_fetcher: UrlFetcher = refuse_every_url) -> bytes:
-    """Render sanitized HTML to PDF bytes with `STYLESHEET` and a fetcher that refuses everything.
+def render_pdf(html: str, *, stylesheet: str, url_fetcher: UrlFetcher = refuse_every_url) -> bytes:
+    """Render sanitized HTML to PDF bytes with `stylesheet` and a fetcher that refuses everything.
+
+    `stylesheet` is one of `layouts.py`'s constants, chosen by the adapter from the export's
+    `LayoutTemplate`; required, with no default, so a caller cannot forget the choice.
 
     CPU-bound and synchronous, like every renderer here; the adapter runs it in
     `asyncio.to_thread` under `asyncio.wait_for` in both processes, never on the event loop.
@@ -259,7 +179,7 @@ def render_pdf(html: str, *, url_fetcher: UrlFetcher = refuse_every_url) -> byte
     the default in a recorder and asserts the count is zero on a conformant document.
     """
     document = HTML(string=html, base_url=None, url_fetcher=_NonFatalFetcher(url_fetcher))
-    rendered = document.write_pdf(stylesheets=[CSS(string=STYLESHEET)])
+    rendered = document.write_pdf(stylesheets=[CSS(string=stylesheet)])
     # WeasyPrint 70 ships no type information, so `write_pdf` is `Any` here; its signature is
     # `write_pdf(target=None, ...)` and it returns the bytes only when `target` is None — which is
     # why the narrowing is a real check rather than a `cast`. If a future version ever changes that,

@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import pytest
 
-from tailorcraft.infrastructure.export.pdf import STYLESHEET, UrlFetchRefused, refuse_every_url
+from tailorcraft.domain.export.value_objects import LayoutTemplate
+from tailorcraft.infrastructure.export.layouts import stylesheet_for
+from tailorcraft.infrastructure.export.pdf import UrlFetchRefused, refuse_every_url
 
 # --- refuse_every_url: raises on every shape of reference, AC-30(a)'s five inputs -------------------
 
@@ -50,14 +52,16 @@ def test_refuse_every_url_raises_regardless_of_the_timeout_argument() -> None:
 # --- STYLESHEET: written whole in the skeleton, so this is green on arrival -------------------------
 
 
-def test_stylesheet_contains_no_at_import_rule() -> None:
+@pytest.mark.parametrize("layout", list(LayoutTemplate))
+def test_stylesheet_contains_no_at_import_rule(layout: LayoutTemplate) -> None:
     """An `@import` is a fetch WeasyPrint would attempt, defeating the point of a fetcher that
     refuses everything on a stylesheet that never asks."""
-    assert "@import" not in STYLESHEET
+    assert "@import" not in stylesheet_for(layout)
 
 
-def test_stylesheet_contains_no_url_function() -> None:
+@pytest.mark.parametrize("layout", list(LayoutTemplate))
+def test_stylesheet_contains_no_url_function(layout: LayoutTemplate) -> None:
     """`url(...)` is how CSS names an external resource — a font, an image, another sheet. Asserted
     on the imported constant, never on `pdf.py`'s source text, because that source also contains the
     literal substring `url(` inside the *name* `refuse_every_url`."""
-    assert "url(" not in STYLESHEET
+    assert "url(" not in stylesheet_for(layout)

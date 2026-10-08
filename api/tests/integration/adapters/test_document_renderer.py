@@ -46,6 +46,7 @@ from tailorcraft.domain.export.value_objects import ExportFormat, LayoutTemplate
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 from tailorcraft.infrastructure.export import renderer as renderer_module
 from tailorcraft.infrastructure.export.html import sanitize_html
+from tailorcraft.infrastructure.export.layouts import CLASSIC_STYLESHEET
 from tailorcraft.infrastructure.export.pdf import UrlFetcher, refuse_every_url, render_pdf
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.settings import Settings
@@ -377,7 +378,9 @@ async def test_hostile_html_past_the_sanitizer_renders_with_no_socket_opened(
         "</body></html>"
     )
 
-    rendered = render_pdf(hostile_html, url_fetcher=_recording_fetcher(calls))
+    rendered = render_pdf(
+        hostile_html, stylesheet=CLASSIC_STYLESHEET, url_fetcher=_recording_fetcher(calls)
+    )
 
     assert isinstance(rendered, bytes)
     assert len(rendered) > 0
