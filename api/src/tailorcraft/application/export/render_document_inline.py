@@ -18,7 +18,7 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.export.events import DocumentRenderedInline
 from tailorcraft.domain.export.ports import DocumentRendererPort
-from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat, LayoutTemplate
+from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -105,7 +105,8 @@ class RenderDocumentInline:
        is CV else docs.cover_letter``. **`current_documents` is the revision if one exists, else
        the draft** (ADR-0015 §1, X-8), which is the whole of that branch: this use case does not
        choose, it reads the one the aggregate calls current.
-    5. ``data = await renderer.render(source.value, document=cmd.document, format=cmd.format)``.
+    5. ``data = await renderer.render(source.value, document=cmd.document, format=cmd.format,
+       layout_template=None)`` — an inline format takes no layout (slice 3.2).
     6. ``await events.publish(DocumentRenderedInline(...))``; return `RenderedInlineDocument`.
 
     **`DocumentRenderFailed` propagates here, and that is the deliberate opposite of
@@ -184,8 +185,8 @@ class RenderDocumentInline:
             source.value,
             document=cmd.document,
             format=cmd.format,
-            # T10 replaces this
-            layout_template=LayoutTemplate.CLASSIC if cmd.format is ExportFormat.PDF else None,
+            # Inline formats take no layout (`ExportFormat.takes_layout_template`, AC-9).
+            layout_template=None,
         )
 
         # Step 6. Published **after** the render, never before: a publish on the way in would
