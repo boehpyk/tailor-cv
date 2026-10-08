@@ -18,11 +18,12 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: twelve slices shipped (1.1–1.6, 2.1–2.5, 3.1); Phase 2 is closed, its gate met on 2026-10-03.
-> Slice 3.1 `tracking-application-board` was merged as PR #21 (`bfb98a9`) and released 2026-10-06
-> (deploy run 37529074626). Slice 3.2 `export-pdf-layout-templates` is implemented (T0–T28) on
-> `feature/export-pdf-layout-templates`; `/verify` is pending and the PR is not opened — the
-> `__Host-tc_guest` slice must merge first (AC-44).** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> **Status: fourteen slices shipped (1.1–1.6, 2.1–2.5, 3.1, 3.2, and the `__Host-tc_guest` security
+> slice); Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
+> merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
+> `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
+> 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
+> (`a092053`) and released 2026-10-09 (deploy run 37855115482).** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -444,10 +445,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   signs the victim into the attacker's account; its `Path=/api/auth` cannot take `__Host-`, so it
 >   is its own slice, on OQ-12's trigger.
 >
-> - **3.2 `export-pdf-layout-templates`** (branch `feature/export-pdf-layout-templates`, **implemented
->   T0–T28, verified 2026-10-08, rebased onto `998c4b4`**; AC-44 met — the `__Host-tc_guest` slice
->   merged first, PR #22) — a PDF export can be **Classic** (1.5's stylesheet, moved verbatim under
->   a digest pin),
+> - **3.2 `export-pdf-layout-templates`** (PR #23, `a092053`, **verified 2026-10-08, released
+>   2026-10-09**, deploy run 37855115482; AC-44 met — the `__Host-tc_guest` slice merged first, PR
+>   #22) — a PDF export can be **Classic** (1.5's stylesheet, moved verbatim under a digest pin),
 >   **Modern** or **Formal** (**ADR-0030**; ADR-0016 and ADR-0017 amended). `LayoutTemplate` is a
 >   **closed `StrEnum`** in `domain/export`, recorded on `ExportJob`, **PDF only**: `request` refuses
 >   a PDF without one (`LayoutTemplateRequired`) and a DOCX with one (`LayoutTemplateNotApplicable`,
