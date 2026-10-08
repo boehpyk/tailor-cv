@@ -120,6 +120,8 @@ export const EXPORT_READY_NOTE = 'Ready to download.';
 
 /**
  * A ready control's label — *Download PDF · 84 KB*, or *Download PDF* when the size is unknown.
+ * With a layout name (a PDF, slice 3.2) it is the control's accessible name — *Download PDF — Modern
+ * layout · 84 KB* (AC-31) — while the visible text stays 1.5's; the picker above shows the layout.
  *
  * **The `null` branch is not defensive padding.** `byte_size` is nullable on every
  * `ExportJobResponse`, because one Pydantic model serves all four statuses; the database's `CHECK`
@@ -128,8 +130,13 @@ export const EXPORT_READY_NOTE = 'Ready to download.';
  * *NaN KB* in a stranger's browser. The bytes are offered either way, because a download does not
  * depend on knowing how many of them there are.
  */
-export function downloadLabel(format: ExportFormat, byteSize: number | null): string {
-  const label = `Download ${EXPORT_FORMAT_LABELS[format]}`;
+export function downloadLabel(
+  format: ExportFormat,
+  byteSize: number | null,
+  layoutName: string | null = null,
+): string {
+  const layoutClause = layoutName === null ? '' : ` — ${layoutName} layout`;
+  const label = `Download ${EXPORT_FORMAT_LABELS[format]}${layoutClause}`;
   return byteSize === null ? label : `${label} · ${formatSize(byteSize)}`;
 }
 

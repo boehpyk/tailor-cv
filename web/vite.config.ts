@@ -48,6 +48,11 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   build: {
+    // The layout previews (slice 3.2) are ~2 KB each, under Vite's 4 KB default, so they would be
+    // inlined as base64 into the main chunk — downloaded on every page, compressing badly, and
+    // re-downloaded on every release. As hashed files they load lazily, only when the picker shows,
+    // and stay cached across releases (AC-38). Everything else keeps Vite's default.
+    assetsInlineLimit: (filePath) => (filePath.endsWith('.webp') ? false : undefined),
     rollupOptions: { output: { manualChunks: chunkOf } },
   },
   server: {

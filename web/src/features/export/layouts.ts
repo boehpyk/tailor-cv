@@ -43,3 +43,8 @@ export const LAYOUT_TEMPLATES: readonly LayoutTemplateOption[] = [
     previewUrl: formalPreview,
   },
 ];
+
+/** A layout's display name — the picker's card title and the ready PDF control's name (AC-31). */
+export function layoutNameOf(id: LayoutTemplate): string {
+  return LAYOUT_TEMPLATES.find((template) => template.id === id)?.name ?? id;
+}

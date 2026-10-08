@@ -25,12 +25,11 @@ export interface ExportTarget {
   readonly document: TailoredDocumentKind;
   readonly format: ExportFormat;
   /**
-   * The PDF layout this control is about (slice 3.2); `null` for every other format.
-   *
-   * SKELETON (T23): optional so the existing fixtures still type-check, and not yet matched by
-   * `latestExportJobFor` / `isSameTarget` — both land in T25.
+   * The PDF layout this control is about (slice 3.2); `null` for every other format. Part of the
+   * target's identity: a Modern PDF and a Classic PDF of one document are two controls' worth of
+   * state, so switching the picker never shows, cancels or hides another layout's job (AC-31).
    */
-  readonly layoutTemplate?: LayoutTemplate | null;
+  readonly layoutTemplate: LayoutTemplate | null;
 }
 
 /**
@@ -209,7 +208,12 @@ export function latestExportJobFor(
   target: ExportTarget,
   jobs: readonly ExportJob[],
 ): ExportJob | undefined {
-  return jobs.find((job) => job.document === target.document && job.format === target.format);
+  return jobs.find(
+    (job) =>
+      job.document === target.document &&
+      job.format === target.format &&
+      job.layout_template === target.layoutTemplate,
+  );
 }
 
 /**
@@ -217,9 +221,10 @@ export function latestExportJobFor(
  * recently requested PDF job, of either document — `null` when there is none. Derived from server
  * state on every render, never copied into `useState`.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T23 SKELETON: the signature qa's T24 tests compile against; T25 uses it and deletes this line.
-export function defaultLayoutFor(_jobs: readonly ExportJob[]): LayoutTemplate | null {
-  throw new Error('not implemented');
+export function defaultLayoutFor(jobs: readonly ExportJob[]): LayoutTemplate | null {
+  // Newest-first, so the first PDF is the newest one — whatever its status: a failed render was
+  // still the layout the user last asked for.
+  return jobs.find((job) => job.format === 'pdf')?.layout_template ?? null;
 }
 
 /** Whether a mutation's variables are about this control. `null` (nothing in flight) never is. */
@@ -227,7 +232,8 @@ function isSameTarget(candidate: ExportTarget | null, target: ExportTarget): boo
   return (
     candidate !== null &&
     candidate.document === target.document &&
-    candidate.format === target.format
+    candidate.format === target.format &&
+    candidate.layoutTemplate === target.layoutTemplate
   );
 }
 
