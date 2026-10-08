@@ -182,7 +182,7 @@ def new_client(app: FastAPI) -> AsyncClient:
     """`raise_app_exceptions=False`: a skeleton's `NotImplementedError` is a real 500 response, so
     a red reads `assert 500 == 200` rather than an ERROR."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -283,7 +283,8 @@ async def register(client: AsyncClient, settings: Settings) -> Account:
 
 
 async def mint_guest(client: AsyncClient, session: AsyncSession) -> GuestOwner:
-    """A real guest session: a real 1.1 upload sets `tc_guest` on `client`; the session id is read
+    """A real guest session: a real 1.1 upload sets `__Host-tc_guest` on `client`; the session id
+    is read
     back off the CV row it created."""
     response = await client.post(
         "/api/base-cvs", files={"file": ("sample.txt", SAMPLE_CV, "text/plain")}

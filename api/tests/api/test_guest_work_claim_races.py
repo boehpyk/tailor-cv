@@ -138,7 +138,8 @@ async def test_ac15a_a_claim_waiting_on_an_erasing_users_row_is_401_and_moves_no
 async def test_ac16_two_claims_of_one_session_are_one_200_with_counts_and_one_200_with_zeros(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """AC-16. Both requests carry the same bearer and the same `tc_guest` cookie. Whichever reaches
+    """AC-16. Both requests carry the same bearer and the same `__Host-tc_guest` cookie. Whichever
+    reaches
     `transfer` first is **held there** until the other is observed waiting on `SELECT … FOR UPDATE
     identity_guest_session`; the gate raises if that never happens, so a claim that stopped locking
     answers 500 here instead of passing by luck of scheduling.

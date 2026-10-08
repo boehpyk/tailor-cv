@@ -67,7 +67,9 @@ _failure_message = failure_message
 _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {
         "model": ErrorResponse,
-        "description": "guest_session_expired — missing, unknown or expired `tc_guest` cookie.",
+        "description": (
+            "guest_session_expired — missing, unknown or expired `__Host-tc_guest` cookie."
+        ),
     },
 }
 
@@ -162,9 +164,9 @@ async def upload_base_cv(
     what renders F-1's 422 `missing_file` — see that handler's docstring for why this router cannot
     do it here (the two known conflicts this task's brief calls out).
 
-    Tolerates a missing, unknown or expired `tc_guest` cookie by minting a fresh `GuestSession` and
-    returning it via `Set-Cookie` (F-17/F-18) — unlike the two read endpoints below, this never
-    answers 401 for a bad cookie.
+    Tolerates a missing, unknown or expired `__Host-tc_guest` cookie by minting a fresh
+    `GuestSession` and returning it via `Set-Cookie` (F-17/F-18) — unlike the two read endpoints
+    below, this never answers 401 for a bad cookie.
     """
     # `resolve_or_start_guest_session` is called directly, not injected via `Depends()` — see its
     # docstring in `deps.py` for the empirically-verified reason (F-1: this must not run, and must
@@ -223,9 +225,9 @@ async def list_base_cvs(
 ) -> BaseCvListResponse:
     """Every `BaseCv` the caller's guest session owns, or `items: []` — never a 404 for "none yet".
 
-    Unlike `POST`, a missing, unknown or expired `tc_guest` cookie is **not** forgiven here: it is a
-    401 `guest_session_expired` (F-19), so the client can tell "you have no CVs" from "your session
-    is gone" and react to each differently.
+    Unlike `POST`, a missing, unknown or expired `__Host-tc_guest` cookie is **not** forgiven here:
+    it is a 401 `guest_session_expired` (F-19), so the client can tell "you have no CVs" from "your
+    session is gone" and react to each differently.
     """
     try:
         cvs = await list_use_case(session.id)

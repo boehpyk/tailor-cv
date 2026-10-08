@@ -123,7 +123,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Shadows `conftest.py`'s `client` fixture for every test in this module — see the module
     docstring for why `raise_app_exceptions=False` matters here specifically."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 
@@ -132,7 +132,7 @@ def _new_client(app: FastAPI) -> AsyncClient:
     concurrent second request (S-19's race) or a distinct "requester" while sharing `ASGITransport`'s
     fixed peer IP."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -312,12 +312,13 @@ async def test_cache_control_no_store_on_every_me_response(
 async def test_a_valid_guest_cookie_riding_along_changes_nothing_for_the_list(
     client: AsyncClient, settings: Settings
 ) -> None:
-    """A `tc_guest` cookie is never read by this router (module docstring, AC-21): minting one via a
+    """A `__Host-tc_guest` cookie is never read by this router (module docstring, AC-21): minting
+    one via a
     guest upload first must not authorize `GET /api/me/base-cvs` on its own."""
     guest_upload = await client.post(
         BASE_CVS_URL, files=_file_part("sample.txt", _read_fixture("sample.txt"), "text/plain")
     )
-    assert guest_upload.status_code == 201, guest_upload.text  # mints tc_guest on this client
+    assert guest_upload.status_code == 201, guest_upload.text  # mints the guest cookie
 
     response = await client.get(ME_BASE_CVS_URL)  # no bearer, but the guest cookie rides along
 

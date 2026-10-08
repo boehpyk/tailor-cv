@@ -6,9 +6,9 @@ import type { SavedBaseCv, SavedBaseCvList } from '@/features/savedCvs/types';
  * The four `/api/me/base-cvs` endpoints (slice 2.2, technical plan §4) — transport only.
  *
  * **Every call here is `auth: 'required'`** (AC-43). These are the account's CVs, authorized by the
- * bearer and by nothing else: the server ignores a `tc_guest` cookie on these routes (AC-21), and
- * the client sends the token because the route needs it, never because one happens to be held.
- * `api/client.ts` attaches it, refreshes first when it is near expiry, and answers one 401
+ * bearer and by nothing else: the server ignores a `__Host-tc_guest` cookie on these routes
+ * (AC-21), and the client sends the token because the route needs it, never because one happens to
+ * be held. `api/client.ts` attaches it, refreshes first when it is near expiry, and answers one 401
  * `invalid_access_token` with one refresh and one retry; a 401 `not_signed_in` (the account is gone)
  * tells the store and is re-thrown.
  *

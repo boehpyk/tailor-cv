@@ -206,7 +206,7 @@ def _new_client(app: FastAPI) -> AsyncClient:
     """A second, independent cookie jar against the same app — for tests that need a second, distinct
     guest session (the authorization rows, G-6/G-7/G-29) or a shared client IP (G-11's per-IP limit)."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -367,7 +367,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Shadows `conftest.py`'s `client` fixture — see the module docstring for why
     `raise_app_exceptions=False` matters here."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

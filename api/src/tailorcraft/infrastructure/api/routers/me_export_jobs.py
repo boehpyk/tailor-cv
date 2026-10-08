@@ -8,9 +8,9 @@ A job, once it exists, is its own resource (1.5's reasoning): its poll and its d
 not the run. Jobs are **created** under their run (`POST /api/me/tailoring-runs/{id}/exports`), whose
 `Location` and every `file_url` point here.
 
-**One credential: the bearer** (`require_user`); a `tc_guest` cookie is ignored and nothing here reads
-it. A guest's job id is a 404, byte-identical to one that does not exist. Every response carries
-`Cache-Control: no-store`, and every `expires_at` is `null` (OQ-8).
+**One credential: the bearer** (`require_user`); a `__Host-tc_guest` cookie is ignored and nothing
+here reads it. A guest's job id is a 404, byte-identical to one that does not exist. Every response
+carries `Cache-Control: no-store`, and every `expires_at` is `null` (OQ-8).
 """
 
 from __future__ import annotations

@@ -28,7 +28,7 @@ export interface ApiTarget {
   readonly latestJobPostingsPath: string;
   /**
    * `'required'` for account data — every request carries the bearer; `null` for a guest's — no
-   * request carries one, and the `tc_guest` cookie authorizes it.
+   * request carries one, and the `__Host-tc_guest` cookie authorizes it.
    */
   readonly auth: 'required' | null;
 }

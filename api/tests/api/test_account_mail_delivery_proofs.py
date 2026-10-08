@@ -82,7 +82,7 @@ A_NEW_PASSWORD = "an entirely different passphrase 7"
 @pytest_asyncio.fixture
 async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

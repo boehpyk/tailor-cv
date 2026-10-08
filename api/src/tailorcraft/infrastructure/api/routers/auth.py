@@ -7,8 +7,8 @@ numbered order below is 2.1's; the slice-2.5 handlers state their own, and set n
 
 **One credential per route (AC-30).** The four `POST`s answer to the refresh cookie and a trusted
 `Origin`; `/me` answers to a bearer token. **None of them depends on `require_guest_session`**, and
-none reads or writes `tc_guest` (AC-29) — a guest session is not a weak login, and a login is not a
-guest session. A test walks the dependency graph to keep that true.
+none reads or writes `__Host-tc_guest` (AC-29) — a guest session is not a weak login, and a login is
+not a guest session. A test walks the dependency graph to keep that true.
 
 **The order of checks in every `POST` is the contract's, and it is load-bearing** (T30):
 
@@ -751,8 +751,8 @@ def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
 # ADR-0028). Red-first: T26's skeleton, T27/T28's tests (`qa`), T29's handlers. Register (above)
 # is the fourth route of the flow since T29: it asks for an account and no longer creates one.
 #
-# None of the three reads a bearer, `tc_refresh` or `tc_guest`, and none sets a cookie. Each sits
-# behind `require_trusted_origin` (403 before the limiter, the database or the hasher). The two
+# None of the three reads a bearer, `tc_refresh` or `__Host-tc_guest`, and none sets a cookie. Each
+# sits behind `require_trusted_origin` (403 before the limiter, the database or the hasher). The two
 # confirms have **no limiter** (plan §4: a 256-bit token is not guessable; garbage costs one indexed
 # lookup, a malformed one none), so Redis down never blocks finishing a confirmation or a reset.
 #

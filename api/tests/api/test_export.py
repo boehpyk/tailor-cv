@@ -170,7 +170,7 @@ def _override_settings(app: FastAPI, base: Settings, **updates: object) -> Setti
 
 def _new_client(app: FastAPI) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -449,7 +449,7 @@ async def _run_export_worker(
 @pytest_asyncio.fixture
 async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

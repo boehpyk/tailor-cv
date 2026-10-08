@@ -163,7 +163,7 @@ async def test_h8_a_forged_bearer_is_401_invalid_access_token(
 async def test_ac24_a_guest_cookie_alone_authorizes_nothing(
     client: AsyncClient, session: AsyncSession, route: _Route
 ) -> None:
-    await mint_guest(client, session)  # tc_guest now rides on every request
+    await mint_guest(client, session)  # __Host-tc_guest now rides on every request
 
     response = await _call(client, route, route.url(None))
 

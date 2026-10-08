@@ -12,9 +12,9 @@ import type {
  * `/api/me/tracked-applications`. Transport only.
  *
  * **Every call here is `auth: 'required'`** (AC-22): a card is account data, answering to the bearer
- * and to nothing else; the server never reads `tc_guest` on these routes. `api/client.ts` attaches
- * the token, refreshes first when it is near expiry, and answers one 401 `invalid_access_token` with
- * one refresh and one retry.
+ * and to nothing else; the server never reads `__Host-tc_guest` on these routes. `api/client.ts`
+ * attaches the token, refreshes first when it is near expiry, and answers one 401
+ * `invalid_access_token` with one refresh and one retry.
  *
  * **The user id is in no URL.** The bearer says whose board it is; the id lives only in the query
  * keys (`features/tracking/hooks/trackingKeys.ts`), where it keeps two users in one tab apart.

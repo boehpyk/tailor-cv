@@ -118,7 +118,8 @@ async def test_a_guest_route_with_a_valid_bearer_and_no_guest_cookie_behaves_as_
     client: AsyncClient, settings: Settings
 ) -> None:
     """AC-30. `GET /api/base-cvs` answers to `require_guest_session` alone — a valid `Authorization:
-    Bearer` with no `tc_guest` cookie must not authorize it, and the response must be indistinguishable
+    Bearer` with no `__Host-tc_guest` cookie must not authorize it, and the response must be
+    indistinguishable
     from a request that never sent a bearer at all (same status, same body)."""
     access_token = await _register_and_get_access_token(client, settings)
 
@@ -135,7 +136,8 @@ async def test_a_guest_route_with_a_valid_bearer_and_no_guest_cookie_behaves_as_
 async def test_me_with_a_live_guest_cookie_behaves_as_without_it_and_never_touches_the_guest_row(
     client: AsyncClient, settings: Settings, engine: AsyncEngine
 ) -> None:
-    """AC-30. `GET /api/auth/me` answers to the bearer alone — a live `tc_guest` cookie riding along
+    """AC-30. `GET /api/auth/me` answers to the bearer alone — a live `__Host-tc_guest` cookie
+    riding along
     must not change the answer, and (the stronger claim) `require_user` must never even query
     `identity_guest_session`: captured SQL, not merely "the JSON came out the same", the same
     technique `test_purge_database.py`'s AC-16 uses for the purge's own read side."""
@@ -162,7 +164,7 @@ async def test_me_with_a_live_guest_cookie_behaves_as_without_it_and_never_touch
 
     joined = "\n".join(captured).lower()
     assert "guest_session" not in joined, (
-        f"/me issued a statement naming the guest-session table while a tc_guest cookie was "
+        f"/me issued a statement naming the guest-session table while a __Host-tc_guest cookie was "
         f"present: {joined}"
     )
 
@@ -184,7 +186,8 @@ async def _register_and_get_access_token(client: AsyncClient, settings: Settings
 # from the body rather than as a sibling `Depends` is what keeps a 422 from minting a session). This
 # extends the walker with an AST scan of the router modules for direct calls to
 # `resolve_or_start_guest_session` / `read_guest_token`, and pins the exception set — the routes that
-# depend on `require_user` **and** touch `tc_guest` by either mechanism — to exactly one route.
+# depend on `require_user` **and** touch `__Host-tc_guest` by either mechanism — to exactly one
+# route.
 # ---------------------------------------------------------------------------------------------
 
 _GUEST_TOUCHING_CALL_NAMES = frozenset(
@@ -356,7 +359,8 @@ def test_ac32_transfer_route_exception_set_is_exactly_the_claim_route(
     app: FastAPI,
 ) -> None:
     """AC-24 (2.2), narrowed by AC-32 (2.4: the copy route is retired, the claim is the one
-    transfer route left). The set of routes that depend on `require_user` **and** touch `tc_guest` —
+    transfer route left). The set of routes that depend on `require_user` **and** touch
+    `__Host-tc_guest` —
     via `require_guest_session`/`resolve_or_start_guest_session` in the dependency graph, **or** a
     direct call the AST scan finds — must be exactly `{POST /api/me/guest-work/claim}`.
     A route added with both, by either mechanism, turns this red."""
@@ -381,11 +385,12 @@ def test_ac32_transfer_route_exception_set_is_exactly_the_claim_route(
 
 
 def test_ac24_r10_the_guest_cookie_name_is_referenced_only_inside_guest_session_py() -> None:
-    """R-10: a *new* reader of `tc_guest` must pass through `read_guest_token` or
+    """R-10: a *new* reader of `__Host-tc_guest` must pass through `read_guest_token` or
     `resolve_or_start_guest_session` (both in `guest_session.py`/`deps.py`) rather than importing
     `COOKIE_NAME` and reading the cookie jar by hand somewhere the walker above cannot see at all —
-    a raw `request.cookies.get("tc_guest")` would touch no scanned helper and slip past both checks
-    above. Scanned by the identifier, not the literal `"tc_guest"` string: several router
+    a raw `request.cookies.get("__Host-tc_guest")` would touch no scanned helper and slip past both
+    checks
+    above. Scanned by the identifier, not the literal `"__Host-tc_guest"` string: several router
     docstrings mention that string in prose, and prose is not a reader."""
     offending: dict[str, set[str]] = {}
     for module_name in [*_router_module_names(), "tailorcraft.infrastructure.api.deps"]:
@@ -395,7 +400,8 @@ def test_ac24_r10_the_guest_cookie_name_is_referenced_only_inside_guest_session_
             offending[module_name] = collector.names
 
     assert offending == {}, (
-        f"COOKIE_NAME (the tc_guest constant) must be referenced only inside guest_session.py's "
+        f"COOKIE_NAME (the __Host-tc_guest constant) must be referenced only inside "
+        f"guest_session.py's "
         f"own read_guest_token/set_guest_cookie — found a direct reference in: {sorted(offending)}"
     )
 

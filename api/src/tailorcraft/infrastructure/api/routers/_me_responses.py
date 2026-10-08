@@ -21,7 +21,7 @@ NOT_SIGNED_IN: dict[int | str, dict[str, Any]] = {
         "description": (
             'invalid_access_token (+ WWW-Authenticate: Bearer error="invalid_token") — missing, '
             "expired or forged bearer | not_signed_in — a valid bearer whose account is gone. "
-            "**Bearer only**: a `tc_guest` cookie is ignored on every `/api/me/` route."
+            "**Bearer only**: a `__Host-tc_guest` cookie is ignored on every `/api/me/` route."
         ),
     },
 }

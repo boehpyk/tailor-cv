@@ -92,8 +92,9 @@ _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {
         "model": ErrorResponse,
         "description": (
-            "guest_session_expired — missing, unknown or expired `tc_guest` cookie (X-2, X-12, "
-            "X-42, X-50). **No session is minted**: none of these five routes is a first contact."
+            "guest_session_expired — missing, unknown or expired `__Host-tc_guest` cookie (X-2, "
+            "X-12, X-42, X-50). **No session is minted**: none of these five routes is a first "
+            "contact."
         ),
     },
 }

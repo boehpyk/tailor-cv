@@ -264,7 +264,7 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
         assert uploaded.status_code == 201, uploaded.text
         ids["base_cv_id"] = str(uploaded.json()["id"])
         guest_token = client.cookies.get(COOKIE_NAME)
-        assert guest_token, "the upload left no tc_guest cookie"
+        assert guest_token, "the upload left no __Host-tc_guest cookie"
         session_id = (
             await session.execute(
                 text("SELECT id FROM identity_guest_session WHERE token_hash = :h"),
@@ -461,6 +461,16 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
         assert marker not in event_text, f"{description} ({marker}) reached a domain event"
         assert marker not in sentry_text, f"{description} ({marker}) reached a Sentry envelope"
         assert marker not in redis_keys, f"{description} ({marker}) reached a Redis key"
+
+    # AC-11: the credential under its new name. Positive control first: the cookie really is the
+    # prefixed one and the capture really holds records (the claim's own line), so the absence below
+    # is not an empty-capture artefact.
+    assert COOKIE_NAME == "__Host-tc_guest"
+    assert len(guest_token) >= 32
+    assert any(CLAIM_EVENT in r.getMessage() for r in caplog.records), "log capture not live"
+    assert all(guest_token not in r.getMessage() for r in caplog.records), (
+        "the __Host-tc_guest token value reached a log record"
+    )
 
 
 # --- AC-46: the claimed work through a purge, an orphan sweep and erase-account -------------------

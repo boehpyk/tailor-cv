@@ -5,7 +5,8 @@ T-13, T-23.
   forged bearer, a guest cookie alone) already pass against the skeleton — `require_user` is 2.1's
   real code — and each is paired with the discriminating positive that cannot: a **valid** bearer
   whose account is gone must be 401 `not_signed_in`, which only a handler that resolves the user
-  can answer; and a valid bearer **plus** a valid `tc_guest` cookie sees only the user's board and
+  can answer; and a valid bearer **plus** a valid `__Host-tc_guest` cookie sees only the user's
+  board and
   cannot track the guest's run.
 - **AC-23.** Alice and Bob each own a succeeded run and a card; guest G owns a succeeded run.
   Alice's bearer on Bob's card id (`PUT …/stage`, `PUT …/title`, `DELETE`) is **404 with a body
@@ -137,7 +138,7 @@ async def test_t8_a_forged_bearer_is_401_invalid_access_token(
 async def test_ac22_a_guest_cookie_alone_authorizes_nothing(
     client: AsyncClient, session: AsyncSession, route: _Route
 ) -> None:
-    await mint_guest(client, session)  # tc_guest now rides on every request
+    await mint_guest(client, session)  # __Host-tc_guest now rides on every request
 
     response = await _call(client, route, route.url())
 
@@ -231,8 +232,8 @@ def test_ac22_the_walker_finds_every_route_on_require_user_alone(app: FastAPI) -
 
 def test_ac22_the_transfer_route_set_is_still_exactly_the_claim_route(app: FastAPI) -> None:
     """2.4's AST scan, restated beside the new routes: routes that depend on `require_user` **and**
-    touch `tc_guest` — by the dependency graph or by a direct call in the body — are exactly
-    `{POST /api/me/guest-work/claim}`. Passes today; it is the guard against a tracking route
+    touch `__Host-tc_guest` — by the dependency graph or by a direct call in the body — are
+    exactly `{POST /api/me/guest-work/claim}`. Passes today; it is the guard against a tracking route
     drifting into the set."""
     violations: set[str] = set()
     for route in _iter_api_routes(app.routes):

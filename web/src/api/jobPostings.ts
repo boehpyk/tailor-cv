@@ -13,9 +13,9 @@ import type { ApiTarget } from './target';
  * Every job posting the caller's guest session owns, as summaries with a preview. `items` is `[]`
  * for a session with none — never a 404.
  *
- * A missing, unknown or expired `tc_guest` cookie is a **401 `guest_session_expired`**, thrown as
- * an `ApiError` like any other failure; this function does not special-case it. What that 401
- * *means* for the UI is a rendering decision, not a transport one, so it is made in
+ * A missing, unknown or expired `__Host-tc_guest` cookie is a **401 `guest_session_expired`**,
+ * thrown as an `ApiError` like any other failure; this function does not special-case it. What that
+ * 401 *means* for the UI is a rendering decision, not a transport one, so it is made in
  * `useJobPostings`, one layer up.
  */
 export function fetchJobPostings(

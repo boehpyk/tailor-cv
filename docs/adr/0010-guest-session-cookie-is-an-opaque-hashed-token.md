@@ -118,3 +118,22 @@ browsers accept only with `Secure`, `Path=/` and no `Domain`. Because it require
 checked against the plain-HTTP development origin before it lands. **Decision (owner, 2026-10-01): not
 in slice 2.4.** Owner `api-dev`; **trigger:** before any second application on the same registrable
 domain accepts user content, or Phase 3, whichever comes first.
+
+## Amendment: 2026-10-08, from the plan of slice `identity-host-prefixed-guest-cookie`
+
+**(c) The guest cookie is `__Host-tc_guest`, always `Secure`; (b) is discharged.** Decision 4's name
+becomes `__Host-tc_guest`, and its `Secure` stops depending on `APP_ENV`. The prefix is the
+browser's guarantee that the cookie was set by this host, over a secure origin, with `Path=/` and no
+`Domain`, so a sibling `*.samolit.com` host can no longer fix a guest session here. The transition
+is a **hard cut**: `tc_guest` is never read again. A dual-read window would keep honouring a planted
+cookie for its whole length. Migrating on read would promote a planted token into the prefixed
+cookie. Clearing a planted cookie is no control either: the `Cookie` header carries no attributes,
+so the server cannot see which `Domain`/`Path` it was set with, and a sibling host can re-plant it
+at will. Cost: a guest mid-session at release loses access to that ≤ 24 h workspace (count read
+before release). Dev on `http://localhost` was checked in Chromium 145 (2026-10-08): `localhost` and
+`127.0.0.1` are secure contexts, so the prefixed `Secure` cookie is accepted there over plain HTTP;
+Firefox was not exercised, and Safari/WebKit has historically refused `Secure` cookies on
+`http://localhost` (unverified here; dev only). The cookie ADR-0008 (g) and ADR-0025 call `tc_guest`
+is this one. Their mechanisms are unchanged. **Not covered:** `tc_refresh` has the same exposure,
+but its `Path=/api/auth` cannot take `__Host-`, which requires `Path=/`. It is recorded as its own
+roadmap question with (b)'s trigger (owner, 2026-10-08).

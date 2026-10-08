@@ -120,7 +120,8 @@ def _reset_redis(clear_redis: None) -> None:
 
 
 def _set_cookies(response: Response) -> list[dict[str, str]]:
-    """Every `tc_guest` `Set-Cookie`, parsed: `{"name", "value", <lower-cased attribute>: value}`.
+    """Every `__Host-tc_guest` `Set-Cookie`, parsed: `{"name", "value", <lower-cased attribute>:
+    value}`.
     Attributes are parsed, not byte-matched (AC-26): the order and the `expires` text are not ours."""
     parsed: list[dict[str, str]] = []
     for header in response.headers.get_list("set-cookie"):
@@ -137,21 +138,21 @@ def _set_cookies(response: Response) -> list[dict[str, str]]:
 
 
 def _assert_never_mints(response: Response) -> None:
-    """No response of this route ever sets a *non-empty* `tc_guest` (AC-25)."""
+    """No response of this route ever sets a *non-empty* `__Host-tc_guest` (AC-25)."""
     for cookie in _set_cookies(response):
         assert cookie["value"] == "", f"the claim minted a guest session: {cookie}"
 
 
 def _assert_cookie_cleared(response: Response, settings: Settings) -> None:
     cookies = _set_cookies(response)
-    assert len(cookies) == 1, f"expected exactly one tc_guest Set-Cookie, got {cookies}"
+    assert len(cookies) == 1, f"expected exactly one __Host-tc_guest Set-Cookie, got {cookies}"
     cookie = cookies[0]
     assert cookie["value"] == ""
     assert cookie.get("max-age") == "0"
     assert cookie.get("path") == "/"
     assert "httponly" in cookie
     assert cookie.get("samesite", "").lower() == "lax"
-    assert ("secure" in cookie) is settings.is_production
+    assert ("secure" in cookie) is True  # a __Host- clear without Secure is ignored (AC-4)
 
     # The deletion must name the attributes the cookie was SET with, or a browser keeps the original.
     reference = FastApiResponse()
@@ -198,11 +199,12 @@ async def _guest_with_work(
     client: AsyncClient, session: AsyncSession, settings: Settings, clock: FixedClock
 ) -> tuple[GuestOwner, Entry, str]:
     """A live guest on `client`: a real upload (which mints the session and the cookie) plus a seeded
-    CV / posting / run / export. Returns the owner, the entry and the raw `tc_guest` token."""
+    CV / posting / run / export. Returns the owner, the entry and the raw `__Host-tc_guest`
+    token."""
     guest = await mint_guest(client, session)
     entry = await seed_entry(session, settings, guest, at=clock.now() - timedelta(minutes=10))
     token = client.cookies.get(COOKIE_NAME)
-    assert token, "the upload did not leave a tc_guest cookie on the client"
+    assert token, "the upload did not leave a __Host-tc_guest cookie on the client"
     return guest, entry, token
 
 
@@ -270,7 +272,8 @@ async def test_ac25_a_bad_bearer_is_401_before_the_guest_table_is_read_and_a_goo
     clock: FixedClock,
     kind: str,
 ) -> None:
-    """C-10. The request carries a LIVE `tc_guest`; a bad bearer must be refused by the dependency
+    """C-10. The request carries a LIVE `__Host-tc_guest`; a bad bearer must be refused by the
+    dependency
     with **no statement naming `identity_guest_session`**, and with no cookie set or cleared.
 
     The discriminating positive is in the same test: the same request with a *good* bearer is a `200`

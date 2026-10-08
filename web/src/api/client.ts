@@ -148,8 +148,8 @@ interface RequestOptions {
    * Opt-in rather than "attach the token whenever there is one", for two reasons:
    *
    * - **No request carries two credentials by accident.** Guest endpoints are authorized by the
-   *   `tc_guest` cookie; a guest request that also carried a bearer token would be the first step
-   *   of the claim (slice 2.4) happening without anyone designing it.
+   *   `__Host-tc_guest` cookie; a guest request that also carried a bearer token would be the first
+   *   step of the claim (slice 2.4) happening without anyone designing it.
    * - **The retry is keyed on the declaration.** A 401 whose `code` is `invalid_access_token`, on
    *   a request declared `'required'`, gets one `authStore.refresh()` and one retry. A 401
    *   `guest_session_expired` never refreshes (I-48): the branch is on `code`, never on status,
@@ -305,7 +305,8 @@ interface BlobRequestOptions {
    * `'required'` makes the download **bearer-authenticated**, with `request`'s exact semantics —
    * the same one refresh and one retry on 401 `invalid_access_token` (slice 2.3, AC-47: an
    * account's export lives under `/api/me/` and answers to the bearer alone). Absent for every
-   * guest download, which is authorized by the `tc_guest` cookie and carries no `Authorization`.
+   * guest download, which is authorized by the `__Host-tc_guest` cookie and carries no
+   * `Authorization`.
    */
   readonly auth?: 'required';
 }

@@ -227,7 +227,7 @@ def _guest_session_repository(session: AsyncSession) -> GuestSessionRepository:
 async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Shadows `conftest.py`'s `client` fixture for every test in this module."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 
@@ -235,7 +235,7 @@ def _new_client(app: FastAPI) -> AsyncClient:
     """A second, independent cookie jar against the same app, for tests that need two distinct
     "requesters" while sharing `ASGITransport`'s fixed peer IP (the per-IP rate-limit tests)."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -534,7 +534,8 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_guest_session_unt
     session: AsyncSession,
     clock: FixedClock,
 ) -> None:
-    """AC-29: no `Set-Cookie: tc_guest` on any outcome, and the guest session row is byte-identical
+    """AC-29: no `Set-Cookie: __Host-tc_guest` on any outcome, and the guest session row is
+    byte-identical
     afterwards, including `expires_at` — registration must never read, set or extend it."""
     guest_session, raw_guest_token = await _seed_guest_session(session, clock)
     client.cookies.set(GUEST_COOKIE_NAME, raw_guest_token)
@@ -876,7 +877,7 @@ async def test_a_login_cookie_is_secure_when_the_app_is_built_for_production(
 
     async with AsyncClient(
         transport=ASGITransport(app=prod_app, raise_app_exceptions=False),
-        base_url="http://testserver",
+        base_url="https://testserver",
     ) as prod_client:
         response = await prod_client.post(
             LOGIN_URL,
@@ -1446,7 +1447,7 @@ async def test_a_successful_me_call_carries_cache_control_no_store(
 
 
 # ---------------------------------------------------------------------------------------------
-# AC-29 — no `tc_guest` Set-Cookie on any of the five endpoints' outcomes
+# AC-29 — no `__Host-tc_guest` Set-Cookie on any of the five endpoints' outcomes
 # ---------------------------------------------------------------------------------------------
 
 
@@ -1490,7 +1491,7 @@ async def test_none_of_the_five_endpoints_ever_sets_a_guest_cookie(
         me_response,
     ):
         assert _cookie_header_named(response, GUEST_COOKIE_NAME) is None, (
-            f"{response.request.url} must never set tc_guest"
+            f"{response.request.url} must never set __Host-tc_guest"
         )
 
 
@@ -1526,7 +1527,8 @@ async def test_double_at_sign_email_on_register_is_422_invalid_email(
 async def test_me_with_a_live_guest_cookie_and_no_bearer_behaves_as_without_it(
     client: AsyncClient, session: AsyncSession, clock: FixedClock
 ) -> None:
-    """`/me` must never touch `tc_guest` — with a live guest cookie and no bearer, the answer is
+    """`/me` must never touch `__Host-tc_guest` — with a live guest cookie and no bearer, the
+    answer is
     identical to having no cookie at all (401 `invalid_access_token`)."""
     _guest_session, raw_guest_token = await _seed_guest_session(session, clock)
     client.cookies.set(GUEST_COOKIE_NAME, raw_guest_token)
@@ -1966,7 +1968,8 @@ async def test_delete_account_takes_every_row_and_file_it_owns_and_nothing_a_gue
     client: AsyncClient, settings: Settings, session: AsyncSession
 ) -> None:
     """AC-29's `Data` column in full: the user, every login, every retired hash, every saved CV row
-    **and file** gone; the guest workspace (`tc_guest`, its session row, its rows, the working copy's
+    **and file** gone; the guest workspace (`__Host-tc_guest`, its session row, its rows, the
+    working copy's
     file) untouched — it is guest data, purged on its own clock, never by account deletion.
 
     Two saved CVs (real files) plus one refresh rotation (so a retired hash genuinely exists to

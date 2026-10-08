@@ -136,7 +136,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """`raise_app_exceptions=False`: a skeleton's `NotImplementedError` must be a 500 the step's
     assertion reads."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

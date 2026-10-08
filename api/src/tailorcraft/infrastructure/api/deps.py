@@ -369,8 +369,8 @@ async def require_guest_session(
     sessions: GuestSessionRepositoryDep,
     clock: ClockDep,
 ) -> GuestSession:
-    """The GET-side cookie rule (F-19): a missing, unknown or expired `tc_guest` cookie all refuse
-    with 401 `guest_session_expired` — never a silently-minted session, unlike `POST`.
+    """The GET-side cookie rule (F-19): a missing, unknown or expired `__Host-tc_guest` cookie all
+    refuse with 401 `guest_session_expired` — never a silently-minted session, unlike `POST`.
 
     Safe to use as an ordinary `Depends()` parameter, unlike `resolve_or_start_guest_session` below:
     it never mutates anything on any path (no session minted, no row written, no cookie set), so it
@@ -397,8 +397,8 @@ async def resolve_or_start_guest_session(
     settings: SettingsDep,
     start_guest_session: StartGuestSessionDep,
 ) -> GuestSession:
-    """The POST-side cookie rule (F-17/F-18): a missing, unknown or expired `tc_guest` cookie all
-    mint a fresh `GuestSession`, set it as the new cookie, and let the request proceed — the
+    """The POST-side cookie rule (F-17/F-18): a missing, unknown or expired `__Host-tc_guest` cookie
+    all mint a fresh `GuestSession`, set it as the new cookie, and let the request proceed — the
     opposite forgiveness direction from `require_guest_session`.
 
     **Deliberately not wired as `upload_base_cv`'s own `Depends()` parameter.** Verified empirically
@@ -1237,7 +1237,7 @@ GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]
 # `require_user`, and no provider in this block depends on `require_guest_session` or
 # `resolve_or_start_guest_session` (AC-24). 2.2's transfer route (`POST /api/base-cvs/copies`) was
 # retired in 2.4 (ADR-0022 amendment (d)); the one transfer route is now the claim,
-# `POST /api/me/guest-work/claim` (ADR-0008 (g)), which reads `tc_guest` in its handler body.
+# `POST /api/me/guest-work/claim` (ADR-0008 (g)), which reads `__Host-tc_guest` in its handler body.
 # ---------------------------------------------------------------------------------------------
 
 

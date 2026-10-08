@@ -9,10 +9,10 @@ import type { GuestWorkClaimResult } from '@/features/claim/types';
  * **Two credentials, one request, each authorizing its own half** (ADR-0008 amendment (g)). The
  * bearer names the destination — the account the work moves into — so the call is
  * `auth: 'required'`, with `api/client.ts`'s refresh-once-and-retry on 401 `invalid_access_token`.
- * The source is the `tc_guest` cookie, which travels because every request here is same-origin with
- * `credentials: 'include'`, exactly as it does today; nothing here reads, sets or names it. That is
- * the one route where carrying both is the design rather than the accident `RequestOptions.auth`
- * warns about.
+ * The source is the `__Host-tc_guest` cookie, which travels because every request here is
+ * same-origin with `credentials: 'include'`, exactly as it does today; nothing here reads, sets or
+ * names it. That is the one route where carrying both is the design rather than the accident
+ * `RequestOptions.auth` warns about.
  *
  * **No body.** The server ignores one; which work moves is "everything the cookie's session owns",
  * never a client-chosen list.
