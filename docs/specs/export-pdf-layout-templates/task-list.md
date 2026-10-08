@@ -198,16 +198,27 @@
 
 ## Measure, release, document, verify
 
-- [ ] **T27** (`qa`, `devops`): **in the production image** (`docker build --target production`, its
+- [x] **T27** (`qa`, `devops`): **in the production image** (`docker build --target production`, its
       own tag): AC-18 and AC-19 as `slow` tests (fonts and libraries per layout — L-22, L-23), then
       **AC-39** — per layout × document `render_duration_ms` p95 (n = 40), the 20 000-character CV,
       `POST` → `ready` p95, fixture PDF sizes. Numbers written into the spec.
-- [ ] **T28** (`devops`): release impact — one migration (`down_revision 7e43a47327ec`), no package,
+      Done 2026-10-08: AC-18/19 110 passed in the image; every p95 inside budget (feature-spec AC-39/40).
+- [x] **T28** (`devops`): release impact — one migration (`down_revision 7e43a47327ec`), no package,
       container, queue, volume, beat entry or setting; re-read `deploy.yml`'s order (stop worker/beat →
       web → api → migrate → worker/beat) with line numbers; production `export_job` row counts and the
       uploads volume size (ADR-0016 (d)) in a read-only transaction; the release windows L-35/L-36
       noted in the PR.
-- [ ] **T29** (docs): **AC-43** — CLAUDE.md (status block incl. the stale 3.1 line, the port change,
+      Done 2026-10-08: one migration `b10d1c777b0a` (down `7e43a47327ec`); `git diff --stat bfb98a9`
+      over docker/, compose files, pyproject/uv.lock, web package files, .github/, settings, .env.example
+      is empty; the only touched build files are `Makefile` (+`layout.previews`, dev-only) and
+      `web/vite.config.ts` (`assetsInlineLimit` for .webp). `deploy.yml`: pull api worker beat web l.104;
+      stop worker beat l.126; web l.129; api l.130; nginx force-recreate l.138; `alembic upgrade head`
+      l.140; worker beat l.142. Production (host `hetzner`, read-only): `alembic_version` =
+      `7e43a47327ec`; `export_job` **3 rows, 2 pdf** (backfill + ADD CONSTRAINT take milliseconds; no
+      need to split the revision); uploads volume `tailorcraft_uploads` **1.7 MiB**. L-35 (new bundle
+      -> old API: 422 on `layout_template` for seconds, Try again works) and L-36 (new API -> old
+      schema: export reads 503 for seconds) are accepted, R-3 — note both in the PR.
+- [x] **T29** (docs): **AC-43** — CLAUDE.md (status block incl. the stale 3.1 line, the port change,
       `make layout.previews`, any footgun met), `docs/roadmap.md` (3.2, 3.1 status corrected, OQ-9's
       answer), `docs/infrastructure.md`, FORboehpyk.md.
 - [ ] **T30** (owner): **AC-44** — confirm the `__Host-tc_guest` slice is merged to `main` (or the

@@ -5488,3 +5488,223 @@ not a drive-by.
 Ask **who else can write this**, not just who can read it. The cookie was safe to read and open to
 write; a migration that looked kind was a laundering service; a test that imported its expectation
 could never disagree. The smallest diff in the project, and three questions worth keeping.
+
+---
+
+# Slice 3.2 — the wardrobe, or: is this the same request?
+
+Since 1.5, every PDF TailorCraft made looked the same: one sensible sans-serif stylesheet, take it or
+leave it. That's fine until a user applies to a law firm and a design studio in the same week. 3.2
+gives a PDF export a **layout**: *Classic* (clean and familiar — it's 1.5's stylesheet, moved over
+byte for byte), *Modern* (an accent rule, a bit more compact) or *Formal* (serif, centred name).
+Three outfits for the same body of text. You pick one in a small radio group above the export
+buttons, each with a thumbnail, and the PDF comes out dressed accordingly.
+
+It's deliberately small. The Constitution says *no layout designer*, and this isn't one: three
+stylesheets someone wrote and checked in, not a font picker and a colour wheel. It ships on
+`feature/export-pdf-layout-templates` as **4385 backend and 1196 frontend tests**, one new ADR
+(0030), two amended ones (0016, 0017), one migration (`b10d1c777b0a`) and nothing new on the box: no
+package, container, queue, volume, beat entry or setting. As of this writing it is **implemented,
+not yet verified**, and its PR waits on purpose: the `__Host-tc_guest` cookie fix (3.1's carried
+security item) must merge to `main` first. That ordering is AC-44, and the owner chose it at
+approval.
+
+## A closed set, in three places, pinned in all three
+
+The interesting design question wasn't the CSS. It was: *what is a layout, to the code?*
+
+The answer is a **closed set**: `LayoutTemplate`, a `StrEnum` in `domain/export` with exactly three
+members. Not a free string, not a setting, not a row in a `layouts` table an admin could edit. A
+closed set is the cheapest thing in programming to reason about: every `match` over it can be
+checked for completeness (`assert_never`), and no value you've never seen can arrive.
+
+But the set has to exist in three places, and that's where closed sets usually rot:
+
+1. **The domain** — `LayoutTemplate`, the member order being the display order.
+2. **The renderer** — `infrastructure/export/layouts.py`, one stylesheet constant per member and a
+   `stylesheet_for` that maps one to the other. The port speaks `LayoutTemplate`; CSS never crosses
+   it. The domain knows *that* a PDF can look Formal, never *how*.
+3. **The browser** — `web/src/features/export/layouts.ts`, the ids, names, descriptions and
+   preview images.
+
+Three copies of one list is a classic way to ship a button that sends a value the server has never
+heard of. The cure here isn't a catalogue endpoint (an extra request to fetch a list that changes
+once a year). It's **a pin on each side**: a Python test that knows the exact members and their
+order, and a TypeScript test that knows the same and names the Python file it mirrors. Change one
+without the other and something goes red with a sentence telling you where to look. It's the same
+idea as a ship's manifest checked at both ports: nobody trusts the cargo to stay the same by itself.
+
+One more rule rides on the enum's docstring: **a member is never deleted, only retired.** Old export
+rows still say `formal`, and a row that can't load is worse than a layout nobody can choose any more.
+
+## Is this the same request? Is this file out of date?
+
+Since 1.5, an export has answered two questions, and before this slice they happened to have
+almost the same answer:
+
+- **"Is this the same request?"** — if you click *PDF* twice, you get the job you already have, not
+  a second render. That's the idempotency key: (run, document, format, run version).
+- **"Is this file out of date?"** — if you edit the CV after exporting, the old PDF is *stale* and
+  the button says so. That's a comparison of the job's run version with the run's current one.
+
+A layout pulls them apart, and the slice is mostly about noticing that. Ask for *Modern* after
+*Classic* and it is clearly **not the same request**: the key gains the layout. But is the Classic
+PDF now **out of date**? No. Nothing about the CV changed; it's the same text in a different outfit.
+So staleness stays exactly what it was, `run_version` alone. Switch layouts and nothing goes stale;
+edit the CV and **every** layout goes stale at once.
+
+It's the difference between "did you already order this?" and "is the milk you bought still good?".
+Ordering oat milk doesn't spoil the cow's milk in your fridge.
+
+The key comparison is `IS NOT DISTINCT FROM`, not `=`, because a DOCX has no layout (`NULL`) and in
+SQL `NULL = NULL` is not true. Plain `=` would have quietly stopped DOCX idempotency from working;
+the null-safe comparison keeps 1.5's behaviour byte for byte. And the caps (40 jobs per guest
+session, 20 per user run) count **every** layout. A layout is a new key, not a new budget.
+
+## The invariant, held twice
+
+*A PDF has a layout; nothing else does.* That rule lives in two places on purpose.
+
+The **aggregate** holds it: `ExportJob.request` refuses a PDF with no layout
+(`LayoutTemplateRequired`) and a DOCX with one (`LayoutTemplateNotApplicable`, which reaches the
+user as a 422), both *before* the object exists. And the **database** holds it:
+`ck_export_job_layout_template_only_for_pdf`, a CHECK that pairs the column with the format.
+
+Why both? Because they guard against different things. The aggregate guards the code path every
+request takes. The CHECK guards everything else: a raw-SQL seed, a hand-run fix on the box, a future
+migration, a test that builds a row by hand. Belt and braces — and, as you'll see, the braces were
+the ones that caught something first.
+
+The default, Classic, is also a deliberate non-decision: it's `DEFAULT_LAYOUT_TEMPLATE` in the
+domain, applied by the use case, and **never a setting**. A setting is something one box can have
+different from another, and nobody wants production's PDFs to look different from dev's because of
+an environment variable.
+
+## The picker remembers nothing, and still remembers
+
+On the frontend, the choice is a native radio group, `LayoutPicker`, with a thumbnail per layout.
+Arrow keys work because it's a real `<fieldset>` of real radios, not divs pretending.
+
+Where does the choice live? Not in `localStorage`, not on the server, not in the URL. It's lifted to
+`RunPage` (which, it was checked, survives switching between the CV and cover-letter tabs, so both
+tabs share one choice) and is **stored nowhere**. Yet when you come back to a run, the picker
+already shows the layout you used last. How? It's **derived**: the pre-selection is the layout of
+the run's newest PDF job, else Classic. The server already knows what you exported; copying that into
+browser storage would just make a second copy that could disagree with the first. That's the
+codebase's React rule ("server state is never copied into `useState`") applied to a preference.
+
+The thumbnails are real: `make layout.previews` renders a **synthetic** CV (no real person's data)
+through the real renderer, rasterises page one in a throwaway container and commits three small WebP
+files plus a manifest of each stylesheet's SHA-256. A test goes red if a stylesheet changes and its
+preview doesn't, so a picture can never quietly lie about the PDF you'll get.
+
+## War stories
+
+### The crash only the whole corpus could find
+
+The Modern layout wanted en-dash bullets instead of dots. The textbook CSS for that is
+`li::marker { content: "– "; }`. It looked fine in the head of whoever wrote it. Then T13 rendered
+**every document in the test corpus in every layout** and WeasyPrint 70 died on the first `<ul>` it
+met:
+
+```
+TypeError: min-content width for TextBox not handled yet
+```
+
+Not a refused rule, not a warning: a crash inside the layout engine, in the worker, which 1.5's
+`except Exception` floor would have turned into a failed export saying `render_error` and nothing
+else. A unit test with one paragraph and no list would never have met it. The fix is the older,
+plainer spelling, `list-style-type: "\2013  "` (a string value), which WeasyPrint supports fully.
+**Render the whole corpus, in every variant, through the real library** — the cheap fixture is the
+one that has no lists.
+
+Two smaller surprises came from reading the PDFs back. Formal's `small-caps` and `text-transform`
+change the **case of the text you extract** from the PDF, so "does the name appear?" must compare
+case-insensitively. And WeasyPrint writes embedded font names hyphenated (`Liberation-Serif-Bold`),
+not as CSS spells them (`Liberation Serif`). The test that proves Formal really embeds a serif font
+now tolerates both, and a mutation (Formal switched to sans) turned exactly the two Formal cells red.
+
+### The CHECK that broke 198 tests
+
+The plan had a rule from 2.3: **a migration lands before its mapping**, because a mapped column the
+table doesn't have breaks every load. So T11 (migration) was supposed to land, green, before T12
+(mapping).
+
+It couldn't. The migration adds a nullable column *and* the CHECK. Until the mapping writes the
+column, every PDF the ORM inserts leaves it `NULL`, and the CHECK, doing its job perfectly, refuses
+every one of them. **198 failures.** There was no order in which T11 alone was green. 2.3's rule is
+true for a bare nullable column; it stops being true the moment a constraint demands that the
+mapping fill it. So T11 and T12 became one commit (`37c7424`), and the commit body says why — the
+codebase's rule is to reorder on purpose and say so, never to commit something red and hope.
+
+(The task list had also predicted that two raw-SQL seeds would need the column. One did; the other
+turned out to insert a Markdown row, which the CHECK correctly leaves alone. Read the seed, not the
+prediction.)
+
+### Two tests that argued with the spec
+
+T8's RED included two cap tests: fill a user's run to the 20-job cap, then ask for another PDF in
+every layout and expect `TooManyExportJobs`. They went red, as REDs should. But the reason was
+wrong. The seed filled the cap with jobs on the very layout the loop then asked for, and the spec's
+order says the **idempotent lookup comes before the cap**: asking for a job you already have
+correctly returns it, cap or no cap. The tests were demanding a refusal the spec forbids.
+
+The fix (`cc1bd0e`) seeds the cap with cover-letter PDFs across every layout, so no CV request can
+match an existing key and only the cap can answer. Same meaning ("the cap counts every layout"), in
+its own commit, before GREEN, so GREEN still edited no test. It's 3.1's lesson again from the other
+side: **a RED test is a claim about the spec, and it can be wrong.**
+
+### Five tests that clicked too early
+
+T24's frontend tests found the PDF button with `findByRole` and clicked it. Nothing was sent. The
+spec itself (AC-32) says the buttons exist but are **disabled** while the export list loads, so they
+don't jump around. `findByRole` happily resolves on a disabled button, the test clicked it at once,
+and a disabled button does nothing. The tests were racing the loading state they were meant to
+respect. A small `enabledButton()` helper (find it, then wait until it's enabled) fixed five tests
+in their own commit (`6cf4628`). 1.5's export tests had written down the same trap; it's the kind
+that needs writing down more than once.
+
+### Vite, helpfully, inlined the pictures
+
+The previews are about 2 KB each. Vite's default `assetsInlineLimit` is 4 KB: anything smaller is
+turned into a `data:` URI and **baked into the JavaScript bundle**. So the three thumbnails, meant
+to be separate, cacheable, lazily-loaded files, were silently riding in the main chunk that every
+page downloads. No error, no warning; the bundle was just a bit bigger than it should be. One line in
+`vite.config.ts` keeps `.webp` out of inlining, and AC-38's test now asserts the images come out as
+hashed files. The main bundle grew **+0.88 kB** gzipped in the end (budget 3).
+
+## The numbers
+
+Measured at T27 in the **production image** (its own tag, not the dev one), n = 40 per cell:
+
+- **Render p95** per layout × document: Classic 98 / 80 ms (CV / letter), Modern 93 / 82, Formal
+  105 / 82. Budget 1 000 ms and ≤ 2 × Classic; the worst ratio is **1.07**.
+- **A 20 000-character CV** (19–23 pages): p95 759 / 771 / 807 ms (budget 5 s).
+- **File sizes**: 10–14 KB for the fixture, 36–49 KB for the 20k CV (budget 200 KB).
+- **`POST` → `ready`**: p95 **178 ms** (budget 10 s) — on the dev worker, written down as such.
+- **Bundle**: **+0.88 kB** gzipped.
+- **Production** (T28, read-only): `export_job` held **3 rows, 2 of them PDFs**, so the back-fill
+  and `ADD CONSTRAINT` are milliseconds and the revision didn't need splitting.
+
+## The common thread, a sixteenth time
+
+3.1 asked *whose fact is it?* 3.2 asks a cousin: **which question is this code answering?** "Same
+request?" and "out of date?" had lived in one line of thought for two years because they used to
+agree. A new dimension (the layout) made them disagree, and the right design kept them apart:
+widen one, leave the other alone. Most "small feature, surprisingly fiddly" moments are two
+questions that used to have the same answer.
+
+And the bugs share a shape too: **the default that does the wrong thing quietly.** Vite inlines small
+files by default. `findByRole` resolves on disabled buttons by default. `=` treats `NULL` as unknown
+by default. A one-paragraph fixture has no list by default. None of them is a bug in the tool; each
+is a sensible default that was wrong *here*, and the only way to see it was to look at what really
+happened (the bundle, the request, the rows, the whole corpus) rather than what should have.
+
+## What's next
+
+- **The `__Host-tc_guest` slice merges first** (AC-44), then 3.2's `/verify` and a manual pass on
+  `:8080` with real Gemini: every layout opened by eye against its thumbnail, a layout switched
+  mid-render, an edit staling every layout at once.
+- **Carried for `/verify`:** the account 429 on export requests has no `no-store` (it's raised in
+  the shared handler, not through `translate`); T14's migration tests were not mutation-tested.
+- **Then 3.3**: rate-limit and retry feedback the user can actually see.

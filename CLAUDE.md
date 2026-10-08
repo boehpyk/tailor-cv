@@ -18,9 +18,11 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: eleven slices shipped (1.1–1.6, 2.1–2.5); Phase 2 is closed, its gate met on 2026-10-03; Phase 3
-> has begun: slice 3.1 `tracking-application-board` is verified (reviewer PASS round 2, 2026-10-06;
-> manual pass T33); its PR is pending.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> **Status: twelve slices shipped (1.1–1.6, 2.1–2.5, 3.1); Phase 2 is closed, its gate met on 2026-10-03.
+> Slice 3.1 `tracking-application-board` was merged as PR #21 (`bfb98a9`) and released 2026-10-06
+> (deploy run 37529074626). Slice 3.2 `export-pdf-layout-templates` is implemented (T0–T28) on
+> `feature/export-pdf-layout-templates`; `/verify` is pending and the PR is not opened — the
+> `__Host-tc_guest` slice must merge first (AC-44).** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -337,8 +339,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   AC-32 (eight `Origin` routes — the spec's "seven" missed `delete-account`), AC-41 (the
 >   mutation is `<=` → `<`; the spec had it backwards).
 >
-> - **3.1 `tracking-application-board`** (branch `feature/tracking-application-board`, **verified
->   (reviewer PASS round 2, 2026-10-06; manual pass T33)**, PR pending, nothing merged or released)
+> - **3.1 `tracking-application-board`** (PR #21, `bfb98a9`, **verified (reviewer PASS round 2,
+>   2026-10-06; manual pass T33), merged, released 2026-10-06**, deploy run 37529074626)
 >   — a signed-in
 >   user's job search on a board. A **seventh bounded context, `tracking`** (**ADR-0029**), chosen
 >   by whose fact it is: a run's status is a fact about a paid call, a card's stage is a fact about
@@ -425,21 +427,57 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   **seed script's** `file_key = 't33/<uuid>'`, which `FileRef` refuses on load; repaired by id, the
 >   deletion answered 204 (Conventions).
 >
-> - **`identity-host-prefixed-guest-cookie`** (branch of the same name, **implemented 2026-10-08,
->   `/verify` pending**; it merges before 3.2, whose AC-44 it satisfies) — the guest cookie is
+> - **`identity-host-prefixed-guest-cookie`** (**implemented 2026-10-08, verified, merged as PR #22
+>   `998c4b4`, released 2026-10-09**; it satisfies 3.2's AC-44) — the guest cookie is
 >   **`__Host-tc_guest`**: `Secure` in every environment, `Path=/`, no `Domain` (**ADR-0010 (c)**,
->   discharging (b)'s session-fixation finding). A **hard cut**: `tc_guest` is never read again, because
->   a dual-read window keeps honouring a planted cookie and migrate-on-read would promote one into the
->   protected name. A guest mid-session at release loses that ≤ 24 h workspace. One constant and one
->   attribute dict in `guest_session.py`; `clear_guest_cookie(response)` lost its `settings`. Dev on
->   plain-HTTP `:8080` works because browsers treat `localhost` as a secure context (Chromium 145,
->   probed and walked end to end; Firefox not exercised). **Every test client is `https://testserver`**:
->   httpx stores a `Secure` cookie over `http://` and never sends it back, so reverting that switch
->   turns **186** tests red. The RED tests spell the literal `"__Host-tc_guest"`, since a test that
->   imports `COOKIE_NAME` cannot fail on a rename. `secure=False` mutated → 7 red. No migration,
->   setting or `.env` change. **Carried (roadmap OQ-16): `tc_refresh` has the same exposure** — a
->   sibling host can plant a refresh cookie that signs the victim into the attacker's account; its
->   `Path=/api/auth` cannot take `__Host-`, so it is its own slice, on OQ-12's trigger.
+>   discharging (b)'s session-fixation finding). A **hard cut**: `tc_guest` is never read again,
+>   because a dual-read window keeps honouring a planted cookie and migrate-on-read would promote
+>   one into the protected name. A guest mid-session at release loses that ≤ 24 h workspace. One
+>   constant and one attribute dict in `guest_session.py`; `clear_guest_cookie(response)` lost its
+>   `settings`. Dev on plain-HTTP `:8080` works because browsers treat `localhost` as a secure
+>   context (Chromium 145, probed and walked end to end; Firefox not exercised). **Every test client
+>   is `https://testserver`**: httpx stores a `Secure` cookie over `http://` and never sends it
+>   back, so reverting that switch turns **186** tests red. The RED tests spell the literal
+>   `"__Host-tc_guest"`, since a test that imports `COOKIE_NAME` cannot fail on a rename.
+>   `secure=False` mutated → 7 red. No migration, setting or `.env` change. **Carried (roadmap
+>   OQ-16): `tc_refresh` has the same exposure** — a sibling host can plant a refresh cookie that
+>   signs the victim into the attacker's account; its `Path=/api/auth` cannot take `__Host-`, so it
+>   is its own slice, on OQ-12's trigger.
+>
+> - **3.2 `export-pdf-layout-templates`** (branch `feature/export-pdf-layout-templates`, **implemented
+>   T0–T28, verified 2026-10-08, rebased onto `998c4b4`**; AC-44 met — the `__Host-tc_guest` slice
+>   merged first, PR #22) — a PDF export can be **Classic** (1.5's stylesheet, moved verbatim under
+>   a digest pin),
+>   **Modern** or **Formal** (**ADR-0030**; ADR-0016 and ADR-0017 amended). `LayoutTemplate` is a
+>   **closed `StrEnum`** in `domain/export`, recorded on `ExportJob`, **PDF only**: `request` refuses
+>   a PDF without one (`LayoutTemplateRequired`) and a DOCX with one (`LayoutTemplateNotApplicable`,
+>   422 `layout_template_not_applicable`), before `cls()`. The default is the use case's
+>   (`DEFAULT_LAYOUT_TEMPLATE`), never a setting. The invariant is held **twice**: by the aggregate
+>   and by **`ck_export_job_layout_template_only_for_pdf`**, a paired CHECK on the new nullable
+>   `export_job.layout_template`. **"Is this the same request?" widened; "is this file out of date?"
+>   did not**: `find_latest_for_key` keys on (run, document, format, **layout**, run version),
+>   compared `IS NOT DISTINCT FROM` so DOCX is unchanged, while staleness stays `run_version` alone — a
+>   layout switch stales nothing, an edit stales every layout. Caps count every layout. **The port
+>   changed**: `DocumentRendererPort.render(…, layout_template)` and `find_latest_for_key(…,
+>   layout_template)` take a required keyword; the port speaks `LayoutTemplate` and never CSS.
+>   `infrastructure/export/layouts.py` holds three checked-in stylesheet constants and
+>   `stylesheet_for` (no `@import`, `url()`, `@font-face` or interpolation — an AST test; system fonts
+>   only — Formal embeds Liberation Serif); `render_pdf` takes the stylesheet as a keyword, and
+>   `layout_template` joins the three render log lines. Migration **`b10d1c777b0a`** (down
+>   `7e43a47327ec`; back-fills PDFs to `classic`; the **downgrade refuses** while a non-classic row
+>   exists). React: a native radio-group `LayoutPicker` with committed WebP previews
+>   (`make layout.previews`, a stylesheet-digest drift test), the choice lifted to `RunPage` and shared
+>   by both tabs, **stored nowhere**: pre-selection is **derived** from the run's newest PDF job, else
+>   Classic. Jobs are matched per layout; only a PDF body carries `layout_template`. **4385 backend
+>   and 1196 frontend tests.** Measured (T27, production image): render p95 per layout × document
+>   80–105 ms (budget 1 000 and ≤ 2 × Classic; worst ratio 1.07); a 20 000-character CV p95 759 / 771
+>   / 807 ms (5 s); fixture PDFs 10–14 KB (200 KB); `POST` → `ready` p95 **178 ms** (10 s, dev
+>   worker); main bundle **+0.88 kB gzip** (3). T28: production `export_job` held **3 rows, 2 PDF**,
+>   so the back-fill and `ADD CONSTRAINT` take milliseconds; no package, container, queue, volume,
+>   beat entry or setting. Found on the way: WeasyPrint's `::marker` crash, a CHECK that forced T11
+>   and T12 into one commit (`37c7424`), two T8 cap tests that contradicted the step order
+>   (`cc1bd0e`), five T24 tests that raced the loading state (`6cf4628`), Vite inlining the previews
+>   (Conventions; Infrastructure footguns).
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
@@ -861,6 +899,11 @@ make nginx.referrer.check  # Referrer-Policy: no-referrer on the SPA + the meta 
 # The identity token sweep runs hourly on beat, always on. Its fact, like the purge's:
 curl -s localhost:8080/health/ready | jq .jobs.identity_token_sweep   # overdue should read 0
 
+# PDF layout previews (slice 3.2). Regenerate after ANY change to infrastructure/export/layouts.py,
+# then commit the three WebPs and api/tests/fixtures/layout_previews.json with the stylesheet — the
+# AC-38 drift test is red until you do. Dev stack up; needs network (a throwaway debian container).
+make layout.previews
+
 # LLM evaluation — NOT a test. Calls the real API, costs money, is not in `make check`.
 make eval
 
@@ -1108,6 +1151,13 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   `intake_base_cv.file_key = 't33/<uuid>'`; `FileRef` refuses that on load, so account erasure
   500'd on a row real data can never produce. Build seeded values with the value objects (or copy
   their grammar), or the erasure path tests the seed.
+- **A loading control that exists but is disabled satisfies `findByRole`** (3.2, `6cf4628`). The
+  export buttons render disabled while the list loads, so `findByRole` resolved at once and the
+  click sent nothing; five T24 tests were corrected before GREEN. Wait for enabled
+  (`waitFor(() => expect(btn).toBeEnabled())`) before clicking.
+- **A RED test can contradict the spec's step order** (3.2, `cc1bd0e`). Two cap tests seeded the cap
+  with jobs on the very key they then requested, so the idempotent lookup (step 3) correctly
+  answered before the cap could. Seed the cap with keys the request cannot match.
 - **A test encodes what the code *should* do — never what it was observed doing.** A test written by
   running the code and recording the answer has no source of truth independent of the code, so it can
   never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
@@ -1435,6 +1485,20 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `infrastructure/persistence/repositories/tailoring/tailoring_run.py:186`** (the posting lock) —
   still correct, only stronger than intended, and **left for the owner**. Compile the query and read
   the SQL; a keyword argument's name is not documentation.
+- **WeasyPrint 70 crashes on `li::marker { content: … }`** with `TypeError: min-content width for
+  TextBox not handled yet`, on any `<ul>` — found by rendering the whole corpus per layout, not by a
+  unit test. Use `list-style-type: "\2013  "` (a string value) instead. Also: `text-transform` and
+  `small-caps` change the **case of text extracted** from the PDF, and WeasyPrint's embedded
+  `BaseFont` names are hyphenated (`Liberation-Serif-Bold`), so a read-back check compares
+  case-insensitively and hyphen-tolerantly.
+- **A migration adding a CHECK on a column the mapping does not write yet cannot land green alone**
+  (3.2, `37c7424`). Every ORM PDF insert left the column `NULL` and hit
+  `ck_export_job_layout_template_only_for_pdf`: 198 failures. The migration (T11) and the mapping
+  (T12) are one commit. "Migration before mapping" (2.3) holds for a nullable column with no
+  constraint; a constraint the mapping must satisfy ties the two together.
+- **Vite inlines any asset under 4 KB as a `data:` URI** (`assetsInlineLimit`). The 2 KB layout
+  previews went into the JS chunk until `web/vite.config.ts` excluded `.webp`; AC-38 now asserts they
+  are hashed files.
 - **`base64.urlsafe_b64decode` silently discards characters outside its alphabet**, so
   `"not-base64!!"` decodes. Anything decoded from a client (the history cursor) uses
   `b64decode(s, altchars=b"-_", validate=True)`. Parse integers from it as digits only, because
