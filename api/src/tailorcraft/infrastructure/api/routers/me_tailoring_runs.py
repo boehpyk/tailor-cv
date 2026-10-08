@@ -117,6 +117,16 @@ def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
+def _refusal_no_store(exc: DomainError, *, max_job_postings_per_user: int) -> HTTPException:
+    """The account translation, plus `no-store` on the refusal: the handler raises it, so it is a
+    response the handler builds (slice 3.2 plan §4, as 3.1's `_refuse` and 2.4's claim do)."""
+    refusal = account_error_to_http_exception(
+        exc, max_job_postings_per_user=max_job_postings_per_user
+    )
+    refusal.headers = {**(refusal.headers or {}), "Cache-Control": "no-store"}
+    return refusal
+
+
 def _principal(user_id: UserId) -> tuple[Literal["user"], str]:
     """The per-principal rate-limit key for an account: every budget is the user's (plan §3)."""
     return ("user", str(user_id.value))
@@ -592,7 +602,7 @@ async def request_my_export(
         clock=clock,
         db=db,
         translate=partial(
-            account_error_to_http_exception,
+            _refusal_no_store,
             max_job_postings_per_user=settings.max_job_postings_per_user,
         ),
     )

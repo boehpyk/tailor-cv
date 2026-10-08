@@ -144,7 +144,7 @@ def to_response(
         tailoring_run_id=job.tailoring_run_id.value,
         document=job.document,
         format=job.format,
-        layout_template=None,  # T19
+        layout_template=job.layout_template,
         status=job.status,
         failure_reason=job.failure_reason,
         retryable=is_retryable(job.failure_reason),
@@ -412,6 +412,7 @@ async def request_export(
                 tailoring_run_id=run_id,
                 document=body.document,
                 format=ExportFormat(body.format),
+                layout_template=body.layout_template,
             )
         )
     except DomainError as exc:
