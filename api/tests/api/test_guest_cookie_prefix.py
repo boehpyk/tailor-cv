@@ -19,6 +19,7 @@ AC-4, AC-7, AC-8, G-2, G-4, G-5, G-6). Written red-first from the spec, against 
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from uuid import UUID
@@ -341,17 +342,25 @@ async def test_ac8_with_both_cookies_the_claim_moves_a_clears_the_prefix_and_lea
     ids=["empty", "4kb", "percent-escapes"],
 )
 async def test_g4_a_junk_prefixed_cookie_is_unknown_on_get_and_mints_on_post(
-    client: AsyncClient, junk: str
+    client: AsyncClient, junk: str, caplog: pytest.LogCaptureFixture
 ) -> None:
     header = {"Cookie": f"{PREFIXED}={junk}"}
 
-    got = await client.get("/api/base-cvs", headers=header)
-    assert got.status_code == 401, got.text
-    assert error_code(got) == "guest_session_expired"
+    with caplog.at_level(logging.DEBUG):
+        got = await client.get("/api/base-cvs", headers=header)
+        assert got.status_code == 401, got.text
+        assert error_code(got) == "guest_session_expired"
 
-    posted = await client.post(
-        "/api/base-cvs", files={"file": ("sample.txt", SAMPLE_CV, "text/plain")}, headers=header
-    )
+        posted = await client.post(
+            "/api/base-cvs",
+            files={"file": ("sample.txt", SAMPLE_CV, "text/plain")},
+            headers=header,
+        )
+    # Positive control: the upload logs `cv_extraction.finished`, so capture was live for these
+    # requests; without it, an empty log would pass the absence below.
+    assert any("cv_extraction" in r.getMessage() for r in caplog.records), caplog.text
+    if junk:  # "" is a substring of everything
+        assert junk not in caplog.text, "the cookie value reached a log record (G-4)"
     assert posted.status_code == 201, posted.text
     cookies = _guest_cookies(posted)
     assert [c["name"] for c in cookies] == [PREFIXED], cookies
