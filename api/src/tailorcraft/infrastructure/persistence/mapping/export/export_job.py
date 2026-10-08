@@ -54,6 +54,7 @@ from tailorcraft.infrastructure.persistence.types.export import (
     ExportFormatType,
     ExportJobIdType,
     ExportJobStatusType,
+    LayoutTemplateType,
 )
 from tailorcraft.infrastructure.persistence.types.identity import GuestSessionIdType, UserIdType
 from tailorcraft.infrastructure.persistence.types.shared import FileRefType
@@ -145,6 +146,11 @@ export_job_table = Table(
     # would silently admit it, while this refuses it until someone decides, in this file, that it has
     # a file.
     Column("format", ExportFormatType, nullable=False),
+    # The layout a PDF is rendered in (slice 3.2, ADR-0030), decided once at request (XJ-10).
+    # `NULL` for every DOCX job and set on every PDF one — the `layout_template_only_for_pdf` CHECK
+    # below holds that where `ExportJob.request` cannot reach. No value CHECK: the decorator is the
+    # authority on which ids exist, so a fourth layout is not a migration (plan §0.12).
+    Column("layout_template", LayoutTemplateType, nullable=True),
     # ADR-0015's version of the run at request time — the number `was_requested_for` compares against
     # to decide `source_changed` (ADR-0016 (b)). Not a foreign key into anything and not the *job's*
     # version (that is `version`, at the bottom); the two integers are unrelated and sit apart in the
@@ -295,6 +301,13 @@ export_job_table = Table(
     # refuses two owners and none in one expression. `ck_export_job_exactly_one_owner`, 2.2's shape
     # exactly — and, as on `tailoring_run`, the lock that keeps the guest cascade off a user's rows.
     CheckConstraint("num_nonnulls(guest_session_id, user_id) = 1", name="exactly_one_owner"),
+    # XJ-10's second lock (slice 3.2): a PDF has a layout and nothing else does. An equality of two
+    # predicates, like the seven above, so one expression refuses both bad pairings. Renders as
+    # `ck_export_job_layout_template_only_for_pdf` (revision `b10d1c777b0a`).
+    CheckConstraint(
+        "(format = 'pdf') = (layout_template IS NOT NULL)",
+        name="layout_template_only_for_pdf",
+    ),
 )
 
 mapper_registry.map_imperatively(
@@ -309,6 +322,7 @@ mapper_registry.map_imperatively(
         "_tailoring_run_id": export_job_table.c.tailoring_run_id,
         "_document": export_job_table.c.document,
         "_format": export_job_table.c.format,
+        "_layout_template": export_job_table.c.layout_template,
         "_run_version": export_job_table.c.run_version,
         "_status": export_job_table.c.status,
         "_failure_reason": export_job_table.c.failure_reason,

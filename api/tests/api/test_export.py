@@ -70,7 +70,7 @@ from tailorcraft.domain.export.errors import (
     DocumentRenderOutputTooLarge,
     DocumentRenderTimedOut,
 )
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
@@ -395,6 +395,7 @@ async def _seed_jobs_for_cap(
             tailoring_run_id=TailoringRunId(UUID(run_id)),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,
+            layout_template=LayoutTemplate.CLASSIC,
             run_version=1,
             requested_at=now,
         )
@@ -1500,6 +1501,7 @@ def test_privacy_weasyprint_and_fonttools_never_reach_a_handler_and_the_typed_ur
     **after** `configure_logging(settings)` has run, never via `caplog.at_level()` on the root
     logger alone (that would prove nothing about the vendor logger's own effective level, which is
     where the silencing actually happens)."""
+    from tailorcraft.infrastructure.export.layouts import CLASSIC_STYLESHEET
     from tailorcraft.infrastructure.export.pdf import render_pdf
     from tailorcraft.infrastructure.observability import configure_logging
 
@@ -1513,7 +1515,7 @@ def test_privacy_weasyprint_and_fonttools_never_reach_a_handler_and_the_typed_ur
     )
 
     with caplog.at_level(logging.DEBUG):
-        render_pdf(hostile_html)
+        render_pdf(hostile_html, stylesheet=CLASSIC_STYLESHEET)
 
     for record in caplog.records:
         assert not record.name.startswith("weasyprint"), (

@@ -141,6 +141,7 @@ EXPORT_JOB_RESPONSE_KEYS = {
     "tailoring_run_id",
     "document",
     "format",
+    "layout_template",
     "status",
     "failure_reason",
     "retryable",

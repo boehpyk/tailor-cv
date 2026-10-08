@@ -40,6 +40,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFailureReason,
     ExportFormat,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 
@@ -83,6 +84,11 @@ class CreateExportRequest(BaseModel):
     document: TailoredDocumentKind
     format: Literal["pdf", "docx"]
 
+    # Slice 3.2: the PDF's layout. Omitted means "the default" (`classic`), resolved by the use case,
+    # not here, so the default lives in one place. An unknown id is FastAPI's own 422; a layout on a
+    # DOCX is the domain's `LayoutTemplateNotApplicable` (422 `layout_template_not_applicable`).
+    layout_template: LayoutTemplate | None = None
+
 
 class ExportJobResponse(BaseModel):
     """One `ExportJob` as the client sees it — the body of the `POST` (202 or 200), of
@@ -105,6 +111,8 @@ class ExportJobResponse(BaseModel):
 
     document: TailoredDocumentKind
     format: ExportFormat
+    # The layout the PDF was rendered with; `null` for a DOCX, which has none (slice 3.2).
+    layout_template: LayoutTemplate | None
 
     status: ExportJobStatus
     failure_reason: ExportFailureReason | None

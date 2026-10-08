@@ -276,3 +276,46 @@ about 400 MB in the worst case, and about 16 MB typically. Pruning superseded fi
 deletion inside a render path — machinery for a cost nobody has yet. **Trigger:** the uploads volume
 above **5 GB**, or any one user above **200 MB**. Today's volume size is recorded before 2.3's
 release, so the trigger is a comparison, not a guess.
+
+## Amendment: 2026-10-08, from the plan of slice 3.2 (`export-pdf-layout-templates`)
+
+Slice 3.2 lets a PDF be rendered in one of three layouts (ADR-0030). The six decisions and the
+ADR-0011 amendment stand; the 2.3 amendment stands. This amendment records what a layout does to
+"the same request", what it does not do to "out of date", and how the cap arithmetic reads now. The
+title's *"keyed on run × document × format × run version"* is read with (a) below; it is annotated
+here rather than rewritten, because an ADR is superseded or amended, never silently edited.
+
+**(a) §2's key gains the layout.** `RequestExport` looks up the latest job for **(run, document,
+format, layout_template, run version)**. A Modern PDF is not a Classic PDF, so asking for one when
+the other exists creates a job (202); asking again for the same layout of the same version returns
+the one that exists (200), exactly as before. `find_latest_for_key` compares the layout with
+`IS NOT DISTINCT FROM`, so a DOCX (`NULL`) keeps working through the same method. The idempotency is
+still soft (X-23's race is unchanged), and *"did this message run twice?"* is still keyed on the job
+id alone.
+
+**(b) §3's staleness does not change.** A job is stale when `job.run_version != run.version`, and
+nothing else. Choosing another layout in the picker makes no file stale — it selects a different
+job. An edit makes every layout's PDF stale at once, because the run has one version.
+
+**(c) The Consequence's column, executed under another name.** *"Phase 3.2 adds a `template` column
+when there is a second template"* — it does, as **`export_job.layout_template VARCHAR(32) NULL`**.
+`template` alone collides with the generic word (an email template, a spec template, a Jinja
+template); the column says which kind it is. It is paired with `format` by
+`ck_export_job_layout_template_only_for_pdf`, `CHECK ((format = 'pdf') = (layout_template IS NOT
+NULL))`, and existing PDF rows are back-filled to `classic`. No value CHECK on the ids (ADR-0030).
+The downgrade refuses while any row holds a layout other than `classic`.
+
+**(d) §6 holds.** A layout id is an enum value, not PII; the row still discloses nothing about the
+person.
+
+**(e) The caps count every layout and do not change.** 40 per guest session, 20 per user run
+(amendment (b) above). Every layout of both documents plus both DOCX is 8 jobs per version, so a
+user who explores everything reaches the per-run cap after two or three fully explored versions.
+Trigger to raise it: `too_many_export_jobs` observed for a user in production.
+
+**(f) The 2.3 amendment's cost arithmetic (d), restated.** That arithmetic assumed four exports per
+run, one PDF and one DOCX per document: 500 runs × 4 × 200 KB ≈ 400 MB in the worst case. With three
+layouts a fully explored version is eight files, so the same reading becomes 500 × 8 × 200 KB ≈
+800 MB. The hard ceiling is the per-run cap, as it always was: 500 runs × 20 × 200 KB ≈ 2 GB, and
+that number does not move. The pruning trigger is unchanged (the uploads volume above **5 GB**, or
+any one user above **200 MB**), and the volume is re-read at 3.2's release.

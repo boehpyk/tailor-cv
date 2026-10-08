@@ -62,7 +62,7 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFormat, LayoutTemplate
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -344,6 +344,7 @@ async def test_a_full_purge_and_orphan_sweep_never_log_any_planted_marker(
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=1,
         requested_at=requested_at,
     )

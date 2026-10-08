@@ -76,6 +76,8 @@ function renderBar(
     runId: EXPORT_RUN_ID,
     document: 'cv',
     saveState: SAVED,
+    layout: null,
+    onLayoutChange: () => undefined,
     ...overrides,
   };
 

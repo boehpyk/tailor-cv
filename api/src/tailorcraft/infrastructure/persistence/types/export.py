@@ -55,6 +55,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 
 
@@ -183,3 +184,35 @@ class ExportFailureReasonType(TypeDecorator[ExportFailureReason]):
         if value is None:
             return None
         return ExportFailureReason(value)
+
+
+class LayoutTemplateType(TypeDecorator[LayoutTemplate]):
+    """`export_job.layout_template` — `VARCHAR(32)`, `NULL` **iff** `format != 'pdf'` (XJ-10, and
+    the `ck_export_job_layout_template_only_for_pdf` constraint). Slice 3.2, ADR-0030.
+
+    32 for headroom: the longest member today is `classic` at seven characters, and a fourth layout
+    is a new member of `LayoutTemplate`, never a migration — which is why there is **no value
+    CHECK** on the column (plan §0.12). This decorator is the authority on which ids exist.
+
+    **An unknown stored value is refused with a `ValueError` naming the column, never the row or
+    the value** (AC-12): the enum's own message would echo the stored string, and a layout a
+    hand-written `UPDATE` invented is a corruption to report by where it is, not by what it says.
+    """
+
+    impl = String(32)
+    cache_ok = True
+
+    def process_bind_param(self, value: LayoutTemplate | None, dialect: Dialect) -> str | None:
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(self, value: Any | None, dialect: Dialect) -> LayoutTemplate | None:
+        if value is None:
+            return None
+        try:
+            return LayoutTemplate(value)
+        except ValueError:
+            raise ValueError(
+                "export_job.layout_template holds an unknown layout template"
+            ) from None

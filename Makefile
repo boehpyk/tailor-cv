@@ -76,6 +76,27 @@ purge: ## Run the guest purge (opts: limit=N for a small, explicit bite)
 	$(API) python -m tailorcraft.cli purge-guests $(if $(limit),--limit=$(limit))
 
 #-----------------------------------------------------------
+# Layout previews (3.2, T21) — dev-time only; never run in CI or on the box
+#-----------------------------------------------------------
+LAYOUT_PREVIEW_TMP := $(CURDIR)/.layout-previews-tmp
+LAYOUT_PREVIEW_OUT := $(CURDIR)/web/src/features/export/assets
+
+layout.previews: ## Regenerate the three PDF-layout preview WebPs + api/tests/fixtures/layout_previews.json
+	rm -rf $(LAYOUT_PREVIEW_TMP)
+	$(API) rm -rf /tmp/layout-previews
+	$(API) python scripts/render_layout_previews.py /tmp/layout-previews
+	$(DC_DEV) cp api:/tmp/layout-previews $(LAYOUT_PREVIEW_TMP)
+	$(API) rm -rf /tmp/layout-previews
+	mv $(LAYOUT_PREVIEW_TMP)/layout_previews.json api/tests/fixtures/layout_previews.json
+	docker run --rm -v $(LAYOUT_PREVIEW_TMP):/work -v $(LAYOUT_PREVIEW_OUT):/out debian:12.11-slim sh -euc '\
+	  apt-get update -qq && apt-get install -y -qq --no-install-recommends poppler-utils webp >/dev/null; \
+	  for l in classic modern formal; do \
+	    pdftoppm -f 1 -l 1 -png -scale-to-x 240 -scale-to-y -1 -singlefile /work/$$l.pdf /work/$$l; \
+	    cwebp -quiet -q 80 -m 6 /work/$$l.png -o /out/layout-$$l.webp; \
+	  done; chown $(shell id -u):$(shell id -g) /out/layout-*.webp'
+	rm -rf $(LAYOUT_PREVIEW_TMP)
+
+#-----------------------------------------------------------
 # Quality gates — backend
 #-----------------------------------------------------------
 fmt: ## Format Python (ruff format)
@@ -177,6 +198,6 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_.-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-.PHONY: up.dev mail.ui down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
+.PHONY: up.dev mail.ui layout.previews down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
         db.dump purge.dry purge fmt lint types imports test.db test test.twice web.types web.lint \
         web.format web.format.check web.test web.build web.check check eval compose.mail.check nginx.referrer.check hooks.install help

@@ -141,7 +141,8 @@ class RenderExportJob:
        1.3's step 5 narrows `extracted_text`; ``source = docs.cv if job.document is CV else
        docs.cover_letter``.
     7. ``started = time.perf_counter()``; ``data = await renderer.render(source.value,
-       document=job.document, format=job.format)`` — **`DocumentRenderFailed` is caught here** and
+       document=job.document, format=job.format, layout_template=job.layout_template)`` —
+       **`DocumentRenderFailed` is caught here** and
        recorded: ``mark_failed(exc.reason)``, save, publish, `FAILED` (X-25…X-27).
     8. ``await files.put(job.storage_ref, data)`` — `FileStoreUnavailable` caught →
        ``mark_failed(FILE_STORE_UNAVAILABLE)`` (X-28).
@@ -339,7 +340,11 @@ class RenderExportJob:
         started = time.perf_counter()
         try:
             data = await self._renderer.render(
-                source.value, document=job.document, format=job.format
+                source.value,
+                document=job.document,
+                format=job.format,
+                # The layout the job recorded at request time (AC-8), never re-derived here.
+                layout_template=job.layout_template,
             )
         except DocumentRenderFailed as exc:
             await self._record_failure(job, exc.reason, self._clock.now())

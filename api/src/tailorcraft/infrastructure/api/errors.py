@@ -29,6 +29,7 @@ from tailorcraft.domain.export.errors import (
     ExportJobNotFound,
     ExportNotQueued,
     ExportNotReady,
+    LayoutTemplateNotApplicable,
     TailoringRunNotExportable,
     TooManyExportJobs,
 )
@@ -553,6 +554,9 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     #   TooManyExportJobs         -> 409 `too_many_export_jobs` (no number in the body) X-18
     #   ExportFormatNotQueued     -> 422 `validation_error`                            X-15
     #   ExportFormatNotInline     -> 422 `validation_error`                            X-1
+    #   LayoutTemplateNotApplicable -> 422 `layout_template_not_applicable` (3.2). Its sibling
+    #                                `LayoutTemplateRequired` is deliberately absent: the use case
+    #                                always supplies a default, so it cannot cross HTTP.
     #   ExportJobNotFound         -> 404 `export_job_not_found`                        X-43
     #   ExportNotReady            -> 409 `export_not_ready` (+ `status`, + `failure_reason`)
     #                                                                                  X-44, X-45
@@ -577,7 +581,8 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         | ExportJobNotFound
         | ExportNotReady
         | ExportNotQueued
-        | DocumentRenderFailed,
+        | DocumentRenderFailed
+        | LayoutTemplateNotApplicable,
     ):
         return _export_error_to_http(exc)
 
@@ -813,6 +818,15 @@ def _export_error_to_http(exc: DomainError) -> HTTPException:
       and fails the same way — the code would be a lie the UI would act on). Sentry sees it, with
       no locals. **Do not "fix" this row into a 503.**
     """
+    if isinstance(exc, LayoutTemplateNotApplicable):
+        # Slice 3.2. A layout on a DOCX: the request is malformed for its format, not in conflict.
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "layout_template_not_applicable",
+                "message": "Only PDFs have a layout.",
+            },
+        )
     if isinstance(exc, TailoringRunNotExportable):
         # X-4 / X-14. 409, not 422: the request was well-formed and named a run the caller owns —
         # it is the run's *state* that conflicts, exactly `tailoring_run_not_editable`'s reasoning

@@ -24,7 +24,7 @@ from datetime import datetime
 from typing import Protocol
 
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 
@@ -137,9 +137,14 @@ class ExportJobRepository(Protocol):
         ...
 
     async def find_latest_for_key(
-        self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        run_id: TailoringRunId,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> ExportJob | None:
-        """The most recently requested job for the (run, document, format) key, or `None`.
+        """The most recently requested job for the (run, document, format, layout_template) key,
+        or `None`.
 
         **One caller: `RequestExport`'s idempotency check** (ADR-0016 (b)). A second click on
         "Download PDF" must not buy a second render, so the use case looks the key up, and — if the
@@ -157,6 +162,13 @@ class ExportJobRepository(Protocol):
         The **run version is not part of the key**, and that is the point: the use case needs to see
         the stale job in order to decide it is stale. A lookup that included the version would return
         `None` for exactly the case that needs an answer.
+
+        **`layout_template` is part of the key** (slice 3.2, ADR-0016 amendment): a Modern PDF is
+        not a Classic PDF, so asking for the other layout is a new request, not a repeat. `None`
+        compares as SQL's `IS NOT DISTINCT FROM`, never `=`: a DOCX job has no layout, and `None`
+        must match exactly the rows whose layout is absent — under `=` it would match nothing, and
+        every DOCX request would buy a second render. Like the run version, the layout says nothing
+        about staleness: switching the picker stales no file, only an edit does.
         """
         ...
 
@@ -219,8 +231,8 @@ class DocumentRendererPort(Protocol):
     """Turn one document's Markdown into the bytes of one format.
 
     **This port is the point of this slice, so read the signature for what is missing — that list is
-    the specification** (ADR-0004, ADR-0017). No HTML. No CSS, no stylesheet, no template, no font,
-    no page size, no margin. No WeasyPrint, no `python-docx`, no `markdown-it`, no `nh3`. No token,
+    the specification** (ADR-0004, ADR-0017). No HTML. No CSS, no stylesheet, no font, no page
+    size, no margin. No WeasyPrint, no `python-docx`, no `markdown-it`, no `nh3`. No token,
     no token stream, no walker, no ProseMirror node. No timeout, no retry count, no output cap. No
     file, no path, no storage key, no filename.
 
@@ -229,6 +241,11 @@ class DocumentRendererPort(Protocol):
     domain would hold opinions about one renderer's pipeline, and swapping WeasyPrint for a print
     service would become a change to the business model. (Naming them in this paragraph is the point
     of the paragraph; naming one in a parameter or a return type is the violation.)
+
+    **`layout_template` is not a stylesheet leaking in** (slice 3.2, ADR-0017 amendment (b)). A
+    `LayoutTemplate` is the user's choice in the domain's words — *which look* they picked, exactly
+    as `format` is *which file* — and the stylesheet that realizes it is the adapter's. A CSS string
+    in this signature would still be the violation; a closed enum naming a choice is not.
 
     **`markdown: str` is not a vendor leaking in, and the distinction is worth being precise about,
     because HTML in this signature would be.** Markdown is the domain's *own stored format* — ADR-0015
@@ -243,7 +260,12 @@ class DocumentRendererPort(Protocol):
     """
 
     async def render(
-        self, markdown: str, *, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        markdown: str,
+        *,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> bytes:
         """Render one document into one format's bytes.
 
@@ -258,6 +280,11 @@ class DocumentRendererPort(Protocol):
         positional strings — `markdown`, a `StrEnum` and a `StrEnum` — and a transposition of the last
         two is a `mypy` error only by luck of their types. Keyword-only makes the call site say which
         is which to a human reading a diff.
+
+        `layout_template` is a **required keyword with no default**: a default of `None` would let a
+        PDF caller forget it and render nothing in particular. It is `None` for every format that
+        takes no layout (`ExportFormat.takes_layout_template`); a PDF with `None` is a caller bug the
+        adapter's floor reports as `render_error`.
 
         **`async`, and the adapter runs the synchronous libraries in `asyncio.to_thread` under
         `asyncio.wait_for`.** WeasyPrint, `python-docx` and `markdown-it-py` are all synchronous, and

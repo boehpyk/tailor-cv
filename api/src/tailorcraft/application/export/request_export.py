@@ -17,7 +17,12 @@ from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import TailoringRunNotExportable, TooManyExportJobs
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus
+from tailorcraft.domain.export.value_objects import (
+    DEFAULT_LAYOUT_TEMPLATE,
+    ExportFormat,
+    ExportJobStatus,
+    LayoutTemplate,
+)
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -55,6 +60,10 @@ class RequestExportCommand:
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat
+    # Slice 3.2 (ADR-0016 amendment): the PDF layout the caller chose, `None` when it chose none.
+    # Optional so every existing caller stays valid; the use case applies the default for a PDF
+    # and the aggregate refuses a layout on a DOCX (`LayoutTemplateNotApplicable`).
+    layout_template: LayoutTemplate | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,13 +132,16 @@ class RequestExport:
        run.status)`` (X-14). Reads the **aggregate's own status**, not `run.current_documents is
        not None`: the two are equivalent, and the status is the one that says what it *means* and
        the one the error carries to the client.
-    3. ``existing = await jobs.find_latest_for_key(run.id, cmd.document, cmd.format)``. If
+    3. ``layout = cmd.layout_template``, or `DEFAULT_LAYOUT_TEMPLATE` when that is `None` and
+       ``cmd.format.takes_layout_template`` (slice 3.2); ``existing = await
+       jobs.find_latest_for_key(run.id, cmd.document, cmd.format, layout)``. If
        `existing` is not `None`, is not `failed`, and ``existing.was_requested_for(run.version)``:
        return ``RequestExportResult(existing, created=False)`` — 200, no row, no task (X-16).
     4. ``if await jobs.count_for_session(sid) >= max_per_session`` (guest) … ``: raise
        TooManyExportJobs(...)`` (X-18).
-    5. ``job = ExportJob.request(id=jobs.next_identity(), ..., run_version=run.version,
-       requested_at=clock.now())`` — `ExportFormatNotQueued` propagates from here (X-15) and
+    5. ``job = ExportJob.request(id=jobs.next_identity(), ..., layout_template=layout,
+       run_version=run.version, requested_at=clock.now())`` — `ExportFormatNotQueued` (X-15) and
+       `LayoutTemplateNotApplicable` (a DOCX with a layout) propagate from here, and
        `InvalidRunVersion` cannot fire, because a run's version is 1 or more by construction.
     6. ``await jobs.add(job)``; ``await events.publish(*job.release_events())``; return
        ``RequestExportResult(job, created=True)``.
@@ -194,7 +206,17 @@ class RequestExport:
         # `was_requested_for` is as far as the aggregate can go. Soft on purpose (X-23): two
         # genuinely concurrent requests may both miss, which is cheaper than a lock on a render
         # nobody paid for.
-        existing = await self._jobs.find_latest_for_key(run.id, cmd.document, cmd.format)
+        #
+        # The layout is resolved first because it is part of the key (ADR-0016 amendment): a PDF
+        # with no choice is the default layout, and a format that takes none keeps `None`. A DOCX
+        # *with* a layout is not refused here — it misses the lookup (no DOCX row has a layout) and
+        # is refused by `ExportJob.request` at step 5, so the rule lives in one place.
+        layout_template = cmd.layout_template
+        if layout_template is None and cmd.format.takes_layout_template:
+            layout_template = DEFAULT_LAYOUT_TEMPLATE
+        existing = await self._jobs.find_latest_for_key(
+            run.id, cmd.document, cmd.format, layout_template
+        )
         if (
             existing is not None
             and existing.status is not ExportJobStatus.FAILED
@@ -234,6 +256,7 @@ class RequestExport:
             tailoring_run_id=run.id,
             document=cmd.document,
             format=cmd.format,
+            layout_template=layout_template,
             run_version=run.version,
             requested_at=self._clock.now(),
         )

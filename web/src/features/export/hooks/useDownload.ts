@@ -2,7 +2,7 @@ import { useMutation } from '@tanstack/react-query';
 
 import { saveBlob } from '../saveBlob';
 
-import type { ExportFormat } from '../types';
+import type { ExportFormat, LayoutTemplate } from '../types';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
 /**
@@ -23,6 +23,8 @@ import type { TailoredDocumentKind } from '@/features/tailoring/types';
 export interface DownloadRequest {
   readonly document: TailoredDocumentKind;
   readonly format: ExportFormat;
+  /** The PDF layout of the file (slice 3.2), `null` for every other format — part of "which control". */
+  readonly layoutTemplate: LayoutTemplate | null;
   /** The name the file lands under — a constant keyed on (document, format). */
   readonly filename: string;
   /** Fetch the bytes. Rejects with an `ApiError` the caller renders as a state. */

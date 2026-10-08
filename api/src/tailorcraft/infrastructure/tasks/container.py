@@ -62,7 +62,7 @@ from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import Aband
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.identity.ports import AccountMailPort
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -278,9 +278,13 @@ class CommittingExportJobRepository:
         return await self._inner.list_for_run(run_id)
 
     async def find_latest_for_key(
-        self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        run_id: TailoringRunId,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> ExportJob | None:
-        return await self._inner.find_latest_for_key(run_id, document, format)
+        return await self._inner.find_latest_for_key(run_id, document, format, layout_template)
 
     async def count_for_session(self, sid: GuestSessionId) -> int:
         return await self._inner.count_for_session(sid)

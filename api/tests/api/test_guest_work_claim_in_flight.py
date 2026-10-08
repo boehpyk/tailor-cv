@@ -52,7 +52,7 @@ from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRunCommand,
     ExecuteTailoringRunOutcome,
 )
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.intake.value_objects import BaseCvLabel, ExtractedText
 from tailorcraft.domain.posting.value_objects import JobPostingText
@@ -276,7 +276,12 @@ class _ClaimingRenderer:
         self.claim: Response | None = None
 
     async def render(
-        self, markdown: str, *, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        markdown: str,
+        *,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> bytes:
         self.calls += 1
         row = await _row(self._world.engine, "export_job", self._job_id.value)

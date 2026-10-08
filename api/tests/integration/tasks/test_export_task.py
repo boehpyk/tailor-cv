@@ -50,7 +50,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.export.render_export_job import RenderExportJobOutcome
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFormat, LayoutTemplate
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -162,6 +162,7 @@ def _a_queued_export_job(
         tailoring_run_id=run.id,
         document=document,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run.version,
         requested_at=clock.now(),
     )

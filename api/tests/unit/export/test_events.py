@@ -43,6 +43,7 @@ def test_export_requested_field_set_is_exactly_the_agreed_fields() -> None:
         "tailoring_run_id",
         "document",
         "format",
+        "layout_template",
         "run_version",
         "occurred_at",
     }

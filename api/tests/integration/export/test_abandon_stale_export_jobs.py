@@ -37,6 +37,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -61,6 +62,7 @@ def _rendering_job(*, requested_at: datetime, started_at: datetime) -> ExportJob
         tailoring_run_id=_a_run_id(),
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=1,
         requested_at=requested_at,
     )

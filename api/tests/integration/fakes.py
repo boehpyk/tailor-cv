@@ -97,7 +97,12 @@ from tailorcraft.domain.export.errors import (
     ExportNotQueued,
 )
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, ExportJobStatus
+from tailorcraft.domain.export.value_objects import (
+    ExportFormat,
+    ExportJobId,
+    ExportJobStatus,
+    LayoutTemplate,
+)
 from tailorcraft.domain.identity.account_mail import AccountMail
 from tailorcraft.domain.identity.claim import ClaimedGuestWork
 from tailorcraft.domain.identity.errors import (
@@ -957,12 +962,19 @@ class FakeExportJobRepository:
         return len([job for job in self._by_id.values() if job.tailoring_run_id == run_id])
 
     async def find_latest_for_key(
-        self, run_id: TailoringRunId, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        run_id: TailoringRunId,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> ExportJob | None:
         candidates = [
             job
             for job in self._by_id.values()
-            if job.tailoring_run_id == run_id and job.document == document and job.format == format
+            if job.tailoring_run_id == run_id
+            and job.document == document
+            and job.format == format
+            and job.layout_template == layout_template
         ]
         if not candidates:
             return None
@@ -1023,11 +1035,18 @@ class FakeDocumentRenderer:
         self._outcome = outcome
         self._delay_seconds = delay_seconds
         self.calls: list[tuple[str, TailoredDocumentKind, ExportFormat]] = []
+        self.layout_templates: list[LayoutTemplate | None] = []
 
     async def render(
-        self, markdown: str, *, document: TailoredDocumentKind, format: ExportFormat
+        self,
+        markdown: str,
+        *,
+        document: TailoredDocumentKind,
+        format: ExportFormat,
+        layout_template: LayoutTemplate | None,
     ) -> bytes:
         self.calls.append((markdown, document, format))
+        self.layout_templates.append(layout_template)
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
         if isinstance(self._outcome, DocumentRenderFailed):

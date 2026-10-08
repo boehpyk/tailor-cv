@@ -45,15 +45,24 @@ import {
   downloadFilenameFor,
   exportGateReasonFor,
 } from '../exportCopy';
-import { viewOfExport } from '../exportView';
+import { defaultLayoutFor, viewOfExport } from '../exportView';
 import { useDownload } from '../hooks/useDownload';
 import { useExportJobs } from '../hooks/useExportJobs';
 import { useRequestExport } from '../hooks/useRequestExport';
 import { isActiveExportStatus } from '../types';
 import { ExportControl } from './ExportControl';
+import { LayoutPicker } from './LayoutPicker';
+import { layoutNameOf } from '../layouts';
 
 import type { ExportMutations, ExportTarget, ExportView } from '../exportView';
-import type { ExportJob, InlineExportFormat, QueuedExportFormat } from '../types';
+import type { DownloadRequest } from '../hooks/useDownload';
+import type {
+  ExportJob,
+  InlineExportFormat,
+  LayoutTemplate,
+  NewExport,
+  QueuedExportFormat,
+} from '../types';
 import type { SaveState } from '@/features/editor/saveState';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
@@ -87,6 +96,13 @@ export interface ExportBarProps {
    * file that silently does not match the screen.
    */
   readonly saveState: SaveState;
+  /**
+   * The user's layout choice on this page, `null` until they make one (slice 3.2, plan §0.10).
+   * Owned by `RunPage`, so the CV and cover-letter tabs share it. Until then the bar shows the
+   * layout derived from the run's jobs (`defaultLayoutFor`), never a copy of it.
+   */
+  readonly layout: LayoutTemplate | null;
+  readonly onLayoutChange: (layout: LayoutTemplate) => void;
 }
 
 /**
@@ -108,6 +124,23 @@ const EXPORT_CONTROLS: readonly ExportControlSpec[] = [
   { delivery: 'queued', format: 'pdf' },
   { delivery: 'queued', format: 'docx' },
 ];
+
+/** Which control a request is about: a PDF request names its layout, every other one none. */
+function targetOfRequest(request: NewExport): ExportTarget {
+  return {
+    document: request.document,
+    format: request.format,
+    layoutTemplate: request.layout_template ?? null,
+  };
+}
+
+function targetOfDownload(request: DownloadRequest): ExportTarget {
+  return {
+    document: request.document,
+    format: request.format,
+    layoutTemplate: request.layoutTemplate,
+  };
+}
 
 /** A stable empty list, so that "no data yet" and "no jobs" are the same object every render. */
 const NO_JOBS: readonly ExportJob[] = [];
@@ -197,7 +230,13 @@ interface ExportBarGates {
   readonly isListError: boolean;
 }
 
-export function ExportBar({ runId, document, saveState }: ExportBarProps): React.JSX.Element {
+export function ExportBar({
+  runId,
+  document,
+  saveState,
+  layout,
+  onLayoutChange,
+}: ExportBarProps): React.JSX.Element {
   const jobsQuery = useExportJobs(runId);
   const requestExport = useRequestExport(runId);
   const download = useDownload();
@@ -221,16 +260,16 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
   const mutations: ExportMutations = {
     requesting:
       requestExport.isPending && requestVariables !== undefined
-        ? { document: requestVariables.document, format: requestVariables.format }
+        ? targetOfRequest(requestVariables)
         : null,
     downloading:
       download.isPending && downloadVariables !== undefined
-        ? { document: downloadVariables.document, format: downloadVariables.format }
+        ? targetOfDownload(downloadVariables)
         : null,
     downloadFailure:
       download.isError && downloadVariables !== undefined
         ? {
-            target: { document: downloadVariables.document, format: downloadVariables.format },
+            target: targetOfDownload(downloadVariables),
             error: download.error,
           }
         : null,
@@ -240,11 +279,16 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
     requestFailure:
       requestExport.isError && requestVariables !== undefined
         ? {
-            target: { document: requestVariables.document, format: requestVariables.format },
+            target: targetOfRequest(requestVariables),
             error: requestExport.error,
           }
         : null,
   };
+
+  // The user's choice, else the run's newest PDF layout (derived from server state on every
+  // render, AC-30), else Classic. While the list loads `jobs` is empty, so Classic shows and the
+  // picker is disabled — the selection cannot jump under the pointer (AC-32).
+  const effectiveLayout: LayoutTemplate = layout ?? defaultLayoutFor(jobs) ?? 'classic';
 
   const gateReason = exportGateReasonFor(saveState);
   const gates: ExportBarGates = {
@@ -279,6 +323,7 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         download.mutate({
           document,
           format,
+          layoutTemplate: null,
           filename: downloadFilenameFor(document, format),
           fetchBlob: () => downloadDocument(map, runId, document, format),
         });
@@ -287,9 +332,16 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
 
     const format = spec.format;
 
-    /** Pay a worker for a fresh render of this (document, format). */
+    // Only a PDF names a layout; a DOCX body never carries the key (the server refuses it, AC-33).
+    const layoutTemplate = format === 'pdf' ? effectiveLayout : null;
+
+    /** Pay a worker for a fresh render of this (document, format, layout). */
     function requestAgain(): void {
-      requestExport.mutate({ document, format });
+      requestExport.mutate(
+        layoutTemplate === null
+          ? { document, format }
+          : { document, format, layout_template: layoutTemplate },
+      );
     }
 
     /** Fetch one export job's bytes and save them under this format's constant filename. */
@@ -298,6 +350,7 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
         download.mutate({
           document,
           format,
+          layoutTemplate,
           filename: downloadFilenameFor(document, format),
           fetchBlob: () => downloadExportFile(map, jobId),
         });
@@ -365,14 +418,28 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
       aria-label="Download this document"
       className="space-y-3 rounded-md border border-slate-200 bg-white px-4 py-3"
     >
+      <LayoutPicker
+        value={effectiveLayout}
+        onChange={onLayoutChange}
+        disabled={jobsQuery.isPending}
+        busy={jobsQuery.isPending}
+      />
+
       <div className="flex flex-wrap gap-4">
         {EXPORT_CONTROLS.map((spec) => {
-          const target: ExportTarget = { document, format: spec.format };
+          const target: ExportTarget = {
+            document,
+            format: spec.format,
+            layoutTemplate: spec.format === 'pdf' ? effectiveLayout : null,
+          };
           const view = viewOfExport(target, jobs, mutations, nowMs);
           return (
             <ExportControl
               key={spec.format}
               format={spec.format}
+              layoutName={
+                target.layoutTemplate === null ? null : layoutNameOf(target.layoutTemplate)
+              }
               view={view}
               disabled={isControlDisabled(view, spec, gates)}
               secondsOnPage={secondsOnPage}

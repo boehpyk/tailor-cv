@@ -105,7 +105,8 @@ class RenderDocumentInline:
        is CV else docs.cover_letter``. **`current_documents` is the revision if one exists, else
        the draft** (ADR-0015 §1, X-8), which is the whole of that branch: this use case does not
        choose, it reads the one the aggregate calls current.
-    5. ``data = await renderer.render(source.value, document=cmd.document, format=cmd.format)``.
+    5. ``data = await renderer.render(source.value, document=cmd.document, format=cmd.format,
+       layout_template=None)`` — an inline format takes no layout (slice 3.2).
     6. ``await events.publish(DocumentRenderedInline(...))``; return `RenderedInlineDocument`.
 
     **`DocumentRenderFailed` propagates here, and that is the deliberate opposite of
@@ -180,7 +181,13 @@ class RenderDocumentInline:
         # the shape ADR-0013 rejected for a failed fetch. The router maps the two reasons the
         # boundary can see: `DocumentRenderError` → 500 (X-5), `DocumentRenderTimedOut` → 503 (X-6).
         # An application test asserts the **propagation**, so catching it here turns that test red.
-        data = await self._renderer.render(source.value, document=cmd.document, format=cmd.format)
+        data = await self._renderer.render(
+            source.value,
+            document=cmd.document,
+            format=cmd.format,
+            # Inline formats take no layout (`ExportFormat.takes_layout_template`, AC-9).
+            layout_template=None,
+        )
 
         # Step 6. Published **after** the render, never before: a publish on the way in would
         # announce a rendering that a `DocumentRenderFailed` is about to make untrue, and nothing

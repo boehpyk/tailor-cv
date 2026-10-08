@@ -42,10 +42,11 @@ from tailorcraft.domain.export.errors import (
     DocumentRenderOutputTooLarge,
     DocumentRenderTimedOut,
 )
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFormat, LayoutTemplate
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
 from tailorcraft.infrastructure.export import renderer as renderer_module
 from tailorcraft.infrastructure.export.html import sanitize_html
+from tailorcraft.infrastructure.export.layouts import CLASSIC_STYLESHEET
 from tailorcraft.infrastructure.export.pdf import UrlFetcher, refuse_every_url, render_pdf
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.settings import Settings
@@ -58,6 +59,10 @@ from tests.fixtures.documents import (
 
 _SRC_ROOT = Path(__file__).resolve().parents[3] / "src" / "tailorcraft"
 _EXPORT_MODULE_DIR = _SRC_ROOT / "infrastructure" / "export"
+
+
+def _layout_for(fmt: ExportFormat) -> LayoutTemplate | None:
+    return LayoutTemplate.CLASSIC if fmt is ExportFormat.PDF else None
 
 
 def _json_log_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
@@ -87,7 +92,10 @@ async def test_every_corpus_fixture_renders_to_every_format_without_failing(
     renderer = MarkdownDocumentRenderer(settings)
 
     rendered = await renderer.render(
-        fixture.markdown, document=TailoredDocumentKind.CV, format=format
+        fixture.markdown,
+        document=TailoredDocumentKind.CV,
+        format=format,
+        layout_template=_layout_for(format),
     )
 
     assert isinstance(rendered, bytes)
@@ -106,7 +114,10 @@ async def test_docx_round_trip_maps_headings_bold_italic_bullets_and_links(
     renderer = MarkdownDocumentRenderer(settings)
 
     rendered = await renderer.render(
-        MODEL_CV_FIXTURE_MARKDOWN, document=TailoredDocumentKind.CV, format=ExportFormat.DOCX
+        MODEL_CV_FIXTURE_MARKDOWN,
+        document=TailoredDocumentKind.CV,
+        format=ExportFormat.DOCX,
+        layout_template=None,
     )
 
     document = read_docx(io.BytesIO(rendered))
@@ -152,7 +163,10 @@ async def test_docx_adds_a_synthetic_title_only_when_the_source_has_no_h1(
     renderer = MarkdownDocumentRenderer(settings)
 
     rendered = await renderer.render(
-        NORMALIZATION_FIXTURE_MARKDOWN, document=TailoredDocumentKind.CV, format=ExportFormat.DOCX
+        NORMALIZATION_FIXTURE_MARKDOWN,
+        document=TailoredDocumentKind.CV,
+        format=ExportFormat.DOCX,
+        layout_template=None,
     )
 
     document = read_docx(io.BytesIO(rendered))
@@ -163,6 +177,7 @@ async def test_docx_adds_a_synthetic_title_only_when_the_source_has_no_h1(
         NORMALIZATION_FIXTURE_MARKDOWN,
         document=TailoredDocumentKind.COVER_LETTER,
         format=ExportFormat.DOCX,
+        layout_template=None,
     )
     letter_document = read_docx(io.BytesIO(rendered_letter))
     assert letter_document.paragraphs[0].text == "Cover Letter"
@@ -243,7 +258,10 @@ async def test_pdf_embeds_a_font_and_page_one_contains_the_heading_and_the_name(
     renderer = MarkdownDocumentRenderer(settings)
 
     rendered = await renderer.render(
-        MODEL_CV_FIXTURE_MARKDOWN, document=TailoredDocumentKind.CV, format=ExportFormat.PDF
+        MODEL_CV_FIXTURE_MARKDOWN,
+        document=TailoredDocumentKind.CV,
+        format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
     )
 
     reader = PdfReader(io.BytesIO(rendered))
@@ -311,7 +329,10 @@ async def test_the_url_fetcher_is_never_called_rendering_a_grammar_conformant_do
     renderer = MarkdownDocumentRenderer(settings, url_fetcher=_recording_fetcher(calls))
 
     await renderer.render(
-        MODEL_CV_FIXTURE_MARKDOWN, document=TailoredDocumentKind.CV, format=ExportFormat.PDF
+        MODEL_CV_FIXTURE_MARKDOWN,
+        document=TailoredDocumentKind.CV,
+        format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
     )
 
     assert calls == []
@@ -357,7 +378,9 @@ async def test_hostile_html_past_the_sanitizer_renders_with_no_socket_opened(
         "</body></html>"
     )
 
-    rendered = render_pdf(hostile_html, url_fetcher=_recording_fetcher(calls))
+    rendered = render_pdf(
+        hostile_html, stylesheet=CLASSIC_STYLESHEET, url_fetcher=_recording_fetcher(calls)
+    )
 
     assert isinstance(rendered, bytes)
     assert len(rendered) > 0
@@ -391,7 +414,9 @@ async def test_a_render_that_outlasts_its_timeout_is_recorded_render_timed_out(
     renderer = MarkdownDocumentRenderer(tight_settings)
 
     with caplog.at_level(logging.INFO), pytest.raises(DocumentRenderTimedOut):
-        await renderer.render("hello", document=TailoredDocumentKind.CV, format=ExportFormat.TXT)
+        await renderer.render(
+            "hello", document=TailoredDocumentKind.CV, format=ExportFormat.TXT, layout_template=None
+        )
 
     events = _json_log_events(caplog)
     failed = [e for e in events if e.get("event") == "export.render_failed"]
@@ -415,7 +440,10 @@ async def test_output_over_the_byte_cap_is_refused_and_logged_with_error_type_no
 
     with caplog.at_level(logging.INFO), pytest.raises(DocumentRenderOutputTooLarge):
         await renderer.render(
-            "hello world", document=TailoredDocumentKind.CV, format=ExportFormat.MD
+            "hello world",
+            document=TailoredDocumentKind.CV,
+            format=ExportFormat.MD,
+            layout_template=None,
         )
 
     events = _json_log_events(caplog)
@@ -447,7 +475,10 @@ async def test_an_unrecognised_exception_from_sanitize_becomes_render_error_from
 
     with caplog.at_level(logging.INFO), pytest.raises(DocumentRenderError) as exc_info:
         await renderer.render(
-            MODEL_CV_FIXTURE_MARKDOWN, document=TailoredDocumentKind.CV, format=ExportFormat.PDF
+            MODEL_CV_FIXTURE_MARKDOWN,
+            document=TailoredDocumentKind.CV,
+            format=ExportFormat.PDF,
+            layout_template=LayoutTemplate.CLASSIC,
         )
 
     assert exc_info.value.__cause__ is None, "raise ... from None must leave __cause__ unset"
@@ -479,7 +510,9 @@ async def test_cancelled_error_during_a_render_is_not_swallowed(
     renderer = MarkdownDocumentRenderer(generous_settings)
 
     task = asyncio.ensure_future(
-        renderer.render("hello", document=TailoredDocumentKind.CV, format=ExportFormat.TXT)
+        renderer.render(
+            "hello", document=TailoredDocumentKind.CV, format=ExportFormat.TXT, layout_template=None
+        )
     )
     await asyncio.sleep(0.05)
     task.cancel()
@@ -503,7 +536,10 @@ async def test_no_document_text_appears_in_any_log_line_across_a_render(
     with caplog.at_level(logging.INFO):
         for format in ExportFormat:
             await renderer.render(
-                MODEL_CV_FIXTURE_MARKDOWN, document=TailoredDocumentKind.CV, format=format
+                MODEL_CV_FIXTURE_MARKDOWN,
+                document=TailoredDocumentKind.CV,
+                format=format,
+                layout_template=_layout_for(format),
             )
 
     assert caplog.records, "expected the renders to have produced at least one log record"

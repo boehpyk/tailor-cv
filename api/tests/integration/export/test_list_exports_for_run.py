@@ -26,7 +26,7 @@ from tailorcraft.application.export.list_exports_for_run import (
 )
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -68,6 +68,7 @@ def _a_job(
         tailoring_run_id=run_id,
         document=document,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run_version,
         requested_at=requested_at,
     )

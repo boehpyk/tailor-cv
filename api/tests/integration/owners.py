@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from uuid import uuid4
 
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import Owner, UserOwner
 from tailorcraft.domain.identity.user import User
@@ -184,6 +184,7 @@ def queued_export(
         tailoring_run_id=run.id,
         document=document,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run.version,
         requested_at=at,
     )

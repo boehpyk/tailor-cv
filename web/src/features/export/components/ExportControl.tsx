@@ -47,6 +47,11 @@ import type { ReactNode } from 'react';
 
 export interface ExportControlProps {
   readonly format: ExportFormat;
+  /**
+   * The PDF layout's display name (slice 3.2), or `null`/absent for every other format. A ready
+   * control names it in its accessible name — *Download PDF — Modern layout* (AC-31).
+   */
+  readonly layoutName?: string | null;
   /** This format's state, derived by `viewOfExport` from the run's jobs and the bar's mutations. */
   readonly view: ExportView;
   /**
@@ -202,6 +207,7 @@ function statusContentFor(
 
 export function ExportControl({
   format,
+  layoutName = null,
   view,
   disabled,
   secondsOnPage,
@@ -213,6 +219,11 @@ export function ExportControl({
         type="button"
         disabled={disabled}
         onClick={onPrimary}
+        aria-label={
+          view.kind === 'ready' && layoutName !== null
+            ? downloadLabel(format, view.byteSize, layoutName)
+            : undefined
+        }
         className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
       >
         {primaryLabelFor(view, format)}

@@ -45,6 +45,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import GuestOwner
@@ -100,6 +101,7 @@ def _queued(
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=document,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run_version,
         requested_at=clock.now(),
     )
@@ -161,15 +163,17 @@ async def _raw_insert(
         "version": 1,
     }
     defaults.update(overrides)
+    # The CHECK ties the layout to the format: a PDF row carries one, any other format does not.
+    defaults.setdefault("layout_template", "classic" if defaults["format"] == "pdf" else None)
     await session.execute(
         text(
             "INSERT INTO export_job "
             "(id, guest_session_id, tailoring_run_id, document, format, run_version, status, "
             "failure_reason, file_key, byte_size, render_duration_ms, requested_at, started_at, "
-            "completed_at, version) "
+            "completed_at, version, layout_template) "
             "VALUES (:id, :guest_session_id, :tailoring_run_id, :document, :format, :run_version, "
             ":status, :failure_reason, :file_key, :byte_size, :render_duration_ms, :requested_at, "
-            ":started_at, :completed_at, :version)"
+            ":started_at, :completed_at, :version, :layout_template)"
         ),
         defaults,
     )

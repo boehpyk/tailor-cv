@@ -22,7 +22,7 @@ import pytest
 from tailorcraft.application.export.get_export_job import ExportJobLookup, GetExportJob
 from tailorcraft.domain.export.errors import ExportJobNotFound, ExportJobNotOwnedBySession
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -61,6 +61,7 @@ async def test_returns_the_job_and_the_runs_current_version_for_the_owning_sessi
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now(),
     )
@@ -85,6 +86,7 @@ async def test_run_gone_reports_run_version_now_as_none(clock: FixedClock) -> No
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now(),
     )
@@ -109,6 +111,7 @@ async def test_run_that_moved_on_reports_the_runs_new_version(clock: FixedClock)
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now(),
     )
@@ -144,6 +147,7 @@ async def test_job_owned_by_a_different_session_raises_export_job_not_found_chai
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now(),
     )
