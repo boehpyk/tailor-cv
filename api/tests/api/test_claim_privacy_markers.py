@@ -264,7 +264,7 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
         assert uploaded.status_code == 201, uploaded.text
         ids["base_cv_id"] = str(uploaded.json()["id"])
         guest_token = client.cookies.get(COOKIE_NAME)
-        assert guest_token, "the upload left no tc_guest cookie"
+        assert guest_token, "the upload left no __Host-tc_guest cookie"
         session_id = (
             await session.execute(
                 text("SELECT id FROM identity_guest_session WHERE token_hash = :h"),

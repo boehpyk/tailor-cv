@@ -1606,7 +1606,9 @@ async def test_guest_upload_ignores_a_valid_bearer_and_still_uses_the_guest_sess
     )
 
     assert response.status_code == 201, response.text
-    assert _guest_cookie_header(response) is not None, "a valid bearer must not replace tc_guest"
+    assert _guest_cookie_header(response) is not None, (
+        "a valid bearer must not replace __Host-tc_guest"
+    )
 
 
 async def test_get_base_cv_by_id_for_a_user_owned_id_is_404(
@@ -1615,7 +1617,8 @@ async def test_get_base_cv_by_id_for_a_user_owned_id_is_404(
     token, _ = await _register_2_2(client, settings)
     saved_cv_id = await _upload_extracted_saved_cv_2_2(client, token)
     # Mint a guest session on this same client first — the point under test is the 404 for a
-    # user-owned id, not "no tc_guest at all" (that is 401 guest_session_expired, F-19, unedited).
+    # user-owned id, not "no __Host-tc_guest at all" (that is 401 guest_session_expired, F-19,
+    # unedited).
     minted = await client.post(
         "/api/base-cvs", files=_file_part("sample.txt", _read_fixture("sample.txt"), "text/plain")
     )

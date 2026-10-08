@@ -498,14 +498,17 @@ async def test_a_full_purge_deletes_zero_rows_from_the_three_identity_tables(
             )
 
 
-# --- AC-29's missing clause: registering with a live tc_guest leaves it and its CVs untouched ----
+# --- AC-29's missing clause: registering with a live __Host-tc_guest leaves it and its CVs
+# untouched ----
 
 
 async def test_registering_with_a_live_guest_cookie_leaves_the_session_and_its_cvs_readable(
     concurrent_app: FastAPI, settings: Settings, engine: AsyncEngine
 ) -> None:
-    """AC-29. A registration carrying a live `tc_guest` must not read, set, rotate or clear that
-    cookie: no `Set-Cookie: tc_guest` on the response, the `identity_guest_session` row byte-identical
+    """AC-29. A registration carrying a live `__Host-tc_guest` must not read, set, rotate or clear
+    that
+    cookie: no `Set-Cookie: __Host-tc_guest` on the response, the `identity_guest_session` row
+    byte-identical
     afterwards (including `expires_at` — the retention promise frozen at `GuestSession.start`, 1.6's
     R-16), and its base CV still readable with the same cookie once registration is done.
     """
@@ -565,11 +568,12 @@ async def test_registering_with_a_live_guest_cookie_leaves_the_session_and_its_c
                 headers=_origin_headers(settings),
             )
             # Slice 2.5 (T27): 202, and *no* `Set-Cookie` at all — register sets neither `tc_refresh`
-            # (nobody is signed in) nor `tc_guest`. The guest-cookie half is the AC-29 claim; the
-            # status and the empty header list make the assertion discriminate a 202 from a 201.
+            # (nobody is signed in) nor `__Host-tc_guest`. The guest-cookie half is the AC-29 claim;
+            # the status and the empty header list make the assertion discriminate a 202 from a 201.
             assert response.status_code == 202, response.text
             assert response.headers.get_list("set-cookie") == [], (
-                "register must never emit a Set-Cookie (AC-27); least of all for tc_guest (AC-29)"
+                "register must never emit a Set-Cookie (AC-27); "
+                "least of all for __Host-tc_guest (AC-29)"
             )
 
             list_response = await client.get(BASE_CVS_URL)

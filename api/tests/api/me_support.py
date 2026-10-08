@@ -283,7 +283,8 @@ async def register(client: AsyncClient, settings: Settings) -> Account:
 
 
 async def mint_guest(client: AsyncClient, session: AsyncSession) -> GuestOwner:
-    """A real guest session: a real 1.1 upload sets `tc_guest` on `client`; the session id is read
+    """A real guest session: a real 1.1 upload sets `__Host-tc_guest` on `client`; the session id
+    is read
     back off the CV row it created."""
     response = await client.post(
         "/api/base-cvs", files={"file": ("sample.txt", SAMPLE_CV, "text/plain")}

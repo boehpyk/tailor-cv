@@ -312,12 +312,13 @@ async def test_cache_control_no_store_on_every_me_response(
 async def test_a_valid_guest_cookie_riding_along_changes_nothing_for_the_list(
     client: AsyncClient, settings: Settings
 ) -> None:
-    """A `tc_guest` cookie is never read by this router (module docstring, AC-21): minting one via a
+    """A `__Host-tc_guest` cookie is never read by this router (module docstring, AC-21): minting
+    one via a
     guest upload first must not authorize `GET /api/me/base-cvs` on its own."""
     guest_upload = await client.post(
         BASE_CVS_URL, files=_file_part("sample.txt", _read_fixture("sample.txt"), "text/plain")
     )
-    assert guest_upload.status_code == 201, guest_upload.text  # mints tc_guest on this client
+    assert guest_upload.status_code == 201, guest_upload.text  # mints the guest cookie
 
     response = await client.get(ME_BASE_CVS_URL)  # no bearer, but the guest cookie rides along
 
