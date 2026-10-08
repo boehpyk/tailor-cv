@@ -55,6 +55,10 @@ class RequestExportCommand:
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat
+    # Slice 3.2 (ADR-0016 amendment): the PDF layout the caller chose, `None` when it chose none.
+    # Optional so every existing caller stays valid; the use case applies the default for a PDF
+    # and the aggregate refuses a layout on a DOCX (`LayoutTemplateNotApplicable`).
+    layout_template: LayoutTemplate | None = None
 
 
 @dataclass(frozen=True, slots=True)
