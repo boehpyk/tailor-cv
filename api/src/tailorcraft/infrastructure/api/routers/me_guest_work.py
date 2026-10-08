@@ -135,7 +135,7 @@ async def claim_guest_work(
     await db.rollback()
 
     if token is not None:
-        clear_guest_cookie(response, settings)
+        clear_guest_cookie(response)
     log.info(
         EVENT_GUEST_WORK_CLAIMED,
         user_id=str(user_id.value),
