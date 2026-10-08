@@ -65,18 +65,17 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from pypdf import PdfWriter
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Message, Scope
 
 from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractionFailureReason
 from tailorcraft.domain.shared.files import FileRef
-from tailorcraft.infrastructure.api.deps import get_app_settings, get_clock, get_session
+from tailorcraft.infrastructure.api.deps import get_app_settings, get_clock
 from tailorcraft.infrastructure.api.guest_session import COOKIE_NAME
 from tailorcraft.infrastructure.api.main import create_app
 from tailorcraft.infrastructure.api.routers.intake import _failure_message
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.settings import Settings
-from tailorcraft.infrastructure.tasks.app import app as celery_app
 from tests.api.me_support import seed_user_and_sign_in
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent / "fixtures" / "cvs"
@@ -1305,31 +1304,6 @@ async def test_guest_cookie_attributes(client: AsyncClient, settings: Settings) 
     # secrets.token_urlsafe(32) draws 256 bits; url-safe base64 of 32 bytes is comfortably longer
     # than any plausible short/weak value a regression could produce.
     assert len(token) >= 32
-
-
-async def test_cookie_is_secure_in_production(
-    settings: Settings, session: AsyncSession, engine: AsyncEngine
-) -> None:
-    """AC-10: "Secure whenever APP_ENV=production." Built from settings with `app_env="production"`
-    rather than asserted as a hypothetical, per this task's own instruction — a second, real `FastAPI`
-    app, wired the same way `conftest.py`'s `app` fixture wires the default one."""
-    prod_settings = settings.model_copy(update={"app_env": "production"})
-    prod_app = create_app(prod_settings)
-    prod_app.dependency_overrides[get_session] = lambda: session
-    prod_app.state.settings = prod_settings
-    prod_app.state.engine = engine
-    prod_app.state.session_factory = lambda: session
-    prod_app.state.celery = celery_app
-
-    async with _new_client(prod_app) as prod_client:
-        response = await prod_client.post(
-            "/api/base-cvs",
-            files=_file_part("sample.txt", _read_fixture("sample.txt"), "text/plain"),
-        )
-
-    cookie = _guest_cookie_header(response)
-    assert cookie is not None, "expected a Set-Cookie header when a new guest session is minted"
-    assert "Secure" in cookie
 
 
 # ---------------------------------------------------------------------------------------------

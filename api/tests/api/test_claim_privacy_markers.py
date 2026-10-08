@@ -462,6 +462,16 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
         assert marker not in sentry_text, f"{description} ({marker}) reached a Sentry envelope"
         assert marker not in redis_keys, f"{description} ({marker}) reached a Redis key"
 
+    # AC-11: the credential under its new name. Positive control first: the cookie really is the
+    # prefixed one and the capture really holds records (the claim's own line), so the absence below
+    # is not an empty-capture artefact.
+    assert COOKIE_NAME == "__Host-tc_guest"
+    assert len(guest_token) >= 32
+    assert any(CLAIM_EVENT in r.getMessage() for r in caplog.records), "log capture not live"
+    assert all(guest_token not in r.getMessage() for r in caplog.records), (
+        "the __Host-tc_guest token value reached a log record"
+    )
+
 
 # --- AC-46: the claimed work through a purge, an orphan sweep and erase-account -------------------
 
