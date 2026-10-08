@@ -48,7 +48,9 @@ router = APIRouter(prefix="/api/job-postings", tags=["posting"])
 _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
     status.HTTP_401_UNAUTHORIZED: {
         "model": ErrorResponse,
-        "description": "guest_session_expired — missing, unknown or expired `tc_guest` cookie.",
+        "description": (
+            "guest_session_expired — missing, unknown or expired `__Host-tc_guest` cookie."
+        ),
     },
 }
 
@@ -112,9 +114,9 @@ async def create_job_posting(
 ) -> JobPostingResponse:
     """Capture one job posting for the caller's guest session, pasted or fetched.
 
-    Tolerates a missing, unknown or expired `tc_guest` cookie by minting a fresh `GuestSession` and
-    returning it via `Set-Cookie` (P-27/P-28) — unlike the two reads below, this never answers 401
-    for a bad cookie.
+    Tolerates a missing, unknown or expired `__Host-tc_guest` cookie by minting a fresh
+    `GuestSession` and returning it via `Set-Cookie` (P-27/P-28) — unlike the two reads below, this
+    never answers 401 for a bad cookie.
     """
     # `resolve_or_start_guest_session` is called HERE, in the body, and never as a `Depends()`.
     # Slice 1.1 established empirically that FastAPI resolves a route's sibling dependencies even

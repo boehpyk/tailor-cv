@@ -18,8 +18,8 @@ error's type, never its message.
 bearer and the same aggregate, so one module; the prefix is `/api/me` and each route spells its own
 resource. Neither shares a prefix with another router, so its registration position is free.
 
-**One credential: the bearer** (`require_user`); a `tc_guest` cookie is ignored and nothing here reads
-it. **No transfer route** (AC-22): the AST scan's exception set stays exactly
+**One credential: the bearer** (`require_user`); a `__Host-tc_guest` cookie is ignored and nothing
+here reads it. **No transfer route** (AC-22): the AST scan's exception set stays exactly
 `{POST /api/me/guest-work/claim}`.
 
 **Every write** passes the tracking limiter first (`TrackingWriteRateLimiterDep`: `user` scope, one

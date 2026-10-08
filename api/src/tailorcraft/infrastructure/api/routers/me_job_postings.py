@@ -4,10 +4,10 @@ Built red-first (sdlc.md §2): **SKELETON** (T20 — real paths, real schemas, e
 in each `responses=` map), **RED** (T21, `qa`), **GREEN** (T23, this file — thin calls into
 `_posting_handlers.py`, T19's shared bodies, with the account's principal and `expires_at: null`).
 
-**One credential: the bearer** (`require_user`). A `tc_guest` cookie riding along changes nothing,
-and nothing in this module reads it (ADR-0008 (f)): the account twin of `POST /api/job-postings`, not
-a transfer route. A guest's posting id is not reachable here, and there is no `GET /{id}` — a user's
-posting is read through its history entry.
+**One credential: the bearer** (`require_user`). A `__Host-tc_guest` cookie riding along changes
+nothing, and nothing in this module reads it (ADR-0008 (f)): the account twin of `POST
+/api/job-postings`, not a transfer route. A guest's posting id is not reachable here, and there is
+no `GET /{id}` — a user's posting is read through its history entry.
 
 Every response carries `Cache-Control: no-store`, and every `expires_at` is `null`: an account
 posting is kept until the history entry that uses it is deleted (OQ-8).

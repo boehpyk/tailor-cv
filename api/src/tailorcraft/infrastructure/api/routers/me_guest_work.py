@@ -6,11 +6,12 @@ cookie clear).
 
 **A transfer route, reversed** (ADR-0008 amendment (g)): the **bearer** authorizes the destination and
 is a dependency (`require_user` — stateless, runs first, so a bad bearer is a 401 before anything
-touches the guest session table); the **`tc_guest` cookie** names the source and is read **in the
-handler body**, never through `require_guest_session` (its 401 would break idempotency) and never
-through `resolve_or_start_guest_session` (which mints). **This route never mints a guest session.**
-The AST scan over `routers/*.py` pins the routes whose bodies touch the guest cookie to exactly
-`{POST /api/me/guest-work/claim}` — 2.2's copy route was retired in 2.4 (ADR-0022 amendment (d)).
+touches the guest session table); the **`__Host-tc_guest` cookie** names the source and is read **in
+the handler body**, never through `require_guest_session` (its 401 would break idempotency) and
+never through `resolve_or_start_guest_session` (which mints). **This route never mints a guest
+session.** The AST scan over `routers/*.py` pins the routes whose bodies touch the guest cookie to
+exactly `{POST /api/me/guest-work/claim}` — 2.2's copy route was retired in 2.4 (ADR-0022
+amendment (d)).
 
 No body, no query parameters: nothing to validate, so no 422 is possible (C-19). Every response the
 handler builds carries `Cache-Control: no-store`.
@@ -109,9 +110,9 @@ async def claim_guest_work(
     db: SessionDep,
 ) -> GuestWorkClaimResponse:
     """Move this browser's guest work into the account: **200** with the counts (all zeros when there
-    was nothing to claim — no cookie, unknown, expired, already claimed), `tc_guest` cleared iff the
-    request carried one; 401 `invalid_access_token` / `not_signed_in`; 429 `rate_limited`; 503
-    `service_unavailable` — none of which sets or clears a cookie.
+    was nothing to claim — no cookie, unknown, expired, already claimed), `__Host-tc_guest` cleared
+    iff the request carried one; 401 `invalid_access_token` / `not_signed_in`; 429 `rate_limited`;
+    503 `service_unavailable` — none of which sets or clears a cookie.
 
     **The unit of work ends in the handler** (FastAPI 0.141 runs a dependency's teardown after the
     response is sent): the bound `transfer` commits inside the use case, and `db.rollback()` here
