@@ -80,7 +80,7 @@ def _reset_redis_between_tests(clear_redis: None) -> None:
 
 def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 

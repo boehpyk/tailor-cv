@@ -155,7 +155,7 @@ def _guest_cookie_header(response: Response) -> str | None:
 
 def _new_client(app: FastAPI) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -340,7 +340,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     docstring gives: a skeleton's `NotImplementedError` must come back as a real 500 response, not
     abort the test."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

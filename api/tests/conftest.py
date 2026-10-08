@@ -432,5 +432,5 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     It also does not run the lifespan, which is why the `app` fixture wires `app.state` by hand.
     """
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c

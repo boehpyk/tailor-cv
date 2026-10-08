@@ -227,7 +227,7 @@ def _guest_session_repository(session: AsyncSession) -> GuestSessionRepository:
 async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Shadows `conftest.py`'s `client` fixture for every test in this module."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 
@@ -235,7 +235,7 @@ def _new_client(app: FastAPI) -> AsyncClient:
     """A second, independent cookie jar against the same app, for tests that need two distinct
     "requesters" while sharing `ASGITransport`'s fixed peer IP (the per-IP rate-limit tests)."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -876,7 +876,7 @@ async def test_a_login_cookie_is_secure_when_the_app_is_built_for_production(
 
     async with AsyncClient(
         transport=ASGITransport(app=prod_app, raise_app_exceptions=False),
-        base_url="http://testserver",
+        base_url="https://testserver",
     ) as prod_client:
         response = await prod_client.post(
             LOGIN_URL,

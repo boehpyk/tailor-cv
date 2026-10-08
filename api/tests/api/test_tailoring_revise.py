@@ -189,7 +189,7 @@ def _override_settings(app: FastAPI, base: Settings, **updates: object) -> Setti
 
 def _new_client(app: FastAPI) -> AsyncClient:
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -388,7 +388,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     `NotImplementedError` into a real `500` response instead of a bare Python exception — see the
     module docstring."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

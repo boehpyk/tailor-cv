@@ -91,14 +91,14 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """`test_auth.py`'s shadowing fixture, for its reason: a skeleton's `NotImplementedError` must be
     a 500 the assertion reads, not an exception re-raised into the test."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 
 def _new_client(app: FastAPI) -> AsyncClient:
     """A second cookie jar against the same app (a second browser)."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 

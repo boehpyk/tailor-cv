@@ -132,7 +132,7 @@ def concurrent_app(
 def _new_client(app: FastAPI) -> AsyncClient:
     """A fresh client with its own cookie jar, against the same app — the shape a second browser
     tab or a second concurrent registration attempt actually has."""
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://testserver")
 
 
 def _rotated_refresh_token(response: Response) -> str:

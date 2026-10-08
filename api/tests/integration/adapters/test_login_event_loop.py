@@ -263,7 +263,7 @@ async def test_loop_unavailable_fraction_stays_under_budget_during_8_concurrent_
     user_id = await _seed_user_with_a_production_cost_hash(
         engine, production_hasher, email=email, password=A_STRONG_PASSWORD
     )
-    client = AsyncClient(transport=ASGITransport(app=live_app), base_url="http://testserver")
+    client = AsyncClient(transport=ASGITransport(app=live_app), base_url="https://testserver")
     try:
         baseline_seconds = await _measure_baseline_turnaround(client)
         turnarounds, wall_clock_seconds = await _hammer_logins_and_sample(client, settings, email)

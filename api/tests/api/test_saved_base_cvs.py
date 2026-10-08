@@ -123,7 +123,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Shadows `conftest.py`'s `client` fixture for every test in this module — see the module
     docstring for why `raise_app_exceptions=False` matters here specifically."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 
@@ -132,7 +132,7 @@ def _new_client(app: FastAPI) -> AsyncClient:
     concurrent second request (S-19's race) or a distinct "requester" while sharing `ASGITransport`'s
     fixed peer IP."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 

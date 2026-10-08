@@ -110,7 +110,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     `assert 500 == 201` on the specific step's own assertion, rather than a raw traceback that aborts
     the test before the later markers are ever planted."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 

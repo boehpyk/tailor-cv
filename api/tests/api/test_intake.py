@@ -148,7 +148,7 @@ def _new_client(app: FastAPI) -> AsyncClient:
     `ASGITransport`'s default `client` tuple is fixed, so every client built this way is seen by the
     server as the same peer IP, which is exactly what the per-IP rate-limit test needs."""
     return AsyncClient(
-        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://testserver"
+        transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="https://testserver"
     )
 
 
@@ -248,7 +248,7 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
     """Shadows `conftest.py`'s `client` fixture for every test in this module — see the module
     docstring for why `raise_app_exceptions=False` matters here specifically."""
     transport = ASGITransport(app=app, raise_app_exceptions=False)
-    async with AsyncClient(transport=transport, base_url="http://testserver") as c:
+    async with AsyncClient(transport=transport, base_url="https://testserver") as c:
         yield c
 
 
