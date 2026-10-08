@@ -24,8 +24,8 @@ import type { ExportMutations, ExportTarget } from './exportView';
  * at all" below.
  */
 
-const PDF_TARGET: ExportTarget = { document: 'cv', format: 'pdf' };
-const MD_TARGET: ExportTarget = { document: 'cv', format: 'md' };
+const PDF_TARGET: ExportTarget = { document: 'cv', format: 'pdf', layoutTemplate: 'classic' };
+const MD_TARGET: ExportTarget = { document: 'cv', format: 'md', layoutTemplate: null };
 
 const NOW_MS = Date.parse('2026-09-18T10:00:03.000Z');
 
@@ -60,7 +60,7 @@ describe('viewOfExport — AC-37', () => {
     const forOtherTarget = viewOfExport(
       PDF_TARGET,
       jobs,
-      makeExportMutations({ requesting: { document: 'cv', format: 'docx' } }),
+      makeExportMutations({ requesting: { document: 'cv', format: 'docx', layoutTemplate: null } }),
       NOW_MS,
     );
     expect(forOtherTarget).toEqual({ kind: 'ready', jobId: 'export-job-fixture', byteSize: null });
@@ -472,7 +472,7 @@ describe('viewOfExport — AC-37', () => {
 
     it('a request failure for a DIFFERENT target does not surface on this one', () => {
       const mutations = withRequestFailure(
-        { document: 'cv', format: 'docx' },
+        { document: 'cv', format: 'docx', layoutTemplate: null },
         new ApiError(409, 'server prose', 'tailoring_run_not_exportable'),
       );
 
