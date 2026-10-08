@@ -7,8 +7,8 @@ import type { HistoryPage } from '@/features/history/types';
  * deletion of one entry (slice 2.3, technical plan §4). Transport only.
  *
  * **Every call here is `auth: 'required'`** (AC-48): account data answers to the bearer and to
- * nothing else — the server ignores `tc_guest` on `/api/me/` — and the client sends the token
- * because the route needs it, never because one happens to be held.
+ * nothing else — the server ignores `__Host-tc_guest` on `/api/me/` — and the client sends the
+ * token because the route needs it, never because one happens to be held.
  *
  * **Why the history collection is `/api/me/tailoring-runs`** and not `/api/me/history`: the resource
  * *is* the user's tailoring runs; "history" is the page that lists them. One collection, one noun.

@@ -6,10 +6,10 @@ import type { BaseCv, BaseCvListResponse } from '@/features/intake/types';
  * Every `BaseCv` the caller's guest session owns. `items` is `[]` for a session with none — never
  * a 404 (technical-plan.md's API contract for `GET /api/base-cvs`).
  *
- * A missing, unknown or expired `tc_guest` cookie is a **401 `guest_session_expired`**, thrown as
- * an `ApiError` like any other failure — this function does not special-case it. What that 401
- * *means* for the UI (F-19: show the fresh dropzone, not an error box) is a rendering decision, not
- * a transport one, so it is made in `useBaseCvs`, one layer up, not here.
+ * A missing, unknown or expired `__Host-tc_guest` cookie is a **401 `guest_session_expired`**,
+ * thrown as an `ApiError` like any other failure — this function does not special-case it. What
+ * that 401 *means* for the UI (F-19: show the fresh dropzone, not an error box) is a rendering
+ * decision, not a transport one, so it is made in `useBaseCvs`, one layer up, not here.
  */
 export function fetchBaseCvs(signal?: AbortSignal): Promise<BaseCvListResponse> {
   return request<BaseCvListResponse>('/api/base-cvs', {

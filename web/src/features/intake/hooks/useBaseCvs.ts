@@ -11,8 +11,8 @@ export const baseCvsQueryKey = ['intake', 'baseCvs'] as const;
  * The guest session's base CVs.
  *
  * **The 401 decision (F-19):** `GET /api/base-cvs` answers 401 `guest_session_expired` for a
- * missing, unknown or expired `tc_guest` cookie, with no body. The feature spec is explicit about
- * what that should look like to the user: "The UI clears local state and shows the fresh
+ * missing, unknown or expired `__Host-tc_guest` cookie, with no body. The feature spec is explicit
+ * about what that should look like to the user: "The UI clears local state and shows the fresh
  * dropzone" — in other words, a session with no cookie left and a session that legitimately owns
  * zero CVs are the **same screen**. So this hook folds `guest_session_expired` into the ordinary
  * empty result (`{ items: [] }`) inside `queryFn`, rather than letting it surface as `isError`.
@@ -28,7 +28,7 @@ export const baseCvsQueryKey = ['intake', 'baseCvs'] as const;
  *
  * A cleared or expired session cannot be told apart from "zero CVs" from this response alone, and
  * that is intentional (ADR-0010): the alternative — a body on a 401 for an unauthenticated request
- * — would let a client fish for whether a `tc_guest` cookie was ever valid.
+ * — would let a client fish for whether a `__Host-tc_guest` cookie was ever valid.
  */
 export function useBaseCvs(): ReturnType<typeof useQuery<BaseCvListResponse>> {
   return useQuery({
