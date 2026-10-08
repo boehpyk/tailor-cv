@@ -26,6 +26,8 @@ from tailorcraft.domain.export.errors import (
     ExportFormatNotQueued,
     ExportNotRendering,
     InvalidRunVersion,
+    LayoutTemplateNotApplicable,
+    LayoutTemplateRequired,
 )
 from tailorcraft.domain.export.events import (
     ExportFailed,
@@ -148,6 +150,9 @@ class ExportJob(RecordsEvents):
       **immutable after creation**. Their absence from every transition, plus this row. A job is
       never "re-pointed" at a new version: that is a new job, which is what makes `run_version` mean
       something and what "Export again" does.
+    - **XJ-10** — A job's layout is decided **once, at request, and only a PDF has one**
+      (slice 3.2, ADR-0030). `request` refuses a `pdf` with no layout (`LayoutTemplateRequired`)
+      and any other format with one (`LayoutTemplateNotApplicable`); no method writes it after.
 
     **Deliberately not invariants of `ExportJob`:**
 
@@ -160,6 +165,8 @@ class ExportJob(RecordsEvents):
     - Staleness relative to the **run**. `was_requested_for` is a comparison whose other side the
       caller supplies, because the aggregate cannot see the run — the same reason `TailoringRun`
       cannot raise `TailoringRunConcurrentlyModified` itself.
+    - Which layouts exist is not the aggregate's business beyond the type; the default is applied
+      by `RequestExport`, because a default is a policy about requests, not a property of a job.
     """
 
     # Class-level annotations only (no assignment): the `__init__` below sets nothing, so this is
@@ -268,6 +275,9 @@ class ExportJob(RecordsEvents):
         - an **inline** format (`md`, `txt`) → `ExportFormatNotQueued` (XJ-2, X-15). This is the one
           constructor in the codebase that rejects a member of its own enum, and it is why this
           aggregate shares no base class with the other three.
+        - a `pdf` with no layout → `LayoutTemplateRequired`, and any other queued format with one
+          → `LayoutTemplateNotApplicable` (XJ-10). Judged after the format, so an inline format is
+          always `ExportFormatNotQueued` whatever layout came with it.
         - a `run_version` below 1 → `InvalidRunVersion` (XJ-8).
 
         Keyword-only, because three of its seven parameters are UUIDs of different things. The typed
@@ -284,12 +294,16 @@ class ExportJob(RecordsEvents):
         `run.version` at the moment of the click; from then on the job renders *that* version or
         fails `source_changed`.
 
-        Both refusals happen **before `cls()`**, so a job that breaks XJ-2 or XJ-8 never exists even
-        momentarily — there is no half-built instance for an `except` block somewhere to catch and
-        keep.
+        Every refusal happens **before `cls()`**, so a job that breaks XJ-2, XJ-8 or XJ-10 never
+        exists even momentarily — there is no half-built instance for an `except` block somewhere to
+        catch and keep.
         """
         if format.delivery is ExportDelivery.INLINE:
             raise ExportFormatNotQueued(format)
+        if format.takes_layout_template and layout_template is None:
+            raise LayoutTemplateRequired(f"{format.value} needs a layout template (XJ-10)")
+        if not format.takes_layout_template and layout_template is not None:
+            raise LayoutTemplateNotApplicable(format)
         if run_version < 1:
             raise InvalidRunVersion(f"run_version must be >= 1, got {run_version} (XJ-8)")
 

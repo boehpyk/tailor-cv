@@ -153,7 +153,13 @@ class ExportFormat(StrEnum):
         A `match` closed by `assert_never`, like `delivery`, so a fifth format is a mypy error here
         rather than a silent `False`.
         """
-        raise NotImplementedError
+        match self:
+            case ExportFormat.PDF:
+                return True
+            case ExportFormat.MD | ExportFormat.TXT | ExportFormat.DOCX:
+                return False
+            case _:
+                assert_never(self)
 
 
 class LayoutTemplate(StrEnum):
