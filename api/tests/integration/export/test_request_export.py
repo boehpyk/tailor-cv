@@ -43,6 +43,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFailureReason,
     ExportFormat,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.errors import GuestSessionExpired, GuestSessionNotFound
 from tailorcraft.domain.identity.ownership import GuestOwner
@@ -318,6 +319,7 @@ async def test_existing_non_terminal_job_at_the_current_version_is_returned_unch
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now() - timedelta(minutes=1),
     )
@@ -358,6 +360,7 @@ async def test_existing_ready_job_at_the_current_version_is_returned_unchanged(
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now() - timedelta(minutes=2),
     )
@@ -396,6 +399,7 @@ async def test_failed_latest_job_for_the_key_is_superseded_by_a_new_job(clock: F
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now() - timedelta(minutes=2),
     )
@@ -434,6 +438,7 @@ async def test_latest_job_requested_for_a_stale_run_version_is_superseded_by_a_n
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now() - timedelta(minutes=2),
     )
@@ -477,6 +482,7 @@ async def test_session_at_the_cap_raises_too_many_export_jobs(clock: FixedClock)
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,
+            layout_template=None,
             run_version=run.version,
             requested_at=clock.now() - timedelta(minutes=1),
         )
@@ -514,6 +520,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
         tailoring_run_id=run.id,
         document=TailoredDocumentKind.CV,
         format=ExportFormat.PDF,
+        layout_template=LayoutTemplate.CLASSIC,
         run_version=run.version,
         requested_at=clock.now() - timedelta(minutes=1),
     )
@@ -525,6 +532,7 @@ async def test_a_returning_current_job_is_handed_back_even_when_the_session_is_a
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,
+            layout_template=None,
             run_version=run.version,
             requested_at=clock.now() - timedelta(minutes=1),
         )

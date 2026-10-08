@@ -45,6 +45,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import GuestOwner
@@ -100,6 +101,7 @@ def _queued(
         tailoring_run_id=TailoringRunId(value=uuid4()),
         document=document,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run_version,
         requested_at=clock.now(),
     )

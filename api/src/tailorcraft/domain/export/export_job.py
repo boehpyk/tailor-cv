@@ -39,6 +39,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
@@ -185,6 +186,8 @@ class ExportJob(RecordsEvents):
     _tailoring_run_id: TailoringRunId
     _document: TailoredDocumentKind
     _format: ExportFormat
+    # Decided once, at `request`; `None` unless the format is `pdf` (slice 3.2, ADR-0030).
+    _layout_template: LayoutTemplate | None
     _run_version: int
     _status: ExportJobStatus
     _failure_reason: ExportFailureReason | None
@@ -253,6 +256,7 @@ class ExportJob(RecordsEvents):
         tailoring_run_id: TailoringRunId,
         document: TailoredDocumentKind,
         format: ExportFormat,
+        layout_template: LayoutTemplate | None,
         run_version: int,
         requested_at: datetime,
     ) -> ExportJob:
@@ -295,6 +299,7 @@ class ExportJob(RecordsEvents):
         job._tailoring_run_id = tailoring_run_id
         job._document = document
         job._format = format
+        job._layout_template = layout_template
         job._run_version = run_version
         job._status = ExportJobStatus.QUEUED
         job._failure_reason = None
@@ -314,6 +319,7 @@ class ExportJob(RecordsEvents):
                 tailoring_run_id=tailoring_run_id,
                 document=document,
                 format=format,
+                layout_template=layout_template,
                 run_version=run_version,
                 occurred_at=requested_at,
             )
@@ -571,6 +577,15 @@ class ExportJob(RecordsEvents):
     @property
     def format(self) -> ExportFormat:
         return self._format
+
+    @property
+    def layout_template(self) -> LayoutTemplate | None:
+        """The layout this job renders with — `None` for every format but `pdf` (AC-4). No method
+        writes it after `request`."""
+        # T12 maps this: until the column exists, a job *loaded* from the database has no
+        # `_layout_template` (SQLAlchemy never calls `__init__`), so it reads `None`. Remove the
+        # `getattr` at T12.
+        return getattr(self, "_layout_template", None)
 
     @property
     def run_version(self) -> int:

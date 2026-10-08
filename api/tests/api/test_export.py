@@ -70,7 +70,7 @@ from tailorcraft.domain.export.errors import (
     DocumentRenderOutputTooLarge,
     DocumentRenderTimedOut,
 )
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
@@ -395,6 +395,7 @@ async def _seed_jobs_for_cap(
             tailoring_run_id=TailoringRunId(UUID(run_id)),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,
+            layout_template=LayoutTemplate.CLASSIC,
             run_version=1,
             requested_at=now,
         )

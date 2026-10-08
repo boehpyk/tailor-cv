@@ -316,3 +316,22 @@ class DocumentRenderError(DocumentRenderFailed):
 
     def __init__(self) -> None:
         super().__init__(ExportFailureReason.RENDER_ERROR)
+
+
+class LayoutTemplateRequired(DomainError):
+    """`ExportJob.request` was asked for a PDF with no layout template (AC-3).
+
+    Unreachable from HTTP — `RequestExport` always supplies one, the default if the visitor chose
+    none — and kept because the aggregate must not trust its caller.
+    """
+
+
+class LayoutTemplateNotApplicable(DomainError):
+    """A layout template was given for a format that takes none — anything but `pdf` (AC-3).
+
+    Carries the format, so the 422's body can name it without the router re-reading the request.
+    """
+
+    def __init__(self, format: ExportFormat) -> None:
+        super().__init__(f"{format.value} takes no layout template")
+        self.format = format

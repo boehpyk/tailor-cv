@@ -17,7 +17,7 @@ from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.errors import TailoringRunNotExportable, TooManyExportJobs
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
-from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus, LayoutTemplate
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -234,6 +234,8 @@ class RequestExport:
             tailoring_run_id=run.id,
             document=cmd.document,
             format=cmd.format,
+            # T10 replaces this
+            layout_template=None if cmd.format is ExportFormat.DOCX else LayoutTemplate.CLASSIC,
             run_version=run.version,
             requested_at=self._clock.now(),
         )

@@ -49,6 +49,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
@@ -95,6 +96,7 @@ def _a_queued_job(
         tailoring_run_id=run.id,
         document=document,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run.version,
         requested_at=run.completed_at,
     )
@@ -465,6 +467,7 @@ async def test_two_concurrent_deliveries_the_loser_is_skipped_with_one_render_ca
             tailoring_run_id=run.id,
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,
+            layout_template=LayoutTemplate.CLASSIC,
             run_version=run.version,
             requested_at=run.completed_at,
         )

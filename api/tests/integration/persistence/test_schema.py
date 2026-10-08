@@ -29,7 +29,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFormat, LayoutTemplate
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -299,6 +299,7 @@ async def test_deleting_a_guest_session_cascades_to_all_four_guest_owned_tables(
             tailoring_run_id=TailoringRunId(value=uuid4()),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,
+            layout_template=LayoutTemplate.CLASSIC,
             run_version=1,
             requested_at=clock.now(),
         )

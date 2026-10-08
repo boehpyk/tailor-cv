@@ -37,6 +37,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFormat,
     ExportJobId,
     ExportJobStatus,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
@@ -76,6 +77,7 @@ def _requested(
         tailoring_run_id=_RUN_ID,
         document=_DOCUMENT,
         format=format,
+        layout_template=LayoutTemplate.CLASSIC if format is ExportFormat.PDF else None,
         run_version=run_version,
         requested_at=at,
     )
@@ -164,6 +166,7 @@ def test_request_with_a_user_owner_round_trips() -> None:
         tailoring_run_id=_RUN_ID,
         document=_DOCUMENT,
         format=_FORMAT,
+        layout_template=LayoutTemplate.CLASSIC if _FORMAT is ExportFormat.PDF else None,
         run_version=_RUN_VERSION,
         requested_at=_REQUESTED_AT,
     )

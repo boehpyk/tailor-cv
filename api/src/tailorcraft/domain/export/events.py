@@ -34,6 +34,7 @@ from tailorcraft.domain.export.value_objects import (
     ExportFailureReason,
     ExportFormat,
     ExportJobId,
+    LayoutTemplate,
 )
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.shared.events import DomainEvent
@@ -45,8 +46,9 @@ class ExportRequested(DomainEvent):
     """A visitor asked for one of a run's documents as a file: a job now exists, `queued`, and a
     task is about to be published for it.
 
-    Payload: `export_job_id`, `owner`, `tailoring_run_id`, `document`, `format`, `run_version`
-    (+ inherited `occurred_at`). `owner` replaced 1.5's `guest_session_id` in slice 2.3 (ADR-0022):
+    Payload: `export_job_id`, `owner`, `tailoring_run_id`, `document`, `format`,
+    `layout_template` (slice 3.2; `None` for every format but `pdf`), `run_version` (+ inherited
+    `occurred_at`). `owner` replaced 1.5's `guest_session_id` in slice 2.3 (ADR-0022):
     still an id, wrapped in its variant, rendered by `LoggingEventPublisher` as `owner_kind` +
     `owner_id`. **Deliberately absent: the text.** The document this
     job will render is reachable from `tailoring_run_id` and `document` by anyone with database
@@ -63,6 +65,7 @@ class ExportRequested(DomainEvent):
     tailoring_run_id: TailoringRunId
     document: TailoredDocumentKind
     format: ExportFormat
+    layout_template: LayoutTemplate | None
     run_version: int
 
 

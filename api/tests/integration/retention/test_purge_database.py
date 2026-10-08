@@ -89,7 +89,7 @@ from tailorcraft.application.retention.purge_expired_guest_sessions import (
     PurgeExpiredGuestSessions,
 )
 from tailorcraft.domain.export.export_job import ExportJob
-from tailorcraft.domain.export.value_objects import ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFormat, LayoutTemplate
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -250,6 +250,7 @@ class _Rig:
             tailoring_run_id=TailoringRunId(value=uuid4()),
             document=TailoredDocumentKind.CV,
             format=ExportFormat.PDF,
+            layout_template=LayoutTemplate.CLASSIC,
             run_version=1,
             requested_at=self.clock.now(),
         )
@@ -273,6 +274,7 @@ class _Rig:
             tailoring_run_id=TailoringRunId(value=uuid4()),
             document=TailoredDocumentKind.COVER_LETTER,
             format=ExportFormat.DOCX,
+            layout_template=None,
             run_version=1,
             requested_at=self.clock.now(),
         )

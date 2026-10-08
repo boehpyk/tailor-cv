@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import assert_never
+from typing import Final, assert_never
 from uuid import UUID
 
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind
@@ -145,6 +145,34 @@ class ExportFormat(StrEnum):
         out of step with the member it maps.
         """
         return self.value
+
+    @property
+    def takes_layout_template(self) -> bool:
+        """`True` for `pdf` only: the one format a layout template applies to (AC-2, ADR-0030).
+
+        A `match` closed by `assert_never`, like `delivery`, so a fifth format is a mypy error here
+        rather than a silent `False`.
+        """
+        raise NotImplementedError
+
+
+class LayoutTemplate(StrEnum):
+    """Which checked-in stylesheet a PDF export is rendered with (ADR-0030).
+
+    A closed set, so a `StrEnum` whose values are the wire spellings (`ExportFormat`'s reason). The
+    member order is the display order. **Never delete a member**: rows still hold it and must load
+    — ADR-0030's retirement rule keeps the member and refuses it at the request path instead. The
+    client mirrors this set in `web/src/features/export/layouts.ts` (AC-29).
+    """
+
+    CLASSIC = "classic"
+    MODERN = "modern"
+    FORMAL = "formal"
+
+
+# A PDF requested with no layout is Classic: 1.5's look, unchanged. Applied by `RequestExport`, not
+# by `ExportJob`, because a default is a policy about requests, not a property of a job.
+DEFAULT_LAYOUT_TEMPLATE: Final = LayoutTemplate.CLASSIC
 
 
 class ExportJobStatus(StrEnum):
