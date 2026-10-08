@@ -25,6 +25,8 @@ export function makeExportJob(overrides: Partial<ExportJob> = {}): ExportJob {
     tailoring_run_id: EXPORT_RUN_ID,
     document: 'cv',
     format: 'pdf',
+    // A PDF is rendered in a layout, a DOCX in none (slice 3.2); an explicit override still wins.
+    layout_template: (overrides.format ?? 'pdf') === 'pdf' ? 'classic' : null,
     status: 'queued',
     failure_reason: null,
     retryable: false,

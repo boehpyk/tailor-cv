@@ -50,6 +50,13 @@ export type QueuedExportFormat = 'pdf' | 'docx';
 export type InlineExportFormat = 'md' | 'txt';
 
 /**
+ * One of the closed set of looks a PDF can be rendered in (slice 3.2). Mirrors the domain's
+ * `LayoutTemplate` StrEnum in `api/src/tailorcraft/domain/export/value_objects.py`; the values are
+ * wire spellings. The names, descriptions and previews live in `layouts.ts`.
+ */
+export type LayoutTemplate = 'classic' | 'modern' | 'formal';
+
+/**
  * Where an export job stands. Mirrors the domain's `ExportJobStatus` — four values, closed.
  *
  * `queued` and `rendering` are the two non-terminal states the poller keeps polling through;
@@ -90,6 +97,11 @@ export type ExportFailureReason =
 export interface NewExport {
   readonly document: TailoredDocumentKind;
   readonly format: QueuedExportFormat;
+  /**
+   * PDF only: the server refuses it beside `docx` (422). Omitted, a PDF gets the domain's default
+   * layout — the client always sends one for a PDF, so it never relies on that default.
+   */
+  readonly layout_template?: LayoutTemplate;
 }
 
 /**
@@ -107,6 +119,8 @@ export interface ExportJob {
 
   readonly document: TailoredDocumentKind;
   readonly format: ExportFormat;
+  /** The layout this PDF was rendered in; `null` for a DOCX (a layout is a property of a PDF). */
+  readonly layout_template: LayoutTemplate | null;
 
   readonly status: ExportJobStatus;
   readonly failure_reason: ExportFailureReason | null;
