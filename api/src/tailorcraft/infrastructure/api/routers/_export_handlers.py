@@ -144,6 +144,7 @@ def to_response(
         tailoring_run_id=job.tailoring_run_id.value,
         document=job.document,
         format=job.format,
+        layout_template=None,  # T19
         status=job.status,
         failure_reason=job.failure_reason,
         retryable=is_retryable(job.failure_reason),
