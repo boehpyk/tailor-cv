@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 
 import { ApiError } from '@/api/client';
@@ -19,6 +20,7 @@ import { useTailoringRun } from '../hooks/useTailoringRun';
 import { viewOfWatchedRun } from '../runView';
 
 import type { TailoringRun } from '../types';
+import type { LayoutTemplate } from '@/features/export/types';
 
 /** The two documents a run page can show, as they are spelt in the URL (`/runs/:runId/:document`). */
 type DocumentSegment = 'cv' | 'cover_letter';
@@ -113,6 +115,10 @@ export function RunPage(): React.JSX.Element {
   // above already read and write in it.
   const map = useScopeMap();
   const scope = useWorkspaceScope();
+  // Slice 3.2 (plan §0.10): the user's PDF layout choice for this page, `null` until they make
+  // one. Here rather than in `ExportBar` because this page survives the CV/cover-letter tab switch
+  // and the bar's subtree does not, and the choice is shared by both tabs.
+  const [chosenLayout, setChosenLayout] = useState<LayoutTemplate | null>(null);
 
   if (runId === null || documentSegment === null) {
     return <NotFoundPage />;
@@ -217,7 +223,13 @@ export function RunPage(): React.JSX.Element {
         <DocumentWorkspace
           run={watched.data}
           renderAbove={(saveState) => (
-            <ExportBar runId={runId} document={documentSegment} saveState={saveState} />
+            <ExportBar
+              runId={runId}
+              document={documentSegment}
+              saveState={saveState}
+              layout={chosenLayout}
+              onLayoutChange={setChosenLayout}
+            />
           )}
         />
       )}

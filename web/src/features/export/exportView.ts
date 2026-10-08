@@ -10,7 +10,7 @@
 import { downloadFailureFor, requestFailureFor } from './exportCopy';
 
 import type { ExportNextAction } from './exportCopy';
-import type { ExportFailureReason, ExportFormat, ExportJob } from './types';
+import type { ExportFailureReason, ExportFormat, ExportJob, LayoutTemplate } from './types';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
 /**
@@ -24,6 +24,13 @@ import type { TailoredDocumentKind } from '@/features/tailoring/types';
 export interface ExportTarget {
   readonly document: TailoredDocumentKind;
   readonly format: ExportFormat;
+  /**
+   * The PDF layout this control is about (slice 3.2); `null` for every other format.
+   *
+   * SKELETON (T23): optional so the existing fixtures still type-check, and not yet matched by
+   * `latestExportJobFor` / `isSameTarget` — both land in T25.
+   */
+  readonly layoutTemplate?: LayoutTemplate | null;
 }
 
 /**
@@ -203,6 +210,16 @@ export function latestExportJobFor(
   jobs: readonly ExportJob[],
 ): ExportJob | undefined {
   return jobs.find((job) => job.document === target.document && job.format === target.format);
+}
+
+/**
+ * The layout the picker pre-selects (AC-30, plan §0.10): the `layout_template` of this run's most
+ * recently requested PDF job, of either document — `null` when there is none. Derived from server
+ * state on every render, never copied into `useState`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T23 SKELETON: the signature qa's T24 tests compile against; T25 uses it and deletes this line.
+export function defaultLayoutFor(_jobs: readonly ExportJob[]): LayoutTemplate | null {
+  throw new Error('not implemented');
 }
 
 /** Whether a mutation's variables are about this control. `null` (nothing in flight) never is. */

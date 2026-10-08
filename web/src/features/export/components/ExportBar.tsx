@@ -51,9 +51,10 @@ import { useExportJobs } from '../hooks/useExportJobs';
 import { useRequestExport } from '../hooks/useRequestExport';
 import { isActiveExportStatus } from '../types';
 import { ExportControl } from './ExportControl';
+import { LayoutPicker } from './LayoutPicker';
 
 import type { ExportMutations, ExportTarget, ExportView } from '../exportView';
-import type { ExportJob, InlineExportFormat, QueuedExportFormat } from '../types';
+import type { ExportJob, InlineExportFormat, LayoutTemplate, QueuedExportFormat } from '../types';
 import type { SaveState } from '@/features/editor/saveState';
 import type { TailoredDocumentKind } from '@/features/tailoring/types';
 
@@ -87,7 +88,17 @@ export interface ExportBarProps {
    * file that silently does not match the screen.
    */
   readonly saveState: SaveState;
+  /**
+   * The user's layout choice on this page, `null` until they make one (slice 3.2, plan §0.10).
+   * Owned by `RunPage`, so the CV and cover-letter tabs share it.
+   *
+   * SKELETON (T23): optional so the existing tests still type-check.
+   */
+  readonly layout?: LayoutTemplate | null;
+  readonly onLayoutChange?: (layout: LayoutTemplate) => void;
 }
+
+function ignoreLayoutChange(): void {}
 
 /**
  * The four controls, in AC-36's order, each with the delivery that decides what its click does.
@@ -197,7 +208,13 @@ interface ExportBarGates {
   readonly isListError: boolean;
 }
 
-export function ExportBar({ runId, document, saveState }: ExportBarProps): React.JSX.Element {
+export function ExportBar({
+  runId,
+  document,
+  saveState,
+  layout = null,
+  onLayoutChange = ignoreLayoutChange,
+}: ExportBarProps): React.JSX.Element {
   const jobsQuery = useExportJobs(runId);
   const requestExport = useRequestExport(runId);
   const download = useDownload();
@@ -245,6 +262,9 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
           }
         : null,
   };
+
+  // SKELETON (T23): the derived pre-selection (`defaultLayoutFor(jobs)`) joins this in T25.
+  const effectiveLayout: LayoutTemplate = layout ?? 'classic';
 
   const gateReason = exportGateReasonFor(saveState);
   const gates: ExportBarGates = {
@@ -365,9 +385,20 @@ export function ExportBar({ runId, document, saveState }: ExportBarProps): React
       aria-label="Download this document"
       className="space-y-3 rounded-md border border-slate-200 bg-white px-4 py-3"
     >
+      <LayoutPicker
+        value={effectiveLayout}
+        onChange={onLayoutChange}
+        disabled={jobsQuery.isPending}
+        busy={jobsQuery.isPending}
+      />
+
       <div className="flex flex-wrap gap-4">
         {EXPORT_CONTROLS.map((spec) => {
-          const target: ExportTarget = { document, format: spec.format };
+          const target: ExportTarget = {
+            document,
+            format: spec.format,
+            layoutTemplate: spec.format === 'pdf' ? effectiveLayout : null,
+          };
           const view = viewOfExport(target, jobs, mutations, nowMs);
           return (
             <ExportControl

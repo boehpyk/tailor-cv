@@ -436,3 +436,11 @@ const DOWNLOAD_FILENAMES: Readonly<
 export function downloadFilenameFor(document: TailoredDocumentKind, format: ExportFormat): string {
   return DOWNLOAD_FILENAMES[document][format];
 }
+
+/** AC-30: the picker's legend — what the three radios choose between (slice 3.2). */
+export const PDF_LAYOUT_LEGEND = 'PDF layout';
+
+/**
+ * AC-34: the checked card says so in words, not by its border colour alone.
+ */
+export const SELECTED_NOTE = 'Selected';
