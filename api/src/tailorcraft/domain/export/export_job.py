@@ -596,10 +596,7 @@ class ExportJob(RecordsEvents):
     def layout_template(self) -> LayoutTemplate | None:
         """The layout this job renders with — `None` for every format but `pdf` (AC-4). No method
         writes it after `request`."""
-        # T12 maps this: until the column exists, a job *loaded* from the database has no
-        # `_layout_template` (SQLAlchemy never calls `__init__`), so it reads `None`. Remove the
-        # `getattr` at T12.
-        return getattr(self, "_layout_template", None)
+        return self._layout_template
 
     @property
     def run_version(self) -> int:

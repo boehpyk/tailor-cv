@@ -81,6 +81,9 @@ _EXPORT_JOB_DOCUMENT: InstrumentedAttribute[TailoredDocumentKind] = cast(
 _EXPORT_JOB_FORMAT: InstrumentedAttribute[ExportFormat] = cast(
     "InstrumentedAttribute[ExportFormat]", ExportJob._format
 )
+_EXPORT_JOB_LAYOUT_TEMPLATE: InstrumentedAttribute[LayoutTemplate | None] = cast(
+    "InstrumentedAttribute[LayoutTemplate | None]", ExportJob._layout_template
+)
 _EXPORT_JOB_STATUS: InstrumentedAttribute[ExportJobStatus] = cast(
     "InstrumentedAttribute[ExportJobStatus]", ExportJob._status
 )
@@ -270,7 +273,7 @@ class SqlAlchemyExportJobRepository:
         run_id: TailoringRunId,
         document: TailoredDocumentKind,
         format: ExportFormat,
-        layout_template: LayoutTemplate | None,  # T12 honours this
+        layout_template: LayoutTemplate | None,
     ) -> ExportJob | None:
         """The most recently requested job for the (run, document, format) key, or `None`.
 
@@ -291,6 +294,9 @@ class SqlAlchemyExportJobRepository:
             .where(_EXPORT_JOB_TAILORING_RUN_ID == run_id)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
             .where(_EXPORT_JOB_DOCUMENT == document)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
             .where(_EXPORT_JOB_FORMAT == format)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+            # `IS NOT DISTINCT FROM`, not `=`: a DOCX lookup passes `None` and must find DOCX jobs,
+            # whose column is `NULL` (AC-13); `= NULL` matches nothing.
+            .where(_EXPORT_JOB_LAYOUT_TEMPLATE.is_not_distinct_from(layout_template))
             .order_by(_EXPORT_JOB_REQUESTED_AT.desc(), _EXPORT_JOB_ID.desc())
             .limit(1)
         )
