@@ -275,7 +275,7 @@ class SqlAlchemyExportJobRepository:
         format: ExportFormat,
         layout_template: LayoutTemplate | None,
     ) -> ExportJob | None:
-        """The most recently requested job for the (run, document, format) key, or `None`.
+        """The most recently requested job for the (run, document, format, layout) key, or `None`.
 
         The contract is the port's: the key is deliberately **not** unique, "latest" is
         `requested_at DESC, id DESC`, and the run version is not part of the key precisely so
