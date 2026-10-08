@@ -282,12 +282,19 @@ async def test_docx_keeps_its_key_with_no_layout_on_either_side(clock: FixedCloc
 async def test_a_guest_at_forty_jobs_is_refused_whatever_layout_is_asked_for(
     clock: FixedClock,
 ) -> None:
-    """Green on arrival (the count is layout-blind today); pinned so T10 keeps it that way."""
+    """The cap counts every layout. Seeded on the cover letter, in every layout, so no requested
+    CV key matches and step 3's idempotent lookup (X-16) cannot answer before the cap does."""
     world = _World(clock)
     owner, run = await world.guest_run()
-    for _ in range(40):
+    layouts = list(LayoutTemplate)
+    for i in range(40):
         await world.jobs.add(
-            world.seed_job(run, format=ExportFormat.PDF, layout_template=LayoutTemplate.MODERN)
+            world.seed_job(
+                run,
+                format=ExportFormat.PDF,
+                layout_template=layouts[i % len(layouts)],
+                document=TailoredDocumentKind.COVER_LETTER,
+            )
         )
     use_case = world.request_export()
 
@@ -332,9 +339,15 @@ async def test_a_user_at_twenty_jobs_on_a_run_is_refused_whatever_layout_is_aske
     user = await seed_user(world.users, "layouts@example.com", earlier)
     run = owned_succeeded_run(user, earlier)
     await world.runs.add(run)
-    for _ in range(20):
+    layouts = list(LayoutTemplate)
+    for i in range(20):  # cover letter, every layout: no requested CV key matches (X-18)
         await world.jobs.add(
-            world.seed_job(run, format=ExportFormat.PDF, layout_template=LayoutTemplate.FORMAL)
+            world.seed_job(
+                run,
+                format=ExportFormat.PDF,
+                layout_template=layouts[i % len(layouts)],
+                document=TailoredDocumentKind.COVER_LETTER,
+            )
         )
     use_case = world.request_export()
 
