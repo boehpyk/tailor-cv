@@ -129,6 +129,29 @@ function apiErrorFor(response: Response, path: string, parsed: unknown): ApiErro
   );
 }
 
+/**
+ * Read a refused response's body and turn it into the `ApiError`. **The one place a failure body is
+ * read**, for `send` and `sendBlob` alike, so the two cannot disagree again (slice 3.3, AC-8: `send`
+ * once parsed strictly, and nginx's HTML 502 during a release surfaced as a `SyntaxError` that hid
+ * the status — and a 429's `Retry-After` with it).
+ *
+ * Tolerant on purpose: an empty body (a bare 503) or a non-JSON one (a proxy's error page) is
+ * `null`, and `apiErrorFor` synthesizes the message from the status. `Retry-After` comes from the
+ * header either way.
+ */
+async function errorFrom(response: Response, path: string): Promise<ApiError> {
+  const text = await response.text();
+  let parsed: unknown = null;
+  if (text.length > 0) {
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      parsed = null;
+    }
+  }
+  return apiErrorFor(response, path, parsed);
+}
+
 interface RequestOptions {
   readonly signal?: AbortSignal;
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -285,17 +308,15 @@ async function send<T>(path: string, options: RequestOptions, bearer: string | n
     ...(options.signal ? { signal: options.signal } : {}),
   });
 
-  // Some endpoints answer with a body on failure and some do not, so read defensively rather than
-  // letting a `.json()` on an empty 503 throw a parse error that hides the real status.
-  const text = await response.text();
-  const parsed: unknown = text.length > 0 ? JSON.parse(text) : null;
-
   const accepted = response.ok || (options.acceptStatuses?.includes(response.status) ?? false);
   if (!accepted) {
-    throw apiErrorFor(response, path, parsed);
+    throw await errorFrom(response, path);
   }
 
-  return parsed as T;
+  // A success is parsed strictly: a 2xx whose body is not JSON is a broken contract, and it
+  // rejects rather than handing the caller `null` as if it were data.
+  const text = await response.text();
+  return (text.length > 0 ? JSON.parse(text) : null) as T;
 }
 
 /** What a blob request may carry. A download is a `GET` with no body — there is nothing else. */
@@ -362,17 +383,7 @@ async function sendBlob(
   });
 
   if (!response.ok) {
-    const text = await response.text();
-    let parsed: unknown = null;
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        // Not JSON — a proxy's error page, say. `apiErrorFor` synthesizes a message from the status.
-        parsed = null;
-      }
-    }
-    throw apiErrorFor(response, path, parsed);
+    throw await errorFrom(response, path);
   }
 
   return response.blob();
