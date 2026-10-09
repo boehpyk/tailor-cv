@@ -47,6 +47,10 @@ async function flush(): Promise<void> {
   for (let i = 0; i < 8; i += 1) {
     await advance(0);
   }
+  // TanStack notifies its observers through `setTimeout(0)`; a 0 ms timer created while a tick is
+  // running lands at +1 ms on the faked clock, so a poll that fails at 1000 renders at 1001. The
+  // zero-time advances above cannot reach it; this one does.
+  await advance(1);
 }
 
 beforeEach(() => {
@@ -177,11 +181,21 @@ describe('AC-19 — one message at a time', () => {
   );
 
   it.each([
-    ['404', 404, { code: 'tailoring_run_not_found', message: 'gone' }],
-    ['401 guest_session_expired', 401, { code: 'guest_session_expired', message: 'expired' }],
+    [
+      '404',
+      404,
+      { code: 'tailoring_run_not_found', message: 'gone' },
+      "We couldn't find that run.",
+    ],
+    [
+      '401 guest_session_expired',
+      401,
+      { code: 'guest_session_expired', message: 'expired' },
+      'Your session has expired. Upload your CV again.',
+    ],
   ])(
     'a %s shows no reconnecting line at all, and is not retried',
-    async (_name, status, error) => {
+    async (_name, status, error, copy) => {
       let polls = 0;
       watchRun((n) => {
         polls = n;
@@ -196,6 +210,7 @@ describe('AC-19 — one message at a time', () => {
       // Control: the refusal really was polled, once, and a 4xx is not treated as transient —
       // TanStack made no retry, so there is nothing to say "trying again" about.
       expect(polls).toBe(2);
+      expect(screen.getByText(copy, { exact: false })).toBeInTheDocument(); // the refusal landed
       expect(screen.queryByText(NO_CONNECTION_LINE)).not.toBeInTheDocument();
     },
     TIMEOUT,
