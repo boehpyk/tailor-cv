@@ -5708,3 +5708,139 @@ happened (the bundle, the request, the rows, the whole corpus) rather than what 
 - **Carried for `/verify`:** the account 429 on export requests has no `no-store` (it's raised in
   the shared handler, not through `translate`); T14's migration tests were not mutation-tested.
 - **Then 3.3**: rate-limit and retry feedback the user can actually see.
+
+---
+
+# Slice 3.3 — the honest "not yet", or: when can I try again?
+
+## What the user sees now
+
+Before this slice, three different things in TailorCraft said "no" and all of them were vague about
+it. Our own rate limiter answered *"a few minutes"* when the truth could be fifty-nine. Gemini
+being busy produced *"Give it a minute"* next to a *Try again* button that was enabled at once. And
+when the network wobbled, the run page silently retried three times and then announced *lost
+contact*, so the user saw nothing, nothing, nothing, then failure.
+
+Now every "no" carries its horizon. A refused button stays disabled and says *"You can try again at
+16:01"* (or *"in 45 seconds"* when it's close), then quietly comes back with *"You can try again
+now."* After Gemini says busy, *Try again* waits 60 seconds. And while the run page is retrying it
+says so: *"Connection trouble — trying again (attempt 2 of 4). Your run is still working."*
+
+## The roadmap said "exponential backoff". The code had four kinds of retry, and none of them was it
+
+The brief was one line: *rate-limit / retry UI feedback with exponential backoff surfaced to the
+user*. The planner read the code first and found four mechanisms, none of them exponential where the
+brief assumed. Our limiter uses fixed one-hour windows. The worker retries Gemini once, a fixed
+second later, and is done before the screen could show it. The only real exponential backoff in the
+system was TanStack Query's 1-2-4 second retry on the status polls, and nobody could see it.
+
+So the slice didn't invent a backoff. It **surfaced the one that exists** and was honest about the
+rest. ADR-0031 says it in its title: *a refusal is surfaced with its horizon; reads retry, writes
+hold.*
+
+## Reads retry, writes hold
+
+This is the rule worth stealing. A **read** (asking "is my run done?") is safe to repeat, so it
+retries by itself and the UI says it's doing so. A **write** (start a run, export a PDF, log in)
+might cost money or change something, so after a refusal it **waits for the user**. The button comes
+back; it never clicks itself.
+
+The tempting alternative was the one every HTTP client library offers: retry the refused request
+automatically after `Retry-After`. It sounds helpful. But picture someone who started a run, got
+refused, gave up and opened another tab. An hour later the first tab quietly fires a paid Gemini
+call they no longer want. This product's oldest rule is that a user who can't tell "still working"
+from "failed" refreshes and pays twice; an invisible retry is the same blur in a new costume.
+
+There is exactly one named exception: autosave. It already retried after a 429, and that's fine,
+because every save carries the document's version. A repeat can be refused, but it can never land
+twice, and it costs nothing. A test now scans every `useMutation` in the codebase and fails if any
+other one grows a `retry` option. Adding `retry: 1` to the tailoring request turned it red at once.
+
+## Where does a deadline live in React?
+
+This was the slice's learning question. A 429 tells you "come back in 120 seconds". Where do you
+keep that?
+
+- **A global store?** It would have to know which buttons share a budget, and only the server knows
+  that. The client would be guessing, a second authority that drifts.
+- **The TanStack cache?** It isn't server state; it's a fact about one response.
+- **`useEffect` copying the error into state?** That's the anti-pattern React's own docs warn about.
+
+The answer is boring and correct: keep `(error, whenItArrived)` in the component, update it **during
+render** when the error object changes (React's documented "adjusting state when a prop changes"
+pattern), and derive everything else. The only effect is the clock tick, because time really is
+something outside React. That's `useErrorHold`, and it replaced a private copy the claim button had
+grown on its own in 2.4.
+
+## War stories
+
+### Four tests that were wrong, and one rule that kept them honest
+
+The cycle here is strict: tests are written first and must fail, then the code makes them pass, and
+**the commit that makes them pass may not edit a test**. That rule is what makes the next four stories
+worth telling. Each time the implementer said "this test is wrong", it couldn't just bend it. The
+test had to be corrected in its own commit, re-checked against the spec, and shown to still fail
+against the old code.
+
+- **The clock that ran 80 ms fast** (`148f4e1`). A test helper advanced the fake clock 80 ms every
+  time it "settled" the page. So the check "still disabled 1 ms before the deadline" actually ran
+  80-160 ms *after* the deadline, when the spec says the button must already be enabled. The app was
+  right; the test was measuring at the wrong moment.
+- **The millisecond TanStack keeps** (`60fba47`). TanStack tells components about new data through
+  `setTimeout(0)`. Under Vitest's fake timers, a zero-delay timer created inside a tick lands at
+  **+1 ms**. So a poll that failed at 1000 ms rendered at 1001, and the test looked at 1000. One
+  `advance(1)` instead of `advance(0)`. It also explained a scary-looking side observation ("a 404
+  leaves the run stuck on working"): it wasn't stuck, it was one millisecond from updating.
+- **Two Export again buttons** (`a8b626f`). The test gave Word a 503 to prove only PDF was held, and
+  1.5's own rule shows *Export again* on a 503 too. So "find the Export again button" found two.
+- **Old tests stating old copy** (`a8b626f`, `ae4c970`). Several 1.x and 2.x tests asserted *"try
+  again in a few minutes"*, the very sentence this slice exists to replace. Updating them is the spec
+  superseding an old row, so each correction names the AC that superseded it.
+
+### "HH:MM" and the 10:16 PM problem
+
+The spec said the wait reads *"at HH:MM"*. The jsdom test environment is en-US, so the real output
+was *"at 10:16 PM"* and the anchored tests failed. The quick fix was to force 24-hour time. But the
+same spec says the time is shown **in the browser's locale**, which is the entire reason the
+function takes a locale parameter. Forcing `h23` would have made the tests pass by telling an
+American user the time in a format their own clock doesn't use. The tests were loosened instead
+(`\d{1,2}:\d{2}` with an optional AM/PM), and the pure function's own tests still pin `en-GB` so its
+exact output stays checked. **When a test and the spec's intent disagree, read the whole sentence of
+the spec, not the example in it.**
+
+### The nginx page that pretended to be your Wi-Fi
+
+When the api container restarts, nginx answers with an HTML 502 page. The client did
+`response.json()` on it, got a `SyntaxError`, and the UI said *"check your connection"*: blaming the
+user's network for our own restart. A single `errorFrom()` helper now reads every refused body for
+both request paths, so an HTML or empty error becomes a proper `ApiError` with its status.
+
+### 183 bytes over
+
+The bundle budget was +2 kB gzipped. The measurement was **+2.18 kB**: twelve surfaces changed, each
+with a few new sentences. The owner amended the budget to 2.5 kB and recorded the overshoot as
+measured, the same way 3.1 recorded a 2 ms overshoot. A budget's job is to make the cost visible and
+the decision deliberate, not to be met at any price.
+
+## The numbers
+
+- **Run-detail `GET` p95**: within **0.08 ms** of `main` (n = 200, three interleaved rounds). The new
+  field is one `match`.
+- **Bundle**: +2.18 kB gzipped (budget amended to 2.5).
+- **Untouched, proven by `git diff`**: the domain, the application layer, the LLM adapter, the rate
+  limiter, settings and migrations. No migration, no new setting.
+- **Tests**: 4454 backend, 1325 frontend.
+
+## The common thread
+
+3.2 asked *which question is this code answering?* 3.3 asks *who is allowed to try again?* The
+answer splits cleanly: the machine may repeat a question, and only the person may repeat a request.
+Almost every design choice in the slice follows from that sentence, and so did most of the tests.
+
+## What's next
+
+- **`/verify`**, carrying two findings from the manual pass: after a hold ends, the old *"…at 16:01"*
+  alert still sits beside *"You can try again now."*; and in dev, `up -d api` alone leaves nginx
+  pointing at the old container (502 until `restart nginx`), which is older than this slice.
+- **Watch** the share of runs failing `llm_rate_limited` (the trigger for a growing cooldown), and
+  complaints about long waits (the trigger for revisiting the hourly limits).
