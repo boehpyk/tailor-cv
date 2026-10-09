@@ -16,8 +16,12 @@ function sentenceFor(state: SaveState): string {
       return `${saveStateCopy.invalid}: ${documentProblemCopy[state.problem]}`;
     case 'paused':
       // AC-16: the instant the hook stamped at receipt, through `retryPhrase` — never the raw
-      // header. The machine's own re-save timer is unchanged; this is only its sentence.
-      return `${saveStateCopy.paused} — we'll save again automatically ${retryPhrase(state.untilMs, Date.now())}.`;
+      // header. Worded as of the receipt (`untilMs − retryAfterSeconds`), never `Date.now()`: this
+      // is a live region, and a re-render must not reword it (AC-23).
+      return `${saveStateCopy.paused} — we'll save again automatically ${retryPhrase(
+        state.untilMs,
+        state.untilMs - state.retryAfterSeconds * 1000,
+      )}.`;
     case 'saved':
     case 'dirty':
     case 'saving':

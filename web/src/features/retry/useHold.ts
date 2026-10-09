@@ -16,7 +16,8 @@ export interface Hold {
   /**
    * The wait in words (*"in 45 seconds"*, *"at 14:03"*), **worded once, when the deadline first
    * appeared**, so a sentence built from it is fixed text: it never ticks inside a live region
-   * (AC-23). `null` when there is no deadline.
+   * (AC-23). `null` whenever nothing is held — no deadline, or one that has passed — so a sentence
+   * built from it names no wait beside `HoldNote`'s *"You can try again now."*.
    */
   readonly phrase: string | null;
   /**
@@ -86,7 +87,7 @@ export function useHold(deadlineMs: number | null): Hold {
     current = { ...current, held: true };
     setSeen(current);
   }
-  const phrase = deadlineMs === null ? null : retryPhrase(deadlineMs, current.atMs);
+  const phrase = held && deadlineMs !== null ? retryPhrase(deadlineMs, current.atMs) : null;
   return held
     ? { held, remainingSeconds: Math.ceil(remainingMs / TICK_MS), phrase, released: false }
     : { held, remainingSeconds: 0, phrase, released: current.held };

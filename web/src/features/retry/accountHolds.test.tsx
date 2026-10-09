@@ -51,6 +51,9 @@ import type { ReactElement } from 'react';
  * naming AC-15 (`LoginPage.test.tsx` I-14/I-15) and AC-15/V-61 (`CheckYourEmail.test.tsx`).
  */
 
+// Verify's MINOR 1: once a hold is released, no sentence may still name the wait.
+const WAIT_NAMED = /try again (?:at \d|in \d+ seconds?)/i;
+
 const NOW = 1_700_000_000_000; // 22:13:20 UTC
 const WINDOW_MS = 120_000;
 // The browser's locale decides the shape (jsdom: en-US, "10:16 PM"); AC-5 forbids forcing one.
@@ -131,6 +134,7 @@ describe('AC-14 — Keep them in my account', () => {
     await advanceToward(clickedAt + WINDOW_MS, 0);
     expect(keep()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
 
     await advance(5000);
     expect(callsTo(fetch, 'POST', CLAIM_PATH)).toHaveLength(1);
@@ -259,6 +263,7 @@ describe.each(SURFACES)('AC-15 — $name', (surface) => {
     await advanceToward(clickedAt + WINDOW_MS, 0);
     expect(surface.submit()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
 
     await advance(5000);
     expect(posts(fetch)).toBe(1);
@@ -294,20 +299,20 @@ describe('AC-16 — copy through retryPhrase, nothing held', () => {
     ['account deletion', deleteAccountErrorCopy],
   ] as const)('%s', (_name, copyFor) => {
     it('names a wait beyond 90 s as a clock time', () => {
-      expect(copyFor(rateLimited(120), NOW + 120_000)).toMatch(CLOCK_TIME);
+      expect(copyFor(rateLimited(120), NOW + 120_000, NOW)).toMatch(CLOCK_TIME);
     });
 
     it('names a short wait in seconds, from the deadline and not the raw header', () => {
-      expect(copyFor(rateLimited(45), NOW + 45_000)).toMatch(/in 45 seconds/);
+      expect(copyFor(rateLimited(45), NOW + 45_000, NOW)).toMatch(/in 45 seconds/);
     });
 
     it('never says "a moment" or "a few minutes" for a wait it knows', () => {
-      expect(copyFor(rateLimited(120), NOW + 120_000)).not.toMatch(/a moment|a few minutes/i);
+      expect(copyFor(rateLimited(120), NOW + 120_000, NOW)).not.toMatch(/a moment|a few minutes/i);
     });
 
     it('leaves a 503 as it was (no clock time invented)', () => {
       const error = new ApiError(503, SERVER_PROSE, 'service_unavailable');
-      expect(copyFor(error, null)).not.toMatch(CLOCK_TIME);
+      expect(copyFor(error, null, NOW)).not.toMatch(CLOCK_TIME);
     });
   });
 });
@@ -327,6 +332,18 @@ describe('AC-16 — autosave paused (SaveIndicator)', () => {
     render(
       <SaveIndicator state={{ kind: 'paused', retryAfterSeconds: 45, untilMs: NOW + 45_000 }} />,
     );
+
+    expect(screen.getByRole('status')).toHaveTextContent(
+      "Saving paused — we'll save again automatically in 45 seconds.",
+    );
+  });
+
+  it('is fixed text: a re-render later does not reword the wait inside the live region', () => {
+    const state = { kind: 'paused', retryAfterSeconds: 45, untilMs: NOW + 45_000 } as const;
+    const { rerender } = render(<SaveIndicator state={state} />);
+    vi.setSystemTime(NOW + 20_000);
+
+    rerender(<SaveIndicator state={{ ...state }} />);
 
     expect(screen.getByRole('status')).toHaveTextContent(
       "Saving paused — we'll save again automatically in 45 seconds.",

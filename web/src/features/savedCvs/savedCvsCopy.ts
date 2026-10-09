@@ -175,7 +175,7 @@ export function uploadSavedCvErrorCopy(
     case 'rate_limited':
       // AC-12: the wait through `retryPhrase`, never a raw seconds count.
       return retryWhen === null
-        ? 'Too many uploads in a short time. Wait a few minutes, then try again.'
+        ? 'Too many uploads in a short time.'
         : `Too many uploads in a short time. You can try again ${retryWhen}.`;
     case 'storage_unavailable':
       return "We couldn't store your file right now. Nothing was saved — try again in a moment.";
@@ -228,7 +228,7 @@ export function deleteAccountErrorCopy(
   /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
   deadlineMs: number | null,
   /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): string {
   if (!(error instanceof ApiError)) {
     return "Couldn't reach TailorCraft. Your account was not deleted.";

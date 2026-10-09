@@ -341,7 +341,8 @@ const REQUEST_FAILURE_BY_CODE: Readonly<Partial<Record<string, RequestFailureVie
     retryable: false,
   },
   rate_limited: {
-    message: 'Too many exports — try again in a few minutes.',
+    // No wait named: with one, `requestFailureFor` words it; without, the hold has ended.
+    message: 'Too many exports.',
     retryable: true,
   },
   service_unavailable: {

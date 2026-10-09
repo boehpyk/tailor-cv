@@ -28,15 +28,15 @@ export function ConnectionNote({
   connection,
   failureCount,
   maxRetries,
-}: ConnectionNoteProps): React.JSX.Element | null {
-  if (connection === 'ok') {
-    return null;
-  }
+}: ConnectionNoteProps): React.JSX.Element {
+  // Always in the DOM (empty while `'ok'`), so a screen reader announces the change inside it.
   return (
     <p role="status" className="text-sm text-slate-600">
-      {connection === 'paused'
-        ? OFFLINE_SENTENCE[kind]
-        : reconnectingSentence(kind, failureCount + 1, maxRetries + 1)}
+      {connection === 'ok'
+        ? null
+        : connection === 'paused'
+          ? OFFLINE_SENTENCE[kind]
+          : reconnectingSentence(kind, failureCount + 1, maxRetries + 1)}
     </p>
   );
 }

@@ -437,9 +437,11 @@ describe('viewOfExport — AC-37', () => {
         retryable: false,
       },
       {
+        // Without a wait to name (the hold has ended), the sentence names none: "a few minutes"
+        // beside "You can try again now." contradicted it (3.3 /verify, MINOR 1).
         name: 'X-19 rate_limited — 30/h/session or 60/h/IP',
         code: 'rate_limited',
-        message: 'Too many exports — try again in a few minutes.',
+        message: 'Too many exports.',
         retryable: true,
       },
       {
@@ -500,7 +502,7 @@ describe('viewOfExport — AC-37', () => {
 
       expect(view).toEqual({
         kind: 'requestFailed',
-        message: 'Too many exports — try again in a few minutes.',
+        message: 'Too many exports.',
         retryable: true,
       });
     });

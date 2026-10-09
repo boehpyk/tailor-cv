@@ -132,7 +132,7 @@ export function moveFailureCopy(
   /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
   deadlineMs: number | null,
   /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): string {
   switch (codeOf(error)) {
     case 'tracked_application_version_conflict':
@@ -174,7 +174,7 @@ export function retitleFailureCopy(
   /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
   deadlineMs: number | null,
   /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): string {
   switch (codeOf(error)) {
     case 'validation_error':
@@ -223,7 +223,7 @@ export function trackFailureCopy(
   /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
   deadlineMs: number | null,
   /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): string {
   switch (codeOf(error)) {
     case 'tailoring_run_not_trackable':

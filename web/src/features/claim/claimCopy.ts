@@ -39,10 +39,13 @@ export const CLAIM_NOTHING_LEFT =
 /** AC-39: 429 `rate_limited`. The button comes back after `Retry-After` (slice 3.3: held until then). */
 export const CLAIM_RATE_LIMITED = 'Too many attempts';
 
-/** AC-14: the 429 sentence, naming the wait through `retryPhrase` (`useErrorHold(error).phrase`). */
+/**
+ * AC-14: the 429 sentence, naming the wait through `retryPhrase` (`useErrorHold(error).phrase`);
+ * `null` once the hold has ended, when `HoldNote` says *"You can try again now."* instead.
+ */
 export function claimRateLimited(retryWhen: string | null): string {
   return retryWhen === null
-    ? `${CLAIM_RATE_LIMITED} — try again in a few minutes.`
+    ? `${CLAIM_RATE_LIMITED}.`
     : `${CLAIM_RATE_LIMITED} — you can try again ${retryWhen}.`;
 }
 /** AC-39: 503, a network failure, anything unexpected. Nothing moved, so trying again is safe. */
