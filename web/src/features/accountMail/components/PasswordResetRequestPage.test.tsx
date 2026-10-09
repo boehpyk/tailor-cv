@@ -140,7 +140,9 @@ describe('/reset-password: failures (each distinct)', () => {
       await submitEmail('not-an-address');
       const alert = await screen.findByRole('alert');
       texts.push(alert.textContent);
-      expect(screen.queryByRole('status')).not.toBeInTheDocument();
+      // Nothing is *said* as a status: a 429's hold mounts its release region empty (so the
+      // release is announced as a change), and an empty live region announces nothing.
+      expect(screen.queryAllByRole('status').filter((s) => s.textContent !== '')).toHaveLength(0);
       const submit = screen.getByRole('button', { name: RESET_REQUEST_SUBMIT_LABEL });
       if (held) {
         expect(submit).toBeDisabled();

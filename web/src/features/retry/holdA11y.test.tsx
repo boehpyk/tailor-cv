@@ -57,10 +57,10 @@ describe('HoldNote', () => {
     expect(screen.getByRole('status')).toHaveTextContent('You can try again now.');
   });
 
-  it('says nothing when never held (a run that failed hours ago released nothing)', () => {
-    render(<HoldNote held={false} remainingSeconds={0} released={false} />);
+  it('renders nothing when never held (a run that failed hours ago released nothing)', () => {
+    const { container } = render(<HoldNote held={false} remainingSeconds={0} released={false} />);
 
-    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('announces the release in a status region that already existed while held', () => {
