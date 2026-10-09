@@ -760,7 +760,8 @@ describe('ExportBar', () => {
         // few minutes.": a 429 now names when the control comes back. No `Retry-After` is sent
         // here, so the wait is the 60 s default and reads "in 60 seconds".
         message: 'Too many exports. You can try again at HH:MM.',
-        matcher: /^Too many exports\. You can try again (at \d{2}:\d{2}|in \d+ seconds)\.$/,
+        matcher:
+          /^Too many exports\. You can try again (at \d{1,2}:\d{2}(?:\s?[AP]M)?|in \d+ seconds)\.$/,
         retryable: true,
       },
       {

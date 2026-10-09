@@ -200,7 +200,9 @@ describe('LoginPage', () => {
     fireEvent.click(submitButton());
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/^Too many attempts\. .*try again at \d{2}:\d{2}\.$/i);
+    expect(alert).toHaveTextContent(
+      /^Too many attempts\. .*try again at \d{1,2}:\d{2}(?:\s?[AP]M)?\.$/i,
+    );
   });
 
   it('I-17 rate_limit_unavailable: "Logging in is unavailable right now. Anything you\'re doing as a guest is unaffected."', async () => {

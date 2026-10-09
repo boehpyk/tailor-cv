@@ -53,7 +53,8 @@ import type { ReactElement } from 'react';
 
 const NOW = 1_700_000_000_000; // 22:13:20 UTC
 const WINDOW_MS = 120_000;
-const CLOCK_TIME = /\d{2}:\d{2}/;
+// The browser's locale decides the shape (jsdom: en-US, "10:16 PM"); AC-5 forbids forcing one.
+const CLOCK_TIME = /\d{1,2}:\d{2}(?:\s?[AP]M)?/;
 const SERVER_PROSE = 'server prose';
 
 async function advance(ms: number): Promise<void> {
@@ -318,7 +319,7 @@ describe('AC-16 — autosave paused (SaveIndicator)', () => {
     );
 
     expect(screen.getByRole('status')).toHaveTextContent(
-      /^Saving paused — we'll save again automatically at \d{2}:\d{2}\.$/,
+      /^Saving paused — we'll save again automatically at \d{1,2}:\d{2}(?:\s?[AP]M)?\.$/,
     );
   });
 

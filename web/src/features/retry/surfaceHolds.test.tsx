@@ -30,7 +30,9 @@ import type { ReactNode } from 'react';
 
 const NOW = 1_700_000_000_000;
 const WINDOW_MS = 120_000;
-const CLOCK_TIME = /\d{2}:\d{2}/; // 120 s is beyond the 90 s threshold, so the phrase is "at HH:MM"
+// 120 s is beyond 90 s, so the phrase is a clock time in the browser's locale (jsdom: en-US,
+// "10:16 PM"); AC-5 forbids forcing one, so the shape accepts both.
+const CLOCK_TIME = /\d{1,2}:\d{2}(?:\s?[AP]M)?/;
 const SERVER_PROSE = 'Too many requests. Try again in 120 seconds.';
 
 function tooMany(code = 'rate_limited'): Response {
