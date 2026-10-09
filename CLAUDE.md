@@ -18,12 +18,14 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: fourteen slices shipped (1.1–1.6, 2.1–2.5, 3.1, 3.2, and the `__Host-tc_guest` security
+> **Status: fifteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, and the `__Host-tc_guest` security
 > slice); Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
 > merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
 > `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
-> (`a092053`) and released 2026-10-09 (deploy run 37855115482).** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> (`a092053`) and released 2026-10-09 (deploy run 37855115482). Slice 3.3
+> `workspace-rate-limit-retry-feedback` was merged as PR #25 (`279a0b7`) and released 2026-10-09
+> (deploy run 37951163281).** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -479,7 +481,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`cc1bd0e`), five T24 tests that raced the loading state (`6cf4628`), Vite inlining the previews
 >   (Conventions; Infrastructure footguns).
 >
-> - **3.3 `workspace-rate-limit-retry-feedback`** (branch, **implemented and verified 2026-10-09**,
+> - **3.3 `workspace-rate-limit-retry-feedback`** (PR #25, `279a0b7`, **verified and released 2026-10-09**, deploy run 37951163281;
 >   reviewer PASS round 1, six MINORs carried by the owner — see the spec's T27) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
 >   ADR-0014 amended). *Reads retry, writes hold*: after a 429 every re-clickable control (tailor,
 >   *Try again*, export per document × format, both uploads, posting — *Paste instead* stays usable
