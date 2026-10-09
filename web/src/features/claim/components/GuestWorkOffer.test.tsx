@@ -19,7 +19,6 @@ import { jsonResponse } from '@/test/fixtures';
 import {
   CLAIM_FAILED,
   CLAIM_NOTHING_LEFT,
-  CLAIM_RATE_LIMITED,
   KEEP_LABEL,
   KEEP_PENDING_LABEL,
   NOT_NOW_LABEL,
@@ -386,7 +385,11 @@ describe('GuestWorkOffer — failures, each distinct from "still working" (AC-39
 
     await user.click(within(region).getByRole('button', { name: KEEP_LABEL }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(CLAIM_RATE_LIMITED);
+    // Spelled out, never imported from claimCopy: an expectation imported from the code under
+    // test moves with it (3.3 /verify, MINOR 3).
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Too many attempts — you can try again in 1 second.',
+    );
     expect(screen.queryByRole('button', { name: KEEP_PENDING_LABEL })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: KEEP_LABEL })).toBeDisabled();
     await waitFor(

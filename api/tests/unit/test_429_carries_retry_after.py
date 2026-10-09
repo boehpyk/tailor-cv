@@ -10,6 +10,12 @@ Mutation (recorded 2026-10-09): deleting `headers={"Retry-After": str(retry_afte
     AssertionError: 429 sites missing Retry-After or `rate_limited`:
     ['_upload.py:97']
 Source restored byte-exact (`git diff` empty).
+
+Two blind spots closed after 3.3's /verify (MINOR 6), each mutation-proven the same day on
+`_upload.py`, both red as `['_upload.py:97']`, source restored byte-exact:
+- the status written as a bare `429` (and `headers=` dropped) — the scan saw only the constant;
+- `"code": "too_many"` with `rate_limited` moved into the `message` — any constant anywhere in
+  `detail` used to count.
 """
 
 from __future__ import annotations
@@ -22,7 +28,10 @@ MINIMUM_SITES = 9  # today's number; fewer means the scan stopped seeing somethi
 
 
 def _is_429(node: ast.expr) -> bool:
-    return isinstance(node, ast.Attribute) and node.attr == "HTTP_429_TOO_MANY_REQUESTS"
+    # The named constant or a bare literal: a site written `429` must not slip past the scan.
+    return (isinstance(node, ast.Attribute) and node.attr == "HTTP_429_TOO_MANY_REQUESTS") or (
+        isinstance(node, ast.Constant) and node.value == 429
+    )
 
 
 def _names_retry_after(call: ast.Call) -> bool:
@@ -33,11 +42,14 @@ def _names_retry_after(call: ast.Call) -> bool:
 
 
 def _has_rate_limited_code(call: ast.Call) -> bool:
-    return any(
-        isinstance(n, ast.Constant) and n.value == "rate_limited"
-        for k in call.keywords
-        if k.arg == "detail"
-        for n in ast.walk(k.value)
+    # Under the `code` key specifically: "rate_limited" inside the `message` prose is not a code.
+    detail = next((k.value for k in call.keywords if k.arg == "detail"), None)
+    return isinstance(detail, ast.Dict) and any(
+        isinstance(k, ast.Constant)
+        and k.value == "code"
+        and isinstance(v, ast.Constant)
+        and v.value == "rate_limited"
+        for k, v in zip(detail.keys, detail.values, strict=True)
     )
 
 
