@@ -135,11 +135,27 @@ def retry_not_before(
     """When *Try again* is worth pressing: `completed_at + PROVIDER_BUSY_COOLDOWN` for a run that
     failed `llm_rate_limited`, else `None` (ADR-0014, amendment of 2026-10-09).
 
-    SKELETON (T3): returns `None` for everything — wrong but typed, so every run route still
-    answers. T5 replaces it with a `match` closed by `assert_never`.
+    `None` when `completed_at` is `None` too: a failed run always has one, but the type allows it.
+    Every other reason is named, as in `is_retryable`, so an eleventh is a mypy error here.
     """
-    del reason, completed_at
-    return None
+    match reason:
+        case TailoringFailureReason.LLM_RATE_LIMITED:
+            return None if completed_at is None else completed_at + PROVIDER_BUSY_COOLDOWN
+        case (
+            None
+            | TailoringFailureReason.LLM_UNAVAILABLE
+            | TailoringFailureReason.LLM_TIMED_OUT
+            | TailoringFailureReason.LLM_REFUSED
+            | TailoringFailureReason.LLM_OUTPUT_INVALID
+            | TailoringFailureReason.LLM_ERROR
+            | TailoringFailureReason.INPUTS_TOO_LARGE
+            | TailoringFailureReason.NOT_QUEUED
+            | TailoringFailureReason.ABANDONED
+            | TailoringFailureReason.BASE_CV_DELETED
+        ):
+            return None
+        case _:
+            assert_never(reason)
 
 
 def to_response(run: TailoringRun, expires_at: datetime | None) -> TailoringRunResponse:
