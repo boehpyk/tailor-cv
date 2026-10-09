@@ -153,6 +153,11 @@ class TailoringRunResponse(BaseModel):
     # field when `status == "failed"`.
     retryable: bool
 
+    # When *Try again* is worth pressing for a provider-busy run: `completed_at + 60 s` iff the run
+    # failed `llm_rate_limited`, else `null`. Computed at the boundary, like `retryable` (ADR-0014,
+    # amendment of 2026-10-09; ADR-0031). Advisory: nothing refuses an earlier retry.
+    retry_not_before: datetime | None
+
     # The CURRENT document (revision if any, else draft) — see the class docstring.
     tailored_cv: str | None
     cover_letter: str | None
@@ -222,6 +227,11 @@ class TailoringRunSummary(BaseModel):
 
     failure_reason: TailoringFailureReason | None
     retryable: bool
+
+    # When *Try again* is worth pressing for a provider-busy run: `completed_at + 60 s` iff the run
+    # failed `llm_rate_limited`, else `null`. Computed at the boundary, like `retryable` (ADR-0014,
+    # amendment of 2026-10-09; ADR-0031). Advisory: nothing refuses an earlier retry.
+    retry_not_before: datetime | None
 
     tailored_cv_character_count: int | None
     cover_letter_character_count: int | None
@@ -296,6 +306,11 @@ class HistoryEntryResponse(BaseModel):
     status: TailoringRunStatus
     failure_reason: TailoringFailureReason | None
     retryable: bool
+
+    # When *Try again* is worth pressing for a provider-busy run: `completed_at + 60 s` iff the run
+    # failed `llm_rate_limited`, else `null`. Computed at the boundary, like `retryable` (ADR-0014,
+    # amendment of 2026-10-09; ADR-0031). Advisory: nothing refuses an earlier retry.
+    retry_not_before: datetime | None
     requested_at: datetime
     completed_at: datetime | None
     version: int

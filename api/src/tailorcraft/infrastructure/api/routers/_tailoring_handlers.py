@@ -18,8 +18,8 @@ is computed once, handed to the limiter as an identifier, and goes nowhere else.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
-from typing import assert_never
+from datetime import datetime, timedelta
+from typing import Final, assert_never
 
 import structlog
 from fastapi import Request, Response, status
@@ -124,6 +124,24 @@ def is_retryable(reason: TailoringFailureReason | None) -> bool:
             assert_never(reason)
 
 
+# ADR-0014, amendment of 2026-10-09: a fixed cooldown after `llm_rate_limited`. A constant, not a
+# setting — no operator has a reason to tune it (technical plan §3).
+PROVIDER_BUSY_COOLDOWN: Final = timedelta(seconds=60)
+
+
+def retry_not_before(
+    reason: TailoringFailureReason | None, completed_at: datetime | None
+) -> datetime | None:
+    """When *Try again* is worth pressing: `completed_at + PROVIDER_BUSY_COOLDOWN` for a run that
+    failed `llm_rate_limited`, else `None` (ADR-0014, amendment of 2026-10-09).
+
+    SKELETON (T3): returns `None` for everything — wrong but typed, so every run route still
+    answers. T5 replaces it with a `match` closed by `assert_never`.
+    """
+    del reason, completed_at
+    return None
+
+
 def to_response(run: TailoringRun, expires_at: datetime | None) -> TailoringRunResponse:
     """The full shape, including both documents. `expires_at` is the **session's** — the session
     owns the 24-hour promise (ADR-0006), exactly as `BaseCvResponse` and `JobPostingResponse` carry
@@ -145,6 +163,7 @@ def to_response(run: TailoringRun, expires_at: datetime | None) -> TailoringRunR
         job_posting_id=run.job_posting_id.value,
         failure_reason=run.failure_reason,
         retryable=is_retryable(run.failure_reason),
+        retry_not_before=retry_not_before(run.failure_reason, run.completed_at),
         tailored_cv=documents.cv.value if documents is not None else None,
         cover_letter=documents.cover_letter.value if documents is not None else None,
         tailored_cv_character_count=(
@@ -187,6 +206,7 @@ def to_summary(run: TailoringRun, expires_at: datetime | None) -> TailoringRunSu
         job_posting_id=run.job_posting_id.value,
         failure_reason=run.failure_reason,
         retryable=is_retryable(run.failure_reason),
+        retry_not_before=retry_not_before(run.failure_reason, run.completed_at),
         tailored_cv_character_count=(
             documents.cv.character_count if documents is not None else None
         ),
