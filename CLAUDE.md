@@ -482,7 +482,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (Conventions; Infrastructure footguns).
 >
 > - **3.3 `workspace-rate-limit-retry-feedback`** (PR #25, `279a0b7`, **verified and released 2026-10-09**, deploy run 37951163281;
->   reviewer PASS round 1, six MINORs carried by the owner — see the spec's T27) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
+>   reviewer PASS round 1; its six MINORs fixed in a follow-up PR, below) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
 >   ADR-0014 amended). *Reads retry, writes hold*: after a 429 every re-clickable control (tailor,
 >   *Try again*, export per document × format, both uploads, posting — *Paste instead* stays usable
 >   on a fetch 429 — claim, login, register, reset, *Send it again*) is disabled until `Retry-After`
@@ -504,7 +504,14 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   the owner** and recorded as measured. T25 (`:8080`, Chromium; Firefox not exercised): every
 >   scenario passed. **Found, carried to `/verify`:** after a 429 hold ends, the alert still reads
 >   *"…at 16:01"* beside *"You can try again now."*; `up -d api` alone leaves dev nginx on the old IP
->   (502 until `restart nginx`, pre-existing). Four RED corrections landed in their own commits
+>   (502 until `restart nginx`, pre-existing). **The follow-up (`fix/retry-feedback-followups`)
+>   fixed /verify's six MINORs:** `useHold`'s `phrase` is `null` whenever nothing is held, and every
+>   429 copy's `null` branch names no wait (*"Too many attempts."*, never *"a few minutes"*);
+>   `SaveIndicator` words the pause as of receipt (`untilMs − retryAfterSeconds`); `HoldNote` mounts
+>   its `role="status"` empty with the hold and fills it at release (`announce={false}` joins
+>   `ExportControl`'s region), `ConnectionNote`'s is always mounted; AC-3's scan sees a literal
+>   `429` and `rate_limited` only under `code`; the claim test spells its sentence. **A live region
+>   mounted together with its text may never be announced** — mount it empty, then change it. Four RED corrections landed in their own commits
 >   (`148f4e1`, `a8b626f`, `ae4c970`, `60fba47`), all **timing or spec-superseded copy** — see
 >   Conventions.
 >
