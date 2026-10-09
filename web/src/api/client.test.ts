@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { request } from './client';
+import { ApiError, request } from './client';
 
 import { __resetForTests, authStore } from '@/features/auth/authStore';
 import { countCallsTo, jsonResponse } from '@/test/fixtures';
@@ -174,5 +174,71 @@ describe('I-48: a 401 guest_session_expired never triggers a refresh — the bra
 
     expect(countCallsTo(fetchMock, '/api/protected-thing', 'GET')).toBe(1);
     expect(countCallsTo(fetchMock, '/api/auth/refresh', 'POST')).toBe(0);
+  });
+});
+
+describe('AC-8 (slice 3.3): a non-2xx with a body that is not JSON is an ApiError, never a SyntaxError', () => {
+  // Mutation note (6): `send()` parsing the body without the guard (`await response.json()`
+  // straight after the status check) turns every row below red with
+  // `expected SyntaxError: Unexpected token '<'… to be an instance of ApiError` — and a gateway's
+  // HTML error page would then reach the UI as "something broke" with no status to branch on.
+  const NGINX_502 =
+    '<html><head><title>502 Bad Gateway</title></head><body><center><h1>502 Bad Gateway</h1></center><hr><center>nginx</center></body></html>';
+
+  it('an nginx HTML 502 gives ApiError(502) with code null and the synthesized message', async () => {
+    makeFetchMock({
+      'GET /api/thing': () =>
+        new Response(NGINX_502, { status: 502, headers: { 'Content-Type': 'text/html' } }),
+    });
+
+    const error: unknown = await request('/api/thing').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 502, code: null, message: '502 for /api/thing' });
+  });
+
+  it('an empty 504 gives ApiError(504) with code null', async () => {
+    makeFetchMock({ 'GET /api/thing': () => new Response('', { status: 504 }) });
+
+    const error: unknown = await request('/api/thing').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 504, code: null });
+  });
+
+  it('a 429 with Retry-After and an HTML body still exposes retryAfterSeconds', async () => {
+    makeFetchMock({
+      'GET /api/thing': () =>
+        new Response('<html>Too Many Requests</html>', {
+          status: 429,
+          headers: { 'Content-Type': 'text/html', 'Retry-After': '37' },
+        }),
+    });
+
+    const error: unknown = await request('/api/thing').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 429, code: null, retryAfterSeconds: 37 });
+  });
+
+  it('a JSON error envelope still wins over the fallback (control: the guard did not swallow it)', async () => {
+    makeFetchMock({ 'GET /api/thing': () => errorResponse(409, 'tailoring_already_running') });
+
+    await expect(request('/api/thing')).rejects.toMatchObject({
+      status: 409,
+      code: 'tailoring_already_running',
+    });
+  });
+
+  it('a 2xx with a non-JSON body still rejects, not silently accepted', async () => {
+    makeFetchMock({
+      'GET /api/thing': () =>
+        new Response('<html>captive portal</html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' },
+        }),
+    });
+
+    await expect(request('/api/thing')).rejects.toThrow();
   });
 });
