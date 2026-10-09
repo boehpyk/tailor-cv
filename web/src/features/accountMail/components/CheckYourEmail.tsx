@@ -156,5 +156,5 @@ function sendAgainFailure(error: Error): string {
   if (!(error instanceof ApiError) || error.status >= 500) {
     return SEND_AGAIN_FAILED;
   }
-  return authErrorCopy('register', error).message;
+  return authErrorCopy('register', error, null).message;
 }

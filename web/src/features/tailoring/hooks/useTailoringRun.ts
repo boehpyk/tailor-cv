@@ -47,7 +47,7 @@ const POLL_INTERVAL_MS = 1000;
  * TanStack's own default, written down because `retry` below is a function, so the default no
  * longer applies by itself.
  */
-const MAX_TRANSIENT_RETRIES = 3;
+export const MAX_TRANSIENT_RETRIES = 3;
 
 /**
  * A 4xx `ApiError` is an answer, not a blip: the server will say the same thing on every attempt.

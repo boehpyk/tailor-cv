@@ -218,7 +218,7 @@ export function GuestWorkspace(): React.JSX.Element {
 
           {rejection !== null && (
             <TailoringRejectionNotice
-              message={rejectionMessage(rejection)}
+              message={rejectionMessage(rejection, null)}
               onViewActiveRun={
                 activeRunId === null
                   ? null

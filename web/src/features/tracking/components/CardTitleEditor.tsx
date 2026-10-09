@@ -120,7 +120,7 @@ export function CardTitleEditor({
     );
   }
 
-  const failure = retitle.isError ? retitleFailureCopy(retitle.error) : null;
+  const failure = retitle.isError ? retitleFailureCopy(retitle.error, null) : null;
 
   return (
     <form

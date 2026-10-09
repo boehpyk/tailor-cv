@@ -333,7 +333,7 @@ export function viewOfExport(
   // last time's news, and the control says *Starting…* again.
   const refusedRequest = mutations.requestFailure;
   if (refusedRequest !== null && isSameTarget(refusedRequest.target, target)) {
-    return { kind: 'requestFailed', ...requestFailureFor(refusedRequest.error) };
+    return { kind: 'requestFailed', ...requestFailureFor(refusedRequest.error, null) };
   }
 
   const job = latestExportJobFor(target, jobs);

@@ -14,6 +14,8 @@ export type UploadErrorNoticeProps =
       readonly message: string;
       readonly status: number;
       readonly code: string | null;
+      /** A 429's hold deadline (`useErrorHold`), for the hint's `retryPhrase`; `null` otherwise. */
+      readonly deadlineMs: number | null;
     }
   | { readonly kind: 'extractionFailed'; readonly message: string };
 
@@ -23,7 +25,12 @@ export type UploadErrorNoticeProps =
  * contract (client.ts's docstring), never on `message`; `status` is only the fallback for a
  * transport-level failure that has no code at all (a network error, or a 5xx with no envelope).
  */
-function actionHintFor(status: number, code: string | null): string | null {
+function actionHintFor(
+  status: number,
+  code: string | null,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+  _deadlineMs: number | null,
+): string | null {
   switch (code) {
     case 'unsupported_format':
       return 'Try a PDF, DOCX or TXT file.';
@@ -58,7 +65,7 @@ export function UploadErrorNotice(props: UploadErrorNoticeProps): React.JSX.Elem
 
   if (props.kind === 'apiError') {
     // Error B — the API rejected the request (413 / 415 / 422 / 409 / 429 / 5xx).
-    const hint = actionHintFor(props.status, props.code);
+    const hint = actionHintFor(props.status, props.code, props.deadlineMs);
     return (
       <div role="alert" className="space-y-1 rounded-md border border-red-200 bg-red-50 px-3 py-2">
         <p className="text-sm font-medium text-red-700">{props.message}</p>

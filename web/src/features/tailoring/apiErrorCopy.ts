@@ -28,7 +28,11 @@ import { ApiError } from '@/api/client';
  */
 export type CopyScope = 'guest' | 'account';
 
-export function rejectionMessage(error: Error, scope: CopyScope = 'guest'): string {
+export function rejectionMessage(
+  error: Error,
+  _deadlineMs: number | null,
+  scope: CopyScope = 'guest',
+): string {
   if (!(error instanceof ApiError)) {
     return "We couldn't reach TailorCraft. Check your connection, then try again.";
   }

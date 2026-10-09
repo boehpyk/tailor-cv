@@ -236,7 +236,7 @@ export function RunPage(): React.JSX.Element {
 
       {rejection !== null && (
         <TailoringRejectionNotice
-          message={rejectionMessage(rejection, map.kind)}
+          message={rejectionMessage(rejection, null, map.kind)}
           onViewActiveRun={
             activeRunId === null
               ? null

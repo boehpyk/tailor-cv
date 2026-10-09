@@ -35,7 +35,7 @@ export function AuthErrorNotice({ id, action, error, focusOnMount = false }: Aut
   if (error === null) {
     return null;
   }
-  const copy = authErrorCopy(action, error);
+  const copy = authErrorCopy(action, error, null);
   return (
     <div
       id={id}

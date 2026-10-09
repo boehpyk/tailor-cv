@@ -101,7 +101,7 @@ export function DeleteAccountSection(): React.JSX.Element {
         </div>
         {error !== null && (
           <p id={errorId} role="alert" className="text-sm text-red-700">
-            {deleteAccountErrorCopy(error)}
+            {deleteAccountErrorCopy(error, null)}
           </p>
         )}
         <button

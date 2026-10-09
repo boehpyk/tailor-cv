@@ -119,7 +119,8 @@ export function movedAnnouncement(title: string, stage: Stage): string {
  * Why a move was refused, by `code` (AC-34): 409 conflict, 404 gone, 429 rate limited, anything
  * else (503, a network failure) *"Not moved — try again."*. Never silent.
  */
-export function moveFailureCopy(error: unknown): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+export function moveFailureCopy(error: unknown, _deadlineMs: number | null): string {
   switch (codeOf(error)) {
     case 'tracked_application_version_conflict':
       return MOVE_CONFLICT_NOTE;
@@ -155,7 +156,8 @@ export function titleCounter(length: number): string {
  * Why a retitle was refused: 422 → the boundary's own message (it never echoes the title); 409, 404,
  * 429, 503 → as a move's (AC-34).
  */
-export function retitleFailureCopy(error: unknown): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+export function retitleFailureCopy(error: unknown, _deadlineMs: number | null): string {
   switch (codeOf(error)) {
     case 'validation_error':
       // `codeOf` returned a code, so this is an `ApiError`; the narrowing is for the type.
@@ -198,7 +200,8 @@ export function onBoardLabel(stage: Stage): string {
  * carries the real cap), 429, anything else (503, a network failure). A 409
  * `application_already_tracked` is a success and never reaches here.
  */
-export function trackFailureCopy(error: unknown): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+export function trackFailureCopy(error: unknown, _deadlineMs: number | null): string {
   switch (codeOf(error)) {
     case 'tailoring_run_not_trackable':
       return TRACK_NOT_TRACKABLE_NOTE;

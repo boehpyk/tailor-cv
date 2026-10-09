@@ -76,7 +76,7 @@ export function TrackButton({ userId, runId }: TrackButtonProps): React.JSX.Elem
       </button>
       {track.isError && (
         <span id={errorId} role="alert" className="text-sm text-red-700">
-          {trackFailureCopy(track.error)}
+          {trackFailureCopy(track.error, null)}
         </span>
       )}
     </span>

@@ -147,6 +147,7 @@ export function BaseCvUploadPanel(): React.JSX.Element {
           message={upload.error.message}
           status={upload.error instanceof ApiError ? upload.error.status : 0}
           code={upload.error instanceof ApiError ? upload.error.code : null}
+          deadlineMs={null}
         />
       )}
 

@@ -380,7 +380,8 @@ const UNKNOWN_REQUEST_FAILURE: RequestFailureView = {
  * question already answered one level up. It falls through to the generic line in the window before
  * that happens.
  */
-export function requestFailureFor(error: Error): RequestFailureView {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+export function requestFailureFor(error: Error, _deadlineMs: number | null): RequestFailureView {
   if (!(error instanceof ApiError) || error.code === null) {
     return UNKNOWN_REQUEST_FAILURE;
   }

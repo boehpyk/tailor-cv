@@ -154,7 +154,8 @@ function isSignedOut(error: ApiError): boolean {
 }
 
 /** AC-35: an account upload the server refused — one distinct sentence per `code`. */
-export function uploadSavedCvErrorCopy(error: Error): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+export function uploadSavedCvErrorCopy(error: Error, _deadlineMs: number | null): string {
   if (!(error instanceof ApiError)) {
     return NETWORK_FAILURE_NOTE;
   }
@@ -223,7 +224,8 @@ export function deleteSavedCvErrorCopy(error: Error): string {
  * AC-40: a deletion the server refused. Every sentence says the account is still there — on any
  * refusal nothing was deleted, and a user who is unsure will try again or, worse, assume it went.
  */
-export function deleteAccountErrorCopy(error: Error): string {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+export function deleteAccountErrorCopy(error: Error, _deadlineMs: number | null): string {
   if (!(error instanceof ApiError)) {
     return "Couldn't reach TailorCraft. Your account was not deleted.";
   }

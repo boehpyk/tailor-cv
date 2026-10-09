@@ -104,7 +104,12 @@ const LOGOUT_FAILED = "Couldn't log you out. Try again.";
  * two sentences carry a number the server sent: `rate_limited` (`retryAfterSeconds`) and
  * `password_too_short` / `password_too_long` (`details.min_length` / `details.max_length`).
  */
-export function authErrorCopy(action: AuthAction, error: Error): AuthErrorCopy {
+export function authErrorCopy(
+  action: AuthAction,
+  error: Error,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
+  _deadlineMs: number | null,
+): AuthErrorCopy {
   if (action === 'logout') {
     return { message: LOGOUT_FAILED };
   }

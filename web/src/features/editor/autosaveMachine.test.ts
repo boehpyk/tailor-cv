@@ -304,22 +304,31 @@ const inFlightCases: readonly Case[] = [
   {
     name: 'landedError(rateLimited, 30s) pauses for the window named, in ms',
     machine: { kind: 'inFlight', lastSaved: A, sent: B, sendWanted: false, debounceArmed: false },
-    event: { type: 'landedError', failure: { kind: 'rateLimited', retryAfterSeconds: 30 } },
-    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    event: {
+      type: 'landedError',
+      failure: { kind: 'rateLimited', retryAfterSeconds: 30, untilMs: 0 },
+    },
+    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     effects: [{ type: 'armTimer', ms: 30_000 }],
   },
   {
     name: 'landedError(rateLimited, 1s): the wait floors at AUTOSAVE_DEBOUNCE_MS, never shorter than the debounce',
     machine: { kind: 'inFlight', lastSaved: A, sent: B, sendWanted: false, debounceArmed: false },
-    event: { type: 'landedError', failure: { kind: 'rateLimited', retryAfterSeconds: 1 } },
-    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 1 },
+    event: {
+      type: 'landedError',
+      failure: { kind: 'rateLimited', retryAfterSeconds: 1, untilMs: 0 },
+    },
+    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 1, untilMs: 0 },
     effects: [{ type: 'armTimer', ms: AUTOSAVE_DEBOUNCE_MS }],
   },
   {
     name: 'landedError(rateLimited), a debounce was armed: clearTimer precedes the pause timer',
     machine: { kind: 'inFlight', lastSaved: A, sent: B, sendWanted: false, debounceArmed: true },
-    event: { type: 'landedError', failure: { kind: 'rateLimited', retryAfterSeconds: 30 } },
-    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    event: {
+      type: 'landedError',
+      failure: { kind: 'rateLimited', retryAfterSeconds: 30, untilMs: 0 },
+    },
+    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     effects: [CLEAR_TIMER, { type: 'armTimer', ms: 30_000 }],
   },
   // --- unmount: captures the wish, never reads the editor again ------------------------------
@@ -442,35 +451,35 @@ describe('conflict', () => {
 const pausedCases: readonly Case[] = [
   {
     name: 'paused + timerDue(differs from lastSaved): one more attempt',
-    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     event: { type: 'timerDue', text: B },
     next: { kind: 'inFlight', lastSaved: A, sent: B, sendWanted: false, debounceArmed: false },
     effects: [SEND_B],
   },
   {
     name: 'paused + timerDue(equal to lastSaved): the window ends with nothing to send',
-    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     event: { type: 'timerDue', text: A },
     next: { kind: 'idle', lastSaved: A },
     effects: [],
   },
   {
     name: 'paused + flush is nothing: a flush cannot jump the 429 window',
-    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     event: { type: 'flush', text: B },
-    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    next: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     effects: [],
   },
   {
     name: "paused + unmount(differs): still sends — the window is the server's to enforce again",
-    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     event: { type: 'unmount', text: B },
     next: { kind: 'leaving', lastSaved: A, sent: B, wish: null },
     effects: [CLEAR_TIMER, SEND_B],
   },
   {
     name: 'paused + unmount(equal to lastSaved): quiet close, timer cleared',
-    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 },
+    machine: { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 },
     event: { type: 'unmount', text: A },
     next: { kind: 'idle', lastSaved: A },
     effects: [CLEAR_TIMER],
@@ -623,7 +632,10 @@ const leavingCases: readonly Case[] = [
   {
     name: 'leaving + landedError(rateLimited): settles failed at lastSaved, no timer armed for a page that is gone',
     machine: { kind: 'leaving', lastSaved: A, sent: B, wish: C },
-    event: { type: 'landedError', failure: { kind: 'rateLimited', retryAfterSeconds: 30 } },
+    event: {
+      type: 'landedError',
+      failure: { kind: 'rateLimited', retryAfterSeconds: 30, untilMs: 0 },
+    },
     next: { kind: 'failed', lastSaved: A },
     effects: [],
   },
@@ -689,7 +701,7 @@ function canonicalMachine(kind: AutosaveMachine['kind']): AutosaveMachine {
     case 'conflict':
       return { kind: 'conflict', lastSaved: A };
     case 'paused':
-      return { kind: 'paused', lastSaved: A, retryAfterSeconds: 30 };
+      return { kind: 'paused', lastSaved: A, retryAfterSeconds: 30, untilMs: 0 };
     case 'failed':
       return { kind: 'failed', lastSaved: A };
     case 'invalid':

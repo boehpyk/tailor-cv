@@ -58,7 +58,7 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
       )}
       {error !== null && (
         <p id={errorId} role="alert" className="text-sm text-red-700">
-          {uploadSavedCvErrorCopy(error)}
+          {uploadSavedCvErrorCopy(error, null)}
         </p>
       )}
     </div>

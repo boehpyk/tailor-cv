@@ -79,7 +79,7 @@ describe('DocumentTabs', () => {
   it('marks a tab unsaved for every non-saved state, not only "dirty"', () => {
     const savingStates: SaveState[] = [
       { kind: 'saving' },
-      { kind: 'paused', retryAfterSeconds: 30 },
+      { kind: 'paused', retryAfterSeconds: 30, untilMs: 0 },
       { kind: 'expired' },
     ];
 

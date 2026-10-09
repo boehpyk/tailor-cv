@@ -69,7 +69,13 @@ export type AutosaveMachine =
     }
   | { readonly kind: 'resolvingConflict'; readonly lastSaved: string }
   | { readonly kind: 'conflict'; readonly lastSaved: string }
-  | { readonly kind: 'paused'; readonly lastSaved: string; readonly retryAfterSeconds: number }
+  | {
+      readonly kind: 'paused';
+      readonly lastSaved: string;
+      readonly retryAfterSeconds: number;
+      /** When the save resumes, stamped by the hook at receipt — for the copy only (AC-16). */
+      readonly untilMs: number;
+    }
   | { readonly kind: 'failed'; readonly lastSaved: string }
   | { readonly kind: 'invalid'; readonly lastSaved: string; readonly problem: DocumentProblem }
   | { readonly kind: 'expired' }
@@ -88,8 +94,11 @@ export type SaveFailure =
   | { readonly kind: 'expired' }
   /** 422 `document_invalid`. */
   | { readonly kind: 'invalid'; readonly problem: DocumentProblem }
-  /** 429, with the window the server named. */
-  | { readonly kind: 'rateLimited'; readonly retryAfterSeconds: number }
+  /**
+   * 429, with the window the server named, and the instant it ends — stamped by the hook at receipt
+   * so the machine stays pure (AC-16).
+   */
+  | { readonly kind: 'rateLimited'; readonly retryAfterSeconds: number; readonly untilMs: number }
   /** Everything else, after the retries. */
   | { readonly kind: 'failed' };
 
@@ -139,7 +148,7 @@ export type AutosaveView =
   | { readonly kind: 'saving' }
   | { readonly kind: 'failed' }
   | { readonly kind: 'conflict' }
-  | { readonly kind: 'paused'; readonly retryAfterSeconds: number }
+  | { readonly kind: 'paused'; readonly retryAfterSeconds: number; readonly untilMs: number }
   | { readonly kind: 'invalid'; readonly problem: DocumentProblem }
   | { readonly kind: 'expired' };
 
@@ -181,7 +190,12 @@ function refused(lastSaved: string, failure: SaveFailure): Transition {
       return stay({ kind: 'invalid', lastSaved, problem: failure.problem });
     case 'rateLimited':
       return {
-        next: { kind: 'paused', lastSaved, retryAfterSeconds: failure.retryAfterSeconds },
+        next: {
+          kind: 'paused',
+          lastSaved,
+          retryAfterSeconds: failure.retryAfterSeconds,
+          untilMs: failure.untilMs,
+        },
         effects: [pausedFor(failure.retryAfterSeconds)],
       };
     case 'failed':
@@ -446,7 +460,11 @@ export function viewOf(machine: AutosaveMachine): AutosaveView {
     case 'conflict':
       return { kind: 'conflict' };
     case 'paused':
-      return { kind: 'paused', retryAfterSeconds: machine.retryAfterSeconds };
+      return {
+        kind: 'paused',
+        retryAfterSeconds: machine.retryAfterSeconds,
+        untilMs: machine.untilMs,
+      };
     case 'failed':
       return { kind: 'failed' };
     case 'invalid':
@@ -466,7 +484,7 @@ export function sameView(a: AutosaveView, b: AutosaveView): boolean {
     return false;
   }
   if (a.kind === 'paused' && b.kind === 'paused') {
-    return a.retryAfterSeconds === b.retryAfterSeconds;
+    return a.retryAfterSeconds === b.retryAfterSeconds && a.untilMs === b.untilMs;
   }
   if (a.kind === 'invalid' && b.kind === 'invalid') {
     return a.problem === b.problem;

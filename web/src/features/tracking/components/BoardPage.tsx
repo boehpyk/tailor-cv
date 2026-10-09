@@ -99,7 +99,7 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
       announceMove(card.id, movedAnnouncement(cardDisplayTitle(card), stage));
     },
     onRefused: (error, card) => {
-      setMoveFailure(moveFailureCopy(error));
+      setMoveFailure(moveFailureCopy(error, null));
       // The card is back where it was, but the control the user chose from was unmounted by the
       // optimistic move: hand focus back to it. A card that is gone (404) has no control to return to.
       if (card.restored) {

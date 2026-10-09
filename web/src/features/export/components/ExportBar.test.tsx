@@ -134,7 +134,7 @@ const SAVE_STATE_GATE_CASES: ReadonlyArray<{ readonly name: string; readonly sta
     name: 'conflict',
     state: { kind: 'conflict', loadLatest: () => undefined, keepMine: () => undefined },
   },
-  { name: 'paused', state: { kind: 'paused', retryAfterSeconds: 30 } },
+  { name: 'paused', state: { kind: 'paused', retryAfterSeconds: 30, untilMs: 0 } },
   { name: 'invalid', state: { kind: 'invalid', problem: 'too_long' as DocumentProblem } },
   { name: 'expired', state: { kind: 'expired' } },
 ];

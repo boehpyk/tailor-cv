@@ -34,8 +34,8 @@ describe('rejectionMessage', () => {
   it.each(KNOWN_CODES)(
     'is driven by code alone for %s — two different server messages give the same copy',
     (code) => {
-      const a = rejectionMessage(new ApiError(409, JUNK_A, code));
-      const b = rejectionMessage(new ApiError(409, JUNK_B, code));
+      const a = rejectionMessage(new ApiError(409, JUNK_A, code), null);
+      const b = rejectionMessage(new ApiError(409, JUNK_B, code), null);
 
       expect(a).toBe(b);
       expect(a).not.toBe(JUNK_A);
@@ -44,22 +44,22 @@ describe('rejectionMessage', () => {
   );
 
   it('never relays the server message even for a code this module does not recognise', () => {
-    const a = rejectionMessage(new ApiError(418, JUNK_A, 'brand_new_code_not_yet_mapped'));
-    const b = rejectionMessage(new ApiError(418, JUNK_B, 'brand_new_code_not_yet_mapped'));
+    const a = rejectionMessage(new ApiError(418, JUNK_A, 'brand_new_code_not_yet_mapped'), null);
+    const b = rejectionMessage(new ApiError(418, JUNK_B, 'brand_new_code_not_yet_mapped'), null);
 
     expect(a).toBe(b);
     expect(a).not.toBe(JUNK_A);
   });
 
   it('still distinguishes a 5xx from a 4xx for an unrecognised code, by status rather than message', () => {
-    const serverError = rejectionMessage(new ApiError(503, JUNK_A, 'brand_new_code'));
-    const clientError = rejectionMessage(new ApiError(418, JUNK_A, 'brand_new_code'));
+    const serverError = rejectionMessage(new ApiError(503, JUNK_A, 'brand_new_code'), null);
+    const clientError = rejectionMessage(new ApiError(418, JUNK_A, 'brand_new_code'), null);
 
     expect(serverError).not.toBe(clientError);
   });
 
   it('reports a transport-level failure (no envelope, so no ApiError at all) without touching its message', () => {
-    const message = rejectionMessage(new Error(JUNK_A));
+    const message = rejectionMessage(new Error(JUNK_A), null);
 
     expect(message).not.toBe(JUNK_A);
     expect(message.length).toBeGreaterThan(0);

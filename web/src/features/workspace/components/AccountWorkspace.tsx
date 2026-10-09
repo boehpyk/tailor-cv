@@ -160,7 +160,7 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
 
           {rejection !== null && (
             <TailoringRejectionNotice
-              message={rejectionMessage(rejection, 'account')}
+              message={rejectionMessage(rejection, null, 'account')}
               onViewActiveRun={null}
               activeRunHref={activeRunId === null ? null : runLink(map, activeRunId)}
             />
