@@ -95,7 +95,11 @@ describe('AC-11 — a refused PDF request holds the PDF control only', () => {
   }
 
   const button = (name: string) => screen.getByRole('button', { name });
-  const exportAgain = () => screen.getByRole('button', { name: /export again/i });
+  // Scoped to the PDF control's region: a refused Word request shows its own *Export again* (X-22).
+  const exportAgain = () =>
+    within(button('PDF').parentElement as HTMLElement).getByRole('button', {
+      name: /export again/i,
+    });
 
   it('disables PDF, sends nothing on click, keeps Word usable, and releases at the deadline', async () => {
     const fetchMock = stubExportFetch(EXPORT_RUN_ID, {

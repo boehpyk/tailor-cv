@@ -734,6 +734,8 @@ describe('ExportBar', () => {
       readonly status: number;
       readonly code: string;
       readonly message: string;
+      /** Where the sentence names a wait, the clock time or seconds vary: match its shape. */
+      readonly matcher?: RegExp;
       readonly retryable: boolean;
     }> = [
       {
@@ -754,7 +756,11 @@ describe('ExportBar', () => {
         name: 'X-19 rate_limited',
         status: 429,
         code: 'rate_limited',
-        message: 'Too many exports — try again in a few minutes.',
+        // Slice 3.3, AC-11 supersedes the old fixed sentence "Too many exports — try again in a
+        // few minutes.": a 429 now names when the control comes back. No `Retry-After` is sent
+        // here, so the wait is the 60 s default and reads "in 60 seconds".
+        message: 'Too many exports. You can try again at HH:MM.',
+        matcher: /^Too many exports\. You can try again (at \d{2}:\d{2}|in \d+ seconds)\.$/,
         retryable: true,
       },
       {
@@ -773,7 +779,7 @@ describe('ExportBar', () => {
       },
     ];
 
-    for (const { name, status, code, message, retryable } of REQUEST_FAILURE_CASES) {
+    for (const { name, status, code, message, matcher, retryable } of REQUEST_FAILURE_CASES) {
       it(`${name}: clicking PDF shows "${message}" on the PDF control only${retryable ? ', with Export again' : ', with no retry'}`, async () => {
         stubExportFetch(EXPORT_RUN_ID, {
           exportJobs: () => Promise.resolve(jsonResponse(200, { items: [] })),
@@ -791,7 +797,7 @@ describe('ExportBar', () => {
         });
         fireEvent.click(screen.getByRole('button', { name: 'PDF' }));
 
-        const notice = await screen.findByText(message);
+        const notice = await screen.findByText(matcher ?? message);
         const pdfButton = screen.getByRole('button', { name: 'PDF' });
         expect(pdfButton.parentElement).toContainElement(notice);
 
@@ -799,7 +805,7 @@ describe('ExportBar', () => {
         // about every control of this format's kind.
         const docxButton = screen.getByRole('button', { name: 'Word' });
         expect(
-          within(docxButton.parentElement as HTMLElement).queryByText(message),
+          within(docxButton.parentElement as HTMLElement).queryByText(matcher ?? message),
         ).not.toBeInTheDocument();
 
         const pdfRegion = pdfButton.parentElement as HTMLElement;
