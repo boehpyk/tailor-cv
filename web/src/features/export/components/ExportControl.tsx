@@ -248,7 +248,7 @@ export function ExportControl({
       */}
       <div role="status" className="text-xs leading-5 text-slate-600">
         {statusContentFor(view, format, secondsOnPage, onPrimary, hold.held)}
-        <HoldNote {...hold} />
+        <HoldNote {...hold} announce={false} />
       </div>
     </div>
   );

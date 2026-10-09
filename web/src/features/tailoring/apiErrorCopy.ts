@@ -61,9 +61,9 @@ export function rejectionMessage(
         : "You've reached the limit for this session.";
     case 'rate_limited':
       // G-11 / AC-9: the wait comes from `Retry-After` through `retryPhrase`, never from the
-      // server's `message`. Without one, "a few minutes" is still true.
+      // server's `message`. Without one (the hold has ended), no wait is named.
       return retryWhen === null
-        ? 'Too many tailoring runs — try again in a few minutes.'
+        ? 'Too many tailoring runs.'
         : `Too many tailoring runs — you can try again ${retryWhen}.`;
     case 'rate_limit_unavailable':
       return 'Tailoring is temporarily unavailable.';

@@ -20,7 +20,7 @@ export function postingRejectionMessage(
   switch (error.code) {
     case 'rate_limited':
       return retryWhen === null
-        ? 'Too many job postings in a short time. Wait a few minutes, then try again.'
+        ? 'Too many job postings in a short time.'
         : `Too many job postings in a short time. You can try again ${retryWhen}.`;
     case 'rate_limit_unavailable':
       return 'Adding job postings is unavailable right now. Try again shortly.';

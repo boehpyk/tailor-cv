@@ -188,7 +188,7 @@ const UNAVAILABLE_TASK: Readonly<Record<Exclude<AuthAction, 'logout'>, string>> 
 /** AC-15: *"Too many attempts. You can try again at 14:03."* — the wait from `retryPhrase`. */
 function tooManyAttempts(retryWhen: string | null): string {
   return retryWhen === null
-    ? 'Too many attempts. Try again in a few minutes.'
+    ? 'Too many attempts.'
     : `Too many attempts. You can try again ${retryWhen}.`;
 }
 

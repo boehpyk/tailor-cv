@@ -175,7 +175,7 @@ export function uploadSavedCvErrorCopy(
     case 'rate_limited':
       // AC-12: the wait through `retryPhrase`, never a raw seconds count.
       return retryWhen === null
-        ? 'Too many uploads in a short time. Wait a few minutes, then try again.'
+        ? 'Too many uploads in a short time.'
         : `Too many uploads in a short time. You can try again ${retryWhen}.`;
     case 'storage_unavailable':
       return "We couldn't store your file right now. Nothing was saved — try again in a moment.";
