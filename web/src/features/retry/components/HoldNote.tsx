@@ -5,7 +5,10 @@ import type { Hold } from '../useHold';
 /** Under this many seconds a visual count is shown; above it the sentence's clock time is enough. */
 const COUNTDOWN_LIMIT_SECONDS = 90;
 
-export type HoldNoteProps = Pick<Hold, 'held' | 'remainingSeconds' | 'released'>;
+export type HoldNoteProps = Pick<Hold, 'held' | 'remainingSeconds' | 'released'> & {
+  /** `false` when the note sits inside a status region already (`ExportControl`). */
+  readonly announce?: boolean;
+};
 
 /**
  * The parts of a hold that are **not** its sentence (plan §5 a11y, AC-23). The sentence — *"You can
