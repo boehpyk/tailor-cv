@@ -185,7 +185,7 @@ describe('LoginPage', () => {
     expect(alert).toHaveTextContent("That email and password don't match an account.");
   });
 
-  it('I-14/I-15 rate_limited: "Too many attempts. Try again in 2 minutes." from the Retry-After header', async () => {
+  it('I-14/I-15 rate_limited: "Too many attempts." naming when to retry, from the Retry-After header (AC-15 supersedes "Try again in 2 minutes.")', async () => {
     makeFetchMock({
       'POST /api/auth/login': () =>
         jsonResponse(
@@ -200,7 +200,7 @@ describe('LoginPage', () => {
     fireEvent.click(submitButton());
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent('Too many attempts. Try again in 2 minutes.');
+    expect(alert).toHaveTextContent(/^Too many attempts\. .*try again at \d{2}:\d{2}\.$/i);
   });
 
   it('I-17 rate_limit_unavailable: "Logging in is unavailable right now. Anything you\'re doing as a guest is unaffected."', async () => {

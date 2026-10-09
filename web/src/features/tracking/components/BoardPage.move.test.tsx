@@ -266,7 +266,8 @@ describe('A refused move rolls back with its own copy (AC-34)', () => {
     [
       '429 rate_limited',
       () => apiError(429, 'rate_limited', {}, { 'Retry-After': '30' }),
-      'Too many changes — wait a moment and try again.',
+      // AC-16 supersedes "wait a moment": the 30 s Retry-After is named.
+      /Too many changes.*try again in 30 seconds/i,
     ],
     [
       '503 service_unavailable',
