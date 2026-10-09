@@ -1,3 +1,5 @@
+import { retryPhrase } from '@/features/retry/hold';
+
 import { ConflictNotice } from './ConflictNotice';
 import { documentProblemCopy, saveStateCopy } from '../saveState';
 
@@ -13,7 +15,9 @@ function sentenceFor(state: SaveState): string {
     case 'invalid':
       return `${saveStateCopy.invalid}: ${documentProblemCopy[state.problem]}`;
     case 'paused':
-      return `${saveStateCopy.paused} — the limit resets in ${String(state.retryAfterSeconds)} s`;
+      // AC-16: the instant the hook stamped at receipt, through `retryPhrase` — never the raw
+      // header. The machine's own re-save timer is unchanged; this is only its sentence.
+      return `${saveStateCopy.paused} — we'll save again automatically ${retryPhrase(state.untilMs, Date.now())}.`;
     case 'saved':
     case 'dirty':
     case 'saving':

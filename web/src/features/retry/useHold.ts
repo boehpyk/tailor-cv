@@ -30,6 +30,11 @@ export interface Hold {
 export interface ErrorHold extends Hold {
   /** The deadline `holdDeadline` gave the error at receipt, for the copy; `null` when none. */
   readonly deadlineMs: number | null;
+  /**
+   * When the error arrived. A copy-only surface words the wait with `retryPhrase(deadlineMs,
+   * receivedAtMs)` so its sentence is fixed text, never `Date.now()` at render (AC-16, AC-23).
+   */
+  readonly receivedAtMs: number;
 }
 
 const TICK_MS = 1000;
@@ -141,5 +146,5 @@ export function useErrorHold(error: unknown): ErrorHold {
     setSeen(current);
   }
   const deadlineMs = holdDeadline(current.error, current.atMs);
-  return { ...useHold(deadlineMs), deadlineMs };
+  return { ...useHold(deadlineMs), deadlineMs, receivedAtMs: current.atMs };
 }

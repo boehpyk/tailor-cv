@@ -2,6 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
 import { useNavigate } from 'react-router';
 
+import { useErrorHold } from '@/features/retry/useHold';
+
 import {
   ACCOUNT_DELETED_NOTICE,
   DELETE_ACCOUNT_CONFIRM_LABEL,
@@ -43,6 +45,8 @@ export function DeleteAccountSection(): React.JSX.Element {
   const passwordId = useId();
   const confirmId = useId();
   const errorId = useId();
+  // Copy only (AC-16): a 429's wait, worded once from when it arrived.
+  const deletionHold = useErrorHold(deletion.error);
 
   function handleSubmit(event: React.SyntheticEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -101,7 +105,7 @@ export function DeleteAccountSection(): React.JSX.Element {
         </div>
         {error !== null && (
           <p id={errorId} role="alert" className="text-sm text-red-700">
-            {deleteAccountErrorCopy(error, null)}
+            {deleteAccountErrorCopy(error, deletionHold.deadlineMs, deletionHold.receivedAtMs)}
           </p>
         )}
         <button

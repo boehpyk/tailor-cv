@@ -1,3 +1,4 @@
+import { retryPhrase } from '@/features/retry/hold';
 import { ApiError } from '@/api/client';
 
 import type { BoardCard, Stage } from './types';
@@ -108,6 +109,13 @@ export const MOVE_CONFLICT_NOTE =
   'This application changed in another tab — your board is up to date.';
 export const MOVE_GONE_NOTE = 'This application is no longer on your board.';
 export const MOVE_RATE_LIMITED_NOTE = 'Too many changes — wait a moment and try again.';
+
+/** A 429 on a move, retitle or track (AC-16): the wait it named, through `retryPhrase`. */
+function rateLimitedNote(deadlineMs: number | null, nowMs: number): string {
+  return deadlineMs === null
+    ? MOVE_RATE_LIMITED_NOTE
+    : `Too many changes — you can try again ${retryPhrase(deadlineMs, nowMs)}.`;
+}
 export const MOVE_FAILED_NOTE = 'Not moved — try again.';
 
 /** The polite live region after a move: *"Moved {title} to {stage}."* (AC-33). */
@@ -119,15 +127,20 @@ export function movedAnnouncement(title: string, stage: Stage): string {
  * Why a move was refused, by `code` (AC-34): 409 conflict, 404 gone, 429 rate limited, anything
  * else (503, a network failure) *"Not moved — try again."*. Never silent.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function moveFailureCopy(error: unknown, _deadlineMs: number | null): string {
+export function moveFailureCopy(
+  error: unknown,
+  /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
+  deadlineMs: number | null,
+  /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
+  nowMs: number = Date.now(),
+): string {
   switch (codeOf(error)) {
     case 'tracked_application_version_conflict':
       return MOVE_CONFLICT_NOTE;
     case 'tracked_application_not_found':
       return MOVE_GONE_NOTE;
     case 'rate_limited':
-      return MOVE_RATE_LIMITED_NOTE;
+      return rateLimitedNote(deadlineMs, nowMs);
     default:
       return MOVE_FAILED_NOTE;
   }
@@ -156,8 +169,13 @@ export function titleCounter(length: number): string {
  * Why a retitle was refused: 422 → the boundary's own message (it never echoes the title); 409, 404,
  * 429, 503 → as a move's (AC-34).
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function retitleFailureCopy(error: unknown, _deadlineMs: number | null): string {
+export function retitleFailureCopy(
+  error: unknown,
+  /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
+  deadlineMs: number | null,
+  /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
+  nowMs: number = Date.now(),
+): string {
   switch (codeOf(error)) {
     case 'validation_error':
       // `codeOf` returned a code, so this is an `ApiError`; the narrowing is for the type.
@@ -167,7 +185,7 @@ export function retitleFailureCopy(error: unknown, _deadlineMs: number | null): 
     case 'tracked_application_not_found':
       return MOVE_GONE_NOTE;
     case 'rate_limited':
-      return MOVE_RATE_LIMITED_NOTE;
+      return rateLimitedNote(deadlineMs, nowMs);
     default:
       return RETITLE_FAILED_NOTE;
   }
@@ -200,8 +218,13 @@ export function onBoardLabel(stage: Stage): string {
  * carries the real cap), 429, anything else (503, a network failure). A 409
  * `application_already_tracked` is a success and never reaches here.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function trackFailureCopy(error: unknown, _deadlineMs: number | null): string {
+export function trackFailureCopy(
+  error: unknown,
+  /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
+  deadlineMs: number | null,
+  /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
+  nowMs: number = Date.now(),
+): string {
   switch (codeOf(error)) {
     case 'tailoring_run_not_trackable':
       return TRACK_NOT_TRACKABLE_NOTE;
@@ -213,7 +236,7 @@ export function trackFailureCopy(error: unknown, _deadlineMs: number | null): st
     case 'tailoring_run_not_found':
       return TRACK_GONE_NOTE;
     case 'rate_limited':
-      return MOVE_RATE_LIMITED_NOTE;
+      return rateLimitedNote(deadlineMs, nowMs);
     default:
       return TRACK_FAILED_NOTE;
   }

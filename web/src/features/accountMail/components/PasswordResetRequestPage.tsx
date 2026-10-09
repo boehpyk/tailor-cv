@@ -3,6 +3,8 @@ import { useId, useState } from 'react';
 
 import { focusOnMount } from '@/components/ui/focusOnMount';
 import { AuthErrorNotice } from '@/features/auth/components/AuthErrorNotice';
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useErrorHold } from '@/features/retry/useHold';
 
 import {
   MAIL_PROVIDER_SENTENCE,
@@ -49,10 +51,12 @@ export function PasswordResetRequestPage(): React.JSX.Element {
   const headingId = `${baseId}-heading`;
   const emailId = `${baseId}-email`;
   const errorId = `${baseId}-error`;
+  // Slice 3.3 (AC-15): a 429 holds the submit until its `Retry-After`.
+  const hold = useErrorHold(request.error);
 
   function handleSubmit(event: SyntheticEvent<HTMLFormElement>): void {
     event.preventDefault();
-    if (queryClient.isMutating({ mutationKey: requestPasswordResetMutationKey }) > 0) {
+    if (hold.held || queryClient.isMutating({ mutationKey: requestPasswordResetMutationKey }) > 0) {
       return;
     }
     request.mutate(email);
@@ -85,7 +89,18 @@ export function PasswordResetRequestPage(): React.JSX.Element {
           />
         </div>
 
-        <AuthErrorNotice id={errorId} action="password_reset" error={request.error} focusOnMount />
+        <AuthErrorNotice
+          id={errorId}
+          action="password_reset"
+          error={request.error}
+          retryWhen={hold.phrase}
+          focusOnMount
+        />
+        <HoldNote
+          held={hold.held}
+          remainingSeconds={hold.remainingSeconds}
+          released={hold.released}
+        />
 
         {request.isSuccess && (
           <div
@@ -99,7 +114,11 @@ export function PasswordResetRequestPage(): React.JSX.Element {
           </div>
         )}
 
-        <button type="submit" disabled={request.isPending} className={primaryButtonClass}>
+        <button
+          type="submit"
+          disabled={request.isPending || hold.held}
+          className={primaryButtonClass}
+        >
           {request.isPending ? SENDING_LABEL : RESET_REQUEST_SUBMIT_LABEL}
         </button>
 

@@ -80,7 +80,8 @@ export function retryPhrase(deadlineMs: number, nowMs: number, opts?: RetryPhras
   // Rounded UP to the minute, so the time named is never before the deadline.
   const at = Math.ceil(deadlineMs / MINUTE_MS) * MINUTE_MS;
   // `hour: '2-digit'`, not the plan's `'numeric'`: AC-5 says HH:MM, and en-GB's `'numeric'` hour
-  // drops the leading zero (7:24, not 07:24).
+  // drops the leading zero (7:24, not 07:24). The locale still decides the clock: en-US reads
+  // "10:16 PM", on purpose.
   const time = new Intl.DateTimeFormat(opts?.locale, {
     hour: '2-digit',
     minute: '2-digit',

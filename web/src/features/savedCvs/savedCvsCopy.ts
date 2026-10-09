@@ -18,6 +18,7 @@
  * what the user sees.
  */
 
+import { retryPhrase } from '@/features/retry/hold';
 import { ApiError } from '@/api/client';
 
 // --- Shared ---------------------------------------------------------------------------------------
@@ -137,14 +138,6 @@ export const ACCOUNT_DELETED_NOTICE = 'Your account and saved CVs were deleted.'
 
 // --- Refusals -------------------------------------------------------------------------------------
 
-/** "Try again in 37 seconds." — or a vaguer wait when the 429 carried no `Retry-After`. */
-function tryAgainIn(seconds: number | null): string {
-  if (seconds === null) {
-    return 'Wait a few minutes, then try again.';
-  }
-  return `Try again in ${String(seconds)} ${seconds === 1 ? 'second' : 'seconds'}.`;
-}
-
 /**
  * A 401 that survived the client's one refresh-and-retry: the token is bad and a refresh could not
  * mend it, or the account behind it is gone. Either way the user is signed out now.
@@ -230,8 +223,13 @@ export function deleteSavedCvErrorCopy(error: Error): string {
  * AC-40: a deletion the server refused. Every sentence says the account is still there — on any
  * refusal nothing was deleted, and a user who is unsure will try again or, worse, assume it went.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function deleteAccountErrorCopy(error: Error, _deadlineMs: number | null): string {
+export function deleteAccountErrorCopy(
+  error: Error,
+  /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
+  deadlineMs: number | null,
+  /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
+  nowMs: number = Date.now(),
+): string {
   if (!(error instanceof ApiError)) {
     return "Couldn't reach TailorCraft. Your account was not deleted.";
   }
@@ -242,7 +240,10 @@ export function deleteAccountErrorCopy(error: Error, _deadlineMs: number | null)
     case 'password_incorrect':
       return "That password isn't right, so your account was not deleted.";
     case 'rate_limited':
-      return `Too many attempts. Your account was not deleted. ${tryAgainIn(error.retryAfterSeconds)}`;
+      // AC-16: the wait through `retryPhrase`, never a raw seconds count.
+      return deadlineMs === null
+        ? 'Too many attempts. Your account was not deleted. Wait a few minutes, then try again.'
+        : `Too many attempts. Your account was not deleted. You can try again ${retryPhrase(deadlineMs, nowMs)}.`;
     case 'rate_limit_unavailable':
       return 'Deleting an account is paused for a moment. Your account was not deleted — try again shortly.';
     case 'service_unavailable':

@@ -1,6 +1,8 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useId, useRef, useState } from 'react';
 
+import { useErrorHold } from '@/features/retry/useHold';
+
 import {
   CANCEL_TITLE_LABEL,
   CLEAR_TITLE_LABEL,
@@ -62,6 +64,8 @@ export function CardTitleEditor({
   describedBy,
 }: CardTitleEditorProps): React.JSX.Element {
   const retitle = useRetitleTrackedApplication(userId);
+  // Copy only (AC-16): a 429's wait, worded once from when it arrived. Nothing is held.
+  const retitleHold = useErrorHold(retitle.error);
   const queryClient = useQueryClient();
   const [draft, setDraft] = useState<string | null>(null);
   const editButton = useRef<HTMLButtonElement>(null);
@@ -120,7 +124,9 @@ export function CardTitleEditor({
     );
   }
 
-  const failure = retitle.isError ? retitleFailureCopy(retitle.error, null) : null;
+  const failure = retitle.isError
+    ? retitleFailureCopy(retitle.error, retitleHold.deadlineMs, retitleHold.receivedAtMs)
+    : null;
 
   return (
     <form

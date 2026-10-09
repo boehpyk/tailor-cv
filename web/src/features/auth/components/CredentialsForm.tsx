@@ -1,5 +1,8 @@
 import { useId, useState } from 'react';
 
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useErrorHold } from '@/features/retry/useHold';
+
 import { AuthErrorNotice } from './AuthErrorNotice';
 
 import type { AuthAction } from '../authCopy';
@@ -64,6 +67,8 @@ export function CredentialsForm({
   const passwordId = `${baseId}-password`;
   const hintId = `${baseId}-password-hint`;
   const errorId = `${baseId}-error`;
+  // Slice 3.3 (AC-15): a 429 holds the submit until its `Retry-After`; a 503 holds nothing.
+  const hold = useErrorHold(error);
 
   const errorRef = error === null ? undefined : errorId;
   const passwordDescribedBy =
@@ -72,6 +77,9 @@ export function CredentialsForm({
 
   function handleSubmit(event: SyntheticEvent<HTMLFormElement>): void {
     event.preventDefault();
+    if (hold.held) {
+      return;
+    }
     onSubmit({ email, password });
   }
 
@@ -126,11 +134,16 @@ export function CredentialsForm({
         )}
       </div>
 
-      <AuthErrorNotice id={errorId} action={action} error={error} />
+      <AuthErrorNotice id={errorId} action={action} error={error} retryWhen={hold.phrase} />
+      <HoldNote
+        held={hold.held}
+        remainingSeconds={hold.remainingSeconds}
+        released={hold.released}
+      />
 
       <button
         type="submit"
-        disabled={isPending}
+        disabled={isPending || hold.held}
         className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
       >
         {isPending ? pendingLabel : submitLabel}
