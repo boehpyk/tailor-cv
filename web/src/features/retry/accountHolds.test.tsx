@@ -299,20 +299,20 @@ describe('AC-16 — copy through retryPhrase, nothing held', () => {
     ['account deletion', deleteAccountErrorCopy],
   ] as const)('%s', (_name, copyFor) => {
     it('names a wait beyond 90 s as a clock time', () => {
-      expect(copyFor(rateLimited(120), NOW + 120_000)).toMatch(CLOCK_TIME);
+      expect(copyFor(rateLimited(120), NOW + 120_000, NOW)).toMatch(CLOCK_TIME);
     });
 
     it('names a short wait in seconds, from the deadline and not the raw header', () => {
-      expect(copyFor(rateLimited(45), NOW + 45_000)).toMatch(/in 45 seconds/);
+      expect(copyFor(rateLimited(45), NOW + 45_000, NOW)).toMatch(/in 45 seconds/);
     });
 
     it('never says "a moment" or "a few minutes" for a wait it knows', () => {
-      expect(copyFor(rateLimited(120), NOW + 120_000)).not.toMatch(/a moment|a few minutes/i);
+      expect(copyFor(rateLimited(120), NOW + 120_000, NOW)).not.toMatch(/a moment|a few minutes/i);
     });
 
     it('leaves a 503 as it was (no clock time invented)', () => {
       const error = new ApiError(503, SERVER_PROSE, 'service_unavailable');
-      expect(copyFor(error, null)).not.toMatch(CLOCK_TIME);
+      expect(copyFor(error, null, NOW)).not.toMatch(CLOCK_TIME);
     });
   });
 });

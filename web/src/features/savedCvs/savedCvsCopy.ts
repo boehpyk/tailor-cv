@@ -228,7 +228,7 @@ export function deleteAccountErrorCopy(
   /** A 429's hold deadline (`useErrorHold(error).deadlineMs`), or `null`. */
   deadlineMs: number | null,
   /** When the error arrived (`useErrorHold(error).receivedAtMs`), so the wait is worded once. */
-  nowMs: number = Date.now(),
+  nowMs: number,
 ): string {
   if (!(error instanceof ApiError)) {
     return "Couldn't reach TailorCraft. Your account was not deleted.";
