@@ -28,6 +28,9 @@ import type { ReactNode } from 'react';
  * each absence has a positive control (the control worked before, a sibling still works during).
  */
 
+// Verify's MINOR 1: once a hold is released, no sentence may still name the wait.
+const WAIT_NAMED = /try again (?:at \d|in \d+ seconds?)/i;
+
 const NOW = 1_700_000_000_000;
 const WINDOW_MS = 120_000;
 // 120 s is beyond 90 s, so the phrase is a clock time in the browser's locale (jsdom: en-US,
@@ -145,6 +148,7 @@ describe('AC-11 — a refused PDF request holds the PDF control only', () => {
     await advanceToward(clickedAt + WINDOW_MS, 0);
     expect(exportAgain()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
 
     await advance(5000); // deadline + 5 s: nothing is re-sent on the user's behalf (AC-22)
     expect(postsTo(fetchMock, `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(2);
@@ -212,6 +216,7 @@ describe('AC-12 — guest upload (BaseCvUploadPanel)', () => {
     await advanceToward(clickedAt + WINDOW_MS, 0);
     expect(fileInput()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     await advance(5000);
     expect(postsTo(fetchMock, '/api/base-cvs')).toBe(1);
   });
@@ -267,6 +272,7 @@ describe('AC-12 — saved-CV upload (SavedCvUploadControl)', () => {
     await advanceToward(clickedAt + WINDOW_MS, 0);
     expect(fileInput()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     await advance(5000);
     expect(postsTo(fetchMock, '/api/me/base-cvs')).toBe(1);
   });
@@ -318,6 +324,7 @@ describe('AC-13 — job posting Add', () => {
     expect(submit()).toBeDisabled();
     await advanceToward(clickedAt + WINDOW_MS, 0);
     expect(submit()).toBeEnabled();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     await advance(5000);
     expect(postsTo(fetchMock, '/api/job-postings')).toBe(1);
   });

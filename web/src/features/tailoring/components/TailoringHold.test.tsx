@@ -34,6 +34,9 @@ import { renderWithRouter } from '@/test/render';
  * control was enabled before the 429, and a 503 on the same control is a re-clickable button).
  */
 
+// Verify's MINOR 1: once a hold is released, no sentence may still name the wait.
+const WAIT_NAMED = /try again (?:at \d|in \d+ seconds?)/i;
+
 const NOW = 1_700_000_000_000; // 22:13:20 UTC, a whole second
 const SECOND = 1000;
 
@@ -133,6 +136,7 @@ describe('AC-9 — Tailor my CV in the guest workspace', () => {
     await advance(1);
     expect(launchButton()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     expect(document.activeElement).toBe(focused);
 
     await advance(5000); // deadline + 5 s: nothing is sent on the user's behalf (AC-22)
@@ -215,6 +219,7 @@ describe('AC-9 — Tailor in the account workspace', () => {
     await advanceToward(clickedAt + 120_000, 0);
     expect(launchButton()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     expect(document.activeElement).toBe(focused);
 
     await advance(5000);
@@ -288,6 +293,7 @@ describe('AC-10 — Try again on a provider-busy run (RunPage)', () => {
     await advance(1);
     expect(tryAgain()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
+    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     expect(document.activeElement).toBe(focused);
 
     await advance(5000); // deadline + 5 s: no retry unless the user clicks (AC-22)

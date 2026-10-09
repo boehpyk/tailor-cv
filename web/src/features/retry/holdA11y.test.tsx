@@ -57,10 +57,34 @@ describe('HoldNote', () => {
     expect(screen.getByRole('status')).toHaveTextContent('You can try again now.');
   });
 
-  it('renders nothing when never held (a run that failed hours ago released nothing)', () => {
-    const { container } = render(<HoldNote held={false} remainingSeconds={0} released={false} />);
+  it('says nothing when never held (a run that failed hours ago released nothing)', () => {
+    render(<HoldNote held={false} remainingSeconds={0} released={false} />);
 
-    expect(container).toBeEmptyDOMElement();
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('announces the release in a status region that already existed while held', () => {
+    // Many screen readers announce only a change *inside* a live region that was already in the
+    // DOM; a region mounted together with its text may never be read (verify's MINOR 5).
+    const { rerender } = render(<HoldNote held remainingSeconds={30} released={false} />);
+    const region = screen.getByRole('status');
+    expect(region).toBeEmptyDOMElement();
+
+    rerender(<HoldNote held={false} remainingSeconds={0} released />);
+
+    expect(screen.getByRole('status')).toBe(region);
+    expect(region).toHaveTextContent('You can try again now.');
+  });
+
+  it('can join a status region it sits in, instead of nesting a second one', () => {
+    render(
+      <div role="status">
+        <HoldNote held={false} remainingSeconds={0} released announce={false} />
+      </div>,
+    );
+
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(screen.getByRole('status')).toHaveTextContent('You can try again now.');
   });
 });
 
@@ -149,7 +173,20 @@ describe('ConnectionNote', () => {
     expect(screen.getByRole('status')).toHaveTextContent("You're offline.");
 
     rerender(<ConnectionNote kind="export" connection="ok" failureCount={0} maxRetries={3} />);
-    expect(container).toBeEmptyDOMElement();
+    expect(container.textContent).toBe('');
+  });
+
+  it('speaks inside a status region that already existed while the poll was ok', () => {
+    const { rerender } = render(
+      <ConnectionNote kind="run" connection="ok" failureCount={0} maxRetries={3} />,
+    );
+    const region = screen.getByRole('status');
+    expect(region).toBeEmptyDOMElement();
+
+    rerender(<ConnectionNote kind="run" connection="retrying" failureCount={1} maxRetries={3} />);
+
+    expect(screen.getByRole('status')).toBe(region);
+    expect(region).toHaveTextContent('Connection trouble');
   });
 });
 
