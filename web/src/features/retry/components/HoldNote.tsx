@@ -1,20 +1,39 @@
-/**
- * A held control's note (plan §5, AC-23): the fixed hold sentence, an `aria-hidden` per-second
- * count when ≤ 90 s remain, and a `role="status"` *"You can try again now."* once the hold ends.
- * Presentational: the hold comes from `useHold` / `useErrorHold` in the owner.
- *
- * T7 SKELETON: renders nothing.
- */
-export interface HoldNoteProps {
-  /** The fixed sentence naming the wait (from `retryPhrase`), shown while held. */
-  readonly sentence: string;
-  /** The hold's deadline; `null` means there was never a hold, so nothing (not even the end) shows. */
-  readonly deadlineMs: number | null;
-  readonly held: boolean;
-  readonly remainingSeconds: number;
-}
+import { TRY_AGAIN_NOW } from '../retryCopy';
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function HoldNote(_props: HoldNoteProps): React.JSX.Element | null {
-  return null;
+import type { Hold } from '../useHold';
+
+/** Under this many seconds a visual count is shown; above it the sentence's clock time is enough. */
+const COUNTDOWN_LIMIT_SECONDS = 90;
+
+export type HoldNoteProps = Pick<Hold, 'held' | 'remainingSeconds' | 'released'>;
+
+/**
+ * The parts of a hold that are **not** its sentence (plan §5 a11y, AC-23). The sentence — *"You can
+ * try again at 14:03."* — lives once in the owner's existing alert or disabled-reason text, as fixed
+ * words. This adds:
+ *
+ * - while held and ≤ 90 s remain, a per-second count that is `aria-hidden`: a ticking number in a
+ *   live region would be announced every second;
+ * - once the hold ends, a `role="status"` *"You can try again now."* — polite, and **no focus
+ *   move**: the control coming back is news, not an interruption.
+ *
+ * No animation, so nothing for `prefers-reduced-motion` to reduce.
+ */
+export function HoldNote({
+  held,
+  remainingSeconds,
+  released,
+}: HoldNoteProps): React.JSX.Element | null {
+  if (held) {
+    return remainingSeconds <= COUNTDOWN_LIMIT_SECONDS ? (
+      <p aria-hidden="true" className="text-sm text-slate-500 tabular-nums">
+        {String(remainingSeconds)} s
+      </p>
+    ) : null;
+  }
+  return released ? (
+    <p role="status" className="text-sm text-slate-700">
+      {TRY_AGAIN_NOW}
+    </p>
+  ) : null;
 }

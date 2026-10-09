@@ -9,6 +9,8 @@ import { JobPostingPanel } from '@/features/posting/components/JobPostingPanel';
 import { createJobPostingMutationKey } from '@/features/posting/hooks/useCreateJobPosting';
 import { useJobPostings } from '@/features/posting/hooks/useJobPostings';
 import { latestPosting } from '@/features/posting/latestPosting';
+import { laterDeadline } from '@/features/retry/hold';
+import { useErrorHold, useRunHoldDeadline } from '@/features/retry/useHold';
 import { activeTailoringRunId, rejectionMessage } from '@/features/tailoring/apiErrorCopy';
 import { TailoringRejectionNotice } from '@/features/tailoring/components/TailoringRejectionNotice';
 import { TailorLaunch } from '@/features/tailoring/components/TailorLaunch';
@@ -134,6 +136,13 @@ export function GuestWorkspace(): React.JSX.Element {
   // Derived before the early returns so the hook order is fixed; `missing` while the list loads.
   const baseCv = checkBaseCv(baseCvs.data === undefined ? null : latestBaseCv(baseCvs.data.items));
   const { tab, setTab } = useWorkspaceTab(hasUsableBaseCv(baseCv));
+  // Slice 3.3: a 429 on the launch, and the provider cooldown after the latest run, each hold
+  // *Tailor again*; the later of the two wins. Derived here, before the early returns.
+  const createHold = useErrorHold(create.error);
+  const runHold = useRunHoldDeadline(
+    runs.data === undefined ? null : latestTailoringRun(runs.data.items),
+  );
+  const holdUntil = laterDeadline(createHold.deadlineMs, runHold);
 
   if (baseCvs.isError || jobPostings.isError || runs.isError) {
     return (
@@ -213,12 +222,13 @@ export function GuestWorkspace(): React.JSX.Element {
             hasPreviousRun={latestRun !== null}
             isStarting={create.isPending}
             runInProgress={runInProgress}
+            holdUntil={holdUntil}
             onLaunch={launch}
           />
 
           {rejection !== null && (
             <TailoringRejectionNotice
-              message={rejectionMessage(rejection, null)}
+              message={rejectionMessage(rejection, createHold.phrase)}
               onViewActiveRun={
                 activeRunId === null
                   ? null

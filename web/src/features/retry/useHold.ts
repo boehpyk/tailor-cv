@@ -1,5 +1,7 @@
 import { useEffect, useReducer, useState } from 'react';
-import { holdDeadline } from './hold';
+import { holdDeadline, retryPhrase, runHoldDeadline } from './hold';
+
+import type { RunCooldownFields } from './hold';
 
 /**
  * The hooks over `hold.ts` (plan §0.3): a hold is component state **derived** from one response,
@@ -11,6 +13,18 @@ export interface Hold {
   readonly held: boolean;
   /** Whole seconds left, derived from `Date.now()` on every render; 0 when not held. */
   readonly remainingSeconds: number;
+  /**
+   * The wait in words (*"in 45 seconds"*, *"at 14:03"*), **worded once, when the deadline first
+   * appeared**, so a sentence built from it is fixed text: it never ticks inside a live region
+   * (AC-23). `null` when there is no deadline.
+   */
+  readonly phrase: string | null;
+  /**
+   * This hook saw the deadline hold and it has since passed — when *"You can try again now."*
+   * belongs on screen. A deadline already past when it first appeared (a run failed hours ago) was
+   * never a hold the user saw, so it releases nothing.
+   */
+  readonly released: boolean;
 }
 
 export interface ErrorHold extends Hold {
@@ -30,6 +44,14 @@ const TICK_MS = 1000;
  */
 export function useHold(deadlineMs: number | null): Hold {
   const [, tick] = useReducer((n: number) => n + 1, 0);
+  // When this deadline first appeared, and whether it was ever seen holding. Adjusted during render
+  // when the deadline changes (React's "adjusting state when a prop changes"), never by an effect.
+  const [seen, setSeen] = useState<SeenDeadline>(() => firstSight(deadlineMs));
+  let current = seen;
+  if (seen.deadlineMs !== deadlineMs) {
+    current = firstSight(deadlineMs);
+    setSeen(current);
+  }
 
   useEffect(() => {
     if (deadlineMs === null) {
@@ -54,9 +76,48 @@ export function useHold(deadlineMs: number | null): Hold {
 
   const remainingMs = deadlineMs === null ? 0 : deadlineMs - Date.now();
   // `<`, not `<=`: at exactly the deadline the control is back (the test's mutation note).
-  return remainingMs > 0
-    ? { held: true, remainingSeconds: Math.ceil(remainingMs / TICK_MS) }
-    : { held: false, remainingSeconds: 0 };
+  const held = remainingMs > 0;
+  if (held && !current.held) {
+    current = { ...current, held: true };
+    setSeen(current);
+  }
+  const phrase = deadlineMs === null ? null : retryPhrase(deadlineMs, current.atMs);
+  return held
+    ? { held, remainingSeconds: Math.ceil(remainingMs / TICK_MS), phrase, released: false }
+    : { held, remainingSeconds: 0, phrase, released: current.held };
+}
+
+interface SeenDeadline {
+  readonly deadlineMs: number | null;
+  readonly atMs: number;
+  readonly held: boolean;
+}
+
+function firstSight(deadlineMs: number | null): SeenDeadline {
+  const atMs = Date.now();
+  return { deadlineMs, atMs, held: deadlineMs !== null && atMs < deadlineMs };
+}
+
+/**
+ * `runHoldDeadline` for the run on screen, **computed once per cooldown** rather than per render:
+ * F-18's clamp reads the browser clock, so recomputing it on every tick would move a skewed
+ * deadline forward for ever. Keyed on the two instants the API sent.
+ */
+export function useRunHoldDeadline(run: RunCooldownFields | null): number | null {
+  const key =
+    run === null || run.retry_not_before === null
+      ? null
+      : `${run.retry_not_before}|${run.completed_at ?? ''}`;
+  const [seen, setSeen] = useState<{ key: string | null; deadlineMs: number | null }>(() => ({
+    key,
+    deadlineMs: run === null ? null : runHoldDeadline(run, Date.now()),
+  }));
+  if (seen.key === key) {
+    return seen.deadlineMs;
+  }
+  const deadlineMs = run === null ? null : runHoldDeadline(run, Date.now());
+  setSeen({ key, deadlineMs });
+  return deadlineMs;
 }
 
 interface Seen {

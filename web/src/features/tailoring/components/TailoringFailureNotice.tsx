@@ -1,3 +1,8 @@
+import { useId } from 'react';
+
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useHold } from '@/features/retry/useHold';
+
 import { failureCopyFor } from '../failureCopy';
 
 import type { TailoringFailureReason } from '../types';
@@ -9,6 +14,11 @@ export interface TailoringFailureNoticeProps {
   /** Both inputs are on screen and usable, so a new run could actually be requested. */
   readonly canStart: boolean;
   readonly isStarting: boolean;
+  /**
+   * Until when *Try again* would be refused (slice 3.3, AC-10): the provider cooldown after an
+   * `llm_rate_limited` run, or a 429 on the retry itself. `null` (the default) holds nothing.
+   */
+  readonly holdUntil?: number | null;
   readonly onRetry: () => void;
 }
 
@@ -31,9 +41,19 @@ export function TailoringFailureNotice({
   retryable,
   canStart,
   isStarting,
+  holdUntil = null,
   onRetry,
 }: TailoringFailureNoticeProps): React.JSX.Element {
   const copy = failureCopyFor(reason);
+  const hintId = useId();
+  const hold = useHold(holdUntil);
+  // While held, the hint is the hold's fixed sentence; once released, `HoldNote` says so instead,
+  // and the generic hint ("Give it a minute") would contradict it.
+  const hint = hold.held
+    ? `You can try again ${hold.phrase ?? 'soon'}.`
+    : hold.released
+      ? null
+      : copy.hint;
 
   return (
     <div
@@ -44,12 +64,22 @@ export function TailoringFailureNotice({
         This tailoring run did not finish
       </p>
       <p className="text-sm font-medium text-amber-900">{copy.headline}</p>
-      {copy.hint !== null && <p className="text-sm text-amber-800">{copy.hint}</p>}
+      {hint !== null && (
+        <p id={hintId} className="text-sm text-amber-800">
+          {hint}
+        </p>
+      )}
+      <HoldNote
+        held={hold.held}
+        remainingSeconds={hold.remainingSeconds}
+        released={hold.released}
+      />
       {retryable && (
         <button
           type="button"
           onClick={onRetry}
-          disabled={!canStart || isStarting}
+          disabled={!canStart || isStarting || hold.held}
+          aria-describedby={hold.held ? hintId : undefined}
           className="rounded-md bg-amber-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
         >
           {isStarting ? 'Starting…' : 'Try again'}

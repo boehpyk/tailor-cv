@@ -17,6 +17,8 @@ export interface ProgressStepperProps {
   /** `TailoringFailureNotice`'s three props, passed through unchanged. */
   readonly canStart: boolean;
   readonly isStarting: boolean;
+  /** Passed to `TailoringFailureNotice` (slice 3.3, AC-10). */
+  readonly holdUntil?: number | null;
   readonly onRetry: () => void;
 }
 
@@ -90,6 +92,7 @@ export function ProgressStepper({
   run,
   canStart,
   isStarting,
+  holdUntil = null,
   onRetry,
 }: ProgressStepperProps): React.JSX.Element {
   const [extractingLabel, fetchingLabel, tailoringLabel] = STAGE_LABELS;
@@ -104,6 +107,7 @@ export function ProgressStepper({
         retryable={run.retryable}
         canStart={canStart}
         isStarting={isStarting}
+        holdUntil={holdUntil}
         onRetry={onRetry}
       />
     );

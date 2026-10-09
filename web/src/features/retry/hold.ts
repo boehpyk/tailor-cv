@@ -110,3 +110,11 @@ export function connectionOf(q: QueryConnectionFields): Connection {
   }
   return q.status !== 'error' && q.failureCount >= 1 ? 'retrying' : 'ok';
 }
+
+/** The later of two hold deadlines, either of which may be absent: a control waits for both. */
+export function laterDeadline(a: number | null, b: number | null): number | null {
+  if (a === null) {
+    return b;
+  }
+  return b === null ? a : Math.max(a, b);
+}

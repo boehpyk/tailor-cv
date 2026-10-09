@@ -1,5 +1,7 @@
 import { useId } from 'react';
 
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useHold } from '@/features/retry/useHold';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import type { BaseCvCheck, JobPostingCheck } from '../launchReadiness';
@@ -34,6 +36,12 @@ export interface TailorLaunchProps {
    * run in flight beside it.
    */
   readonly runInProgress?: boolean;
+  /**
+   * Until when a new run would be refused (slice 3.3, AC-9/AC-10): a 429's `Retry-After`, or the
+   * provider cooldown after an `llm_rate_limited` run, whichever is later — the owner combines
+   * them. `null` (the default) holds nothing.
+   */
+  readonly holdUntil?: number | null;
   readonly onLaunch: () => void;
 }
 
@@ -46,10 +54,14 @@ function blockedReason(
   baseCv: BaseCvCheck,
   jobPosting: JobPostingCheck,
   runInProgress: boolean,
+  holdSentence: string | null,
 ): string | null {
   const reasons: string[] = [];
   if (runInProgress) {
     reasons.push('A tailoring run is already under way — wait for it to finish first.');
+  }
+  if (holdSentence !== null) {
+    reasons.push(holdSentence);
   }
   switch (baseCv.state) {
     case 'ready':
@@ -128,11 +140,18 @@ export function TailorLaunch({
   hasPreviousRun,
   isStarting,
   runInProgress = false,
+  holdUntil = null,
   onLaunch,
 }: TailorLaunchProps): React.JSX.Element {
   const reasonId = useId();
   const disclosureId = useId();
-  const reason = blockedReason(baseCv, jobPosting, runInProgress);
+  const hold = useHold(holdUntil);
+  const reason = blockedReason(
+    baseCv,
+    jobPosting,
+    runInProgress,
+    hold.held ? `You can try again ${hold.phrase ?? 'soon'}.` : null,
+  );
   const map = useScopeMap();
 
   return (
@@ -172,6 +191,11 @@ export function TailorLaunch({
           {reason}
         </p>
       )}
+      <HoldNote
+        held={hold.held}
+        remainingSeconds={hold.remainingSeconds}
+        released={hold.released}
+      />
     </div>
   );
 }

@@ -28,8 +28,8 @@ const FAILURE_COPY: Readonly<Record<TailoringFailureReason, FailureCopy>> = {
   llm_unavailable: { headline: "We couldn't reach the model.", hint: null },
   llm_rate_limited: {
     headline: 'The model is busy right now.',
-    // PRD §6's backoff hint. Deliberately vague about the number: the provider's own retry-after
-    // is not in the response, and a precise figure we made up would be a promise we cannot keep.
+    // PRD §6's backoff hint, for a run that carries no `retry_not_before`. When it does (slice 3.3,
+    // AC-10), `TailoringFailureNotice` replaces this with the hold's own sentence.
     hint: 'Give it a minute before you try again.',
   },
   llm_refused: { headline: 'The model declined to rewrite this content.', hint: null },
