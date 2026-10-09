@@ -43,6 +43,11 @@ function useElapsedSeconds(): number {
 export interface TailoringProgressProps {
   /** Only the two non-terminal statuses reach this component; the container narrows first. */
   readonly status: 'queued' | 'running';
+  /**
+   * The poll is paused because the browser is offline (slice 3.3, AC-18). The elapsed counter is
+   * hidden: it would keep counting a run this tab can no longer see, and `ConnectionNote` says why.
+   */
+  readonly paused?: boolean;
 }
 
 /**
@@ -67,7 +72,10 @@ export interface TailoringProgressProps {
  * announced when they change. The ticking count is `aria-hidden`: announcing it every second would
  * bury everything else a screen reader has to say.
  */
-export function TailoringProgress({ status }: TailoringProgressProps): React.JSX.Element {
+export function TailoringProgress({
+  status,
+  paused = false,
+}: TailoringProgressProps): React.JSX.Element {
   const elapsedSeconds = useElapsedSeconds();
 
   return (
@@ -79,10 +87,15 @@ export function TailoringProgress({ status }: TailoringProgressProps): React.JSX
         <p className="text-sm font-medium text-slate-800">Waiting for a worker…</p>
       ) : (
         <p className="text-sm font-medium text-slate-800">
-          Tailoring with Gemini…{' '}
-          <span aria-hidden="true" className="text-slate-500 tabular-nums">
-            {elapsedSeconds}s
-          </span>
+          Tailoring with Gemini…
+          {!paused && (
+            <>
+              {' '}
+              <span aria-hidden="true" className="text-slate-500 tabular-nums">
+                {elapsedSeconds}s
+              </span>
+            </>
+          )}
         </p>
       )}
 

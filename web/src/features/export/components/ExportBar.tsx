@@ -35,6 +35,8 @@ import { useEffect, useState } from 'react';
 
 import { ApiError } from '@/api/client';
 import { downloadDocument, downloadExportFile } from '@/api/exports';
+import { ConnectionNote } from '@/features/retry/components/ConnectionNote';
+import { connectionOf } from '@/features/retry/hold';
 import { useErrorHold } from '@/features/retry/useHold';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
@@ -49,7 +51,7 @@ import {
 } from '../exportCopy';
 import { defaultLayoutFor, isSameTarget, viewOfExport } from '../exportView';
 import { useDownload } from '../hooks/useDownload';
-import { useExportJobs } from '../hooks/useExportJobs';
+import { MAX_TRANSIENT_RETRIES, useExportJobs } from '../hooks/useExportJobs';
 import { useRequestExport } from '../hooks/useRequestExport';
 import { isActiveExportStatus } from '../types';
 import { ExportControl } from './ExportControl';
@@ -254,7 +256,8 @@ export function ExportBar({
   const map = useScopeMap();
 
   const jobs = jobsQuery.data?.items ?? NO_JOBS;
-  const nowMs = useNowMs(jobs.some((job) => isActiveExportStatus(job.status)));
+  const anyJobActive = jobs.some((job) => isActiveExportStatus(job.status));
+  const nowMs = useNowMs(anyJobActive);
   // When this bar first appeared, so a control can tell "this job is old" from "this user has been
   // waiting". Lazy `useState` rather than `useRef`, because it is read during render and never
   // written again — a constant for the lifetime of the mount, which is exactly what it means.
@@ -514,6 +517,18 @@ export function ExportBar({
         a user actually asked about. The gate reason is on screen before any control can be clicked,
         and the loading line describes a render that is about to be replaced.
       */}
+      {/* Slice 3.3 (AC-20): the poll's own retry state, only while a job is being prepared — the
+          one time this bar polls at all. A fifth live region, but one that speaks only when the
+          connection does, never on the bar's bookkeeping. */}
+      {anyJobActive && (
+        <ConnectionNote
+          kind="export"
+          connection={connectionOf(jobsQuery)}
+          failureCount={jobsQuery.failureCount}
+          maxRetries={MAX_TRANSIENT_RETRIES}
+        />
+      )}
+
       {gateReason !== null && <p className="text-sm text-slate-700">{gateReason}</p>}
 
       {gateReason === null && jobsQuery.isPending && (
