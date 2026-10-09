@@ -69,7 +69,12 @@ export interface ExportMutations {
    * unlike a failed download — where the job is still there to poll — there is no other route by
    * which the user could ever learn what happened.
    */
-  readonly requestFailure: { readonly target: ExportTarget; readonly error: Error } | null;
+  readonly requestFailure: {
+    readonly target: ExportTarget;
+    readonly error: Error;
+    /** A 429's wait in words (slice 3.3, AC-11), worded once at receipt; absent otherwise. */
+    readonly retryWhen?: string | null;
+  } | null;
 }
 
 /**
@@ -228,7 +233,7 @@ export function defaultLayoutFor(jobs: readonly ExportJob[]): LayoutTemplate | n
 }
 
 /** Whether a mutation's variables are about this control. `null` (nothing in flight) never is. */
-function isSameTarget(candidate: ExportTarget | null, target: ExportTarget): boolean {
+export function isSameTarget(candidate: ExportTarget | null, target: ExportTarget): boolean {
   return (
     candidate !== null &&
     candidate.document === target.document &&
@@ -333,7 +338,10 @@ export function viewOfExport(
   // last time's news, and the control says *Starting…* again.
   const refusedRequest = mutations.requestFailure;
   if (refusedRequest !== null && isSameTarget(refusedRequest.target, target)) {
-    return { kind: 'requestFailed', ...requestFailureFor(refusedRequest.error, null) };
+    return {
+      kind: 'requestFailed',
+      ...requestFailureFor(refusedRequest.error, refusedRequest.retryWhen ?? null),
+    };
   }
 
   const job = latestExportJobFor(target, jobs);

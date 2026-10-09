@@ -154,8 +154,11 @@ function isSignedOut(error: ApiError): boolean {
 }
 
 /** AC-35: an account upload the server refused — one distinct sentence per `code`. */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function uploadSavedCvErrorCopy(error: Error, _deadlineMs: number | null): string {
+export function uploadSavedCvErrorCopy(
+  error: Error,
+  /** When a 429 lets the user try again, in words (`useErrorHold(error).phrase`); else `null`. */
+  retryWhen: string | null,
+): string {
   if (!(error instanceof ApiError)) {
     return NETWORK_FAILURE_NOTE;
   }
@@ -177,7 +180,10 @@ export function uploadSavedCvErrorCopy(error: Error, _deadlineMs: number | null)
       // The one place the server's prose is shown: it names the cap, which the client never knows.
       return error.message;
     case 'rate_limited':
-      return `Too many uploads in a short time. ${tryAgainIn(error.retryAfterSeconds)}`;
+      // AC-12: the wait through `retryPhrase`, never a raw seconds count.
+      return retryWhen === null
+        ? 'Too many uploads in a short time. Wait a few minutes, then try again.'
+        : `Too many uploads in a short time. You can try again ${retryWhen}.`;
     case 'storage_unavailable':
       return "We couldn't store your file right now. Nothing was saved — try again in a moment.";
     case 'service_unavailable':

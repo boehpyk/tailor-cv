@@ -39,10 +39,13 @@ import {
   downloadLabel,
   preparingNote,
 } from '../exportCopy';
+import { HoldNote } from '@/features/retry/components/HoldNote';
+
 import { ExportFailureNotice } from './ExportFailureNotice';
 
 import type { ExportView } from '../exportView';
 import type { ExportFormat } from '../types';
+import type { HoldNoteProps } from '@/features/retry/components/HoldNote';
 import type { ReactNode } from 'react';
 
 export interface ExportControlProps {
@@ -72,9 +75,16 @@ export interface ExportControlProps {
    * export started ten minutes into the session still gets its full twenty seconds.
    */
   readonly secondsOnPage: number;
+  /**
+   * A 429 on this control's own request (slice 3.3, AC-11): while held, the control and its
+   * *Export again* are disabled; the other formats never see it. Absent holds nothing.
+   */
+  readonly hold?: HoldNoteProps;
   /** Export this format, or download it — whichever the bar decided this control's click means. */
   readonly onPrimary: () => void;
 }
+
+const NO_HOLD: HoldNoteProps = { held: false, remainingSeconds: 0, released: false };
 
 /**
  * Whether the working copy has been on screen long enough to be replaced by the 20-second line.
@@ -130,6 +140,7 @@ function statusContentFor(
   format: ExportFormat,
   secondsOnPage: number,
   onPrimary: () => void,
+  held: boolean,
 ): ReactNode {
   switch (view.kind) {
     case 'idle':
@@ -195,6 +206,7 @@ function statusContentFor(
             <button
               type="button"
               onClick={onPrimary}
+              disabled={held}
               className="ml-2 rounded-md px-1.5 py-0.5 font-medium text-rose-800 underline underline-offset-2 hover:bg-rose-100"
             >
               {EXPORT_AGAIN_ACTION}
@@ -211,13 +223,14 @@ export function ExportControl({
   view,
   disabled,
   secondsOnPage,
+  hold = NO_HOLD,
   onPrimary,
 }: ExportControlProps): React.JSX.Element {
   return (
     <div className="flex min-w-36 flex-col gap-1">
       <button
         type="button"
-        disabled={disabled}
+        disabled={disabled || hold.held}
         onClick={onPrimary}
         aria-label={
           view.kind === 'ready' && layoutName !== null
@@ -234,7 +247,8 @@ export function ExportControl({
         `role="status"` is a polite live region — announced when it changes, never interrupting.
       */}
       <div role="status" className="text-xs leading-5 text-slate-600">
-        {statusContentFor(view, format, secondsOnPage, onPrimary)}
+        {statusContentFor(view, format, secondsOnPage, onPrimary, hold.held)}
+        <HoldNote {...hold} />
       </div>
     </div>
   );

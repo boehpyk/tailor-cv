@@ -380,10 +380,17 @@ const UNKNOWN_REQUEST_FAILURE: RequestFailureView = {
  * question already answered one level up. It falls through to the generic line in the window before
  * that happens.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T7 skeleton; read in GREEN
-export function requestFailureFor(error: Error, _deadlineMs: number | null): RequestFailureView {
+export function requestFailureFor(
+  error: Error,
+  /** When a 429 lets the user try again, in words (`useErrorHold(error).phrase`); else `null`. */
+  retryWhen: string | null,
+): RequestFailureView {
   if (!(error instanceof ApiError) || error.code === null) {
     return UNKNOWN_REQUEST_FAILURE;
+  }
+  if (error.code === 'rate_limited' && retryWhen !== null) {
+    // AC-11: the wait from `Retry-After`, worded once at receipt. Without one, the map's line.
+    return { message: `Too many exports. You can try again ${retryWhen}.`, retryable: true };
   }
   return REQUEST_FAILURE_BY_CODE[error.code] ?? UNKNOWN_REQUEST_FAILURE;
 }

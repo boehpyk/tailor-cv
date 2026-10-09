@@ -33,7 +33,9 @@
 
 import { useEffect, useState } from 'react';
 
+import { ApiError } from '@/api/client';
 import { downloadDocument, downloadExportFile } from '@/api/exports';
+import { useErrorHold } from '@/features/retry/useHold';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import {
@@ -45,7 +47,7 @@ import {
   downloadFilenameFor,
   exportGateReasonFor,
 } from '../exportCopy';
-import { defaultLayoutFor, viewOfExport } from '../exportView';
+import { defaultLayoutFor, isSameTarget, viewOfExport } from '../exportView';
 import { useDownload } from '../hooks/useDownload';
 import { useExportJobs } from '../hooks/useExportJobs';
 import { useRequestExport } from '../hooks/useRequestExport';
@@ -126,6 +128,13 @@ const EXPORT_CONTROLS: readonly ExportControlSpec[] = [
 ];
 
 /** Which control a request is about: a PDF request names its layout, every other one none. */
+/** The last 429 on `POST /exports`: which control it refused, and which submission it answered. */
+interface HeldRefusal {
+  readonly target: ExportTarget;
+  readonly error: ApiError;
+  readonly submittedAt: number;
+}
+
 function targetOfRequest(request: NewExport): ExportTarget {
   return {
     document: request.document,
@@ -285,6 +294,38 @@ export function ExportBar({
         : null,
   };
 
+  // Slice 3.3 (AC-11): a 429 holds the control it refused, and only that one, until its
+  // `Retry-After`. The refusal is kept here rather than read from `requestExport.error` alone,
+  // because one mutation serves four controls: a request for *Word* replaces the mutation's error
+  // and would otherwise release the held PDF early. "Storing information from previous renders":
+  // adjusted during render, never by an effect. A later request for the same target ends it.
+  const [lastRefusal, setLastRefusal] = useState<HeldRefusal | null>(null);
+  let refusal = lastRefusal;
+  const requestError = requestExport.error;
+  if (
+    requestError instanceof ApiError &&
+    requestError.status === 429 &&
+    requestVariables !== undefined &&
+    requestError !== lastRefusal?.error
+  ) {
+    refusal = {
+      target: targetOfRequest(requestVariables),
+      error: requestError,
+      submittedAt: requestExport.submittedAt,
+    };
+    setLastRefusal(refusal);
+  } else if (
+    refusal !== null &&
+    requestVariables !== undefined &&
+    requestExport.submittedAt !== refusal.submittedAt &&
+    isSameTarget(targetOfRequest(requestVariables), refusal.target)
+  ) {
+    refusal = null;
+    setLastRefusal(null);
+  }
+  const heldRefusal = refusal;
+  const refusalHold = useErrorHold(heldRefusal?.error ?? null);
+
   // The user's choice, else the run's newest PDF layout (derived from server state on every
   // render, AC-30), else Classic. While the list loads `jobs` is empty, so Classic shows and the
   // picker is disabled — the selection cannot jump under the pointer (AC-32).
@@ -432,7 +473,23 @@ export function ExportBar({
             format: spec.format,
             layoutTemplate: spec.format === 'pdf' ? effectiveLayout : null,
           };
-          const view = viewOfExport(target, jobs, mutations, nowMs);
+          const refusedHere =
+            heldRefusal !== null && isSameTarget(heldRefusal.target, target) ? heldRefusal : null;
+          const view = viewOfExport(
+            target,
+            jobs,
+            refusedHere !== null
+              ? {
+                  ...mutations,
+                  requestFailure: {
+                    target,
+                    error: refusedHere.error,
+                    retryWhen: refusalHold.phrase,
+                  },
+                }
+              : mutations,
+            nowMs,
+          );
           return (
             <ExportControl
               key={spec.format}
@@ -443,6 +500,7 @@ export function ExportBar({
               view={view}
               disabled={isControlDisabled(view, spec, gates)}
               secondsOnPage={secondsOnPage}
+              {...(refusedHere !== null ? { hold: refusalHold } : {})}
               onPrimary={primaryActionFor(spec, view)}
             />
           );
