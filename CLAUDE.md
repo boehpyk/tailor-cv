@@ -479,8 +479,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`cc1bd0e`), five T24 tests that raced the loading state (`6cf4628`), Vite inlining the previews
 >   (Conventions; Infrastructure footguns).
 >
-> - **3.3 `workspace-rate-limit-retry-feedback`** (branch, **implemented 2026-10-09, not yet
->   verified**) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
+> - **3.3 `workspace-rate-limit-retry-feedback`** (branch, **implemented and verified 2026-10-09**,
+>   reviewer PASS round 1, six MINORs carried by the owner — see the spec's T27) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
 >   ADR-0014 amended). *Reads retry, writes hold*: after a 429 every re-clickable control (tailor,
 >   *Try again*, export per document × format, both uploads, posting — *Paste instead* stays usable
 >   on a fetch 429 — claim, login, register, reset, *Send it again*) is disabled until `Retry-After`
