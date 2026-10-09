@@ -162,6 +162,7 @@ export function makeHistoryEntry(overrides: Partial<HistoryEntry> = {}): History
     status: 'succeeded',
     failure_reason: null,
     retryable: false,
+    retry_not_before: null,
     requested_at: '2026-09-20T10:00:00Z',
     completed_at: '2026-09-20T10:00:09Z',
     version: 3,

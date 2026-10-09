@@ -18,6 +18,8 @@ export interface AuthErrorNoticeProps {
   readonly action: AuthAction;
   /** The mutation's `error`; `null` renders nothing. */
   readonly error: Error | null;
+  /** A 429's wait in words (`useErrorHold(error).phrase`), for the *Too many attempts* line. */
+  readonly retryWhen?: string | null;
 }
 
 /**
@@ -31,11 +33,17 @@ export interface AuthErrorNoticeProps {
  * `focusOnMount` moves focus to the notice when it appears (slice 2.5's screens, AC-52): the
  * outcome of a submit is where a keyboard user should be. 2.1's forms leave focus where it is.
  */
-export function AuthErrorNotice({ id, action, error, focusOnMount = false }: AuthErrorNoticeProps) {
+export function AuthErrorNotice({
+  id,
+  action,
+  error,
+  retryWhen = null,
+  focusOnMount = false,
+}: AuthErrorNoticeProps) {
   if (error === null) {
     return null;
   }
-  const copy = authErrorCopy(action, error);
+  const copy = authErrorCopy(action, error, retryWhen);
   return (
     <div
       id={id}

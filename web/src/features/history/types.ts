@@ -50,6 +50,8 @@ export interface HistoryEntry {
   readonly id: string;
   readonly status: TailoringRunStatus;
   readonly failure_reason: TailoringFailureReason | null;
+  /** See `TailoringRun.retry_not_before`. */
+  readonly retry_not_before: string | null;
   /** Computed by the API — see `TailoringRun.retryable`. Read it; never re-derive it. */
   readonly retryable: boolean;
   readonly requested_at: string;

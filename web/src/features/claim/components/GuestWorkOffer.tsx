@@ -1,18 +1,19 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
-import { ApiError } from '@/api/client';
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useErrorHold } from '@/features/retry/useHold';
 
 import {
   CLAIM_FAILED,
   CLAIM_NOTHING_LEFT,
-  CLAIM_RATE_LIMITED,
   KEEP_LABEL,
   KEEP_PENDING_LABEL,
   NOT_NOW_LABEL,
   OFFER_REGION_LABEL,
   OFFER_RETENTION_LINE,
   claimMovedNothing,
+  claimRateLimited,
   claimSuccessNote,
   guestWorkOfferSentence,
 } from '../claimCopy';
@@ -20,39 +21,7 @@ import { claimGuestWorkMutationKey, useClaimGuestWork } from '../hooks/useClaimG
 import { useGuestWorkSummary } from '../hooks/useGuestWorkSummary';
 
 import type { GuestWorkClaimResult } from '../types';
-
-/** When a 429 carries no `Retry-After`, the button still comes back — after a minute. */
-const DEFAULT_RETRY_AFTER_SECONDS = 60;
-
-/** How long a 429 keeps the button disabled, in ms — or `null` when the error is not a 429. */
-function rateLimitWindowMs(error: Error | null): number | null {
-  if (!(error instanceof ApiError) || error.status !== 429) {
-    return null;
-  }
-  return (error.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS) * 1000;
-}
-
-/**
- * The 429's `Retry-After` window as a boolean: `true` from the moment the error arrives until the
- * window has passed. The timer is the one thing here outside React, so it is the `useEffect`; which
- * error it has already waited out is the only state, and "still waiting" is derived from it.
- */
-function useStillRateLimited(error: Error | null): boolean {
-  const windowMs = rateLimitWindowMs(error);
-  const [waitedOut, setWaitedOut] = useState<Error | null>(null);
-  useEffect(() => {
-    if (windowMs === null) {
-      return undefined;
-    }
-    const timer = setTimeout(() => {
-      setWaitedOut(error);
-    }, windowMs);
-    return () => {
-      clearTimeout(timer);
-    };
-  }, [error, windowMs]);
-  return windowMs !== null && waitedOut !== error;
-}
+import type { HoldNoteProps } from '@/features/retry/components/HoldNote';
 
 export interface GuestWorkOfferProps {
   /** The signed-in user the work would move to — roots the claim's mutation key (AC-42). */
@@ -95,7 +64,8 @@ export function GuestWorkOffer({
   const claim = useClaimGuestWork(userId);
   const queryClient = useQueryClient();
   const [dismissed, setDismissed] = useState(false);
-  const rateLimited = useStillRateLimited(claim.error);
+  // Slice 3.3 (AC-14): the shared hold, which replaced this component's private copy of it.
+  const hold = useErrorHold(claim.error);
 
   if (claim.isSuccess) {
     return (
@@ -126,14 +96,15 @@ export function GuestWorkOffer({
   return (
     <OfferRegion
       isPending={claim.isPending}
-      keepDisabled={claim.isPending || rateLimited}
+      keepDisabled={claim.isPending || hold.held}
       alert={
         claim.error === null
           ? null
-          : rateLimitWindowMs(claim.error) === null
+          : hold.deadlineMs === null
             ? CLAIM_FAILED
-            : CLAIM_RATE_LIMITED
+            : claimRateLimited(hold.phrase)
       }
+      hold={hold}
       onKeep={keep}
       onNotNow={() => {
         setDismissed(true);
@@ -147,6 +118,7 @@ interface OfferRegionProps {
   readonly keepDisabled: boolean;
   /** The failure sentence (`role="alert"`), or `null` when the last attempt did not fail. */
   readonly alert: string | null;
+  readonly hold: HoldNoteProps;
   readonly onKeep: () => void;
   readonly onNotNow: () => void;
 }
@@ -156,6 +128,7 @@ function OfferRegion({
   isPending,
   keepDisabled,
   alert,
+  hold,
   onKeep,
   onNotNow,
 }: OfferRegionProps): React.JSX.Element | null {
@@ -193,6 +166,11 @@ function OfferRegion({
           {alert}
         </p>
       )}
+      <HoldNote
+        held={hold.held}
+        remainingSeconds={hold.remainingSeconds}
+        released={hold.released}
+      />
     </section>
   );
 }

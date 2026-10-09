@@ -1,5 +1,8 @@
 import { useId } from 'react';
 
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useErrorHold } from '@/features/retry/useHold';
+
 import { useUploadSavedBaseCv } from '../hooks/useUploadSavedBaseCv';
 import {
   UPLOAD_SAVED_CV_LABEL,
@@ -26,6 +29,8 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
   const inputId = useId();
   const errorId = useId();
   const error = upload.error;
+  // Slice 3.3 (AC-12): a 429 holds the input until its `Retry-After`.
+  const hold = useErrorHold(error);
 
   function handleChange(event: React.ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
@@ -46,7 +51,7 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
         id={inputId}
         type="file"
         accept=".pdf,.docx,.txt"
-        disabled={upload.isPending}
+        disabled={upload.isPending || hold.held}
         onChange={handleChange}
         aria-describedby={error === null ? undefined : errorId}
         className="block text-sm"
@@ -58,9 +63,14 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
       )}
       {error !== null && (
         <p id={errorId} role="alert" className="text-sm text-red-700">
-          {uploadSavedCvErrorCopy(error)}
+          {uploadSavedCvErrorCopy(error, hold.phrase)}
         </p>
       )}
+      <HoldNote
+        held={hold.held}
+        remainingSeconds={hold.remainingSeconds}
+        released={hold.released}
+      />
     </div>
   );
 }

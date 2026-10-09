@@ -12,6 +12,8 @@ import { effectiveSelection } from '@/features/savedCvs/selection';
 import { runLink } from '@/features/scope/scopeMap';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { useLatestAccountRun } from '@/features/history/hooks/useLatestAccountRun';
+import { laterDeadline } from '@/features/retry/hold';
+import { useErrorHold, useRunHoldDeadline } from '@/features/retry/useHold';
 import { activeTailoringRunId, rejectionMessage } from '@/features/tailoring/apiErrorCopy';
 import { TailoringRejectionNotice } from '@/features/tailoring/components/TailoringRejectionNotice';
 import { TailorLaunch } from '@/features/tailoring/components/TailorLaunch';
@@ -97,6 +99,9 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
   const input = launchInput(baseCv, jobPosting);
   const latestRun = latest.data ?? null;
   const runInProgress = latestRun !== null && isActiveTailoringRunStatus(latestRun.status);
+  // Slice 3.3: a 429 on the launch and the latest run's provider cooldown; the later wins.
+  const createHold = useErrorHold(create.error);
+  const holdUntil = laterDeadline(createHold.deadlineMs, useRunHoldDeadline(latestRun));
 
   function launch(): void {
     // `isPending` lags a same-tick double click; `isMutating` does not (H-58, CLAUDE.md).
@@ -155,12 +160,13 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
             hasPreviousRun={latestRun !== null}
             isStarting={create.isPending}
             runInProgress={runInProgress}
+            holdUntil={holdUntil}
             onLaunch={launch}
           />
 
           {rejection !== null && (
             <TailoringRejectionNotice
-              message={rejectionMessage(rejection, 'account')}
+              message={rejectionMessage(rejection, createHold.phrase, 'account')}
               onViewActiveRun={null}
               activeRunHref={activeRunId === null ? null : runLink(map, activeRunId)}
             />

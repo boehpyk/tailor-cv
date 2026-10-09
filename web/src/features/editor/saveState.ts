@@ -26,7 +26,7 @@ export type SaveState =
   /** 409 and the server's text differs from ours (E-8, E-17). Nothing happens without a click. */
   | { readonly kind: 'conflict'; readonly loadLatest: () => void; readonly keepMine: () => void }
   /** 429 — the save limiter said wait. */
-  | { readonly kind: 'paused'; readonly retryAfterSeconds: number }
+  | { readonly kind: 'paused'; readonly retryAfterSeconds: number; readonly untilMs: number }
   /** 422 `document_invalid` — the server refused the text; waits for the next change. */
   | { readonly kind: 'invalid'; readonly problem: DocumentProblem }
   /** 401 — the session is gone; the editor is read-only and the text stays on screen (AC-34). */

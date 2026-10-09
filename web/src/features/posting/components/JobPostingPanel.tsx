@@ -2,6 +2,8 @@ import { useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 
 import { ApiError } from '@/api/client';
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useErrorHold } from '@/features/retry/useHold';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 
 import { FetchFailureNotice } from './FetchFailureNotice';
@@ -10,6 +12,7 @@ import { JobPostingInput } from './JobPostingInput';
 import { useCreateJobPosting } from '../hooks/useCreateJobPosting';
 import { useJobPostings } from '../hooks/useJobPostings';
 import { latestPosting } from '../latestPosting';
+import { postingRejectionMessage } from '../postingCopy';
 import { isFetchFailureCode } from '../types';
 
 import type { PostingSource } from '../types';
@@ -52,6 +55,12 @@ export function JobPostingPanel(): React.JSX.Element {
   const [preCheckError, setPreCheckError] = useState<string | null>(null);
   const [isReplacing, setIsReplacing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // Slice 3.3 (AC-13, F-5b): a 429 holds the source it refused. A paste spends the create budget,
+  // so it holds both sources; a fetch spends the fetch budget too, so it holds *Fetch* only and a
+  // paste stays sendable — FR-2's fallback must survive the limit.
+  const createHold = useErrorHold(create.error);
+  const refusedSource = create.variables?.source ?? null;
+  const submitHeld = createHold.held && (refusedSource === 'pasted' || mode === 'fetched');
 
   /**
    * Error A — rejected before the request. UX only: its entire job is to avoid a round trip for
@@ -179,7 +188,7 @@ export function JobPostingPanel(): React.JSX.Element {
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={create.isPending}
+            disabled={create.isPending || submitHeld}
             className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
           >
             {/* Two different verbs, because only one of them is waiting on someone else's server.
@@ -221,9 +230,29 @@ export function JobPostingPanel(): React.JSX.Element {
       )}
 
       {create.isError && !isFetchFailure && (
-        // Error B — the API refused the request itself.
-        <div role="alert" className="rounded-md border border-red-200 bg-red-50 px-3 py-2">
-          <p className="text-sm font-medium text-red-700">{create.error.message}</p>
+        // Error B — the API refused the request itself. Worded by `code` (AC-13), never the
+        // server's `message`. A fetch held by a 429 still offers FR-2's paste fallback (F-5b).
+        <div
+          role="alert"
+          className="space-y-2 rounded-md border border-red-200 bg-red-50 px-3 py-2"
+        >
+          <p className="text-sm font-medium text-red-700">
+            {postingRejectionMessage(create.error, createHold.phrase)}
+          </p>
+          {createHold.deadlineMs !== null && refusedSource === 'fetched' && mode === 'fetched' && (
+            <button
+              type="button"
+              onClick={handlePasteInstead}
+              className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700"
+            >
+              Paste the description instead
+            </button>
+          )}
+          <HoldNote
+            held={submitHeld}
+            remainingSeconds={createHold.remainingSeconds}
+            released={createHold.released}
+          />
         </div>
       )}
     </div>

@@ -101,10 +101,15 @@ const LOGOUT_FAILED = "Couldn't log you out. Try again.";
 
 /**
  * The notice for `error` on `action`'s form. Takes the whole error, not just its `code`, because
- * two sentences carry a number the server sent: `rate_limited` (`retryAfterSeconds`) and
+ * two sentences carry a number the server sent: `rate_limited` (its wait, as `retryWhen`) and
  * `password_too_short` / `password_too_long` (`details.min_length` / `details.max_length`).
  */
-export function authErrorCopy(action: AuthAction, error: Error): AuthErrorCopy {
+export function authErrorCopy(
+  action: AuthAction,
+  error: Error,
+  /** When a 429 lets the user try again, in words (`useErrorHold(error).phrase`); else `null`. */
+  retryWhen: string | null = null,
+): AuthErrorCopy {
   if (action === 'logout') {
     return { message: LOGOUT_FAILED };
   }
@@ -119,13 +124,14 @@ export function authErrorCopy(action: AuthAction, error: Error): AuthErrorCopy {
           : 'Something went wrong. Try again.',
     };
   }
-  return copyForCode(error.code, action, error);
+  return copyForCode(error.code, action, error, retryWhen);
 }
 
 function copyForCode(
   code: AuthErrorCode,
   action: Exclude<AuthAction, 'logout'>,
   error: ApiError,
+  retryWhen: string | null,
 ): AuthErrorCopy {
   switch (code) {
     case 'invalid_credentials':
@@ -146,7 +152,7 @@ function copyForCode(
     case 'password_matches_email':
       return { message: "Your password can't be your email address. Choose something else." };
     case 'rate_limited':
-      return { message: tooManyAttempts(error.retryAfterSeconds) };
+      return { message: tooManyAttempts(retryWhen) };
     case 'rate_limit_unavailable':
     case 'service_unavailable':
       // Two causes (Redis down, Postgres down), one meaning for the user: "not right now". And the
@@ -179,13 +185,11 @@ const UNAVAILABLE_TASK: Readonly<Record<Exclude<AuthAction, 'logout'>, string>> 
   password_reset: 'Resetting a password',
 };
 
-/** `Retry-After: 120` → "…in 2 minutes." Rounded **up**: telling someone "0 minutes" invites a 429. */
-function tooManyAttempts(retryAfterSeconds: number | null): string {
-  if (retryAfterSeconds === null) {
-    return 'Too many attempts. Try again in a few minutes.';
-  }
-  const minutes = Math.max(1, Math.ceil(retryAfterSeconds / 60));
-  return `Too many attempts. Try again in ${String(minutes)} ${minutes === 1 ? 'minute' : 'minutes'}.`;
+/** AC-15: *"Too many attempts. You can try again at 14:03."* — the wait from `retryPhrase`. */
+function tooManyAttempts(retryWhen: string | null): string {
+  return retryWhen === null
+    ? 'Too many attempts. Try again in a few minutes.'
+    : `Too many attempts. You can try again ${retryWhen}.`;
 }
 
 /** The server's own number, narrowed here — the one place that knows what the key means. */

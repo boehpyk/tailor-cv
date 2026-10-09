@@ -14,9 +14,12 @@ import { progressOfRun } from '@/features/workspace/progress';
 
 import { NotFoundPage } from './NotFoundPage';
 import { TailoringRejectionNotice } from './TailoringRejectionNotice';
+import { ConnectionNote } from '@/features/retry/components/ConnectionNote';
+import { connectionOf, laterDeadline } from '@/features/retry/hold';
+import { useErrorHold, useRunHoldDeadline } from '@/features/retry/useHold';
 import { activeTailoringRunId, rejectionMessage } from '../apiErrorCopy';
 import { useCreateTailoringRun } from '../hooks/useCreateTailoringRun';
-import { useTailoringRun } from '../hooks/useTailoringRun';
+import { MAX_TRANSIENT_RETRIES, useTailoringRun } from '../hooks/useTailoringRun';
 import { viewOfWatchedRun } from '../runView';
 
 import type { TailoringRun } from '../types';
@@ -119,6 +122,13 @@ export function RunPage(): React.JSX.Element {
   // one. Here rather than in `ExportBar` because this page survives the CV/cover-letter tab switch
   // and the bar's subtree does not, and the choice is shared by both tabs.
   const [chosenLayout, setChosenLayout] = useState<LayoutTemplate | null>(null);
+  // Slice 3.3 (AC-10): *Try again* waits out the provider cooldown the run carries, and a 429 on
+  // the retry itself; the later of the two wins.
+  const createHold = useErrorHold(create.error);
+  const holdUntil = laterDeadline(createHold.deadlineMs, useRunHoldDeadline(watched.data ?? null));
+  // Slice 3.3 (AC-17, AC-18): what the poll is doing besides ticking, read from TanStack's own
+  // state — the backoff shown is the backoff that runs. Derived; nothing stored.
+  const connection = connectionOf(watched);
 
   if (runId === null || documentSegment === null) {
     return <NotFoundPage />;
@@ -192,6 +202,8 @@ export function RunPage(): React.JSX.Element {
           run={view}
           canStart={true}
           isStarting={create.isPending}
+          holdUntil={holdUntil}
+          paused={connection === 'paused'}
           onRetry={() => {
             // `failed` implies the detail query answered, so `data` is set; the narrowing is for
             // the type, which cannot see that, and the no-op branch is unreachable in practice.
@@ -199,6 +211,15 @@ export function RunPage(): React.JSX.Element {
               retry(watched.data);
             }
           }}
+        />
+      )}
+
+      {view.kind === 'working' && (
+        <ConnectionNote
+          kind="run"
+          connection={connection}
+          failureCount={watched.failureCount}
+          maxRetries={MAX_TRANSIENT_RETRIES}
         />
       )}
 
@@ -236,7 +257,7 @@ export function RunPage(): React.JSX.Element {
 
       {rejection !== null && (
         <TailoringRejectionNotice
-          message={rejectionMessage(rejection, map.kind)}
+          message={rejectionMessage(rejection, createHold.phrase, map.kind)}
           onViewActiveRun={
             activeRunId === null
               ? null

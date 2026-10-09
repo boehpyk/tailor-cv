@@ -36,8 +36,15 @@ export const KEEP_PENDING_LABEL = 'Keeping your work…';
 /** AC-39: 200 with every count zero — a success that moved nothing; the offer goes. */
 export const CLAIM_NOTHING_LEFT =
   "There was nothing left to keep — this browser's guest work has already been kept or has expired.";
-/** AC-39: 429 `rate_limited`. The button comes back after `Retry-After`. */
-export const CLAIM_RATE_LIMITED = 'Too many attempts — try again in a few minutes.';
+/** AC-39: 429 `rate_limited`. The button comes back after `Retry-After` (slice 3.3: held until then). */
+export const CLAIM_RATE_LIMITED = 'Too many attempts';
+
+/** AC-14: the 429 sentence, naming the wait through `retryPhrase` (`useErrorHold(error).phrase`). */
+export function claimRateLimited(retryWhen: string | null): string {
+  return retryWhen === null
+    ? `${CLAIM_RATE_LIMITED} — try again in a few minutes.`
+    : `${CLAIM_RATE_LIMITED} — you can try again ${retryWhen}.`;
+}
 /** AC-39: 503, a network failure, anything unexpected. Nothing moved, so trying again is safe. */
 export const CLAIM_FAILED = "Couldn't keep your work. Nothing was moved — try again.";
 

@@ -479,6 +479,33 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`cc1bd0e`), five T24 tests that raced the loading state (`6cf4628`), Vite inlining the previews
 >   (Conventions; Infrastructure footguns).
 >
+> - **3.3 `workspace-rate-limit-retry-feedback`** (branch, **implemented and verified 2026-10-09**,
+>   reviewer PASS round 1, six MINORs carried by the owner — see the spec's T27) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
+>   ADR-0014 amended). *Reads retry, writes hold*: after a 429 every re-clickable control (tailor,
+>   *Try again*, export per document × format, both uploads, posting — *Paste instead* stays usable
+>   on a fetch 429 — claim, login, register, reset, *Send it again*) is disabled until `Retry-After`
+>   passes, says so (*"at 16:01"* beyond 90 s in the **browser's locale**, *"in N seconds"* at or
+>   under), and re-enables with a `role="status"` and no focus move; **nothing that writes retries by
+>   itself** except autosave (version-guarded). Tracking, autosave and account deletion get the
+>   wording only. The run and export pollers show *"trying again (attempt n of 4)"* and *offline*,
+>   read from TanStack's own `failureCount` / `fetchStatus` — no new retry code, no jitter. After a
+>   run fails `llm_rate_limited`, *Try again* holds **60 s**: `retry_not_before` on the three run
+>   shapes, computed at the boundary (`completed_at + PROVIDER_BUSY_COOLDOWN`, a `match` closed by
+>   `assert_never`), advisory, never stored — **no migration, no setting**. An AST test pins that
+>   every router 429 (nine) carries `Retry-After` + `rate_limited`. `client.ts` reads every refused
+>   body through one tolerant `errorFrom()`, so nginx's HTML 502 is an `ApiError`, not "check your
+>   connection". React: `features/retry/` (`hold.ts`, `useHold`/`useErrorHold`, `HoldNote`,
+>   `ConnectionNote`). **4454 backend and 1325 frontend tests.** Measured (T24): AC-24's `git diff
+>   main --stat` over `infrastructure/llm`, `domain`, `application`, `rate_limit.py`, `settings.py`
+>   and `alembic` is **empty**; run-detail `GET` p95 within **0.08 ms** of `main` (n = 200 × 3,
+>   interleaved); main bundle **+2.18 kB gzip** — over the planned 2 kB, **AC-26 amended to 2.5 kB by
+>   the owner** and recorded as measured. T25 (`:8080`, Chromium; Firefox not exercised): every
+>   scenario passed. **Found, carried to `/verify`:** after a 429 hold ends, the alert still reads
+>   *"…at 16:01"* beside *"You can try again now."*; `up -d api` alone leaves dev nginx on the old IP
+>   (502 until `restart nginx`, pre-existing). Four RED corrections landed in their own commits
+>   (`148f4e1`, `a8b626f`, `ae4c970`, `60fba47`), all **timing or spec-superseded copy** — see
+>   Conventions.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -945,6 +972,21 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   component re-renders them all: 1000 `BoardCard` renders per move at 500 cards. Keep identity by
   id with a `structuralSharing` function (`shareCardsById`), and give the memoized item stable,
   id-taking callbacks and no inline object props.
+  **Reads retry, writes hold (3.3, ADR-0031).** A refused write is held until `Retry-After` and
+  never re-sent by itself; a read may retry, and the UI says so. A deadline from one response is
+  **component state derived during render** (`useErrorHold`: `(error, receivedAt)` adjusted when
+  the error changes, then `useHold` with one effect for the tick and an exact-deadline timeout) —
+  not a store, not the query cache, not a `useEffect` copying the error. A copy-only surface takes
+  `useErrorHold(error).phrase`, never `holdDeadline(error, Date.now())` at render, which moves the
+  deadline every render. Word clock times in the **browser's locale** (no forced `hourCycle`); tests
+  pin `'en-GB'`/`'UTC'` on the pure function and match `\d{1,2}:\d{2}(\s?[AP]M)?` in components.
+  **Fake timers vs TanStack (3.3).** Retry delays and notifies are `setTimeout`s: use
+  `vi.advanceTimersByTimeAsync` (the sync form hangs, it does not fail). TanStack notifies observers
+  through `setTimeout(0)`, which Vitest schedules **+1 ms** when created inside a tick, so flush
+  with `advance(1)`, not `advance(0)` (`60fba47`). A helper that advances the clock (80 ms per
+  `settle()`) makes "deadline − 1 ms" land after the deadline: advance to `deadline − Date.now() −
+  1` (`148f4e1`). `onlineManager` is a module global — `afterEach(() =>
+  onlineManager.setOnline(true))`. `userEvent.type` can hang under fake timers; use `fireEvent`.
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
   **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a

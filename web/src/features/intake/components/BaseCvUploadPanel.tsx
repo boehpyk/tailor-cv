@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { ApiError } from '@/api/client';
+import { useErrorHold } from '@/features/retry/useHold';
 
 import { BaseCvCard } from './BaseCvCard';
 import { CvDropzone } from './CvDropzone';
@@ -62,6 +63,8 @@ export function BaseCvUploadPanel(): React.JSX.Element {
   // once a replacement upload succeeds (below) — there is no case where a stale `true` should
   // survive past that, so there is nothing here for a `useEffect` to synchronize.
   const [isReplacing, setIsReplacing] = useState(false);
+  // Slice 3.3 (AC-12): a 429 holds the dropzone until its `Retry-After`; nothing else does.
+  const uploadHold = useErrorHold(upload.error);
 
   function handleFileChosen(file: File): void {
     const problem = preValidate(file);
@@ -121,7 +124,7 @@ export function BaseCvUploadPanel(): React.JSX.Element {
         />
       ) : (
         <CvDropzone
-          disabled={upload.isPending}
+          disabled={upload.isPending || uploadHold.held}
           // The chosen filename comes from the mutation's own `variables`, not a second piece of
           // local state that would just be a copy of it.
           uploadingFileName={upload.isPending ? upload.variables.name : null}
@@ -147,6 +150,7 @@ export function BaseCvUploadPanel(): React.JSX.Element {
           message={upload.error.message}
           status={upload.error instanceof ApiError ? upload.error.status : 0}
           code={upload.error instanceof ApiError ? upload.error.code : null}
+          deadlineMs={uploadHold.deadlineMs}
         />
       )}
 

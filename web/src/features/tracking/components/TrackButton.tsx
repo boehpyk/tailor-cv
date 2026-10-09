@@ -2,6 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useId } from 'react';
 import { Link } from 'react-router';
 
+import { useErrorHold } from '@/features/retry/useHold';
+
 import { variablesNameId } from '../hooks/boardCache';
 import { trackApplicationMutationKey } from '../hooks/trackingKeys';
 import { useBoardEntryForRun } from '../hooks/useBoardEntryForRun';
@@ -39,6 +41,8 @@ export function TrackButton({ userId, runId }: TrackButtonProps): React.JSX.Elem
   const track = useTrackApplication(userId);
   const queryClient = useQueryClient();
   const errorId = useId();
+  // Copy only (AC-16): a 429's wait, worded once from when it arrived. Nothing is held.
+  const trackHold = useErrorHold(track.error);
 
   const trackedStage: Stage | null =
     entry?.stage ?? (track.data?.kind === 'tracked' ? track.data.application.stage : null);
@@ -76,7 +80,7 @@ export function TrackButton({ userId, runId }: TrackButtonProps): React.JSX.Elem
       </button>
       {track.isError && (
         <span id={errorId} role="alert" className="text-sm text-red-700">
-          {trackFailureCopy(track.error)}
+          {trackFailureCopy(track.error, trackHold.deadlineMs, trackHold.receivedAtMs)}
         </span>
       )}
     </span>

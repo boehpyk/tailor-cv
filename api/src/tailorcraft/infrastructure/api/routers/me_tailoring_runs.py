@@ -141,6 +141,7 @@ def _to_history_entry(entry: TailoringHistoryEntry) -> HistoryEntryResponse:
         status=entry.status,
         failure_reason=entry.failure_reason,
         retryable=handlers.is_retryable(entry.failure_reason),
+        retry_not_before=handlers.retry_not_before(entry.failure_reason, entry.completed_at),
         requested_at=entry.requested_at,
         completed_at=entry.completed_at,
         version=entry.version,

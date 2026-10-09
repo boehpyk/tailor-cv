@@ -478,3 +478,30 @@ the second is the silent erasure this ADR's Alternatives already refused.
   exist only under the user. The guest route's rule is unchanged.
 - **The rate limit is keyed on the user** (plus the client IP, failing closed, as 1.3's is) on the
   account route, since a user has no session to key on.
+
+## Amendment: 2026-10-09, from the plan of slice 3.3 (`workspace-rate-limit-retry-feedback`)
+
+This amendment adds one boundary field. It changes no rule above, no column and no state of the run.
+
+**A run failed `llm_rate_limited` carries `retry_not_before`.** ADR-0031 holds *Try again* (and
+*Tailor again*) for 60 s after Gemini says busy, and the instant comes from the API, beside
+`retryable`, for the reason `retryable` is there: *"is paying again worth it **yet**?"* is the same
+boundary fact with a clock, and a TypeScript copy of it would be a second authority.
+
+- **Where:** `TailoringRunResponse`, `TailoringRunSummary` and `HistoryEntryResponse` gain
+  `retry_not_before: datetime | null`, non-null **iff** `status == "failed"` and `failure_reason ==
+  "llm_rate_limited"`, and then equal to `completed_at + 60 s`.
+- **Absolute, not relative.** An instant is right in a cached, polled response; a
+  `retry_after_seconds` would be wrong by the cache's age.
+- **Computed at the boundary, never stored.** `completed_at` and `failure_reason` are already on the
+  row and on the history read model, so there is **no migration** and no query change. The domain and
+  application layers are untouched.
+- **A constant, not a setting:** `PROVIDER_BUSY_COOLDOWN = timedelta(seconds=60)`. Whole-second,
+  because `completed_at` is (the `Clock` contract).
+- **Advisory.** `RequestTailoringRun` does not refuse a run inside the window. The hourly limiter
+  remains the enforcement; a client that ignores the field can retry at once, exactly as before.
+- **Only `llm_rate_limited`.** The function is a `match` that names every `TailoringFailureReason`,
+  closed by `assert_never`, so an eleventh reason is a type error until someone decides whether it
+  cools down. The cooldown does not grow on repeated failures (ADR-0031, Alternatives).
+
+§6 is unchanged: the worker's retry stays in the adapter, two attempts, invisible to the user.

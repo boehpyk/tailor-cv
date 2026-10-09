@@ -17,6 +17,10 @@ export interface ProgressStepperProps {
   /** `TailoringFailureNotice`'s three props, passed through unchanged. */
   readonly canStart: boolean;
   readonly isStarting: boolean;
+  /** Passed to `TailoringFailureNotice` (slice 3.3, AC-10). */
+  readonly holdUntil?: number | null;
+  /** The run's poll is paused offline (slice 3.3, AC-18): `TailoringProgress` hides its counter. */
+  readonly paused?: boolean;
   readonly onRetry: () => void;
 }
 
@@ -90,13 +94,17 @@ export function ProgressStepper({
   run,
   canStart,
   isStarting,
+  holdUntil = null,
+  paused = false,
   onRetry,
 }: ProgressStepperProps): React.JSX.Element {
   const [extractingLabel, fetchingLabel, tailoringLabel] = STAGE_LABELS;
 
   let tailoringBody: ReactNode = null;
   if (progress.tailoring === 'active' && run.kind === 'working') {
-    tailoringBody = <TailoringProgress key={`${run.runId}:${run.status}`} status={run.status} />;
+    tailoringBody = (
+      <TailoringProgress key={`${run.runId}:${run.status}`} status={run.status} paused={paused} />
+    );
   } else if (progress.tailoring === 'failed' && run.kind === 'failed') {
     tailoringBody = (
       <TailoringFailureNotice
@@ -104,6 +112,7 @@ export function ProgressStepper({
         retryable={run.retryable}
         canStart={canStart}
         isStarting={isStarting}
+        holdUntil={holdUntil}
         onRetry={onRetry}
       />
     );

@@ -166,6 +166,12 @@ export interface TailoringRun {
   readonly job_posting_id: string;
 
   readonly failure_reason: TailoringFailureReason | null;
+  /**
+   * After a failed `llm_rate_limited` run, the instant (ISO 8601, UTC) before which *Try again*
+   * would meet the same busy provider (ADR-0031); `null` for every other run. Computed by the API —
+   * the client reads it and never decides the cooldown.
+   */
+  readonly retry_not_before: string | null;
 
   /**
    * Whether "Try again" is worth offering. **Computed by the API from `failure_reason`; the client
@@ -248,6 +254,12 @@ export interface TailoringRunSummary {
   readonly job_posting_id: string;
 
   readonly failure_reason: TailoringFailureReason | null;
+  /**
+   * After a failed `llm_rate_limited` run, the instant (ISO 8601, UTC) before which *Try again*
+   * would meet the same busy provider (ADR-0031); `null` for every other run. Computed by the API —
+   * the client reads it and never decides the cooldown.
+   */
+  readonly retry_not_before: string | null;
   /** Computed by the API — see `TailoringRun.retryable`. */
   readonly retryable: boolean;
 

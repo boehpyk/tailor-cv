@@ -215,7 +215,7 @@ describe('Check your email: Send it again', () => {
     expect(screen.getByRole('button', { name: SEND_AGAIN_LABEL })).toBeEnabled();
   });
 
-  it("429: an alert built from the server's Retry-After, then the button is re-enabled (V-61)", async () => {
+  it("429: an alert built from the server's Retry-After, and the button is held (V-61, AC-15)", async () => {
     stubAccountFetch({ [REGISTER]: refusal(429, 'rate_limited', {}, { 'Retry-After': '120' }) });
     mount();
 
@@ -225,7 +225,9 @@ describe('Check your email: Send it again', () => {
     expect(alert.textContent).not.toBe('');
     expect(alert).not.toHaveTextContent(SEND_AGAIN_FAILED);
     expect(screen.queryByText(SENT_AGAIN_NOTE)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: SEND_AGAIN_LABEL })).toBeEnabled();
+    // AC-15 supersedes "then the button is re-enabled": a 429 now holds Send it again until the
+    // time it names (proved, with release, in `retry/accountHolds.test.tsx`).
+    expect(screen.getByRole('button', { name: SEND_AGAIN_LABEL })).toBeDisabled();
   });
 
   it.each([

@@ -28,7 +28,15 @@ import { ApiError } from '@/api/client';
  */
 export type CopyScope = 'guest' | 'account';
 
-export function rejectionMessage(error: Error, scope: CopyScope = 'guest'): string {
+export function rejectionMessage(
+  error: Error,
+  /**
+   * When a 429 lets the user try again, in words (`useErrorHold(error).phrase`, worded at
+   * receipt so the alert's text never ticks); `null` when there is no hold to name.
+   */
+  retryWhen: string | null,
+  scope: CopyScope = 'guest',
+): string {
   if (!(error instanceof ApiError)) {
     return "We couldn't reach TailorCraft. Check your connection, then try again.";
   }
@@ -52,10 +60,11 @@ export function rejectionMessage(error: Error, scope: CopyScope = 'guest'): stri
         ? "You've reached the limit on tailoring runs for your account."
         : "You've reached the limit for this session.";
     case 'rate_limited':
-      // G-11 asks for "try again in N minutes". N lives in the `Retry-After` header, which
-      // `ApiError` does not carry, and the server's `message` (which may contain it) is not ours to
-      // relay. "A few minutes" is true for a 10-per-hour window; a made-up number would not be.
-      return 'Too many tailoring runs — try again in a few minutes.';
+      // G-11 / AC-9: the wait comes from `Retry-After` through `retryPhrase`, never from the
+      // server's `message`. Without one, "a few minutes" is still true.
+      return retryWhen === null
+        ? 'Too many tailoring runs — try again in a few minutes.'
+        : `Too many tailoring runs — you can try again ${retryWhen}.`;
     case 'rate_limit_unavailable':
       return 'Tailoring is temporarily unavailable.';
     case 'queue_unavailable':

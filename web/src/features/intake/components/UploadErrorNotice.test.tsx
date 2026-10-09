@@ -17,6 +17,7 @@ describe('UploadErrorNotice', () => {
   it("renders the apiError message verbatim, with a known code's action hint as its own separate text", () => {
     render(
       <UploadErrorNotice
+        deadlineMs={null}
         kind="apiError"
         message="We only accept PDF, DOCX or TXT files."
         status={415}
@@ -33,6 +34,7 @@ describe('UploadErrorNotice', () => {
   it('renders only the server message for an apiError code with no known hint', () => {
     render(
       <UploadErrorNotice
+        deadlineMs={null}
         kind="apiError"
         message="Something went wrong."
         status={422}
@@ -46,7 +48,13 @@ describe('UploadErrorNotice', () => {
 
   it('renders a temporary-problem hint for a 5xx apiError with no known code', () => {
     render(
-      <UploadErrorNotice kind="apiError" message="Internal error." status={503} code={null} />,
+      <UploadErrorNotice
+        kind="apiError"
+        message="Internal error."
+        status={503}
+        code={null}
+        deadlineMs={null}
+      />,
     );
 
     expect(screen.getByText('Internal error.')).toBeInTheDocument();

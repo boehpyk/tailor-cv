@@ -87,9 +87,11 @@ function failureOf(error: Error): SaveFailure {
     }
   }
   if (error.status === 429) {
+    const retryAfterSeconds = error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS;
     return {
       kind: 'rateLimited',
-      retryAfterSeconds: error.retryAfterSeconds ?? RATE_LIMIT_FALLBACK_SECONDS,
+      retryAfterSeconds,
+      untilMs: Date.now() + retryAfterSeconds * 1000,
     };
   }
   return { kind: 'failed' };

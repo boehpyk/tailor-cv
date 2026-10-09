@@ -5,6 +5,8 @@ import { Link } from 'react-router';
 import { ApiError } from '@/api/client';
 import { focusOnMount } from '@/components/ui/focusOnMount';
 import { authErrorCopy } from '@/features/auth/authCopy';
+import { HoldNote } from '@/features/retry/components/HoldNote';
+import { useErrorHold } from '@/features/retry/useHold';
 
 import {
   ALREADY_CONFIRMED_PROMPT,
@@ -82,10 +84,12 @@ export function CheckYourEmail({
   const sendAgain = useRequestRegistration();
   const queryClient = useQueryClient();
   const headingId = useId();
+  // Slice 3.3 (AC-15): a 429 holds *Send it again* until its `Retry-After`.
+  const hold = useErrorHold(sendAgain.error);
 
   function resend(): void {
     // 2.1's I-53 trap: `sendAgain.isPending` lags a same-tick double click; the cache does not.
-    if (queryClient.isMutating({ mutationKey: requestRegistrationMutationKey }) > 0) {
+    if (hold.held || queryClient.isMutating({ mutationKey: requestRegistrationMutationKey }) > 0) {
       return;
     }
     sendAgain.mutate(credentials);
@@ -115,7 +119,7 @@ export function CheckYourEmail({
         <button
           type="button"
           onClick={resend}
-          disabled={sendAgain.isPending}
+          disabled={sendAgain.isPending || hold.held}
           className={primaryButtonClass}
         >
           {sendAgain.isPending ? SENDING_LABEL : SEND_AGAIN_LABEL}
@@ -132,9 +136,14 @@ export function CheckYourEmail({
       )}
       {sendAgain.error !== null && (
         <p role="alert" tabIndex={-1} ref={focusOnMount} className={`mt-3 ${alertClass}`}>
-          {sendAgainFailure(sendAgain.error)}
+          {sendAgainFailure(sendAgain.error, hold.phrase)}
         </p>
       )}
+      <HoldNote
+        held={hold.held}
+        remainingSeconds={hold.remainingSeconds}
+        released={hold.released}
+      />
 
       <p className="mt-6 text-sm text-slate-600">
         <span>{ALREADY_CONFIRMED_PROMPT}</span>{' '}
@@ -152,9 +161,9 @@ export function CheckYourEmail({
  * says nothing was sent and the button can be pressed again (V-66). Anything else (a 403 after a
  * deploy, say) reads as `/register`'s own refusal would.
  */
-function sendAgainFailure(error: Error): string {
+function sendAgainFailure(error: Error, retryWhen: string | null): string {
   if (!(error instanceof ApiError) || error.status >= 500) {
     return SEND_AGAIN_FAILED;
   }
-  return authErrorCopy('register', error).message;
+  return authErrorCopy('register', error, retryWhen).message;
 }

@@ -2,6 +2,8 @@ import { useMutationState, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useId, useMemo, useState } from 'react';
 import { Link } from 'react-router';
 
+import { holdDeadline } from '@/features/retry/hold';
+
 import { BoardCard, CARD_REMOVAL } from './BoardCard';
 import { BoardColumn } from './BoardColumn';
 import { variablesNameId } from '../hooks/boardCache';
@@ -99,7 +101,9 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
       announceMove(card.id, movedAnnouncement(cardDisplayTitle(card), stage));
     },
     onRefused: (error, card) => {
-      setMoveFailure(moveFailureCopy(error));
+      // Worded here, once, at the refusal (AC-16): the note is state, so it never ticks.
+      const now = Date.now();
+      setMoveFailure(moveFailureCopy(error, holdDeadline(error, now), now));
       // The card is back where it was, but the control the user chose from was unmounted by the
       // optimistic move: hand focus back to it. A card that is gone (404) has no control to return to.
       if (card.restored) {

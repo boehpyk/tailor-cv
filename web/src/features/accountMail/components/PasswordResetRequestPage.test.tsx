@@ -124,21 +124,29 @@ describe('/reset-password: success', () => {
 
 describe('/reset-password: failures (each distinct)', () => {
   it('422 invalid_email, 429, 503 and a network failure all render a role="alert" with different text', async () => {
-    const outcomes: Array<[string, () => Response | Promise<Response>]> = [
-      ['422', refusal(422, 'invalid_email')],
-      ['429', refusal(429, 'rate_limited', {}, { 'Retry-After': '120' })],
-      ['503', refusal(503, 'service_unavailable')],
-      ['network', networkFailure],
+    // `held`: AC-15 supersedes "the button is enabled after every outcome" for the 429, which
+    // now holds the submit until the time it names (proved with release in
+    // `retry/accountHolds.test.tsx`).
+    const outcomes: Array<[string, () => Response | Promise<Response>, boolean]> = [
+      ['422', refusal(422, 'invalid_email'), false],
+      ['429', refusal(429, 'rate_limited', {}, { 'Retry-After': '120' }), true],
+      ['503', refusal(503, 'service_unavailable'), false],
+      ['network', networkFailure, false],
     ];
     const texts: string[] = [];
-    for (const [, handler] of outcomes) {
+    for (const [, handler, held] of outcomes) {
       stubAccountFetch({ [REQUEST]: handler });
       const page = mount();
       await submitEmail('not-an-address');
       const alert = await screen.findByRole('alert');
       texts.push(alert.textContent);
       expect(screen.queryByRole('status')).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: RESET_REQUEST_SUBMIT_LABEL })).toBeEnabled();
+      const submit = screen.getByRole('button', { name: RESET_REQUEST_SUBMIT_LABEL });
+      if (held) {
+        expect(submit).toBeDisabled();
+      } else {
+        expect(submit).toBeEnabled();
+      }
       page.unmount();
     }
 
