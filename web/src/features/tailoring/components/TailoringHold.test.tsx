@@ -55,10 +55,19 @@ async function advance(ms: number): Promise<void> {
 }
 
 /** Load, requests and renders settle without a real clock. */
-async function settle(): Promise<void> {
+async function settle(stepMs = 0): Promise<void> {
+  // Zero-time by default: flush promises and 0 ms timers without moving the clock, so a deadline
+  // is exactly (receipt + window) and "deadline - 1 ms" really is 1 ms early. Only the account
+  // workspace's boot needs real fake-time steps to load; nothing is measured against the clock
+  // until after it has.
   for (let i = 0; i < 8; i += 1) {
-    await advance(10);
+    await advance(stepMs);
   }
+}
+
+/** Advance to `offsetMs` from `deadlineMs`, whatever the clock now reads. */
+async function advanceToward(deadlineMs: number, offsetMs: number): Promise<void> {
+  await advance(deadlineMs + offsetMs - Date.now());
 }
 
 function launchButton(): HTMLElement {
@@ -186,9 +195,10 @@ describe('AC-9 — Tailor in the account workspace', () => {
   it('a 429 with Retry-After: 120 disables it, sends nothing on click, and releases at +120 s', async () => {
     const fetch = account(() => tooMany(120));
     renderWithRouter('/');
-    await settle();
+    await settle(10); // the account boot needs fake time to load
     expect(launchButton()).toBeEnabled();
 
+    const clickedAt = Date.now();
     fireEvent.click(launchButton());
     await settle();
 
@@ -200,9 +210,9 @@ describe('AC-9 — Tailor in the account workspace', () => {
     expect(callsTo(fetch, 'POST', '/api/me/tailoring-runs')).toHaveLength(1);
 
     const focused = document.activeElement;
-    await advance(119_999);
+    await advanceToward(clickedAt + 120_000, -1);
     expect(launchButton()).toBeDisabled();
-    await advance(1);
+    await advanceToward(clickedAt + 120_000, 0);
     expect(launchButton()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
     expect(document.activeElement).toBe(focused);
@@ -216,7 +226,7 @@ describe('AC-9 — Tailor in the account workspace', () => {
       jsonResponse(503, { error: { code: 'rate_limit_unavailable', message: 'Unavailable.' } }),
     );
     renderWithRouter('/');
-    await settle();
+    await settle(10); // the account boot needs fake time to load
 
     fireEvent.click(launchButton());
     await settle();
