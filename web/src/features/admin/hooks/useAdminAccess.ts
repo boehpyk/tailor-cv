@@ -30,11 +30,17 @@ export function adminAccessQueryKey(userId: string): readonly string[] {
  * A 404 is not retried (AC-31); a 503 or a network failure is retried once.
  *
  * Takes the `userId` rather than reading the scope, so a guest scope cannot reach it by type.
+ *
+ * The data is `true`, not the client's `void`: TanStack v5 refuses a query function that resolves
+ * `undefined` and turns the 204 into an error — which the view would show as "unavailable".
  */
-export function useAdminAccess(userId: string): UseQueryResult<void> {
+export function useAdminAccess(userId: string): UseQueryResult<true> {
   return useQuery({
     queryKey: adminAccessQueryKey(userId),
-    queryFn: ({ signal }) => adminAccess(signal),
+    queryFn: async ({ signal }) => {
+      await adminAccess(signal);
+      return true as const;
+    },
     retry: (failureCount, error) => !isClientError(error) && failureCount < MAX_TRANSIENT_RETRIES,
   });
 }

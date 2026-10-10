@@ -24,7 +24,7 @@ const linkClass = 'font-medium text-slate-900 underline underline-offset-2';
  *   refresh answers tells a logged-in user they were logged out.
  * - `anonymous` — the empty state: **Log in** · **Create account**.
  * - `authenticated` — the email, **History** (slice 2.3, AC-44), **Board** (slice 3.1, AC-32),
- *   **Account** and **Log out**. The
+ *   **Admin** for an admin (slice 4.1, AC-30), **Account** and **Log out**. The
  *   email comes from `['auth', 'me']` and can be absent for the instant before the seed lands; the
  *   links cannot, so they render alone. Log out is here so it is one click from every page — a
  *   history run included (AC-43) — except `/account`, whose own Log out already sits in the page:
@@ -68,6 +68,12 @@ export function AuthStatus() {
           <Link to="/board" className={linkClass}>
             {BOARD_NAV_LABEL}
           </Link>
+          {/* AC-30: a hint for showing the link, not authority — `/admin` asks the server (OQ-13). */}
+          {auth.user?.role === 'admin' && (
+            <Link to="/admin" className={linkClass}>
+              Admin
+            </Link>
+          )}
           <Link to="/account" className={linkClass}>
             Account
           </Link>

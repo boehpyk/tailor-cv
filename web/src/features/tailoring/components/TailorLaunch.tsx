@@ -3,6 +3,7 @@ import { useId } from 'react';
 import { HoldNote } from '@/features/retry/components/HoldNote';
 import { useHold } from '@/features/retry/useHold';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+import { OPERATOR_ACCESS_NOTE } from '@/features/workspace/workspaceCopy';
 
 import type { BaseCvCheck, JobPostingCheck } from '../launchReadiness';
 
@@ -172,6 +173,8 @@ export function TailorLaunch({
       <p id={disclosureId} className="text-sm text-slate-600">
         {GEMINI_DISCLOSURE}
       </p>
+      {/* AC-37: the account workspace says this in its promise, so only the guest's says it here. */}
+      {map.kind !== 'account' && <p className="text-sm text-slate-600">{OPERATOR_ACCESS_NOTE}</p>}
       <p className="text-sm text-slate-500">
         {map.kind === 'account' ? ACCOUNT_RETENTION_SENTENCE : RETENTION_SENTENCE}
       </p>
