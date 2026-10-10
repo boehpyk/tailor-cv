@@ -2,7 +2,9 @@
 
 **Invariant:** a user has exactly one `EmailAddress` and one `PasswordHash`, and the hash changes only
 through `replace_password_hash` (a rehash) or `reset_password` (slice 2.5), never by assignment; and
-exactly one `Role`, changed only by `change_role` (slice 4.1, ADR-0032). That is the whole of it, and it is small on
+exactly one `Role`, changed only by `change_role` (slice 4.1, ADR-0032); and a `disabled_at` that is
+set (at or after `created_at`) exactly when the account is disabled, changed only by `disable` and
+`enable` (slice 4.2, ADR-0033). That is the whole of it, and it is small on
 purpose: a `Login` rotates every 15 minutes per tab while a user row is written at registration and on
 a rare rehash, so logins are a separate aggregate rather than a collection in here (technical plan
 §0.1 — the consistency boundary is the smallest set of things that must change together, and a
@@ -16,6 +18,12 @@ either inserted. The rule belongs to the one component that sees the whole set a
 index `uq_identity_user_email`. `UserRepository.add` translates its violation into
 `EmailAlreadyRegistered`, and `ConfirmRegistration` never looks the email up first — the insert *is* the
 check (technical plan §0.4; I-5, I-6).
+
+**Also not an invariant here: "a disabled user holds no `Login`".** The reason is the same: a `User`
+cannot see another aggregate's rows. It is kept by `DisableAccount`'s lock order (the user row
+`FOR UPDATE`, then every login deleted, one transaction) and by `LogIn`'s re-check of the disabled
+state under its `FOR SHARE` on the user row, so no login can be created after a disable commits
+(slice 4.2, ADR-0033).
 
 **Not a subtype of anything `GuestSession` is.** Both answer "who is asking", and they share no base
 class, `Protocol`, union alias or mixin beyond `RecordsEvents` — which every aggregate composes and
@@ -34,6 +42,8 @@ from datetime import datetime
 
 from tailorcraft.domain.identity.events import (
     PasswordChangedByReset,
+    UserDisabled,
+    UserEnabled,
     UserPasswordRehashed,
     UserRegistered,
     UserRoleChanged,
@@ -53,10 +63,12 @@ from tailorcraft.domain.shared.events import RecordsEvents
 class User(RecordsEvents):
     """A registered person.
 
-    State: `_id`, `_email`, `_password_hash`, `_created_at`, `_password_updated_at`, `_role` —
+    State: `_id`, `_email`, `_password_hash`, `_created_at`, `_password_updated_at`, `_role`,
+    `_disabled_at` —
     private, exposed only through read-only properties. `_password_updated_at` equals `_created_at`
     at registration (the hash was set then) and moves only with `replace_password_hash`. `_role` is
-    `Role.USER` at registration and moves only with `change_role`.
+    `Role.USER` at registration and moves only with `change_role`. `_disabled_at` is `None` at
+    registration and moves only with `disable` / `enable`.
     """
 
     # Class-level annotations only (no assignment): `__init__` sets nothing, so this is how
@@ -219,7 +231,7 @@ class User(RecordsEvents):
     @property
     def is_disabled(self) -> bool:
         """Whether this account is disabled."""
-        raise NotImplementedError
+        return self._disabled_at is not None
 
     def disable(self, at: datetime, logins_revoked: int) -> None:
         """Disable this account, recording `UserDisabled`; a no-op when it already is.
@@ -228,11 +240,23 @@ class User(RecordsEvents):
         before the no-op. The count is how many `Login`s `DisableAccount` deleted under the user's
         lock — the repository deletes, the aggregate records (as `reset_password`).
         """
-        raise NotImplementedError
+        if at < self._created_at:
+            raise InvariantViolated("an account cannot be disabled before the user existed")
+        if logins_revoked < 0:
+            raise InvariantViolated("a disable cannot have revoked a negative number of logins")
+        if self._disabled_at is not None:
+            return
+        self._disabled_at = at
+        self.record(UserDisabled(user_id=self._id, logins_revoked=logins_revoked, occurred_at=at))
 
     def enable(self, at: datetime) -> None:
         """Re-enable this account, recording `UserEnabled`; a no-op when it is not disabled.
 
         Raises `InvariantViolated` if `at` is before `created_at`, checked before the no-op.
         """
-        raise NotImplementedError
+        if at < self._created_at:
+            raise InvariantViolated("an account cannot be enabled before the user existed")
+        if self._disabled_at is None:
+            return
+        self._disabled_at = None
+        self.record(UserEnabled(user_id=self._id, occurred_at=at))

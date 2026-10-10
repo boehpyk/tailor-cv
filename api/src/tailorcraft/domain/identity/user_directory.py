@@ -8,11 +8,18 @@ to show a list is the cost 2.2's T30 measured. Keyset pages on `(created_at, use
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import ClassVar, Protocol
 
-from tailorcraft.domain.identity.value_objects import EmailAddress, Role, UserId
+from tailorcraft.domain.identity.errors import InvalidEmailSearch, InvalidUserDirectoryCursor
+from tailorcraft.domain.identity.value_objects import (
+    EmailAddress,
+    Role,
+    UserId,
+    _normalize_email,  # one normalization for an address and a search for one, on purpose
+)
 
 PAGE_SIZE_DEFAULT = 20
 PAGE_SIZE_MAX = 50
@@ -27,15 +34,24 @@ class EmailSearch:
     `strpos`, never `LIKE`, so a search cannot widen itself into "every row".
     """
 
+    MAX_LENGTH: ClassVar[int] = 254
+
     value: str
 
     def __post_init__(self) -> None:
-        pass  # skeleton: no rule yet, so a "refused" RED fails on DID NOT RAISE
+        # The messages name the rule, never the input: a search is something a person typed.
+        if self.value != _normalize_email(self.value):
+            raise InvalidEmailSearch("an email search must be stripped and lower-cased")
+        if not 1 <= len(self.value) <= self.MAX_LENGTH:
+            raise InvalidEmailSearch(f"an email search must be 1..{self.MAX_LENGTH} characters")
+        if any(unicodedata.category(ch) == "Cc" for ch in self.value):
+            raise InvalidEmailSearch("an email search must not contain a control character")
 
     @classmethod
     def parse(cls, raw: str) -> EmailSearch | None:
         """`None` for an empty or whitespace-only `raw` (no filter); otherwise the normalized search."""
-        raise NotImplementedError
+        normalized = _normalize_email(raw)
+        return cls(normalized) if normalized else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,7 +67,11 @@ class UserDirectoryCursor:
     user_id: UserId
 
     def __post_init__(self) -> None:
-        pass  # skeleton: no rule yet, so a "refused" RED fails on DID NOT RAISE
+        # `utcoffset() is None`, not `tzinfo is None`: a tzinfo may decline to give an offset.
+        if self.created_at.utcoffset() is None:
+            raise InvalidUserDirectoryCursor("created_at must be timezone-aware")
+        if self.created_at.microsecond != 0:
+            raise InvalidUserDirectoryCursor("created_at must be whole-second")
 
 
 @dataclass(frozen=True, slots=True)
