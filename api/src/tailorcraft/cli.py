@@ -23,6 +23,11 @@ counts and deletes nothing. Exit 0 erased (or found, on a dry run), 1 no such ac
 database / a database failure, 2 usage. Its code lives in
 `infrastructure/retention/erase_account_command.py`.
 
+`grant-role --user-id <uuid> [--dry-run]` and `revoke-role --user-id <uuid> [--dry-run]` are
+implemented (slice 4.1, `identity-user-roles`, T12): the only way a role changes, through
+`ChangeUserRole`. Exit 0 changed / already held / dry run, 1 no such account / a foreign database /
+a database failure, 2 usage. Their code lives in `infrastructure/identity/role_command.py`.
+
 `check-settings` is implemented (slice 2.1, T46, OQ-2): it runs every startup refusal the API
 process has — the `Settings` validators and the Celery stale-window checks — without starting
 anything, and exits 1 printing the refusal's sentence (never a value) or 0 printing `settings ok`.
@@ -128,6 +133,23 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="print what would be deleted; delete nothing"
     )
 
+    # AC-26 / AC-27: the only way a role changes (ADR-0032). `--user-id` is required and parsed as a
+    # UUID by argparse, so a missing or malformed id is exit 2 before any database. No `--email`
+    # (OQ-6): erase-account's reason — one account, named by the id nobody mistypes into someone
+    # else's, never looked up by a person's address. No `--role` (OQ-7): two commands whose names
+    # say the direction, so a grant can never be typed as a revoke by changing one argument.
+    for name, help_text in (
+        ("grant-role", "make one account an administrator"),
+        ("revoke-role", "make one administrator an ordinary user again"),
+    ):
+        role = sub.add_parser(name, help=help_text)
+        role.add_argument(
+            "--user-id", type=UUID, required=True, help="the account's id (identity_user.id)"
+        )
+        role.add_argument(
+            "--dry-run", action="store_true", help="print what would change; change nothing"
+        )
+
     # T46 / OQ-2: every startup refusal the API has, asked once in one process before uvicorn is
     # exec'd — so a refusal exits the container instead of respawning under `--workers N`.
     sub.add_parser(
@@ -193,6 +215,17 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         return run_erase(user_id=args.user_id, dry_run=args.dry_run)
+    if args.command in ("grant-role", "revoke-role"):
+        # Imported here: it builds a database engine, which no other command's path needs.
+        from tailorcraft.domain.identity.value_objects import Role
+        from tailorcraft.infrastructure.identity.role_command import run_from_cli as run_role
+
+        return run_role(
+            user_id=args.user_id,
+            to=Role.ADMIN if args.command == "grant-role" else Role.USER,
+            dry_run=args.dry_run,
+            command=args.command,
+        )
     if args.command == "check-settings":
         # Imported here: it must build nothing but `Settings`, and loading the other commands'
         # modules would import a database driver it has no use for.
