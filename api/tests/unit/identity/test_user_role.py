@@ -145,3 +145,20 @@ def test_is_admin_flips_both_ways_through_change_role() -> None:
     seen.append(user.is_admin)
 
     assert seen == [False, True, False]
+
+
+# --- AC-1 (test-after) -----------------------------------------------------------------------
+
+
+def test_role_has_exactly_user_then_admin_with_their_wire_values() -> None:
+    assert [(m.name, m.value) for m in Role] == [("USER", "user"), ("ADMIN", "admin")]
+
+
+@pytest.mark.parametrize("spelling", ["ROLE_ADMIN", "Admin", ""])
+def test_role_refuses_a_spelling_that_is_not_a_value(spelling: str) -> None:
+    with pytest.raises(ValueError):  # noqa: PT011 - the message is stdlib's, not ours
+        Role(spelling)
+
+
+def test_role_round_trips_its_values() -> None:
+    assert (Role("user"), Role("admin")) == (Role.USER, Role.ADMIN)
