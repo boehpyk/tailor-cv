@@ -18,16 +18,16 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: fifteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, and the `__Host-tc_guest` security
-> slice); Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
+> **Status: sixteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1, and the `__Host-tc_guest`
+> security slice); Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
 > merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
 > `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
 > (`a092053`) and released 2026-10-09 (deploy run 37855115482). Slice 3.3
 > `workspace-rate-limit-retry-feedback` was merged as PR #25 (`279a0b7`) and released 2026-10-09
-> (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was implemented
-> and verified 2026-10-10 on `feature/identity-user-roles` (reviewer PASS round 1), PR open, not
-> yet merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was verified
+> 2026-10-10 (reviewer PASS round 1), merged as PR #28 (`26472b1`) and released the same day**
+> (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -517,7 +517,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`148f4e1`, `a8b626f`, `ae4c970`, `60fba47`), all **timing or spec-superseded copy** — see
 >   Conventions.
 >
-> - **4.1 `identity-user-roles`** (**implemented and verified 2026-10-10, reviewer PASS round 1; PR open**) — one role per
+> - **4.1 `identity-user-roles`** (PR #28, `26472b1`, **verified and released 2026-10-10**, deploy run 38074030810) — one role per
 >   user, `user | admin`, and an `/api/admin` surface only an admin can see (**ADR-0032**; ADR-0008
 >   amendment (i)). `Role` is a closed `StrEnum` on `User` (`register_with_password` sets `USER`, no
 >   parameter; `change_role` records `UserRoleChanged`; `is_admin` is the **only** role check in the
