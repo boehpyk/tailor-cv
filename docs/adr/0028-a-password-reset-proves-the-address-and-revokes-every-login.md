@@ -149,3 +149,10 @@ the difference.
   the user first. Each race above is staged on two real connections with the overlap read from
   `pg_stat_activity`.
 - **2.2's self-deletion is now recoverable** for a user who forgot the password: reset first.
+
+## Note: 2026-10-11, from slice 4.2 (`admin-users`)
+
+**A reset proves the address; it does not re-enable a disabled account** (ADR-0033 decision 5). The
+reset mail is still sent, the reset still replaces the hash and revokes every login, and the account
+stays disabled: the next login with the new password is 403 `account_disabled`. Disable keeps pending
+resets. The lock order above (the user before any login or reset) is the one disable follows too.

@@ -134,3 +134,11 @@ before inserting its `Login`, and the reset's `FOR UPDATE` on the user orders th
 decisions 5 and 6). Access tokens already issued live out their ≤ 15 minutes, as after logout.
 *"Revoked by a reset"* and *"never existed"* stay indistinguishable on the next presentation, as the
 Consequence above says of reuse.
+
+## Note: 2026-10-11, from slice 4.2 (`admin-users`)
+
+**Disabling an account is a fourth revocation path** (ADR-0033): the user row `FOR UPDATE`, then every
+`Login` of the account deleted, in one transaction, with the count on `UserDisabled`. **Enabling
+resurrects nothing** — revocation is deletion, so there is no session to bring back. Unlike the other
+paths, an access token already issued does not live out its 15 minutes: the bearer rule refuses a
+disabled account (ADR-0008 (j)).

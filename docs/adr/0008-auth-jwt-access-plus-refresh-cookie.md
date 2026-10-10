@@ -243,3 +243,22 @@ Slice 4.1 adds the first route that asks for a fact about the user beyond the be
   byte-identical to an unmatched route (ADR-0032 decision 4).
 - **No cookie, no `Origin` check.** Admin routes are bearer-only, so ADR-0021's `Origin` set stays
   eight.
+
+## Amendment: 2026-10-11, from the plan of slice 4.2 (`admin-users`)
+
+Slice 4.2 lets an admin disable an account (ADR-0033). Deleting its logins stops the refresh, but an
+access token already issued would keep working for up to 15 minutes.
+
+**(j) The bearer rule reads one fact from the user row: whether the account is disabled.**
+
+- **Bearer verification is no longer stateless.** After the signature, audience and expiry checks
+  pass, `require_user` reads `UserRepository.is_disabled(user_id)` — one primary-key read — and a
+  disabled account gets **403 `account_disabled`**, with no `WWW-Authenticate` (it is not a
+  credential challenge). A missing row reads `False`, so each route's existing "user gone" answer is
+  unchanged.
+- **A bad bearer still never reaches the database**: the read happens only after the token verifies.
+- **The token is unchanged** (five claims) and **Redis is still untouched** by authentication.
+- **Login** refuses a disabled account with the same 403, but only after a correct password; a wrong
+  password stays 401 `invalid_credentials`, byte-identical to before.
+- **(f) holds**: the disabled bit is a fact the server looks up for the user the bearer names, not a
+  second credential.

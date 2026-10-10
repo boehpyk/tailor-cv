@@ -95,3 +95,10 @@ Three facts from the code decide the details:
   command.
 - **Watch:** a second role (add `--role` to the CLI and a value to the CHECK), and 4.2's destructive
   actions, which must decide whether to re-check the role inside their own transaction.
+
+## Note: 2026-10-11, from slice 4.2 (`admin-users`)
+
+- **"Non-admin requests pay nothing" now means "pay nothing for the role".** Every bearer request,
+  admin or not, pays one primary-key read for the disabled bit (ADR-0008 (j), ADR-0033).
+- **The open question in Watch is answered: destructive admin actions do not re-check the actor's
+  role under lock** (ADR-0033 decision 6). They lock only the target; the one-request window stands.
