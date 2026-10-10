@@ -571,8 +571,8 @@ async def test_the_foreign_database_guard_detects_a_mismatched_database_name(
     settings: Settings, session: AsyncSession
 ) -> None:
     """The guard itself, proved against a real connection: `session` is genuinely connected to
-    `tailorcraft_test` (the `connection`/`session` fixtures), so handing `_refuse_a_foreign_database`
-    a `Settings` whose `database_url` names a different database must raise `_ForeignDatabase`
+    `tailorcraft_test` (the `connection`/`session` fixtures), so handing `database_guard.refuse_a_foreign_database`
+    a `Settings` whose `database_url` names a different database must raise `database_guard.ForeignDatabase`
     carrying both names — never silently pass because the two strings merely differ."""
     _assert_test_database(settings)
     mismatched = settings.model_copy(
@@ -597,7 +597,7 @@ async def test_the_guard_refusing_exits_1_and_touches_nothing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The entry point's handling of the guard's own refusal: forced by monkeypatching
-    `_refuse_a_foreign_database` itself to always raise (the guard's detection logic is proved for
+    `database_guard.refuse_a_foreign_database` itself to always raise (the guard's detection logic is proved for
     real, against a genuine connection, by the test immediately above) — proving that when it fires,
     `erase_account` reaches no account data at all: the seeded account, its saved CV and its file are
     every one still there afterward, and the exit code and log line are AC-31's."""
