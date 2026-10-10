@@ -1235,8 +1235,91 @@ async def test_a_successful_me_call_returns_exactly_the_user_shape(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"id", "email", "created_at"}
+    assert set(body) == {"id", "email", "created_at", "role"}
+    assert body["role"] == "user"
     assert body["email"] == "me.shape@example.com"
+
+
+USER_KEYS = {"id", "email", "created_at", "role"}
+
+
+async def test_the_user_in_a_login_response_has_exactly_the_four_keys(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """AC-12: login's `user` object gains `role`, nothing else."""
+    from tests.api.me_support import A_PASSWORD, LOGIN_URL
+
+    email = "login.shape@example.com"
+    await seed_user_and_sign_in(client, settings, email=email)
+    response = await client.post(
+        LOGIN_URL,
+        json={"email": email, "password": A_PASSWORD},
+        headers=_origin_headers(settings),
+    )
+
+    assert response.status_code == 200, response.text
+    assert set(response.json()["user"]) == USER_KEYS
+    assert response.json()["user"]["role"] == "user"
+
+
+async def test_the_user_in_a_refresh_response_has_exactly_the_four_keys(
+    app: FastAPI,
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+) -> None:
+    """AC-12: refresh's `user` object has the same four keys."""
+    app.dependency_overrides[get_clock] = lambda: clock
+    user = await _seed_user(session, password_hasher, clock, email="refresh.shape@example.com")
+    _login, raw_token = await _seed_login(session, user, clock)
+    client.cookies.set(REFRESH_COOKIE_NAME, raw_token)
+
+    response = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+
+    assert response.status_code == 200, response.text
+    assert set(response.json()["user"]) == USER_KEYS
+    assert response.json()["user"]["role"] == "user"
+
+
+async def test_me_reports_a_grant_committed_elsewhere_with_the_same_token_and_the_token_is_unchanged(
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+    app: FastAPI,
+) -> None:
+    """AC-12 (read at request time) and AC-13 (no `role` claim: five claims before and after).
+
+    The same token is presented twice around a grant. (The cross-connection proof is AC-18 in
+    `test_admin_firewall.py`; this test is about `/me`'s shape and the token's claims.)"""
+    import jwt  # PyJWT, already a dependency (access tokens)
+
+    user = await _seed_user(session, password_hasher, clock, email="grant.shape@example.com")
+    tokens = JwtAccessTokens(
+        settings.jwt_signing_key.get_secret_value(),
+        timedelta(minutes=settings.access_token_ttl_minutes),
+    )
+    issued = tokens.issue(user.id, clock.now())
+    app.dependency_overrides[get_clock] = lambda: clock
+    headers = {"Authorization": f"Bearer {issued.token}"}
+
+    claims_before = set(jwt.decode(issued.token, options={"verify_signature": False}))
+    first = await client.get(ME_URL, headers=headers)
+    await session.execute(
+        text("UPDATE identity_user SET role = 'admin' WHERE id = :id"), {"id": user.id.value}
+    )
+    await session.commit()
+    session.expire_all()  # a Core UPDATE does not touch the identity map (2.4); production has a session per request
+    second = await client.get(ME_URL, headers=headers)
+    claims_after = set(jwt.decode(issued.token, options={"verify_signature": False}))
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["role"] == "user"
+    assert second.json()["role"] == "admin"
+    assert claims_before == claims_after == {"iss", "aud", "sub", "iat", "exp"}
 
 
 # ---------------------------------------------------------------------------------------------
