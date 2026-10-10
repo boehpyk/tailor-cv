@@ -27,7 +27,7 @@ from functools import cache
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.dependencies.models import Dependant
 from fastapi.routing import APIRoute
 from httpx import AsyncClient
@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tailorcraft.infrastructure.api import routers as _routers_package
 from tailorcraft.infrastructure.api.deps import (
+    require_admin,
     require_guest_session,
     require_user,
     resolve_or_start_guest_session,
@@ -517,3 +518,175 @@ def test_ac32_none_of_the_three_new_routes_takes_a_bearer_a_guest_session_or_a_c
         assert resolve_or_start_guest_session not in calls, key
         assert route.endpoint.__name__ not in guest_touchers, key
         assert route.endpoint.__name__ not in refresh_touchers, key
+
+
+# ---------------------------------------------------------------------------------------------
+# Slice 4.1 (T17) - the admin firewall's structural proof (AC-22, AC-23). Reuses `_iter_api_routes`
+# and `_all_dependency_calls` above; there is no second walker.
+# ---------------------------------------------------------------------------------------------
+
+ADMIN_ACCESS = ("/api/admin/access", "GET")
+
+
+def _is_admin_path(path: str) -> bool:
+    return path == "/api/admin" or path.startswith("/api/admin/")
+
+
+def _unguarded_admin_routes(app: FastAPI) -> list[tuple[str, str]]:
+    """AC-22(a)'s checker, a function of an app so the positive control can run it on a bad one:
+    every `/api/admin[/...]` route without `require_admin` in its dependency graph."""
+    return sorted(
+        (route.path, method)
+        for route in _iter_api_routes(app.routes)
+        if _is_admin_path(route.path)
+        and require_admin not in _all_dependency_calls(route.dependant)
+        for method in route.methods or ()
+    )
+
+
+def test_ac22a_every_admin_route_has_require_admin_in_its_dependency_graph(app: FastAPI) -> None:
+    assert _unguarded_admin_routes(app) == []
+
+
+def test_ac22b_the_walker_finds_admin_routes_and_require_admin_on_get_access(
+    app: FastAPI,
+) -> None:
+    """A pass of (a) cannot be vacuous: the walker sees at least one admin route, and the guard on
+    the one the shell's gate probes."""
+    admin_routes = {
+        (route.path, method): route
+        for route in _iter_api_routes(app.routes)
+        if _is_admin_path(route.path)
+        for method in route.methods or ()
+    }
+    assert admin_routes, "the walker found no /api/admin route - is it even recursing?"
+    assert require_admin in _all_dependency_calls(admin_routes[ADMIN_ACCESS].dependant)
+
+
+def test_ac22c_the_checker_reports_an_unguarded_admin_route_on_a_throwaway_app() -> None:
+    """Positive control: the same checker, on an app whose admin router lacks the dependency (and a
+    guarded route beside it, which must not be reported)."""
+    bad, good = APIRouter(prefix="/api/admin"), APIRouter(prefix="/api/admin/guarded")
+
+    @bad.get("/leak")
+    async def leak() -> None: ...
+
+    @bad.post("/leak")
+    async def leak_post() -> None: ...
+
+    @good.get("/fine", dependencies=[Depends(require_admin)])
+    async def fine() -> None: ...
+
+    throwaway = FastAPI()
+    throwaway.include_router(bad)
+    throwaway.include_router(good)
+
+    assert _unguarded_admin_routes(throwaway) == [
+        ("/api/admin/leak", "GET"),
+        ("/api/admin/leak", "POST"),
+    ]
+
+
+def test_ac22d_require_admin_is_a_dependency_of_the_admin_router_itself() -> None:
+    """So a route added to that router later inherits it, rather than each route remembering."""
+    from tailorcraft.infrastructure.api.routers import admin
+
+    assert [d.dependency for d in admin.router.dependencies] == [require_admin]
+
+
+def test_ac22e_the_admin_route_is_among_those_the_one_credential_scan_walks(app: FastAPI) -> None:
+    """2.1's scan walks `_iter_api_routes(app.routes)`; the admin route is in that set, answers to
+    the bearer, and touches no guest credential."""
+    (route,) = [
+        r
+        for r in _iter_api_routes(app.routes)
+        if r.path == ADMIN_ACCESS[0] and ADMIN_ACCESS[1] in (r.methods or ())
+    ]
+    calls = _all_dependency_calls(route.dependant)
+    assert require_user in calls
+    assert require_guest_session not in calls
+    assert resolve_or_start_guest_session not in calls
+
+
+_SRC = Path(_routers_package.__file__).resolve().parents[3]  # the tailorcraft package
+_USER_AGGREGATE = _SRC / "domain" / "identity" / "user.py"
+
+
+def _role_writes(tree: ast.Module) -> list[tuple[int, str]]:
+    """Attribute assignments to `role`/`_role`, `setattr(x, "role", …)` and `SET role` SQL."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", 0)
+        targets: list[ast.expr] = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AugAssign | ast.AnnAssign):
+            targets = [node.target]
+        found += [
+            (line, "assignment")
+            for t in targets
+            if isinstance(t, ast.Attribute) and t.attr in {"role", "_role"}
+        ]
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "setattr"
+            and len(node.args) > 1
+            and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in {"role", "_role"}
+        ):
+            found.append((line, "setattr"))
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "set role" in " ".join(node.value.lower().split())
+        ):
+            found.append((line, "sql"))
+    return found
+
+
+def test_ac23_no_code_writes_the_role_outside_the_aggregate() -> None:
+    """The column is written by the mapper from `User._role`; nothing else - a router, a repository,
+    the CLI - may assign it, or there is a second path to promotion."""
+    offenders = {
+        str(path.relative_to(_SRC)): writes
+        for path in sorted(_SRC.rglob("*.py"))
+        if path != _USER_AGGREGATE and (writes := _role_writes(ast.parse(path.read_text())))
+    }
+    assert offenders == {}, f"role written outside the aggregate: {offenders}"
+
+
+def test_ac23_inside_the_aggregate_only_registration_and_change_role_assign_the_role() -> None:
+    tree = ast.parse(_USER_AGGREGATE.read_text())
+    assigning = {
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef)
+        and any(line for line, _ in _role_writes(ast.Module(body=fn.body, type_ignores=[])))
+    }
+    assert assigning == {"register_with_password", "change_role"}
+
+
+def test_ac23_the_role_scan_has_a_positive_control() -> None:
+    bad = "user._role = x\nsetattr(u, 'role', 1)\nq = 'UPDATE t SET  role = 1'"
+    assert [kind for _, kind in _role_writes(ast.parse(bad))] == ["assignment", "setattr", "sql"]
+    assert _role_writes(ast.parse("x = 1")) == []
+
+
+def _mentions_change_user_role(tree: ast.Module) -> bool:
+    return any(
+        (isinstance(n, ast.Name) and n.id == "ChangeUserRole")
+        or (isinstance(n, ast.ImportFrom) and "change_user_role" in (n.module or ""))
+        or (
+            isinstance(n, ast.alias)
+            and n.name.split(".")[-1] in {"ChangeUserRole", "change_user_role"}
+        )
+        for n in ast.walk(tree)
+    )
+
+
+def test_ac23_no_router_module_references_change_user_role() -> None:
+    names = _router_module_names()
+    assert len(names) > 5
+    assert [m for m in names if _mentions_change_user_role(_parsed_router_module(m))] == []
+    assert _mentions_change_user_role(ast.parse("from a.change_user_role import ChangeUserRole"))

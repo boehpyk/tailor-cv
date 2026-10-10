@@ -18,6 +18,7 @@ a red reads `assert 500 == 204`, an assertion, rather than an ERROR. `NotImpleme
 from __future__ import annotations
 
 import functools
+import logging
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -417,3 +418,112 @@ async def test_a_wrong_method_on_the_admin_path_is_405_with_allow_get_for_anyone
 
     assert response.status_code == 405, response.text
     assert "GET" in response.headers.get("allow", "")
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-24 (T17): admin includes user
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("url", ["/api/me/tailoring-runs", "/api/me/board", "/api/me/base-cvs"])
+async def test_an_admin_gets_the_same_200_from_the_user_routes_as_a_user_does(
+    http: AsyncClient, settings: Settings, seeded_ids: list[UUID], url: str
+) -> None:
+    user_token, _ = await _account(http, settings, seeded_ids)
+    admin_token, _ = await _account(http, settings, seeded_ids, admin=True)
+
+    as_user = await http.get(url, headers=bearer(user_token))
+    as_admin = await http.get(url, headers=bearer(admin_token))
+
+    assert as_user.status_code == 200, as_user.text
+    assert as_admin.status_code == 200, as_admin.text
+    assert as_admin.json() == as_user.json()
+
+
+# ---------------------------------------------------------------------------------------------
+# AC-25 (T17): the refusal's one log line
+# ---------------------------------------------------------------------------------------------
+
+REFUSED = "identity.admin_access_refused"
+
+
+def _refusal_lines(caplog: pytest.LogCaptureFixture, since: int) -> list[str]:
+    return [r.getMessage() for r in caplog.records[since:] if REFUSED in r.getMessage()]
+
+
+async def test_a_refused_plain_user_logs_one_line_with_the_route_template_and_no_pii(
+    http: AsyncClient,
+    settings: Settings,
+    seeded_ids: list[UUID],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    token, user_id = await _account(http, settings, seeded_ids)
+
+    with caplog.at_level(logging.DEBUG):
+        mark = len(caplog.records)
+        response = await http.get(ACCESS_URL, headers=bearer(token))
+        lines = _refusal_lines(caplog, mark)
+        everything = " ".join(r.getMessage() for r in caplog.records[mark:])
+
+    assert response.status_code == 404
+    assert len(lines) == 1, lines
+    (line,) = lines
+    assert str(user_id) in line
+    assert "GET" in line
+    assert ACCESS_URL in line
+    assert token not in everything
+    assert "@" not in everything  # no email address anywhere in this request's output
+
+
+async def test_the_line_carries_the_route_template_never_the_raw_path(
+    http: AsyncClient,
+    world_app: FastAPI,
+    settings: Settings,
+    seeded_ids: list[UUID],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The only admin route today has no path parameter, so a throwaway templated route on the same
+    router (mounted on a copy of the production firewall) is the only way to tell a template from a
+    raw path. The raw path carries a marker the log must not."""
+    from fastapi import APIRouter, Depends
+
+    from tailorcraft.infrastructure.api.deps import require_admin
+
+    probe = APIRouter(prefix="/api/admin", dependencies=[Depends(require_admin)])
+
+    @probe.get("/things/{thing_id}")
+    async def thing(thing_id: str) -> None: ...
+
+    world_app.include_router(probe)
+    token, _ = await _account(http, settings, seeded_ids)
+    marker = f"raw-{uuid4().hex}"
+
+    with caplog.at_level(logging.DEBUG):
+        mark = len(caplog.records)
+        response = await http.get(f"/api/admin/things/{marker}", headers=bearer(token))
+        lines = _refusal_lines(caplog, mark)
+
+    assert response.status_code == 404
+    assert len(lines) == 1, lines
+    assert "/api/admin/things/{thing_id}" in lines[0]
+    assert marker not in lines[0]
+
+
+async def test_an_admin_and_a_bad_bearer_log_no_refusal_line(
+    http: AsyncClient,
+    settings: Settings,
+    seeded_ids: list[UUID],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    admin_token, _ = await _account(http, settings, seeded_ids, admin=True)
+    with caplog.at_level(logging.DEBUG):
+        mark = len(caplog.records)
+        allowed = await http.get(ACCESS_URL, headers=bearer(admin_token))
+        anonymous = await http.get(ACCESS_URL)
+        garbage = await http.get(ACCESS_URL, headers=bearer("not.a.token"))
+        lines = _refusal_lines(caplog, mark)
+
+    assert allowed.status_code == 204
+    assert anonymous.status_code == 401
+    assert garbage.status_code == 401
+    assert lines == []
