@@ -17,6 +17,7 @@ a red reads `assert 500 == 204`, an assertion, rather than an ERROR. `NotImpleme
 
 from __future__ import annotations
 
+import functools
 from collections.abc import AsyncIterator, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -126,14 +127,21 @@ def _statements(engine: AsyncEngine) -> Iterator[list[str]]:
 
 
 def _spy_on_access_handler(app: FastAPI) -> list[int]:
-    """Wrap the route's endpoint so a call is counted. The walk descends included routers."""
+    """Count calls to the route's endpoint.
+
+    FastAPI 0.141 serves `_EffectiveRouteContext`s built from `route.endpoint` and cached per
+    `_IncludedRouter`, so patching an `APIRoute`'s dependant after the build is never seen. Wrap the
+    endpoint, then drop the cached contexts so the next request rebuilds them from the wrapper.
+    """
     calls: list[int] = []
+    routers: list[Any] = []
 
     def routes(items: Any) -> Iterator[APIRoute]:
         for route in items:
             if isinstance(route, APIRoute):
                 yield route
             elif hasattr(route, "original_router"):
+                routers.append(route)
                 yield from routes(route.original_router.routes)
             elif hasattr(route, "routes"):
                 yield from routes(route.routes)
@@ -141,14 +149,17 @@ def _spy_on_access_handler(app: FastAPI) -> list[int]:
     (route,) = [
         r for r in routes(app.routes) if r.path == ACCESS_URL and "GET" in (r.methods or set())
     ]
-    real = route.dependant.call
-    assert real is not None
+    real = route.endpoint
 
+    @functools.wraps(real)
     async def spy(*args: Any, **kwargs: Any) -> Any:
         calls.append(1)
         return await real(*args, **kwargs)
 
-    route.dependant.call = spy
+    route.endpoint = spy
+    for included in routers:
+        included._effective_candidates_version = None
+        included._effective_low_priority_routes_version = None
     return calls
 
 
