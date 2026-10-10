@@ -36,7 +36,7 @@ from tailorcraft.domain.identity.events import (
     UserPasswordRehashed,
     UserRegistered,
 )
-from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
+from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, Role, UserId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
@@ -64,6 +64,7 @@ class User(RecordsEvents):
     _password_hash: PasswordHash
     _created_at: datetime
     _password_updated_at: datetime
+    _role: Role
 
     def __init__(self) -> None:
         """Takes nothing and does nothing. Build a `User` with `register_with_password`.
@@ -163,3 +164,20 @@ class User(RecordsEvents):
     @property
     def password_updated_at(self) -> datetime:
         return self._password_updated_at
+
+    @property
+    def role(self) -> Role:
+        """This user's one `Role` (slice 4.1)."""
+        raise NotImplementedError
+
+    @property
+    def is_admin(self) -> bool:
+        """Whether this user is an administrator — the only role check in the codebase."""
+        raise NotImplementedError
+
+    def change_role(self, to: Role, at: datetime) -> None:
+        """Make `to` this user's role, recording `UserRoleChanged`; a no-op when it already is.
+
+        Raises `InvariantViolated` if `at` is before `created_at`.
+        """
+        raise NotImplementedError

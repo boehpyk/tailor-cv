@@ -25,6 +25,7 @@ from tailorcraft.domain.identity.value_objects import (
     LoginNotFoundReason,
     MailFailureReason,
     TokenRefusal,
+    UserId,
     WeakPasswordReason,
 )
 from tailorcraft.domain.shared.errors import DomainError
@@ -255,3 +256,22 @@ class MailNotDelivered(DomainError):
 class AccountMailQueueUnavailable(DomainError):
     """`AccountMailQueuePort` could not enqueue a delivery — the broker is down. The request's row is
     already committed; the user's recovery is *Send it again*. Carries nothing."""
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 4.1 — user roles (ADR-0032).
+# --------------------------------------------------------------------------------------------------
+
+
+class NotAnAdministrator(DomainError):
+    """`AuthorizeAdministrator` refused: the signed-in user's role is not `admin`.
+
+    Carries the user's **id** for the log line — never an email. **Deliberately not mapped** by
+    `domain_error_to_http_exception`: only `require_admin` translates it, and into Starlette's
+    plain 404, so a non-admin cannot tell `/api/admin` from a path that does not exist (technical
+    plan §0.4). A 403 would confirm the surface is there.
+    """
+
+    def __init__(self, user_id: UserId) -> None:
+        super().__init__("not an administrator")
+        self.user_id = user_id

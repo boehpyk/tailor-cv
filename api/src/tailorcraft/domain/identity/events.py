@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from tailorcraft.domain.identity.value_objects import LoginId, UserId
+from tailorcraft.domain.identity.value_objects import LoginId, Role, UserId
 from tailorcraft.domain.shared.events import DomainEvent
 
 
@@ -91,3 +91,19 @@ class PasswordChangedByReset(DomainEvent):
 
     user_id: UserId
     logins_revoked: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UserRoleChanged(DomainEvent):
+    """A user's role changed (slice 4.1, ADR-0032). Payload: `user_id`, `from_role`, `to_role`
+    (+ `occurred_at`).
+
+    The most security-relevant write in the system, so it is an event even with no listener:
+    `LoggingEventPublisher` logs every field, which makes this the structured record of who became
+    (or stopped being) an administrator — ids and role names only. Recorded only when the role
+    actually changed; a no-op `change_role` records nothing.
+    """
+
+    user_id: UserId
+    from_role: Role
+    to_role: Role
