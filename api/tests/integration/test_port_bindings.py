@@ -52,6 +52,9 @@ from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 
 # Ports bound by a composition root other than the two checked here. Each entry names that root.
 _BOUND_ELSEWHERE: dict[str, str] = {
+    # TEMPORARY (slice 4.2, T2): remove when `routers/admin_users.py` binds it (T13/T15); the
+    # stale-exemption check fails if this is left behind.
+    "UserDirectoryQuery": "skeleton only until the admin users router binds it (slice 4.2).",
     "OrphanFileScannerPort": (
         "bound only by the operator's `purge-guests --orphans` CLI "
         "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "

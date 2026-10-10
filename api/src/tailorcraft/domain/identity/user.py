@@ -68,6 +68,7 @@ class User(RecordsEvents):
     _created_at: datetime
     _password_updated_at: datetime
     _role: Role
+    _disabled_at: datetime | None
 
     def __init__(self) -> None:
         """Takes nothing and does nothing. Build a `User` with `register_with_password`.
@@ -106,6 +107,7 @@ class User(RecordsEvents):
         user._created_at = at
         user._password_updated_at = at
         user._role = Role.USER
+        user._disabled_at = None
         user.record(UserRegistered(user_id=id, occurred_at=at))
         return user
 
@@ -208,3 +210,29 @@ class User(RecordsEvents):
         self.record(
             UserRoleChanged(user_id=self._id, from_role=from_role, to_role=to, occurred_at=at)
         )
+
+    @property
+    def disabled_at(self) -> datetime | None:
+        """When this account was disabled; `None` while it is active (slice 4.2, ADR-0033)."""
+        return self._disabled_at
+
+    @property
+    def is_disabled(self) -> bool:
+        """Whether this account is disabled."""
+        raise NotImplementedError
+
+    def disable(self, at: datetime, logins_revoked: int) -> None:
+        """Disable this account, recording `UserDisabled`; a no-op when it already is.
+
+        Raises `InvariantViolated` if `at` is before `created_at` or `logins_revoked < 0`, checked
+        before the no-op. The count is how many `Login`s `DisableAccount` deleted under the user's
+        lock — the repository deletes, the aggregate records (as `reset_password`).
+        """
+        raise NotImplementedError
+
+    def enable(self, at: datetime) -> None:
+        """Re-enable this account, recording `UserEnabled`; a no-op when it is not disabled.
+
+        Raises `InvariantViolated` if `at` is before `created_at`, checked before the no-op.
+        """
+        raise NotImplementedError

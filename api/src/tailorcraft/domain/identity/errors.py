@@ -275,3 +275,30 @@ class NotAnAdministrator(DomainError):
     def __init__(self, user_id: UserId) -> None:
         super().__init__("not an administrator")
         self.user_id = user_id
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 4.2 — admin users (ADR-0033).
+# --------------------------------------------------------------------------------------------------
+
+
+class AccountDisabled(DomainError):
+    """The account is disabled: `LogIn` refused a correct password, or the bearer's user is disabled.
+
+    Carries the user's **id** for the log line — never an email. One meaning everywhere: 403
+    `account_disabled`.
+    """
+
+    def __init__(self, user_id: UserId) -> None:
+        super().__init__("account disabled")
+        self.user_id = user_id
+
+
+class InvalidEmailSearch(DomainError):
+    """`EmailSearch` refused its input (too long, or a control character). Carries nothing a stranger
+    typed. The boundary answers 422 `invalid_search`."""
+
+
+class InvalidUserDirectoryCursor(DomainError):
+    """`UserDirectoryCursor` was given a `created_at` that is naive or not whole-second — a cursor no
+    stored value could have produced. The boundary answers 422 `invalid_cursor`."""

@@ -107,3 +107,24 @@ class UserRoleChanged(DomainEvent):
     user_id: UserId
     from_role: Role
     to_role: Role
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UserDisabled(DomainEvent):
+    """An administrator disabled an account (slice 4.2, ADR-0033). Payload: `user_id`,
+    `logins_revoked` (+ `occurred_at`).
+
+    **No actor id**: an event is a fact about the aggregate; who asked is the route's
+    `admin.account_action` log line. Recorded only when the state changed.
+    """
+
+    user_id: UserId
+    logins_revoked: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UserEnabled(DomainEvent):
+    """An administrator re-enabled a disabled account (slice 4.2, ADR-0033). Payload: `user_id`
+    (+ `occurred_at`). Restores no session. Recorded only when the state changed."""
+
+    user_id: UserId

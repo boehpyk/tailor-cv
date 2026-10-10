@@ -190,6 +190,10 @@ class SqlAlchemyUserRepository:
         )
         return result.first() is not None
 
+    async def is_disabled(self, user_id: UserId) -> bool:
+        """Skeleton (slice 4.2, T2): implemented with the mapping and migration."""
+        raise NotImplementedError
+
 
 if TYPE_CHECKING:
     # Makes mypy prove the class structurally satisfies the port rather than trusting the shape by

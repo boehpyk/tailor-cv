@@ -331,6 +331,11 @@ class FakeUserRepository:
         user = self._by_id.get(user_id)
         return user is not None and user.password_hash == seen
 
+    async def is_disabled(self, user_id: UserId) -> bool:
+        """The stored user's state; False when absent (slice 4.2, T2)."""
+        user = self._by_id.get(user_id)
+        return user is not None and user.is_disabled
+
     def all(self) -> list[User]:
         """Test-only inspection, not part of `UserRepository`."""
         return list(self._by_id.values())
@@ -1709,6 +1714,10 @@ class LoggingUserRepository(FakeUserRepository):
         self._log.append("users.confirm_credential_unchanged")
         self.confirm_calls.append((user_id, seen))
         return await super().confirm_credential_unchanged(user_id, seen)
+
+    async def is_disabled(self, user_id: UserId) -> bool:
+        self._log.append("users.is_disabled")
+        return await super().is_disabled(user_id)
 
 
 class LoggingLoginRepository(FakeLoginRepository):
