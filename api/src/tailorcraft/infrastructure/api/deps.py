@@ -33,6 +33,7 @@ from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
 from tailorcraft.application.export.render_document_inline import RenderDocumentInline
 from tailorcraft.application.export.request_export import RequestExport
+from tailorcraft.application.identity.authorize_administrator import AuthorizeAdministrator
 from tailorcraft.application.identity.claim_guest_work import ClaimGuestWork
 from tailorcraft.application.identity.confirm_registration import ConfirmRegistration
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
@@ -85,6 +86,7 @@ from tailorcraft.domain.identity.ports import (
     PendingRegistrationRepository,
     UserRepository,
 )
+from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
     EmailAddress,
@@ -1230,6 +1232,31 @@ def get_get_current_user(users: UserRepositoryDep) -> GetCurrentUser:
 
 
 GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]
+
+
+# ---------------------------------------------------------------------------------------------
+# The admin firewall — slice 4.1 (technical plan §0.4-§0.6, §3 "Wiring"). `require_admin` is the
+# router-level dependency of `routers/admin.py`; it depends on `require_user`, so a bad bearer is
+# a 401 before any session is opened for the role read (§0.5).
+# ---------------------------------------------------------------------------------------------
+
+
+def get_authorize_administrator(users: UserRepositoryDep) -> AuthorizeAdministrator:
+    return AuthorizeAdministrator(users)
+
+
+AuthorizeAdministratorDep = Annotated[AuthorizeAdministrator, Depends(get_authorize_administrator)]
+
+
+async def require_admin(
+    request: Request, user_id: RequireUserDep, authorize: AuthorizeAdministratorDep
+) -> User:
+    """The signed-in administrator, or a refusal: 401 `not_signed_in` for a bearer whose account
+    is gone, and for a plain user a 404 byte-identical to an unmatched path (§0.4)."""
+    raise NotImplementedError
+
+
+AdminDep = Annotated[User, Depends(require_admin)]
 
 
 # ---------------------------------------------------------------------------------------------
