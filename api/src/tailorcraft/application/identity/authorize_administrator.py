@@ -7,6 +7,7 @@ terms (`NotAnAdministrator`), and `require_admin` decides that the answer is a p
 
 from __future__ import annotations
 
+from tailorcraft.domain.identity.errors import NotAnAdministrator
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import UserId
@@ -29,4 +30,7 @@ class AuthorizeAdministrator:
         self._users = users
 
     async def __call__(self, user_id: UserId) -> User:
-        raise NotImplementedError
+        user = await self._users.get(user_id)
+        if not user.is_admin:
+            raise NotAnAdministrator(user_id)
+        return user

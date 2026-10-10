@@ -45,4 +45,12 @@ class ChangeUserRole:
         self._events = events
 
     async def __call__(self, user_id: UserId, to: Role, *, dry_run: bool) -> RoleChange:
-        raise NotImplementedError
+        user = await self._users.get_for_update(user_id)
+        from_role = user.role
+        outcome = RoleChange(user_id, from_role, to, changed=from_role is not to)
+        if dry_run or not outcome.changed:
+            return outcome
+        user.change_role(to, self._clock.now())
+        await self._users.save(user)
+        await self._events.publish(*user.release_events())
+        return outcome
