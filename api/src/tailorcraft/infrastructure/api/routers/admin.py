@@ -28,4 +28,4 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 )
 async def access(response: Response) -> None:
     """204, empty, `Cache-Control: no-store`: the signed-in user may enter the admin area."""
-    raise NotImplementedError
+    response.headers["Cache-Control"] = "no-store"

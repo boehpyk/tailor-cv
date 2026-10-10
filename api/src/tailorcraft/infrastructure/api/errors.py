@@ -179,6 +179,10 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     # purpose: `LoginExpired` and `LoginConcurrentlyRotated` are translated inside `RefreshLogin`
     # (into `LoginNotFound` and `RefreshInProgress`) and never reach a route — reaching the floor
     # with either is a bug, and a real 500 is the honest answer to it.
+    # Slice 4.1: `NotAnAdministrator` is absent on purpose too, and is not a bug: only
+    # `deps.require_admin` translates it, into Starlette's plain 404 rather than this envelope, so a
+    # non-admin cannot tell `/api/admin` from a path that does not exist (technical plan §0.4). A
+    # mapping here would invite a route to raise it as a 403 that confirms the surface is there.
     if isinstance(
         exc,
         InvalidEmailAddress

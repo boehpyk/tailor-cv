@@ -27,6 +27,7 @@ import structlog
 from celery import Celery
 from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tailorcraft.application.export.download_export_file import DownloadExportFile
 from tailorcraft.application.export.get_export_job import GetExportJob
@@ -72,7 +73,7 @@ from tailorcraft.domain.export.ports import (
     ExportJobRepository,
     ExportQueuePort,
 )
-from tailorcraft.domain.identity.errors import AccessTokenInvalid
+from tailorcraft.domain.identity.errors import AccessTokenInvalid, NotAnAdministrator, UserNotFound
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
@@ -109,6 +110,7 @@ from tailorcraft.domain.tracking.ports import ApplicationBoardQuery, TrackedAppl
 from tailorcraft.infrastructure.api.errors import (
     GUEST_SESSION_EXPIRED_DETAIL,
     ORIGIN_NOT_ALLOWED_DETAIL,
+    domain_error_to_http_exception,
     invalid_access_token_exception,
 )
 from tailorcraft.infrastructure.api.guest_session import (
@@ -1241,6 +1243,10 @@ GetCurrentUserDep = Annotated[GetCurrentUser, Depends(get_get_current_user)]
 # ---------------------------------------------------------------------------------------------
 
 
+EVENT_USER_MISSING: Final = "identity.user_missing"
+EVENT_ADMIN_ACCESS_REFUSED: Final = "identity.admin_access_refused"
+
+
 def get_authorize_administrator(users: UserRepositoryDep) -> AuthorizeAdministrator:
     return AuthorizeAdministrator(users)
 
@@ -1252,8 +1258,32 @@ async def require_admin(
     request: Request, user_id: RequireUserDep, authorize: AuthorizeAdministratorDep
 ) -> User:
     """The signed-in administrator, or a refusal: 401 `not_signed_in` for a bearer whose account
-    is gone, and for a plain user a 404 byte-identical to an unmatched path (§0.4)."""
-    raise NotImplementedError
+    is gone, and for a plain user a 404 byte-identical to an unmatched path (§0.4).
+
+    A `SQLAlchemyError` from the role read is deliberately not caught: `main.py` renders it 503
+    `service_unavailable` (AC-19)."""
+    try:
+        return await authorize(user_id)
+    except UserNotFound as exc:
+        # 2.1's I-39: a valid token whose user row is gone — the same line and 401 as `/me`.
+        log.info(EVENT_USER_MISSING, user_id=str(user_id.value))
+        raise domain_error_to_http_exception(exc) from None
+    except NotAnAdministrator:
+        log.info(
+            EVENT_ADMIN_ACCESS_REFUSED,
+            user_id=str(user_id.value),
+            method=request.method,
+            # The route *template*, never the raw path: a path can carry whatever the caller typed.
+            route=request.scope["route"].path,
+        )
+        # The ONE place in the codebase that does not use the app's error envelope, on purpose
+        # (technical plan §0.4). Starlette's `HTTPException` is not the `fastapi.HTTPException`
+        # subclass `main.py`'s envelope handler is registered for, so it falls through to the
+        # default handler and renders `{"detail":"Not Found"}` with no `Cache-Control` — byte for
+        # byte what routing answers for a path that does not exist (AC-15). Raising
+        # `fastapi.HTTPException(404)` here, or adding the envelope or `no-store`, would make the
+        # refusal distinguishable and confirm the admin surface exists. Do not "fix" it.
+        raise StarletteHTTPException(status_code=status.HTTP_404_NOT_FOUND) from None
 
 
 AdminDep = Annotated[User, Depends(require_admin)]

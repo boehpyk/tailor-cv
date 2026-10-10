@@ -259,7 +259,9 @@ def _authenticated(result: Authenticated) -> AuthenticatedResponse:
 
 
 def _user_response(user: User) -> UserResponse:
-    return UserResponse(id=user.id.value, email=user.email.value, created_at=user.created_at)
+    return UserResponse(
+        id=user.id.value, email=user.email.value, created_at=user.created_at, role=user.role
+    )
 
 
 def _cookie_max_age(login: Login) -> int:
