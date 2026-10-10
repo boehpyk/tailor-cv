@@ -14,8 +14,9 @@ export const ADMIN_EMPTY = 'Nothing to manage here yet.';
 export const ADMIN_UNAVAILABLE = "Couldn't check admin access.";
 export const ADMIN_RETRY_LABEL = 'Retry';
 
-/** AC-33: the `Suspense` fallback while the lazy chunk loads (`role="status"`). */
-export const LAZY_LOADING = 'Loading…';
-/** AC-33: the chunk failed to load (a tab older than the last release). */
-export const LAZY_CHUNK_FAILED = "Couldn't load this page. Reload to get the latest version.";
-export const LAZY_RELOAD_LABEL = 'Reload';
+/**
+ * AC-33's three sentences live in `lazyCopy.ts`, which the main bundle imports (`AdminRoute`,
+ * `LazyBoundary`). Re-exported here so a test reads every admin sentence from one module; the main
+ * bundle must never import *this* module, or Rollup puts `ADMIN_EMPTY` in the main chunk (AC-35).
+ */
+export { LAZY_CHUNK_FAILED, LAZY_LOADING, LAZY_RELOAD_LABEL } from './lazyCopy';
