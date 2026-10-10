@@ -88,6 +88,7 @@ from tailorcraft.domain.identity.ports import (
     UserRepository,
 )
 from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.user_directory import UserDirectoryQuery
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
     EmailAddress,
@@ -1382,6 +1383,20 @@ def get_tailoring_history_query(session: SessionDep) -> TailoringHistoryQuery:
 
 
 TailoringHistoryQueryDep = Annotated[TailoringHistoryQuery, Depends(get_tailoring_history_query)]
+
+
+def get_user_directory_query(session: SessionDep) -> UserDirectoryQuery:
+    """Binds `UserDirectoryQuery` -> `SqlAlchemyUserDirectoryQuery` (slice 4.2, ADR-0033): a
+    read-side port, one Core statement over the request's session. Bound once a route depends on it
+    (`routers/admin_users.py`)."""
+    from tailorcraft.infrastructure.persistence.queries.user_directory import (
+        SqlAlchemyUserDirectoryQuery,
+    )
+
+    return SqlAlchemyUserDirectoryQuery(session)
+
+
+UserDirectoryQueryDep = Annotated[UserDirectoryQuery, Depends(get_user_directory_query)]
 
 
 def get_list_tailoring_history(
