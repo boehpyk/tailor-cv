@@ -2,7 +2,7 @@
 
 One class per value object, as in `types/intake.py`. Slice 2.1 adds five beside `GuestSessionIdType`;
 slice 2.5 adds the two one-time-token aggregates' ids (`PendingRegistrationIdType`,
-`PasswordResetIdType`) and reuses the other four as they are.
+`PasswordResetIdType`) and reuses the other four as they are; slice 4.1 adds `RoleType`.
 Three of them carry a **credential-shaped** value (`PasswordHash`, `TokenHash`) or PII
 (`EmailAddress`); none of them logs, and none of them has anything to log — a `TypeDecorator` is a
 pure translation, and a failure inside it surfaces through the engine's `handle_error` listener with
@@ -31,6 +31,7 @@ from tailorcraft.domain.identity.value_objects import (
     PasswordHash,
     PasswordResetId,
     PendingRegistrationId,
+    Role,
     TokenHash,
     UserId,
 )
@@ -190,3 +191,29 @@ class PasswordResetIdType(TypeDecorator[PasswordResetId]):
         if value is None:
             return None
         return PasswordResetId(value)
+
+
+class RoleType(TypeDecorator[Role]):
+    """`identity_user.role` — `VARCHAR(16)`, `NOT NULL`, one of `ck_identity_user_role_known`'s
+    values. Slice 4.1, ADR-0032.
+
+    **An unknown stored value is refused with a `ValueError` naming the column, never the value**
+    (AC-10(d), `LayoutTemplateType`'s pattern): the enum's own message would echo the stored string.
+    The CHECK makes such a row unreachable through SQL; this is the Python half of the same rule.
+    """
+
+    impl = String(16)
+    cache_ok = True
+
+    def process_bind_param(self, value: Role | None, dialect: Dialect) -> str | None:
+        if value is None:
+            return None
+        return value.value
+
+    def process_result_value(self, value: Any | None, dialect: Dialect) -> Role | None:
+        if value is None:
+            return None
+        try:
+            return Role(value)
+        except ValueError:
+            raise ValueError("identity_user.role holds an unknown role") from None

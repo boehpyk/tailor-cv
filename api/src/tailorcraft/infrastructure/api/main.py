@@ -21,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
 from tailorcraft.infrastructure.api.routers import (
+    admin,
     auth,
     export,
     health,
@@ -256,6 +257,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # `/api/me/board` and `/api/me/tracked-applications` (slice 3.1) share no prefix with any other
     # router; their position is free.
     app.include_router(me_tracked_applications.router)
+    # `/api/admin` (slice 4.1) shares no prefix with any other router, so its position is free.
+    app.include_router(admin.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

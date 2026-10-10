@@ -1,6 +1,7 @@
 import { Navigate, createBrowserRouter } from 'react-router';
 
 import { App } from './App';
+import { AdminRoute } from './features/admin/components/AdminRoute';
 import { ConfirmEmailPage } from './features/accountMail/components/ConfirmEmailPage';
 import { PasswordResetConfirmPage } from './features/accountMail/components/PasswordResetConfirmPage';
 import { PasswordResetRequestPage } from './features/accountMail/components/PasswordResetRequestPage';
@@ -37,6 +38,7 @@ import type { RouteObject } from 'react-router';
  * | `/history/:runId`         | redirect → `/history/:runId/cv` (2.3)                 |
  * | `/history/:runId/:document` | `RequireAuth` → `AccountScope` → `RunPage` (2.3)    |
  * | `/board`                  | `RequireAuth` → `AccountScope` → `BoardPage` (3.1)    |
+ * | `/admin`                  | `AdminRoute`: `RequireAuth` → `AccountScope` → lazy `AdminPage` (4.1) |
  * | `*`                       | `NotFoundPage` (E-28)         |
  *
  * `App` is the layout route: every page renders through its `<Outlet />`, between the header and
@@ -129,6 +131,7 @@ export const routes: RouteObject[] = [
           </RequireAuth>
         ),
       },
+      { path: 'admin', element: <AdminRoute /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

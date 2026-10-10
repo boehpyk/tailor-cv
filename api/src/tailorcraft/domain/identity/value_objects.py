@@ -653,3 +653,21 @@ class MailFailureReason(StrEnum):
     UNAVAILABLE = "unavailable"
     THROTTLED = "throttled"
     PROVIDER_REFUSED = "provider_refused"
+
+
+class Role(StrEnum):
+    """What a registered user may do: `user` (everything a person does with their own account) or
+    `admin` (that, plus the `/admin` surface) — slice 4.1, ADR-0032.
+
+    A closed set, so a `StrEnum` whose values are the database and wire spelling (OQ-1). Two
+    members, in this order. **Never delete a member** while rows can hold it — `LayoutTemplate`'s
+    rule: a row that no longer loads is worse than a role nobody grants. A third member is a
+    migration (`ck_identity_user_role_known`) and a plan, never an edit here alone.
+
+    Not a hierarchy: there is no `>=` between roles. "An admin is also a user" needs no check,
+    because every non-admin route asks only *who* is signed in, never *what role* they hold;
+    `User.is_admin` is the one role check there is.
+    """
+
+    USER = "user"
+    ADMIN = "admin"

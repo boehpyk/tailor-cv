@@ -1,7 +1,8 @@
 """The `User` aggregate: a registered person — one normalized email, one password credential.
 
 **Invariant:** a user has exactly one `EmailAddress` and one `PasswordHash`, and the hash changes only
-through `replace_password_hash` (a rehash) or `reset_password` (slice 2.5), never by assignment. That is the whole of it, and it is small on
+through `replace_password_hash` (a rehash) or `reset_password` (slice 2.5), never by assignment; and
+exactly one `Role`, changed only by `change_role` (slice 4.1, ADR-0032). That is the whole of it, and it is small on
 purpose: a `Login` rotates every 15 minutes per tab while a user row is written at registration and on
 a rare rehash, so logins are a separate aggregate rather than a collection in here (technical plan
 §0.1 — the consistency boundary is the smallest set of things that must change together, and a
@@ -35,8 +36,9 @@ from tailorcraft.domain.identity.events import (
     PasswordChangedByReset,
     UserPasswordRehashed,
     UserRegistered,
+    UserRoleChanged,
 )
-from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
+from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, Role, UserId
 from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
@@ -51,9 +53,10 @@ from tailorcraft.domain.shared.events import RecordsEvents
 class User(RecordsEvents):
     """A registered person.
 
-    State: `_id`, `_email`, `_password_hash`, `_created_at`, `_password_updated_at` — private,
-    exposed only through read-only properties. `_password_updated_at` equals `_created_at` at
-    registration (the hash was set then) and moves only with `replace_password_hash`.
+    State: `_id`, `_email`, `_password_hash`, `_created_at`, `_password_updated_at`, `_role` —
+    private, exposed only through read-only properties. `_password_updated_at` equals `_created_at`
+    at registration (the hash was set then) and moves only with `replace_password_hash`. `_role` is
+    `Role.USER` at registration and moves only with `change_role`.
     """
 
     # Class-level annotations only (no assignment): `__init__` sets nothing, so this is how
@@ -64,6 +67,7 @@ class User(RecordsEvents):
     _password_hash: PasswordHash
     _created_at: datetime
     _password_updated_at: datetime
+    _role: Role
 
     def __init__(self) -> None:
         """Takes nothing and does nothing. Build a `User` with `register_with_password`.
@@ -88,6 +92,9 @@ class User(RecordsEvents):
     ) -> User:
         """The only way to create a `User`: `created_at = password_updated_at = at`.
 
+        The role is always `Role.USER`, and there is **no parameter** for it: no code path registers
+        an administrator (AC-2). Promotion is `change_role`, reached only from the operator's CLI.
+
         Records `UserRegistered(user_id=id, occurred_at=at)`. Takes a `PasswordHash`, never a
         `Password` — hashing is the port's job, done by the use case before this is called, so the
         aggregate never holds a plaintext even for the length of a constructor.
@@ -98,6 +105,7 @@ class User(RecordsEvents):
         user._password_hash = password_hash
         user._created_at = at
         user._password_updated_at = at
+        user._role = Role.USER
         user.record(UserRegistered(user_id=id, occurred_at=at))
         return user
 
@@ -163,3 +171,40 @@ class User(RecordsEvents):
     @property
     def password_updated_at(self) -> datetime:
         return self._password_updated_at
+
+    @property
+    def role(self) -> Role:
+        """This user's one `Role` (slice 4.1)."""
+        return self._role
+
+    @property
+    def is_admin(self) -> bool:
+        """Whether this user is an administrator — **the only role check in the codebase**.
+
+        Asked by `AuthorizeAdministrator` and nowhere else. There is no `is_user` and no check for
+        `Role.USER` anywhere, on purpose: "an admin can do everything a user can" is not a rule that
+        needs checking, because no user route asks about the role at all — every `/api/me/*` route
+        answers to the bearer alone, so an admin passes them by construction (spec, contrast 3). A
+        hierarchy (`role >= USER`) would be code guarding a fact that is already true.
+
+        `is`, not `==`: enum members are singletons, and identity says so.
+        """
+        return self._role is Role.ADMIN
+
+    def change_role(self, to: Role, at: datetime) -> None:
+        """Make `to` this user's role, recording `UserRoleChanged`; a no-op when it already is.
+
+        Raises `InvariantViolated` if `at` is before `created_at` — checked before anything else, so a
+        refused change neither assigns nor records, even when `to` is already the role. A no-op is
+        silent because `UserRoleChanged` is the audit record of who became (or stopped being) an
+        administrator; an event for a change that did not happen would make that record lie.
+        """
+        if at < self._created_at:
+            raise InvariantViolated("a role cannot change before the user existed")
+        if to is self._role:
+            return
+        from_role = self._role
+        self._role = to
+        self.record(
+            UserRoleChanged(user_id=self._id, from_role=from_role, to_role=to, occurred_at=at)
+        )

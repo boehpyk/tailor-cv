@@ -63,6 +63,7 @@ from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.api.refresh_cookie import mint_refresh_token
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.observability import configure_logging
+from tailorcraft.infrastructure.persistence import database_guard
 from tailorcraft.infrastructure.persistence.mapping.identity.guest_session import (
     guest_session_table,
 )
@@ -570,8 +571,8 @@ async def test_the_foreign_database_guard_detects_a_mismatched_database_name(
     settings: Settings, session: AsyncSession
 ) -> None:
     """The guard itself, proved against a real connection: `session` is genuinely connected to
-    `tailorcraft_test` (the `connection`/`session` fixtures), so handing `_refuse_a_foreign_database`
-    a `Settings` whose `database_url` names a different database must raise `_ForeignDatabase`
+    `tailorcraft_test` (the `connection`/`session` fixtures), so handing `database_guard.refuse_a_foreign_database`
+    a `Settings` whose `database_url` names a different database must raise `database_guard.ForeignDatabase`
     carrying both names — never silently pass because the two strings merely differ."""
     _assert_test_database(settings)
     mismatched = settings.model_copy(
@@ -580,8 +581,8 @@ async def test_the_foreign_database_guard_detects_a_mismatched_database_name(
         }
     )
 
-    with pytest.raises(erase_account_command._ForeignDatabase) as exc_info:
-        await erase_account_command._refuse_a_foreign_database(session, mismatched)
+    with pytest.raises(database_guard.ForeignDatabase) as exc_info:
+        await database_guard.refuse_a_foreign_database(session, mismatched)
 
     assert exc_info.value.expected == "definitely_not_it"
     assert exc_info.value.actual == "tailorcraft_test"
@@ -596,7 +597,7 @@ async def test_the_guard_refusing_exits_1_and_touches_nothing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The entry point's handling of the guard's own refusal: forced by monkeypatching
-    `_refuse_a_foreign_database` itself to always raise (the guard's detection logic is proved for
+    `database_guard.refuse_a_foreign_database` itself to always raise (the guard's detection logic is proved for
     real, against a genuine connection, by the test immediately above) — proving that when it fires,
     `erase_account` reaches no account data at all: the seeded account, its saved CV and its file are
     every one still there afterward, and the exit code and log line are AC-31's."""
@@ -607,9 +608,9 @@ async def test_the_guard_refusing_exits_1_and_touches_nothing(
     )
 
     async def _always_refuse(session: AsyncSession, refused_settings: Settings) -> None:
-        raise erase_account_command._ForeignDatabase("intended_db", "actual_db")
+        raise database_guard.ForeignDatabase("intended_db", "actual_db")
 
-    monkeypatch.setattr(erase_account_command, "_refuse_a_foreign_database", _always_refuse)
+    monkeypatch.setattr(erase_account_command, "refuse_a_foreign_database", _always_refuse)
 
     with caplog.at_level(logging.WARNING):
         exit_code = await erase_account_command.erase_account(

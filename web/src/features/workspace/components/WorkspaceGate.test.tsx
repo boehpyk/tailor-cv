@@ -26,7 +26,7 @@ import { renderWithRouter } from '@/test/render';
  */
 
 const ACCOUNT_PROMISE =
-  "You're signed in, so what you tailor here is saved to your history — the job posting, the tailored CV and cover letter, and any files you export — until you delete it. The AI provider sees your CV's text and the job posting when you tailor.";
+  "You're signed in, so what you tailor here is saved to your history — the job posting, the tailored CV and cover letter, and any files you export — until you delete it. The AI provider sees your CV's text and the job posting when you tailor. The person who runs TailorCraft can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.";
 
 /** Everything the account workspace reads, answered empty, so only the gate is under test. */
 function accountWorkspaceRoutes() {

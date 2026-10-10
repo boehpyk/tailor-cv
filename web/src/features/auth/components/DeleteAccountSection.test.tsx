@@ -25,7 +25,12 @@ import type { User } from '../types';
  * this one — will need to move with it. Every other assertion in this file does not depend on it.
  */
 
-const USER: User = { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-25T10:00:00Z' };
+const USER: User = {
+  id: 'user-1',
+  email: 'alex@example.com',
+  created_at: '2026-09-25T10:00:00Z',
+  role: 'user' as const,
+};
 const AUTHENTICATED_RESPONSE = {
   access_token: 'token-1',
   token_type: 'Bearer' as const,

@@ -55,7 +55,12 @@ function renderAccountPage(queryClient?: QueryClient) {
   };
 }
 
-const USER = { id: 'user-1', email: 'alex@example.com', created_at: '2026-01-05T10:00:00Z' };
+const USER = {
+  id: 'user-1',
+  email: 'alex@example.com',
+  created_at: '2026-01-05T10:00:00Z',
+  role: 'user' as const,
+};
 const AUTHENTICATED_RESPONSE = {
   access_token: 'token-abc',
   token_type: 'Bearer' as const,

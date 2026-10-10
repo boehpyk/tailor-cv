@@ -47,7 +47,12 @@ import type { User } from '../types';
  * test that moved together with it would not be discriminating between the two reasons.
  */
 
-const USER: User = { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-23T10:00:00Z' };
+const USER: User = {
+  id: 'user-1',
+  email: 'alex@example.com',
+  created_at: '2026-09-23T10:00:00Z',
+  role: 'user' as const,
+};
 const AUTHENTICATED_RESPONSE = {
   access_token: 'token-1',
   token_type: 'Bearer' as const,

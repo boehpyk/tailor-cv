@@ -1,4 +1,5 @@
-"""`Authenticated`: what every use case that signs somebody in hands back to the route.
+"""`Authenticated`: what every use case that signs somebody in hands back to the route; and
+`RoleChange`, what `ChangeUserRole` reports (slice 4.1).
 
 Shared by two use cases — `LogIn` and `RefreshLogin` (slice 2.5 removed the third, `RegisterUser`) —
 which is why it lives in its own module rather than beside either: each ends in the same place (a
@@ -17,7 +18,7 @@ from dataclasses import dataclass
 
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.user import User
-from tailorcraft.domain.identity.value_objects import IssuedAccessToken
+from tailorcraft.domain.identity.value_objects import IssuedAccessToken, Role, UserId
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,3 +35,18 @@ class Authenticated:
     user: User
     login: Login
     access_token: IssuedAccessToken
+
+
+@dataclass(frozen=True, slots=True)
+class RoleChange:
+    """What `ChangeUserRole` did — or, on a dry run, would do (AC-7, slice 4.1).
+
+    `from_role` is the role the user held when the row was locked, `to_role` the role asked for, and
+    `changed` whether the role differs (`from_role is not to_role`): `False` for a no-op, and on a dry
+    run, whether a real run would change it. Ids and role names only, so the CLI can print it whole.
+    """
+
+    user_id: UserId
+    from_role: Role
+    to_role: Role
+    changed: bool

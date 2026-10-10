@@ -25,7 +25,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
 > (`a092053`) and released 2026-10-09 (deploy run 37855115482). Slice 3.3
 > `workspace-rate-limit-retry-feedback` was merged as PR #25 (`279a0b7`) and released 2026-10-09
-> (deploy run 37951163281).** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was implemented
+> and verified 2026-10-10 on `feature/identity-user-roles` (reviewer PASS round 1), PR open, not
+> yet merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -515,6 +517,49 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`148f4e1`, `a8b626f`, `ae4c970`, `60fba47`), all **timing or spec-superseded copy** — see
 >   Conventions.
 >
+> - **4.1 `identity-user-roles`** (**implemented and verified 2026-10-10, reviewer PASS round 1; PR open**) — one role per
+>   user, `user | admin`, and an `/api/admin` surface only an admin can see (**ADR-0032**; ADR-0008
+>   amendment (i)). `Role` is a closed `StrEnum` on `User` (`register_with_password` sets `USER`, no
+>   parameter; `change_role` records `UserRoleChanged`; `is_admin` is the **only** role check in the
+>   codebase). Migration **`3d26e05edffe`**: `identity_user.role VARCHAR(16) NOT NULL DEFAULT 'user'`
+>   (kept for good, for the deploy window) + `ck_identity_user_role_known`; the **downgrade refuses**
+>   while an admin exists. **The role is never a claim**: `AuthorizeAdministrator` reads the row
+>   (`users.get`, no lock) on every admin request, so a grant or revoke applies to the next request
+>   and signs nobody out; the token still has five claims. `/api/admin` has a **router-level**
+>   `require_admin` (bearer → 401, user gone → 401 `not_signed_in`, not admin → 404), pinned by a
+>   structural walk with a positive control. **A non-admin's 404 is Starlette's**
+>   (`starlette.exceptions.HTTPException(404)`, `{"detail":"Not Found"}`), byte-identical to an
+>   unmatched path and compared against a live one — the **one** raise in the codebase that skips the
+>   app envelope, on purpose. 4.1's only route: `GET /api/admin/access` → 204 `no-store`. Roles change
+>   **only** by CLI (`grant-role` / `revoke-role`, `ChangeUserRole` under `FOR UPDATE`; Commands), no
+>   HTTP writer, the last admin may be revoked. The foreign-database guard moved to
+>   `infrastructure/persistence/database_guard.py`. React: `role` on `User`, an **Admin** link
+>   between Board and Account iff `role === 'admin'` (a hint; the server's 204 is the authority),
+>   and the codebase's **first code split**: `/admin` → `RequireAuth` → `AccountScope` →
+>   `LazyBoundary` (a class; *Reload* on a failed chunk) → `Suspense` → `lazy(AdminPage)`; the
+>   view is one union, **error first**, so a 404 beats a cached 204. The operator-access sentence
+>   (`OPERATOR_ACCESS_NOTE`, Constitution §8) is on the guest workspace, the account promise and
+>   `/account`. **4566 backend and 1360 frontend tests**, `make check` green twice. Measured: main
+>   bundle **+1.24 kB gzip** (AC-35 **amended by the owner** 1.0 → 1.5 kB), admin chunk 0.81 kB;
+>   `/api/admin/access` p95 **2.76–2.95 ms** on the production image (budget 30), `/me` within 1 ms
+>   of `main`. AC-39 holds (`infrastructure/llm`, `domain/tailoring`, `application/tailoring`
+>   unchanged). Five mutations recorded (Starlette → FastAPI 404: 1 red; router deps removed: 17;
+>   `get_for_update` → `get`: 4; `is_admin` → `True`: 10; view order swapped: 1). **Found on the
+>   way:** two harness defects in RED tests, each corrected in its own commit (`4c61a28`, `e58df70`;
+>   Conventions); TanStack v5 refusing `undefined` data (the probe returns `true`); and **F-1, found
+>   only by T26's manual pass**: the app's client turns `refetchOnWindowFocus` off, so a demoted
+>   admin's open tab never asked again while a test on a bespoke client passed — fixed red-first
+>   (`58b280a` → `bb6a4f1` → `21333e8`, the probe refetches `'always'` on focus). Firefox not
+>   exercised. **`/verify` passed in one round** (0 CRITICAL, 0 MAJOR). T26's demotion was walked
+>   again in Chromium: a focus 12 s after load, inside the 30 s `staleTime`, sent the probe again,
+>   which answered 404, and the not-found view replaced the shell. The Admin link stays until the
+>   next `/me` fetch, which R-26 allows. Three MINORs were tests that could not fail, hardened in
+>   `1538047`, each proven by mutation: AC-13 had decoded one hand-minted token twice and now
+>   decodes the tokens `/login` and `/refresh` issue to an admin; AC-23's scan now catches a Core
+>   `.values(role=…)`; T3's refusal test, red only on `NotImplementedError`, was proven by moving
+>   the guard. **Carried to 4.2:** the view puts every error ahead of a cached 204, so a transient
+>   503 on focus replaces the admin page. Decide whether only a 404 outranks cached data.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -923,6 +968,13 @@ python -m tailorcraft.cli erase-account --user-id <uuid>
 # a database failure, or SELECT current_database() ≠ the database DATABASE_URL names (refused
 # before any read) · 2 usage. Logs ids, counts and class names only.
 
+# Admin roles (slice 4.1, ADR-0032) — the ONLY way a role changes; no HTTP writer, no make target.
+# By id, never email (read it from GET /api/auth/me). Dry run first. Takes effect on the next request.
+python -m tailorcraft.cli grant-role  --user-id <uuid> --dry-run   # would change user <id>: role user → admin (dry run)
+python -m tailorcraft.cli grant-role  --user-id <uuid>             # user <id>: role user → admin
+python -m tailorcraft.cli revoke-role --user-id <uuid>             # the last admin may be revoked; recovery is grant-role
+# Exit: 0 changed or already held (no event) · 1 no such account / db failure / foreign database · 2 usage.
+
 # Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
 # deliberately NO setting that weakens the SSRF address policy.
@@ -996,6 +1048,17 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   `settle()`) makes "deadline − 1 ms" land after the deadline: advance to `deadline − Date.now() −
   1` (`148f4e1`). `onlineManager` is a module global — `afterEach(() =>
   onlineManager.setOnline(true))`. `userEvent.type` can hang under fake timers; use `fireEvent`.
+  **The app's client turns `refetchOnWindowFocus` off (4.1, F-1).** A test on a hand-built
+  `QueryClient` keeps TanStack's defaults and can pass where the app fails: AC-31's demotion test
+  did, and only the manual pass found it. Build test clients with `createAppQueryClient()`
+  (`web/src/queryClient.ts`) when the behaviour depends on a default. A query that must refetch on
+  focus says so itself, and `'always'` if the cache is within the 30 s `staleTime`. TanStack v5's
+  `focusManager` listens for `visibilitychange` on **`window`** — the event does not bubble, so a
+  dispatch on `document` refetches nothing (`e58df70`). And v5 refuses a query function resolving
+  `undefined`: a 204 probe returns a sentinel (`true`), or every success is an error.
+  **A lazy route's main-bundle half imports nothing from its chunk's modules (4.1).** One import of
+  `adminCopy.ts` from `AdminRoute` would have pulled the whole module into the main chunk; the
+  fallback strings live in `lazyCopy.ts`. Check with a grep of `dist/assets/index-*.js`.
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
   **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
@@ -1546,7 +1609,9 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   (3.2, `37c7424`). Every ORM PDF insert left the column `NULL` and hit
   `ck_export_job_layout_template_only_for_pdf`: 198 failures. The migration (T11) and the mapping
   (T12) are one commit. "Migration before mapping" (2.3) holds for a nullable column with no
-  constraint; a constraint the mapping must satisfy ties the two together.
+  constraint; a constraint the mapping must satisfy ties the two together. **So does any constraint
+  at all (4.1, `5d75124`):** the `test_autogenerate_against_head_produces_an_empty_diff` tests read a
+  CHECK the metadata lacks as drift, even when every insert satisfies it via a `DEFAULT`.
 - **Vite inlines any asset under 4 KB as a `data:` URI** (`assetsInlineLimit`). The 2 KB layout
   previews went into the JS chunk until `web/vite.config.ts` excluded `.webp`; AC-38 now asserts they
   are hashed files.
@@ -1573,7 +1638,11 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `/me`. Measured, not read in a changelog.
 - **FastAPI 0.141 no longer flattens `app.routes` on `include_router`.** The real `APIRoute`s sit
   behind `_IncludedRouter.original_router.routes`, so a walker over `app.routes` finds nothing and
-  passes vacuously. Descend, duck-typed (the class is private).
+  passes vacuously. Descend, duck-typed (the class is private). **It also serves a copy:**
+  `_IncludedRouter` builds `_EffectiveRouteContext`s from `route.endpoint`, so patching
+  `route.dependant.call` on the original `APIRoute` is never invoked (4.1, `4c61a28`). A spy wraps
+  `route.endpoint` and resets the effective-route cache; a test that counts calls asserts its
+  positive control first.
 - **A removed route answers 405, not 404, when its path still matches another route.**
   `POST /api/base-cvs/copies` matches `/api/base-cvs/{base_cv_id}` (GET, PATCH, DELETE), so Starlette
   refuses the method before any handler runs. Assert what the removal protects (405, and an `Allow`

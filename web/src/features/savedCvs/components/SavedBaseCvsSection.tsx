@@ -1,5 +1,7 @@
 import { useId, useState } from 'react';
 
+import { OPERATOR_ACCESS_NOTE } from '@/features/workspace/workspaceCopy';
+
 import { useDeleteSavedBaseCv } from '../hooks/useDeleteSavedBaseCv';
 import { useSavedBaseCvs } from '../hooks/useSavedBaseCvs';
 import {
@@ -145,6 +147,7 @@ function SavedBaseCvsBody(): React.JSX.Element {
       )}
 
       <SavedCvUploadControl notice={SAVED_CV_RETENTION_NOTICE} />
+      <p className="text-sm text-slate-500">{OPERATOR_ACCESS_NOTE}</p>
     </div>
   );
 }

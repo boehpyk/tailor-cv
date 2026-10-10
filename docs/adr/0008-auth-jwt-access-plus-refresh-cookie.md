@@ -223,3 +223,23 @@ channel exists"*, and named the one design that does not: *always 202, and email
   address they do not own and, if its owner clicks the confirmation, create an account in the owner's
   name with the attacker's password. Confirmation not signing in, and the reset, are what make that
   harmless (ADR-0027 decision 6, ADR-0028).
+
+## Amendment: 2026-10-10, from the plan of slice 4.1 (`identity-user-roles`)
+
+Slice 4.1 adds the first route that asks for a fact about the user beyond the bearer: every
+`/api/admin/*` route requires the admin role (ADR-0032).
+
+**(i) A route may require the bearer and a role. The role is not a credential and not a claim.**
+
+- **The token is unchanged.** Still exactly five claims (`iss`, `aud`, `sub`, `iat`, `exp`); no
+  `role`. The role is read from `identity_user` on every admin request, so a grant or a revoke takes
+  effect on the next request and needs no token revocation.
+- **(f)'s "one credential per route" holds.** An admin route answers to the bearer alone. The role
+  is a fact the server looks up for the user the bearer names, not a second thing the client
+  presents. Admin routes read no guest cookie, and the transfer-route set is unchanged.
+- **The order is the bearer's first.** `require_admin` depends on `require_user`: a missing or
+  expired bearer is 401 (so the client's refresh-on-401 still works), a deleted user is 401
+  `not_signed_in`, and only then is the role read. A signed-in user without the role gets 404,
+  byte-identical to an unmatched route (ADR-0032 decision 4).
+- **No cookie, no `Origin` check.** Admin routes are bearer-only, so ADR-0021's `Origin` set stays
+  eight.

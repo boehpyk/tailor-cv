@@ -17,7 +17,7 @@ registered user's row — the one thing FR-6 says it must never touch.
 
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Column, Table
+from sqlalchemy import CheckConstraint, Column, Table, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from tailorcraft.domain.identity.user import User
@@ -25,6 +25,7 @@ from tailorcraft.infrastructure.persistence.registry import mapper_registry, met
 from tailorcraft.infrastructure.persistence.types.identity import (
     EmailAddressType,
     PasswordHashType,
+    RoleType,
     UserIdType,
 )
 
@@ -48,6 +49,15 @@ user_table = Table(
     # "A@x.io" beside "a@x.io" would be two users to the unique index and one person to everybody
     # else. Renders as `ck_identity_user_email_normalized` (the `name=` is the constraint_name slot).
     CheckConstraint("email = lower(btrim(email))", name="email_normalized"),
+    # VARCHAR(16) via `RoleType` (slice 4.1, ADR-0032). The aggregate sets the role explicitly at
+    # registration, so the server default is never the source of truth for new code: it exists for
+    # the deploy window, when the previous image still INSERTs without the column (R-27), and it
+    # stays for good (plan §0.8). Declared here too so the metadata and the migration agree.
+    Column("role", RoleType, nullable=False, server_default=text("'user'")),
+    # A CHECK here although `export_job.layout_template` has none, for `ApplicationStage`'s reason:
+    # the role set is a security boundary, so a new member *should* need a migration, and a
+    # hand-written `UPDATE` must not be able to invent one. Renders `ck_identity_user_role_known`.
+    CheckConstraint("role IN ('user','admin')", name="role_known"),
 )
 
 mapper_registry.map_imperatively(
@@ -59,5 +69,6 @@ mapper_registry.map_imperatively(
         "_password_hash": user_table.c.password_hash,
         "_created_at": user_table.c.created_at,
         "_password_updated_at": user_table.c.password_updated_at,
+        "_role": user_table.c.role,
     },
 )

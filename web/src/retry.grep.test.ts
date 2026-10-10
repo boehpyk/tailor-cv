@@ -98,8 +98,8 @@ describe('AC-21 — no write auto-retries', () => {
     expect(RETRY_KEY.test('{ mutationFn, onError }')).toBe(false);
   });
 
-  it('main.tsx gives mutations no default retry', () => {
-    const main = stripComments(readFileSync(join(SRC_ROOT, 'main.tsx'), 'utf8'));
+  it('the app query client gives mutations no default retry', () => {
+    const main = stripComments(readFileSync(join(SRC_ROOT, 'queryClient.ts'), 'utf8'));
 
     expect(main).toMatch(/queries\s*:\s*\{[^}]*retry/); // control: the file does set a query retry
     expect(main).not.toMatch(/mutations\s*:\s*\{[^}]*retry/);

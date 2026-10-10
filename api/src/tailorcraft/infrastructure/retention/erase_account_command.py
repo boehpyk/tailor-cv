@@ -16,9 +16,10 @@ same use case the route calls, not a second copy of it — translate to an exit 
 | no account with that id, the database is not the configured one, or the database failed | **1** |
 | no `--user-id`, a malformed id, any other usage error | **2** — argparse's own, in `cli.py` |
 
-**The database guard.** Before anything is read, `SELECT current_database()` must equal the
-database named in `Settings.database_url`; otherwise the command refuses and deletes nothing (AC-31:
-no cross-database erasure). A connection string that routes somewhere else — a pooler default, a
+**The database guard** (`persistence/database_guard.py`, shared with the role commands since 4.1).
+Before anything is read, `SELECT current_database()` must equal the database named in
+`Settings.database_url`; otherwise the command refuses and deletes nothing (AC-31: no
+cross-database erasure). A connection string that routes somewhere else — a pooler default, a
 service file, a hand-edited URL — should be a refusal, not a surprise. The two names are printed:
 they are database names, never credentials.
 
@@ -42,9 +43,7 @@ from typing import Final
 from uuid import UUID
 
 import structlog
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tailorcraft.application.retention.erase_account import EraseAccount
 from tailorcraft.domain.identity.value_objects import UserId
@@ -53,6 +52,10 @@ from tailorcraft.domain.retention.value_objects import AccountCounts, AccountEra
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.observability import configure_logging
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
+from tailorcraft.infrastructure.persistence.database_guard import (
+    ForeignDatabase,
+    refuse_a_foreign_database,
+)
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.retention.data_access import CommittingAccountData
 from tailorcraft.infrastructure.settings import Settings, get_settings
@@ -67,15 +70,6 @@ EVENT_ACCOUNT_FILE_UNLINK_FAILED: Final = "retention.account_file_unlink_failed"
 EVENT_ERASE_ACCOUNT_DRY_RUN: Final = "retention.account_erasure_dry_run"
 EVENT_ERASE_ACCOUNT_REFUSED: Final = "retention.account_erasure_refused"
 EVENT_ERASE_ACCOUNT_FAILED: Final = "retention.account_erasure_failed"
-
-
-class _ForeignDatabase(Exception):
-    """The connection landed in a database other than the one `Settings.database_url` names."""
-
-    def __init__(self, expected: str | None, actual: str) -> None:
-        super().__init__("connected to an unexpected database")
-        self.expected = expected
-        self.actual = actual
 
 
 def run_from_cli(*, user_id: UUID, dry_run: bool) -> int:
@@ -115,7 +109,7 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
         factory = create_session_factory(engine)
         async with factory() as session:
             try:
-                await _refuse_a_foreign_database(session, settings)
+                await refuse_a_foreign_database(session, settings)
                 # Deferred import, for the mapper-configuration reason `deps.get_account_data`
                 # documents: the adapter reads mapped attributes at import.
                 from tailorcraft.infrastructure.persistence.retention.account_data import (
@@ -132,7 +126,7 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
             except Exception:
                 await session.rollback()
                 raise
-    except _ForeignDatabase as exc:
+    except ForeignDatabase as exc:
         log.warning(
             EVENT_ERASE_ACCOUNT_REFUSED,
             reason="foreign_database",
@@ -228,15 +222,6 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
             file=sys.stderr,
         )
     return EXIT_OK
-
-
-async def _refuse_a_foreign_database(session: AsyncSession, settings: Settings) -> None:
-    """AC-31's guard: the database this session is connected to must be the one `DATABASE_URL`
-    names, asked of the server rather than assumed from the string."""
-    expected = make_url(settings.database_url).database
-    actual = (await session.execute(text("SELECT current_database()"))).scalar_one()
-    if actual != expected:
-        raise _ForeignDatabase(expected, str(actual))
 
 
 def _no_such_account(user_id: UserId, *, dry_run: bool, started_at: float) -> int:

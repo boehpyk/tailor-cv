@@ -25,7 +25,12 @@ const AUTHENTICATED_RESPONSE = {
   access_token: 'token-1',
   token_type: 'Bearer' as const,
   expires_in: 900,
-  user: { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-25T10:00:00Z' },
+  user: {
+    id: 'user-1',
+    email: 'alex@example.com',
+    created_at: '2026-09-25T10:00:00Z',
+    role: 'user' as const,
+  },
 };
 
 beforeEach(() => {
@@ -164,6 +169,7 @@ describe('authCache.connectCrossTabSignOut (AC-42, AC-33, AC-38 S-56)', () => {
         id: 'user-1',
         email: 'alex@example.com',
         created_at: '2026-09-25T10:00:00Z',
+        role: 'user' as const,
       });
       queryClient.setQueryData(['auth', 'savedBaseCvs', 'user-1'], { items: [{ id: 'cv-a' }] });
       queryClient.setQueryData(['base-cvs'], [{ id: 'guest-cv-1' }]);
@@ -191,6 +197,7 @@ describe('authCache.connectCrossTabSignOut (AC-42, AC-33, AC-38 S-56)', () => {
       id: 'user-1',
       email: 'alex@example.com',
       created_at: '2026-09-25T10:00:00Z',
+      role: 'user' as const,
     });
 
     const disconnect = connectCrossTabSignOut(queryClient, thisTabChannel);
@@ -202,6 +209,7 @@ describe('authCache.connectCrossTabSignOut (AC-42, AC-33, AC-38 S-56)', () => {
       id: 'user-1',
       email: 'alex@example.com',
       created_at: '2026-09-25T10:00:00Z',
+      role: 'user' as const,
     });
     thisTabChannel.close();
     otherTabChannel.close();

@@ -1235,8 +1235,103 @@ async def test_a_successful_me_call_returns_exactly_the_user_shape(
 
     assert response.status_code == 200, response.text
     body = response.json()
-    assert set(body) == {"id", "email", "created_at"}
+    assert set(body) == {"id", "email", "created_at", "role"}
+    assert body["role"] == "user"
     assert body["email"] == "me.shape@example.com"
+
+
+USER_KEYS = {"id", "email", "created_at", "role"}
+
+
+async def test_the_user_in_a_login_response_has_exactly_the_four_keys(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """AC-12: login's `user` object gains `role`, nothing else."""
+    from tests.api.me_support import A_PASSWORD, LOGIN_URL
+
+    email = "login.shape@example.com"
+    await seed_user_and_sign_in(client, settings, email=email)
+    response = await client.post(
+        LOGIN_URL,
+        json={"email": email, "password": A_PASSWORD},
+        headers=_origin_headers(settings),
+    )
+
+    assert response.status_code == 200, response.text
+    assert set(response.json()["user"]) == USER_KEYS
+    assert response.json()["user"]["role"] == "user"
+
+
+async def test_the_user_in_a_refresh_response_has_exactly_the_four_keys(
+    app: FastAPI,
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+) -> None:
+    """AC-12: refresh's `user` object has the same four keys."""
+    app.dependency_overrides[get_clock] = lambda: clock
+    user = await _seed_user(session, password_hasher, clock, email="refresh.shape@example.com")
+    _login, raw_token = await _seed_login(session, user, clock)
+    client.cookies.set(REFRESH_COOKIE_NAME, raw_token)
+
+    response = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+
+    assert response.status_code == 200, response.text
+    assert set(response.json()["user"]) == USER_KEYS
+    assert response.json()["user"]["role"] == "user"
+
+
+async def test_me_reports_a_grant_with_the_same_token_and_an_admins_issued_tokens_carry_no_role(
+    client: AsyncClient,
+    settings: Settings,
+    session: AsyncSession,
+    password_hasher: Argon2PasswordHasher,
+    clock: FixedClock,
+) -> None:
+    """AC-12 (read at request time) and AC-13 (no `role` claim).
+
+    The same login-issued token is presented around a grant, then the **admin's** tokens from
+    `/login` and `/refresh` are decoded: the paths that would grow a role claim, not a token minted
+    by hand. (The cross-connection proof is AC-18 in `test_admin_firewall.py`.)"""
+    import jwt  # PyJWT, already a dependency (access tokens)
+
+    def claims(token: str) -> dict[str, object]:
+        decoded: dict[str, object] = jwt.decode(token, options={"verify_signature": False})
+        return decoded
+
+    email = "grant.shape@example.com"
+    user = await _seed_user(session, password_hasher, clock, email=email)
+    credentials = _credentials(email, A_STRONG_PASSWORD)
+    as_user = await client.post(LOGIN_URL, json=credentials, headers=_origin_headers(settings))
+    assert as_user.status_code == 200, as_user.text
+    headers = {"Authorization": f"Bearer {as_user.json()['access_token']}"}
+
+    first = await client.get(ME_URL, headers=headers)
+    await session.execute(
+        text("UPDATE identity_user SET role = 'admin' WHERE id = :id"), {"id": user.id.value}
+    )
+    await session.commit()
+    session.expire_all()  # a Core UPDATE does not touch the identity map (2.4); production has a session per request
+    second = await client.get(ME_URL, headers=headers)
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["role"] == "user"
+    assert second.json()["role"] == "admin"
+
+    as_admin = await client.post(LOGIN_URL, json=credentials, headers=_origin_headers(settings))
+    assert as_admin.status_code == 200, as_admin.text
+    assert as_admin.json()["user"]["role"] == "admin"  # positive control: this login is an admin's
+    refreshed = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["user"]["role"] == "admin"
+
+    five = {"iss", "aud", "sub", "iat", "exp"}
+    for issued in (as_user, as_admin, refreshed):
+        payload = claims(issued.json()["access_token"])
+        assert set(payload) == five
+        assert "admin" not in str(payload.values())
 
 
 # ---------------------------------------------------------------------------------------------

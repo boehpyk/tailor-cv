@@ -29,7 +29,12 @@ import type { BaseCv } from '@/features/intake/types';
  * already exist keep their label.
  */
 
-const USER = { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-25T10:00:00Z' };
+const USER = {
+  id: 'user-1',
+  email: 'alex@example.com',
+  created_at: '2026-09-25T10:00:00Z',
+  role: 'user' as const,
+};
 const AUTHENTICATED = {
   access_token: 'token-1',
   token_type: 'Bearer' as const,

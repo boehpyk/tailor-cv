@@ -205,6 +205,11 @@ phase that depends on it closes.
   address, and it is *stated to the user* where the address is typed. The mail carries a one-time
   link and nothing else — no name, no CV content, no account id — as plain text with tracking off.
   Nothing else is ever mailed: no marketing, no notifications ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)).
+- **The operator can read stored data, and the user is told so.** An admin can read CVs, job
+  postings and tailored documents to operate and support the service. Users are told in one
+  sentence where they hand data over: *"The person who runs TailorCraft can read what is stored
+  here — CVs, job postings and tailored documents — to operate and support the service."*
+  ([ADR-0032](./adr/0032-a-role-is-one-column-on-the-user-read-on-every-admin-request.md)).
 - **Untrusted input crosses a validation boundary** before touching the domain. Three inputs are
   security-critical: the **uploaded file** (type, size, and content sniffing — a "PDF" is whatever
   bytes the user sent), the **job URL** (SSRF: no localhost, no private ranges, no redirects into

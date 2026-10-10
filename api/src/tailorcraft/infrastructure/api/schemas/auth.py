@@ -22,6 +22,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
+from tailorcraft.domain.identity.value_objects import Role
+
 EMAIL_MAX_LENGTH = 320
 PASSWORD_MAX_LENGTH = 1024
 
@@ -98,13 +100,18 @@ class ResetConfirmRequest(BaseModel):
 
 
 class UserResponse(BaseModel):
-    """`{"id", "email", "created_at"}` — `GET /api/auth/me`, and `user` inside every
+    """`{"id", "email", "created_at", "role"}` — `GET /api/auth/me`, and `user` inside every
     `AuthenticatedResponse`. Nothing else about an account crosses the wire: no hash, no login id,
-    no timestamps of password changes."""
+    no timestamps of password changes.
+
+    `role` (slice 4.1) serializes as its string value (`"user"` or `"admin"`). It tells the client
+    whether to *show* the admin link, nothing more: the server re-reads the role on every
+    `/api/admin` request, and it is never a token claim (technical plan §0.3)."""
 
     id: UUID
     email: str
     created_at: datetime
+    role: Role
 
 
 class AuthenticatedResponse(BaseModel):

@@ -5844,3 +5844,137 @@ Almost every design choice in the slice follows from that sentence, and so did m
   pointing at the old container (502 until `restart nginx`), which is older than this slice.
 - **Watch** the share of runs failing `llm_rate_limited` (the trigger for a growing cooldown), and
   complaints about long waits (the trigger for revisiting the hourly limits).
+
+---
+
+# Slice 4.1 — a door that looks like a wall
+
+## What the user sees now
+
+Almost nothing, and that is the point. A normal account sees exactly what it saw yesterday, plus
+one honest sentence near the CV upload: the people who run the site can read what you store.
+An **admin** sees one more link in the header, *Admin*, between Board and Account, and behind it a
+page that says *Nothing to manage here yet.* Phase 4 fills that page. 4.1 builds the door and the
+lock, and makes sure everyone without a key sees a plain wall.
+
+You become an admin in exactly one way: someone with a shell on the box runs
+`python -m tailorcraft.cli grant-role --user-id <uuid>`. There is no button for it and no endpoint
+for it. The most dangerous write in the system is also the hardest one to reach.
+
+## Role-as-row, not role-as-claim
+
+The tempting design puts `"role": "admin"` into the access token. Every request then knows the
+role for free, with no database read. It's fast, and it's the design in half the tutorials online.
+
+The trouble shows up the day you **revoke** someone. A token is a signed promise that lasts 15
+minutes, and you can't take a promise back. The demoted admin keeps admin powers until it expires.
+For a hotel, that's like the front desk changing a guest's room but letting the old key card keep
+working until checkout.
+
+So the role is a column on `identity_user`, and every `/api/admin/*` request reads it. That costs
+one primary-key lookup, measured at a p95 of **under 3 ms**. In return, a revoke works on the very
+next request and signs nobody out. The token still carries its five claims and nothing else, and a
+test decodes a real token to prove it.
+
+## Why the 404 is Starlette's and not ours
+
+A non-admin who visits `/api/admin/access` gets a 404, not a 403. A 403 says "this exists, and it's
+not for you," which is information. A 404 says nothing.
+
+But *which* 404? The app has its own error envelope, `{"error": {"code": …}}`, and
+every other refusal uses it. Use it here and the 404 is subtly different from the one a typo
+produces (`{"detail":"Not Found"}`, which comes straight from the router). A curious user comparing
+the two would see that one of them is a real place. So `require_admin` raises **Starlette's**
+`HTTPException(404)`, which FastAPI renders exactly like an unmatched route. It's the one raise in
+the codebase that skips the envelope, and it has a comment saying so, because the first tidy-minded
+refactor would otherwise "fix" it.
+
+The test for this doesn't compare against a string literal. It sends two real requests, one to
+`/api/admin/access` as a plain user and one to `/api/admin/no-such-route`, and asserts that the bytes
+and headers match. A literal would only prove that the code agrees with the test author's belief.
+Comparing against the router itself proves the thing that matters: nobody can tell the two apart.
+Mutation 1 (swap in FastAPI's own `HTTPException`) turned exactly that test red.
+
+The honest residue is recorded in ADR-0032. Without a bearer you get a 401, and a wrong method
+gets routing's 405. Both tell a determined prober that *something* lives under `/api/admin`. That
+was accepted on purpose rather than bought back with a second, bigger lie.
+
+## The first code split
+
+`/admin` is the first page in the app that is downloaded **only when you go there**:
+`lazy(() => import('./AdminPage'))`. Ninety-nine visitors in a hundred will never see it, so it
+shouldn't be in their bundle. It builds as its own 0.81 kB chunk, and the main bundle grew by
+1.24 kB for the route, the link and the fallback.
+
+One import nearly undid it. The route and its fallback live in the main bundle, and they needed a
+couple of strings from `adminCopy.ts`. Importing that file would have pulled *all* the admin copy
+into the main chunk. The fix was a tiny `lazyCopy.ts` holding only what the main bundle needs, and
+the proof is a grep: `Nothing to manage here yet` appears 0 times in `index-*.js`.
+
+Code splitting also brings a new way to fail. A tab opened before a deploy asks for a chunk whose
+hashed name no longer exists. `LazyBoundary`, an old-fashioned class component (React 19 still
+has no hook for error boundaries), catches the failed import. Instead of a blank page it says
+*Couldn't load this page. Reload to get the latest version.* The manual pass reproduced it: build,
+open the tab, rebuild, click. It got the Reload view, and Reload brought up the shell.
+
+## War stories
+
+**The spy that watched the wrong door.** A test wanted to prove the admin handler never *runs* for a
+plain user, so it wrapped `route.dependant.call`. Its own positive control failed: the spy saw
+nothing even when the admin got a 204. FastAPI 0.141 doesn't serve the `APIRoute` you register. It
+builds a fresh "effective" copy from `route.endpoint` and serves that, so the patched object was a
+museum exhibit. The implementer found it, said so, and didn't touch the test. The correction landed
+in its own commit, still red against the skeleton. Notice that the positive control is what caught
+it. Without one, a broken spy reads as "the handler never ran", which is exactly what the test
+hoped to see.
+
+**The event that went to the wrong address.** The demotion test simulated "the user came back to the
+tab" by dispatching `visibilitychange` on `document`. TanStack listens on `window`, and the event
+doesn't bubble up to it, so nothing happened. A one-word fix: `window`.
+
+**`undefined` is not an answer.** The access probe's 204 has no body, so the query function resolved
+`undefined`. TanStack v5 treats that as a programming error, so every admin saw *Couldn't check admin
+access.* The probe now returns `true`. It's a small thing, and it would have hidden every admin page
+behind an error.
+
+**F-1, the one only a human could find.** Every test was green. Then the manual pass did the
+obvious thing: grant, open `/admin`, revoke, come back to the tab. The page stayed. No request was
+sent at all. The app's query client turns `refetchOnWindowFocus` **off** for everything (2.1 chose
+that, for good reasons). The demotion test had built its own client with TanStack's defaults, where
+it is **on**. So the test was checking a different app from the one users get.
+
+The fix went red-first, in three commits. First, the app's client moved into
+`createAppQueryClient()` so a test could use the real one. Next, the test switched to it and went
+red. Last, the probe got `refetchOnWindowFocus: 'always'`. It had to be `'always'`, not `true`,
+because `true` still skips a refetch while the cached answer is under 30 seconds old. A mutation
+proved that too: `true` turns the test red.
+
+The lesson is worth more than the fix. **A test harness that quietly differs from production is
+testing a sibling product.** This is the third time a hand-built TanStack client has bitten this
+codebase (`gcTime: 0` did it twice in 2.1/2.2). The rule now is: when the behaviour depends on a
+default, build the client the way the app does.
+
+## The numbers
+
+- **`/api/admin/access` p95**: **2.76–2.95 ms** on the production image (budget 30). `/me` is
+  within 1 ms of `main`.
+- **Bundle**: main +1.24 kB gzip (the budget was amended from 1.0 to 1.5 kB by the owner). Admin
+  chunk 0.81 kB.
+- **Mutations**: five, all recorded. The 404 swap turned 1 test red, removing the router guard 17,
+  the lock swap 4, `is_admin → True` 10, and the view-order swap 1.
+- **Tests**: 4566 backend, 1360 frontend. Green twice in a row.
+
+## The common thread
+
+3.3 asked *who may try again?* 4.1 asks *who may know?* The answers to "is this an admin?" and "does
+this page exist?" were designed to be **indistinguishable** to anyone who shouldn't know. The
+404 is the router's own, the role never leaves the server inside a token, and the link in the
+header is only a hint. And the bug that got through was the same idea one level down: a test that
+couldn't tell its own client from the real one.
+
+## What's next
+
+- **`/verify`**: re-walk T26's demotion step in a real browser now that F-1 is fixed. Firefox
+  hasn't been exercised.
+- **4.2**: the admin page gets something to manage. Its plan has to close OQ-16, the gap between
+  "is this an admin?" and a destructive action taken a moment later.
