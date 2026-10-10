@@ -613,7 +613,8 @@ _USER_AGGREGATE = _SRC / "domain" / "identity" / "user.py"
 
 
 def _role_writes(tree: ast.Module) -> list[tuple[int, str]]:
-    """Attribute assignments to `role`/`_role`, `setattr(x, "role", …)` and `SET role` SQL."""
+    """Attribute assignments to `role`/`_role`, `setattr(x, "role", …)`, a Core
+    `.values(role=…)` / `.values({"role": …})`, and `SET role` SQL."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(tree):
         line = getattr(node, "lineno", 0)
@@ -636,6 +637,22 @@ def _role_writes(tree: ast.Module) -> list[tuple[int, str]]:
             and node.args[1].value in {"role", "_role"}
         ):
             found.append((line, "setattr"))
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "values"
+            and (
+                any(k.arg in {"role", "_role"} for k in node.keywords)
+                or any(
+                    isinstance(a, ast.Dict)
+                    and any(
+                        isinstance(k, ast.Constant) and k.value in {"role", "_role"} for k in a.keys
+                    )
+                    for a in node.args
+                )
+            )
+        ):
+            found.append((line, "core"))
         if (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
@@ -668,9 +685,13 @@ def test_ac23_inside_the_aggregate_only_registration_and_change_role_assign_the_
 
 
 def test_ac23_the_role_scan_has_a_positive_control() -> None:
-    bad = "user._role = x\nsetattr(u, 'role', 1)\nq = 'UPDATE t SET  role = 1'"
-    assert [kind for _, kind in _role_writes(ast.parse(bad))] == ["assignment", "setattr", "sql"]
-    assert _role_writes(ast.parse("x = 1")) == []
+    bad = (
+        "user._role = x\nsetattr(u, 'role', 1)\nq = 'UPDATE t SET  role = 1'\n"
+        "update(t).values(role=r)\nupdate(t).values({'role': r})"
+    )
+    kinds = sorted(kind for _, kind in _role_writes(ast.parse(bad)))
+    assert kinds == ["assignment", "core", "core", "setattr", "sql"]
+    assert _role_writes(ast.parse("x = 1\nupdate(t).values(user_id=u)")) == []
 
 
 def _mentions_change_user_role(tree: ast.Module) -> bool:

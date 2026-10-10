@@ -1283,30 +1283,31 @@ async def test_the_user_in_a_refresh_response_has_exactly_the_four_keys(
     assert response.json()["user"]["role"] == "user"
 
 
-async def test_me_reports_a_grant_committed_elsewhere_with_the_same_token_and_the_token_is_unchanged(
+async def test_me_reports_a_grant_with_the_same_token_and_an_admins_issued_tokens_carry_no_role(
     client: AsyncClient,
     settings: Settings,
     session: AsyncSession,
     password_hasher: Argon2PasswordHasher,
     clock: FixedClock,
-    app: FastAPI,
 ) -> None:
-    """AC-12 (read at request time) and AC-13 (no `role` claim: five claims before and after).
+    """AC-12 (read at request time) and AC-13 (no `role` claim).
 
-    The same token is presented twice around a grant. (The cross-connection proof is AC-18 in
-    `test_admin_firewall.py`; this test is about `/me`'s shape and the token's claims.)"""
+    The same login-issued token is presented around a grant, then the **admin's** tokens from
+    `/login` and `/refresh` are decoded: the paths that would grow a role claim, not a token minted
+    by hand. (The cross-connection proof is AC-18 in `test_admin_firewall.py`.)"""
     import jwt  # PyJWT, already a dependency (access tokens)
 
-    user = await _seed_user(session, password_hasher, clock, email="grant.shape@example.com")
-    tokens = JwtAccessTokens(
-        settings.jwt_signing_key.get_secret_value(),
-        timedelta(minutes=settings.access_token_ttl_minutes),
-    )
-    issued = tokens.issue(user.id, clock.now())
-    app.dependency_overrides[get_clock] = lambda: clock
-    headers = {"Authorization": f"Bearer {issued.token}"}
+    def claims(token: str) -> dict[str, object]:
+        decoded: dict[str, object] = jwt.decode(token, options={"verify_signature": False})
+        return decoded
 
-    claims_before = set(jwt.decode(issued.token, options={"verify_signature": False}))
+    email = "grant.shape@example.com"
+    user = await _seed_user(session, password_hasher, clock, email=email)
+    credentials = _credentials(email, A_STRONG_PASSWORD)
+    as_user = await client.post(LOGIN_URL, json=credentials, headers=_origin_headers(settings))
+    assert as_user.status_code == 200, as_user.text
+    headers = {"Authorization": f"Bearer {as_user.json()['access_token']}"}
+
     first = await client.get(ME_URL, headers=headers)
     await session.execute(
         text("UPDATE identity_user SET role = 'admin' WHERE id = :id"), {"id": user.id.value}
@@ -1314,12 +1315,23 @@ async def test_me_reports_a_grant_committed_elsewhere_with_the_same_token_and_th
     await session.commit()
     session.expire_all()  # a Core UPDATE does not touch the identity map (2.4); production has a session per request
     second = await client.get(ME_URL, headers=headers)
-    claims_after = set(jwt.decode(issued.token, options={"verify_signature": False}))
 
     assert first.status_code == second.status_code == 200
     assert first.json()["role"] == "user"
     assert second.json()["role"] == "admin"
-    assert claims_before == claims_after == {"iss", "aud", "sub", "iat", "exp"}
+
+    as_admin = await client.post(LOGIN_URL, json=credentials, headers=_origin_headers(settings))
+    assert as_admin.status_code == 200, as_admin.text
+    assert as_admin.json()["user"]["role"] == "admin"  # positive control: this login is an admin's
+    refreshed = await client.post(REFRESH_URL, headers=_origin_headers(settings))
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["user"]["role"] == "admin"
+
+    five = {"iss", "aud", "sub", "iat", "exp"}
+    for issued in (as_user, as_admin, refreshed):
+        payload = claims(issued.json()["access_token"])
+        assert set(payload) == five
+        assert "admin" not in str(payload.values())
 
 
 # ---------------------------------------------------------------------------------------------

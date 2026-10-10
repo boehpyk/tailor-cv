@@ -122,6 +122,9 @@ def test_change_role_refuses_an_instant_before_created_at() -> None:
 
 
 def test_a_refused_change_role_changes_and_records_nothing() -> None:
+    """The T3 RED failed on the skeleton's NotImplementedError, so this was proven at /verify:
+    moving the guard below the assignment and `record` fails it (1 failed, 27 passed), source
+    restored byte-exact."""
     user = _registered()
 
     with pytest.raises(InvariantViolated):
