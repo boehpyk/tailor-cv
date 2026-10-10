@@ -14,6 +14,7 @@ import {
   status,
   stubAccountFetch,
 } from '@/test/accountFetch';
+import { createAppQueryClient } from '@/queryClient';
 import { renderWithRouter } from '@/test/render';
 
 import {
@@ -154,7 +155,10 @@ describe('/admin — AC-31', () => {
     });
     signInAs(ADMIN);
 
-    renderWithRouter('/admin', { queryClient: clientWithRetriesOff() });
+    // The app's own client (F-1, T26): a bespoke client kept TanStack's refetch-on-focus default,
+    // which the app turns off, so this case passed while the real tab never asked again. Focus
+    // comes straight after the 204, so the cached answer is still fresh under the app's staleTime.
+    renderWithRouter('/admin', { queryClient: createAppQueryClient() });
     expect(
       await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
     ).toBeInTheDocument();
