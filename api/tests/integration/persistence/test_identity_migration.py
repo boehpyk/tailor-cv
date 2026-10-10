@@ -299,10 +299,18 @@ async def test_every_timestamp_column_on_the_three_new_tables_is_timestamptz_pre
     ).bindparams(bindparam("tables", expanding=True))
     result = await session.execute(stmt, {"tables": list(_NEW_TABLES)})
     rows = result.all()
-    # identity_user: created_at, password_updated_at (2) — identity_login: created_at, expires_at,
-    # rotated_at (3) — identity_retired_refresh_token: retired_at (1) — six in total.
-    assert len(rows) == 6, (
-        f"expected 6 timestamptz columns across the three new tables, found {rows}"
+    expected = {
+        ("identity_user", "created_at"),
+        ("identity_user", "password_updated_at"),
+        ("identity_user", "disabled_at"),  # slice 4.2, ADR-0033
+        ("identity_login", "created_at"),
+        ("identity_login", "expires_at"),
+        ("identity_login", "rotated_at"),
+        ("identity_retired_refresh_token", "retired_at"),
+    }
+    found = {(row.table_name, row.column_name) for row in rows}
+    assert found == expected, (
+        f"timestamptz columns differ from the expected set: {found ^ expected}"
     )
     for row in rows:
         assert row.data_type == "timestamp with time zone"

@@ -58,6 +58,11 @@ user_table = Table(
     # the role set is a security boundary, so a new member *should* need a migration, and a
     # hand-written `UPDATE` must not be able to invent one. Renders `ck_identity_user_role_known`.
     CheckConstraint("role IN ('user','admin')", name="role_known"),
+    # Slice 4.2 (ADR-0033): when the account was disabled, `NULL` while it is active. One nullable
+    # instant says both *whether* and *since when*, so there is no status column to disagree with it.
+    # No default (an account is born active) and no index: the bearer's read is by primary key, and
+    # the directory sorts on `created_at`.
+    Column("disabled_at", TIMESTAMP(timezone=True, precision=0), nullable=True),
 )
 
 mapper_registry.map_imperatively(
@@ -70,5 +75,6 @@ mapper_registry.map_imperatively(
         "_created_at": user_table.c.created_at,
         "_password_updated_at": user_table.c.password_updated_at,
         "_role": user_table.c.role,
+        "_disabled_at": user_table.c.disabled_at,
     },
 )
