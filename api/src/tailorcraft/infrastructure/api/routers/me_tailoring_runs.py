@@ -176,7 +176,7 @@ def _log_entry_erasure(
     """One `retention.history_entry_erased` line with the counts, and one
     `retention.history_entry_file_unlink_failed` per failed unlink — ids, counts and class names,
     never a storage key or a path. `EraseHistoryEntry` returns its failures rather than logging them
-    (the application layer does not log); `routers/auth.py::_log_erasure` is the same shape."""
+    (the application layer does not log); `routers/_erasure_log.py::log_erasure` is the same shape."""
     log.info(
         EVENT_HISTORY_ENTRY_ERASED,
         user_id=str(user_id.value),

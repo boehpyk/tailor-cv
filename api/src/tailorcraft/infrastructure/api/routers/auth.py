@@ -74,10 +74,8 @@ from tailorcraft.domain.identity.value_objects import (
     LoginNotFoundReason,
     Password,
     TokenRefusal,
-    UserId,
 )
 from tailorcraft.domain.retention.errors import AccountNotFound
-from tailorcraft.domain.retention.value_objects import AccountErasureReport
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
     ConfirmRegistrationDep,
@@ -113,6 +111,7 @@ from tailorcraft.infrastructure.api.refresh_cookie import (
     remaining_lifetime_seconds,
     set_refresh_cookie,
 )
+from tailorcraft.infrastructure.api.routers._erasure_log import log_erasure
 from tailorcraft.infrastructure.api.schemas.auth import (
     AuthenticatedResponse,
     CredentialsRequest,
@@ -173,8 +172,6 @@ EVENT_REFRESH_REFUSED: Final = "identity.refresh_refused"
 EVENT_REFRESH_RACED: Final = "identity.refresh_raced"
 EVENT_USER_MISSING: Final = "identity.user_missing"
 EVENT_ACCOUNT_DELETION_REFUSED: Final = "identity.account_deletion_refused"
-EVENT_ACCOUNT_ERASED: Final = "retention.account_erased"
-EVENT_ACCOUNT_FILE_UNLINK_FAILED: Final = "retention.account_file_unlink_failed"
 # Slice 2.5 (feature spec, the V-rows' "Logged" column). Ids and closed reasons only — never an
 # address, a token, a token's hash or a password.
 EVENT_REGISTRATION_REQUESTED: Final = "identity.registration_requested"
@@ -713,39 +710,11 @@ async def delete_account(
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from None
 
-    _log_erasure(user_id, report)
+    log_erasure(user_id, report)
 
     await _commit(session)
     clear_refresh_cookie(response, settings)
     _no_store(response)
-
-
-def _log_erasure(user_id: UserId, report: AccountErasureReport) -> None:
-    """S-45: one `retention.account_erased` line with the counts, and one
-    `retention.account_file_unlink_failed` per failed unlink — ids, counts and class names only.
-
-    `EraseAccount` returns its failures rather than logging them (the application layer does not
-    log); this is the entry point writing them down, exactly as the purge's task does with its
-    `PurgeReport`. Each failure is an orphan file for the operator's sweep (R-5)."""
-    log.info(
-        EVENT_ACCOUNT_ERASED,
-        user_id=str(user_id.value),
-        base_cvs=report.base_cvs,
-        # Slice 2.3 (H-52): an account is also its history. `files` is every key the erasure tried
-        # to unlink — saved CVs' and derived export keys — so the two numbers below read against it.
-        tailoring_runs=report.tailoring_runs,
-        job_postings=report.job_postings,
-        export_jobs=report.export_jobs,
-        files=report.files,
-        files_unlinked=report.files_unlinked,
-        files_failed=len(report.unlink_failures),
-        # Slice 3.1 (T-34): the account's cards, gone by the cascade. A count.
-        tracked_applications=report.tracked_applications,
-    )
-    for error_type in report.unlink_failures:
-        log.warning(
-            EVENT_ACCOUNT_FILE_UNLINK_FAILED, user_id=str(user_id.value), error_type=error_type
-        )
 
 
 # ---------------------------------------------------------------------------------------------
