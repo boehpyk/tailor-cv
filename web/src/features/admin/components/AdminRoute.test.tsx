@@ -159,7 +159,8 @@ describe('/admin — AC-31', () => {
       await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
     ).toBeInTheDocument();
 
-    fireEvent(document, new Event('visibilitychange'));
+    // TanStack v5's focusManager listens on window, and the event does not bubble.
+    fireEvent(window, new Event('visibilitychange'));
 
     expect(await screen.findByRole('heading', { name: NOT_FOUND_HEADING })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: ADMIN_HEADING })).not.toBeInTheDocument();
