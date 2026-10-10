@@ -130,11 +130,13 @@ export const USER_A: User = {
   id: 'user-a',
   email: 'a@example.com',
   created_at: '2026-09-01T10:00:00Z',
+  role: 'user' as const,
 };
 export const USER_B: User = {
   id: 'user-b',
   email: 'b@example.com',
   created_at: '2026-09-01T10:00:00Z',
+  role: 'user' as const,
 };
 
 export function tokenFor(user: User): string {

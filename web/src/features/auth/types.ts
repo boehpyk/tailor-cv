@@ -5,12 +5,20 @@
  * Read-only on purpose: these are what the server said, and nothing in the client edits a response.
  */
 
+/**
+ * A user's role (slice 4.1, OQ-1): closed, and the wire spelling. The client reads it only to show
+ * or hide the Admin link; `/admin` always asks the server (`GET /api/admin/access`), because a
+ * cached role is a hint, never authority (AC-34).
+ */
+export type Role = 'user' | 'admin';
+
 /** A registered user, as `GET /api/auth/me` and every token response describe them. */
 export interface User {
   readonly id: string;
   readonly email: string;
   /** ISO-8601, UTC, whole seconds. */
   readonly created_at: string;
+  readonly role: Role;
 }
 
 /**

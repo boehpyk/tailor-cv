@@ -37,8 +37,18 @@ function wrapperFor(queryClient: QueryClient) {
   };
 }
 
-const USER_A: User = { id: 'user-a', email: 'a@example.com', created_at: '2026-09-25T10:00:00Z' };
-const USER_B: User = { id: 'user-b', email: 'b@example.com', created_at: '2026-09-25T10:00:00Z' };
+const USER_A: User = {
+  id: 'user-a',
+  email: 'a@example.com',
+  created_at: '2026-09-25T10:00:00Z',
+  role: 'user' as const,
+};
+const USER_B: User = {
+  id: 'user-b',
+  email: 'b@example.com',
+  created_at: '2026-09-25T10:00:00Z',
+  role: 'user' as const,
+};
 
 function authResponseFor(user: User): AuthenticatedResponse {
   return { access_token: `token-${user.id}`, token_type: 'Bearer', expires_in: 900, user };

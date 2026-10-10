@@ -25,13 +25,28 @@ function authResponse(overrides: Partial<AuthenticatedResponse> = {}): Authentic
     access_token: 'access-token-1',
     token_type: 'Bearer',
     expires_in: 900,
-    user: { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-23T10:00:00Z' },
+    user: {
+      id: 'user-1',
+      email: 'alex@example.com',
+      created_at: '2026-09-23T10:00:00Z',
+      role: 'user' as const,
+    },
     ...overrides,
   };
 }
 
-const USER_A: User = { id: 'user-a', email: 'a@example.com', created_at: '2026-09-23T10:00:00Z' };
-const USER_B: User = { id: 'user-b', email: 'b@example.com', created_at: '2026-09-23T10:00:00Z' };
+const USER_A: User = {
+  id: 'user-a',
+  email: 'a@example.com',
+  created_at: '2026-09-23T10:00:00Z',
+  role: 'user' as const,
+};
+const USER_B: User = {
+  id: 'user-b',
+  email: 'b@example.com',
+  created_at: '2026-09-23T10:00:00Z',
+  role: 'user' as const,
+};
 
 function makeQueryClient(): QueryClient {
   return new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });

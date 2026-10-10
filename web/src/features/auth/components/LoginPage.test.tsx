@@ -89,7 +89,12 @@ const AUTHENTICATED_RESPONSE = {
   access_token: 'token-abc',
   token_type: 'Bearer' as const,
   expires_in: 900,
-  user: { id: 'user-1', email: 'alex@example.com', created_at: '2026-09-23T10:00:00Z' },
+  user: {
+    id: 'user-1',
+    email: 'alex@example.com',
+    created_at: '2026-09-23T10:00:00Z',
+    role: 'user' as const,
+  },
 };
 
 beforeEach(() => {
