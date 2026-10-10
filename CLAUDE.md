@@ -26,7 +26,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (`a092053`) and released 2026-10-09 (deploy run 37855115482). Slice 3.3
 > `workspace-rate-limit-retry-feedback` was merged as PR #25 (`279a0b7`) and released 2026-10-09
 > (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was implemented
-> 2026-10-10 on `feature/identity-user-roles`, not yet verified or merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> and verified 2026-10-10 on `feature/identity-user-roles` (reviewer PASS round 1), PR open, not
+> yet merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -516,7 +517,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`148f4e1`, `a8b626f`, `ae4c970`, `60fba47`), all **timing or spec-superseded copy** — see
 >   Conventions.
 >
-> - **4.1 `identity-user-roles`** (**implemented 2026-10-10, awaiting `/verify`**) — one role per
+> - **4.1 `identity-user-roles`** (**implemented and verified 2026-10-10, reviewer PASS round 1; PR open**) — one role per
 >   user, `user | admin`, and an `/api/admin` surface only an admin can see (**ADR-0032**; ADR-0008
 >   amendment (i)). `Role` is a closed `StrEnum` on `User` (`register_with_password` sets `USER`, no
 >   parameter; `change_role` records `UserRoleChanged`; `is_admin` is the **only** role check in the
@@ -549,7 +550,15 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   only by T26's manual pass**: the app's client turns `refetchOnWindowFocus` off, so a demoted
 >   admin's open tab never asked again while a test on a bespoke client passed — fixed red-first
 >   (`58b280a` → `bb6a4f1` → `21333e8`, the probe refetches `'always'` on focus). Firefox not
->   exercised. T26's demotion step should be re-walked at `/verify`.
+>   exercised. **`/verify` passed in one round** (0 CRITICAL, 0 MAJOR). T26's demotion was walked
+>   again in Chromium: a focus 12 s after load, inside the 30 s `staleTime`, sent the probe again,
+>   which answered 404, and the not-found view replaced the shell. The Admin link stays until the
+>   next `/me` fetch, which R-26 allows. Three MINORs were tests that could not fail, hardened in
+>   `1538047`, each proven by mutation: AC-13 had decoded one hand-minted token twice and now
+>   decodes the tokens `/login` and `/refresh` issue to an admin; AC-23's scan now catches a Core
+>   `.values(role=…)`; T3's refusal test, red only on `NotImplementedError`, was proven by moving
+>   the guard. **Carried to 4.2:** the view puts every error ahead of a cached 204, so a transient
+>   503 on focus replaces the admin page. Decide whether only a 404 outranks cached data.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
