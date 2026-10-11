@@ -35,6 +35,7 @@ from tailorcraft.domain.export.errors import (
 )
 from tailorcraft.domain.identity.errors import (
     AccessTokenInvalid,
+    AccountDisabled,
     AccountMailQueueUnavailable,
     ConfirmationTokenInvalid,
     EmailAlreadyRegistered,
@@ -42,6 +43,8 @@ from tailorcraft.domain.identity.errors import (
     GuestSessionNotFound,
     InvalidCredentials,
     InvalidEmailAddress,
+    InvalidEmailSearch,
+    InvalidUserDirectoryCursor,
     LoginNotFound,
     PasswordHashingFailed,
     RefreshInProgress,
@@ -117,6 +120,14 @@ NOT_SIGNED_IN_DETAIL = {
 """401 for every "this refresh cookie names no live login" (I-19, I-20, I-21, I-27) and for a valid
 access token whose user is gone (I-39). One code: after a revocation, "revoked" and "never existed"
 are indistinguishable by design (ADR-0020)."""
+
+ACCOUNT_DISABLED_DETAIL = {
+    "code": "account_disabled",
+    "message": "This account has been disabled.",
+}
+"""403 for a disabled account (slice 4.2, ADR-0033): a correct password at login, and a valid
+bearer whose account an administrator disabled. A 403, not a 401: the credential is fine and a
+refresh would not help, so the client must not answer it by signing in again."""
 
 LINK_INVALID_DETAIL = {
     "code": "link_invalid",
@@ -201,6 +212,28 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
         | AccountMailQueueUnavailable,
     ):
         return _identity_error_to_http(exc)
+
+    # -- the admin users area (slice 4.2, ADR-0033) ---------------------------------------------
+    if isinstance(exc, AccountDisabled):
+        return HTTPException(status.HTTP_403_FORBIDDEN, detail=ACCOUNT_DISABLED_DETAIL)
+    if isinstance(exc, InvalidEmailSearch):
+        # A fixed sentence: the search is something a person typed, never echoed (AC-18).
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_search",
+                "message": "That search is not valid. Use up to 254 characters of an email.",
+            },
+        )
+    if isinstance(exc, InvalidUserDirectoryCursor):
+        # History's code and sentence (H-26): one meaning for a refused page link everywhere.
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_cursor",
+                "message": "That page link is not valid. Start again from the first page.",
+            },
+        )
 
     if isinstance(exc, BaseCvNotFound):
         return HTTPException(

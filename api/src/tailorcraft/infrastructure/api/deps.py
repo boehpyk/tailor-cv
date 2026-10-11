@@ -38,7 +38,10 @@ from tailorcraft.application.identity.authorize_administrator import AuthorizeAd
 from tailorcraft.application.identity.claim_guest_work import ClaimGuestWork
 from tailorcraft.application.identity.confirm_registration import ConfirmRegistration
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
+from tailorcraft.application.identity.disable_account import DisableAccount
+from tailorcraft.application.identity.enable_account import EnableAccount
 from tailorcraft.application.identity.get_current_user import GetCurrentUser
+from tailorcraft.application.identity.list_users import ListUsers
 from tailorcraft.application.identity.log_in import LogIn
 from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
@@ -58,6 +61,7 @@ from tailorcraft.application.posting.list_job_postings import ListJobPostingsFor
 from tailorcraft.application.posting.list_recent_job_postings import ListRecentJobPostingsForUser
 from tailorcraft.application.retention.erase_account import EraseAccount
 from tailorcraft.application.retention.erase_history_entry import EraseHistoryEntry
+from tailorcraft.application.retention.get_account_overview import GetAccountOverview
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
@@ -1397,6 +1401,63 @@ def get_user_directory_query(session: SessionDep) -> UserDirectoryQuery:
 
 
 UserDirectoryQueryDep = Annotated[UserDirectoryQuery, Depends(get_user_directory_query)]
+
+
+# ---------------------------------------------------------------------------------------------
+# The admin users area — slice 4.2 (technical plan §3 "Wiring"). Every route is behind
+# `routers/admin_users.py`'s router-level `require_admin`; the erase reuses `get_erase_account`.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_disable_account(
+    users: UserRepositoryDep,
+    logins: LoginRepositoryDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+) -> DisableAccount:
+    return DisableAccount(users, logins, clock, events)
+
+
+DisableAccountDep = Annotated[DisableAccount, Depends(get_disable_account)]
+
+
+def get_enable_account(
+    users: UserRepositoryDep, clock: ClockDep, events: EventPublisherDep
+) -> EnableAccount:
+    return EnableAccount(users, clock, events)
+
+
+EnableAccountDep = Annotated[EnableAccount, Depends(get_enable_account)]
+
+
+def get_list_users(directory: UserDirectoryQueryDep) -> ListUsers:
+    return ListUsers(directory)
+
+
+ListUsersDep = Annotated[ListUsers, Depends(get_list_users)]
+
+
+def get_overview_account_data(session: SessionDep) -> AccountDataPort:
+    """`AccountDataPort` -> `SqlAlchemyAccountData` **without** `CommittingAccountData`: the
+    overview only counts, so there is nothing to commit before a file is touched.
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.retention.account_data import (
+        SqlAlchemyAccountData,
+    )
+
+    return SqlAlchemyAccountData(session)
+
+
+def get_account_overview(
+    users: UserRepositoryDep,
+    accounts: Annotated[AccountDataPort, Depends(get_overview_account_data)],
+) -> GetAccountOverview:
+    return GetAccountOverview(users, accounts)
+
+
+GetAccountOverviewDep = Annotated[GetAccountOverview, Depends(get_account_overview)]
 
 
 def get_list_tailoring_history(
