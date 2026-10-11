@@ -28,8 +28,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was verified
 > 2026-10-10 (reviewer PASS round 1), merged as PR #28 (`26472b1`) and released the same day**
 > (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). **Slice
-> 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2) and awaits release**
-> (T29). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2), merged as PR #30
+> (`16fbe47`) and released the same day** (deploy run 38161380305). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -562,8 +562,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   the guard. **Carried to 4.2:** the view puts every error ahead of a cached 204, so a transient
 >   503 on focus replaces the admin page. Decide whether only a 404 outranks cached data.
 >
-> - **4.2 `admin-users`** (**verified 2026-10-11, reviewer PASS round 2** — then the
->   owner's release, T29; round 1's MAJOR, the search term reaching Sentry, fixed in `9984003`) — a user directory at `/admin` and three actions on an account: disable,
+> - **4.2 `admin-users`** (PR #30, `16fbe47`, **verified 2026-10-11, reviewer PASS round 2, released the
+>   same day**, deploy run 38161380305; round 1's MAJOR, the search term reaching Sentry, fixed in `9984003`) — a user directory at `/admin` and three actions on an account: disable,
 >   enable, erase (**ADR-0033**; ADR-0008 amendment (j), ADR-0024 amendment (b); notes on ADR-0020,
 >   0028, 0032). **Disabled is a timestamp**: `User.disabled_at` (`None` is active), `disable(at,
 >   logins_revoked)` / `enable(at)` record `UserDisabled` / `UserEnabled`, and a repeat records
