@@ -8,10 +8,11 @@ in `admin.py`, and 4.1's structural walk pins it on every route under `/api/admi
 holds it. So the firewall's refusals come first on every route, before any path or query parameter
 is validated (AC-19): a non-admin gets the 404 byte-identical to an unmatched path, never a 422.
 
-**A missing target is 404 `user_not_found`, translated here, not in `errors.py`** (§0.7). The global
-map turns `UserNotFound` and `AccountNotFound` into 401 `not_signed_in` — "*your* account is gone".
-Here the account that is gone is someone else's, and a 401 would sign the administrator out. The
-*actor's* `UserNotFound` never reaches a handler: `require_admin` turns it into the 401 first.
+**A missing target is 404 `user_not_found`, translated by `_admin_responses.user_not_found`, not
+in `errors.py`** (§0.7). The global map turns `UserNotFound` and `AccountNotFound` into 401
+`not_signed_in` — "*your* account is gone". Here the account that is gone is someone else's, and a
+401 would sign the administrator out. The *actor's* `UserNotFound` never reaches a handler:
+`require_admin` turns it into the 401 first.
 
 Every response a handler builds carries `Cache-Control: no-store`. No `Origin` check (bearer-only)
 and no rate limit (OQ-10).
@@ -23,7 +24,7 @@ from typing import Annotated, Any, Final
 from uuid import UUID
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from tailorcraft.application.identity.results import AccountStatusChange
 from tailorcraft.domain.identity.errors import InvalidUserDirectoryCursor, UserNotFound
@@ -47,14 +48,16 @@ from tailorcraft.infrastructure.api.deps import (
     SessionDep,
     require_admin,
 )
-from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
+from tailorcraft.infrastructure.api.routers._admin_responses import (
+    FIREWALL,
+    USER_NOT_FOUND,
+    refusal,
+    set_no_store,
+    user_not_found,
+)
 from tailorcraft.infrastructure.api.routers._erasure_log import log_erasure
 from tailorcraft.infrastructure.api.routers._keyset_cursor import decode_keyset, encode_keyset
-from tailorcraft.infrastructure.api.routers._me_responses import (
-    NOT_SIGNED_IN,
-    SERVICE_UNAVAILABLE,
-    VALIDATION_ERROR,
-)
+from tailorcraft.infrastructure.api.routers._me_responses import VALIDATION_ERROR
 from tailorcraft.infrastructure.api.schemas.admin import (
     AccountErasureResponse,
     AccountStatusChangeResponse,
@@ -68,7 +71,6 @@ from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 log = structlog.get_logger(__name__)
 
 EVENT_ADMIN_ACCOUNT_ACTION: Final = "admin.account_action"
-_NO_STORE: Final = {"Cache-Control": "no-store"}
 _CURSOR_REFUSAL: Final = "not a user directory cursor"
 
 router = APIRouter(prefix="/api/admin/users", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -77,28 +79,6 @@ router = APIRouter(prefix="/api/admin/users", tags=["admin"], dependencies=[Depe
 # the one a person meets as 422 `invalid_search`; this one only stops an absurd query string early.
 _SEARCH_MAX_LENGTH: Final = 512
 _CURSOR_MAX_LENGTH: Final = 256
-
-ACCOUNT_DISABLED: dict[int | str, dict[str, Any]] = {
-    status.HTTP_403_FORBIDDEN: {
-        "model": ErrorResponse,
-        "description": "account_disabled — the administrator's own account is disabled.",
-    },
-}
-
-USER_NOT_FOUND: dict[int | str, dict[str, Any]] = {
-    status.HTTP_404_NOT_FOUND: {
-        "model": ErrorResponse,
-        "description": (
-            "user_not_found — no account with that id (including one erased concurrently)."
-        ),
-    },
-}
-
-_FIREWALL: dict[int | str, dict[str, Any]] = {
-    **NOT_SIGNED_IN,
-    **ACCOUNT_DISABLED,
-    **SERVICE_UNAVAILABLE,
-}
 
 
 @router.get(
@@ -114,7 +94,7 @@ _FIREWALL: dict[int | str, dict[str, Any]] = {
                 "ever echoed or logged."
             ),
         },
-        **_FIREWALL,
+        **FIREWALL,
     },
 )
 async def list_users(
@@ -129,13 +109,13 @@ async def list_users(
     """One keyset page of every account, newest first, optionally filtered by an email substring.
     `next_cursor` is `null` on the last page; no match is `{"items": [], "next_cursor": null}`.
     Neither `q` nor the cursor is ever logged or echoed (AC-18)."""
-    _set_no_store(response)
+    set_no_store(response)
     try:
         search = EmailSearch.parse(q) if q is not None else None
         after = _decode_cursor(cursor) if cursor is not None else None
         page = await list_users(search, after, limit)
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
 
     wire = AdminUserPageResponse(
         items=[
@@ -161,7 +141,7 @@ async def list_users(
 @router.get(
     "/{user_id}",
     response_model=AdminUserDetailResponse,
-    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **_FIREWALL},
+    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **FIREWALL},
 )
 async def get_user(
     user_id: UUID,
@@ -171,13 +151,13 @@ async def get_user(
     db: SessionDep,
 ) -> AdminUserDetailResponse:
     """One account and what erasing it would delete."""
-    _set_no_store(response)
+    set_no_store(response)
     try:
         found = await overview(UserId(user_id))
     except (UserNotFound, AccountNotFound):
-        raise _user_not_found() from None
+        raise user_not_found() from None
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
 
     counts = found.counts
     wire = AdminUserDetailResponse(
@@ -199,7 +179,7 @@ async def get_user(
 @router.post(
     "/{user_id}/disable",
     response_model=AccountStatusChangeResponse,
-    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **_FIREWALL},
+    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **FIREWALL},
 )
 async def disable_user(
     user_id: UUID,
@@ -209,15 +189,15 @@ async def disable_user(
     db: SessionDep,
 ) -> AccountStatusChangeResponse:
     """Disable the account and delete every login it holds; idempotent (`changed: false`)."""
-    _set_no_store(response)
+    set_no_store(response)
     target = UserId(user_id)
     try:
         change = await disable_account(target)
     except (UserNotFound, AccountNotFound):
         _log_action(actor, target, "disable", "not_found")
-        raise _user_not_found() from None
+        raise user_not_found() from None
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
 
     await db.commit()
     _log_action(actor, target, "disable", "changed" if change.changed else "unchanged")
@@ -227,7 +207,7 @@ async def disable_user(
 @router.post(
     "/{user_id}/enable",
     response_model=AccountStatusChangeResponse,
-    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **_FIREWALL},
+    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **FIREWALL},
 )
 async def enable_user(
     user_id: UUID,
@@ -237,15 +217,15 @@ async def enable_user(
     db: SessionDep,
 ) -> AccountStatusChangeResponse:
     """Enable the account; resurrects no login. Idempotent; `logins_revoked` is always 0."""
-    _set_no_store(response)
+    set_no_store(response)
     target = UserId(user_id)
     try:
         change = await enable_account(target)
     except (UserNotFound, AccountNotFound):
         _log_action(actor, target, "enable", "not_found")
-        raise _user_not_found() from None
+        raise user_not_found() from None
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
 
     await db.commit()
     _log_action(actor, target, "enable", "changed" if change.changed else "unchanged")
@@ -255,7 +235,7 @@ async def enable_user(
 @router.delete(
     "/{user_id}",
     response_model=AccountErasureResponse,
-    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **_FIREWALL},
+    responses={**USER_NOT_FOUND, **VALIDATION_ERROR, **FIREWALL},
 )
 async def erase_user(
     user_id: UUID,
@@ -266,16 +246,16 @@ async def erase_user(
 ) -> AccountErasureResponse:
     """Erase the account: rows committed, then files (2.2's `EraseAccount`). A failed unlink is
     counted in `unlink_failures` and left for the orphan sweep; it never fails the request."""
-    _set_no_store(response)
+    set_no_store(response)
     target = UserId(user_id)
     try:
         report = await erase_account(target)
     except (UserNotFound, AccountNotFound):
         # Includes the loser of two concurrent erasures (AC-23).
         _log_action(actor, target, "erase", "not_found")
-        raise _user_not_found() from None
+        raise user_not_found() from None
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
 
     # 2.2's lines, byte-identical to `delete-account`'s (plan §3).
     log_erasure(target, report)
@@ -290,32 +270,6 @@ async def erase_user(
         job_postings=report.job_postings,
         export_jobs=report.export_jobs,
         tracked_applications=report.tracked_applications,
-    )
-
-
-def _set_no_store(response: Response) -> None:
-    response.headers.update(_NO_STORE)
-
-
-def _refusal(exc: DomainError) -> HTTPException:
-    """`exc` through the global map, carrying `no-store` (`main.py` renders these headers)."""
-    http = domain_error_to_http_exception(exc)
-    http.headers = {**(http.headers or {}), **_NO_STORE}
-    return http
-
-
-def _user_not_found() -> HTTPException:
-    """404 `user_not_found` for a missing **target** (plan §0.7).
-
-    Not the global map on purpose: `errors.py` turns `UserNotFound`/`AccountNotFound` into 401
-    `not_signed_in`, which means "*your* account is gone" and makes the client sign the
-    administrator out. Here the account that is gone is someone else's. The *actor's* own
-    `UserNotFound` never reaches a handler: `require_admin` answers it with the 401 first.
-    """
-    return HTTPException(
-        status.HTTP_404_NOT_FOUND,
-        detail={"code": "user_not_found", "message": "No account was found with that id."},
-        headers=dict(_NO_STORE),
     )
 
 
