@@ -1,4 +1,5 @@
-"""Wire shapes for `/api/admin/users` (slice 4.2, technical plan §4, ADR-0033).
+"""Wire shapes for `/api/admin/users` (slice 4.2, technical plan §4, ADR-0033) and an account's
+content under it (slice 4.3, technical plan §3, ADR-0034).
 
 **No password hash, no login id, anywhere** (AC-15): a directory row and an account's detail carry
 an id, an address, a role and two instants. Instants are ISO-8601 with an offset, whole seconds
@@ -17,6 +18,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from tailorcraft.domain.identity.value_objects import Role
+from tailorcraft.infrastructure.api.schemas.intake import SavedBaseCvResponse
 
 
 class AdminUserSummary(BaseModel):
@@ -87,3 +89,35 @@ class AccountErasureResponse(BaseModel):
     job_postings: int
     export_jobs: int
     tracked_applications: int
+
+
+class AdminSavedBaseCvResponse(SavedBaseCvResponse):
+    """One saved CV **with its extracted text** — `GET /api/admin/users/{id}/base-cvs/{cv_id}`.
+
+    **Contradicts `SavedBaseCvResponse` on purpose**, whose docstring promises "no text and no
+    bytes": that shape describes a CV to its owner's list, this one shows an administrator what the
+    account holds (ADR-0034; slice 4.3 plan §0.6). A subclass, because it is exactly that shape plus
+    one field, and a test pins the parent unchanged (AC-24) so the text cannot leak back into the
+    user's routes. `null` while the CV is not extracted.
+    """
+
+    extracted_text: str | None
+
+
+class AdminBaseCvDeletionResponse(BaseModel):
+    """`DELETE /api/admin/users/{id}/base-cvs/{cv_id}` — the row is gone; `file_unlinked: false`
+    means the bytes are an orphan for the sweep (the user's twin answers 204 and logs the same)."""
+
+    file_unlinked: bool
+
+
+class AdminHistoryEntryErasureResponse(BaseModel):
+    """`DELETE /api/admin/users/{id}/tailoring-runs/{run_id}` — what `EraseHistoryEntry` removed:
+    rows committed, then files; `unlink_failures` left for the orphan sweep."""
+
+    tailoring_runs: int
+    job_postings: int
+    export_jobs: int
+    tracked_applications: int
+    files_unlinked: int
+    unlink_failures: int
