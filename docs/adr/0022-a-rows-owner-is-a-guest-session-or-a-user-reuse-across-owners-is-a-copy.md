@@ -215,3 +215,9 @@ copy can exist.**
 
 Decision 6's *"it exists for the wire's `origin` field and for slice 2.4's claim"* is thereby used
 once, as an exclusion, and then retired with its readers.
+
+## Note: 2026-10-11, from slice 4.3 (`admin-content`)
+
+Authorization stays one equality. An admin is never a variant of `Owner` — no `AdminOwner`, no
+`owner == x or is_admin` — the admin's routes pass the **target's** `UserOwner` (ADR-0034,
+ADR-0008 (k)), and the admin's authority is the firewall.
