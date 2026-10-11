@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.ports import UserRepository
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import UserId
@@ -34,4 +35,9 @@ class GetAccountOverview:
         self._accounts = accounts
 
     async def __call__(self, target: UserId) -> AccountOverview:
-        raise NotImplementedError
+        user = await self._users.get(target)
+        counts = await self._accounts.count_account(target)
+        if counts is None:
+            # Erased between the two reads: as gone as if `get` had not found it.
+            raise UserNotFound(f"no User with id {target!r}")
+        return AccountOverview(user, counts)

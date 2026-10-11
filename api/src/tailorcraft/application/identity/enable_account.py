@@ -32,4 +32,10 @@ class EnableAccount:
         self._events = events
 
     async def __call__(self, target: UserId) -> AccountStatusChange:
-        raise NotImplementedError
+        user = await self._users.get_for_update(target)
+        was = user.is_disabled
+        user.enable(self._clock.now())
+        if was:
+            await self._users.save(user)
+        await self._events.publish(*user.release_events())
+        return AccountStatusChange(target, user.disabled_at, changed=was, logins_revoked=0)

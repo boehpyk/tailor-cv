@@ -7,11 +7,13 @@ Read-only; takes no lock.
 from __future__ import annotations
 
 from tailorcraft.domain.identity.user_directory import (
+    PAGE_SIZE_MAX,
     EmailSearch,
     UserDirectoryCursor,
     UserDirectoryPage,
     UserDirectoryQuery,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 
 
 class ListUsers:
@@ -23,4 +25,7 @@ class ListUsers:
     async def __call__(
         self, search: EmailSearch | None, after: UserDirectoryCursor | None, limit: int
     ) -> UserDirectoryPage:
-        raise NotImplementedError
+        # The boundary already bounds `limit`; reaching here out of range is a caller's bug.
+        if not 1 <= limit <= PAGE_SIZE_MAX:
+            raise InvariantViolated(f"a directory page holds 1..{PAGE_SIZE_MAX} entries")
+        return await self._directory.page(search, after, limit)
