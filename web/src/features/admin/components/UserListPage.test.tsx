@@ -1,5 +1,7 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetForTests } from '@/features/auth/authStore';
@@ -14,6 +16,7 @@ import {
   stubAccountFetch,
 } from '@/test/accountFetch';
 import { adminOnly, noContent, page, summary } from '@/test/adminFetch';
+import { routes } from '@/router';
 import { renderWithRouter } from '@/test/render';
 
 import {
@@ -28,7 +31,9 @@ import {
   YOU_MARKER,
   usersNoMatch,
 } from '../adminCopy';
+import { erasedNoticeState } from '../erasedNotice';
 
+import type { InitialEntry } from 'react-router';
 import type { AdminUserSummary } from '@/api/admin';
 import type { User } from '@/features/auth/types';
 
@@ -273,5 +278,53 @@ describe('/admin user list — AC-32 search', () => {
     expect(await screen.findByText(SEARCH_INVALID)).toBeInTheDocument();
     expect(screen.getByLabelText(SEARCH_LABEL)).toHaveValue('%%');
     expect(screen.queryByRole('heading', { name: USERS_HEADING })).toBeInTheDocument();
+  });
+});
+
+describe('UserListPage: the erase notice leaves no email in history (AC-35, AC-38)', () => {
+  /**
+   * Mutation (recorded 2026-10-11): replacing the `navigate(…)` call in `UserListPage`'s effect
+   * with a no-op turns this red: `AssertionError: expected { erased: { …(2) } } to be null` on
+   * `router.state.location.state`; restored byte-exact. (Dropping only `state: null` stays green:
+   * a `navigate` without `state` also lands on null, so the option is belt and braces.)
+   */
+  it('shows the notice once, then replaces the entry with the same URL and no state', async () => {
+    const marker = 'erased-marker-4471@example.com';
+    serve(page([ANN] satisfies AdminUserSummary[]));
+    const queryClient = createAppQueryClient();
+    const mount = (entry: InitialEntry[]) => {
+      const router = createMemoryRouter(routes, { initialEntries: entry });
+      const view = render(
+        <QueryClientProvider client={queryClient}>
+          <RouterProvider router={router} />
+        </QueryClientProvider>,
+      );
+      return { router, view };
+    };
+
+    const first = mount([
+      {
+        pathname: '/admin',
+        search: '?q=x',
+        state: erasedNoticeState({ email: marker, unlinkFailures: 2 }),
+      },
+    ]);
+    expect(await screen.findByText(`Erased the account ${marker}.`)).toBeInTheDocument();
+    expect(
+      screen.getByText('2 file(s) could not be removed; the orphan sweep will reclaim them.'),
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(first.router.state.location.state).toBeNull();
+    });
+    expect(first.router.state.location.pathname).toBe('/admin');
+    expect(first.router.state.location.search).toBe('?q=x');
+
+    // Arrive again from where the history now stands (a reload, or Back to this entry).
+    first.view.unmount();
+    const { pathname, search, state } = first.router.state.location;
+    mount([{ pathname, search, state }]);
+    await screen.findByRole('link', { name: 'ann@example.com' });
+    expect(screen.queryByText(/Erased the account/)).not.toBeInTheDocument();
+    expect(JSON.stringify(state)).not.toContain(marker);
   });
 });
