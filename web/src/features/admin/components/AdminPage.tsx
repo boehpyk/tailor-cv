@@ -4,7 +4,7 @@ import { NotFoundPage } from '@/features/tailoring/components/NotFoundPage';
 import { ADMIN_CHECKING, ADMIN_RETRY_LABEL, ADMIN_UNAVAILABLE } from '../adminCopy';
 import { useAdminAccess } from '../hooks/useAdminAccess';
 
-import { AdminShell } from './AdminShell';
+import { AdminRoutes } from './AdminRoutes';
 
 export interface AdminPageProps {
   /** The signed-in account, from `AccountScope`; roots the access probe's key (AC-34). */
@@ -46,7 +46,7 @@ export default function AdminPage({ userId }: AdminPageProps): React.JSX.Element
         </p>
       );
     case 'allowed':
-      return <AdminShell />;
+      return <AdminRoutes actorId={userId} />;
     case 'not_found':
       return <NotFoundPage />;
     case 'unavailable':

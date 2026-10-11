@@ -8,10 +8,6 @@ import type { AccountCounts } from '@/api/admin';
 
 /** AC-31: the probe is pending (`role="status"`). */
 export const ADMIN_CHECKING = 'Checking access…';
-/** AC-31: the shell's `<h1>`, which labels its `<section>` (AC-36). */
-export const ADMIN_HEADING = 'Admin';
-/** AC-31: the empty state. 4.2 replaces it with the user list. Must stay out of the main chunk (AC-35). */
-export const ADMIN_EMPTY = 'Nothing to manage here yet.';
 /** AC-31: 503 or a network failure (`role="alert"`), visibly different from checking. */
 export const ADMIN_UNAVAILABLE = "Couldn't check admin access.";
 export const ADMIN_RETRY_LABEL = 'Retry';
@@ -25,7 +21,7 @@ export { LAZY_CHUNK_FAILED, LAZY_LOADING, LAZY_RELOAD_LABEL } from './lazyCopy';
 
 // --- Slice 4.2: the user list (AC-31, AC-32) ------------------------------------------------------
 
-/** The list page's `<h1>`, which labels its `<section>`. */
+/** The list page's `<h1>`, which labels its `<section>` (4.1's shell heading *Admin* retired). */
 export const USERS_HEADING = 'Users';
 /** The table's `<caption>` (AC-39). */
 export const USERS_CAPTION = 'Registered accounts, newest first';
