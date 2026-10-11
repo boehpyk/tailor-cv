@@ -11,8 +11,6 @@ export interface UserSearchFormProps {
 
 /**
  * `<form role="search">` with a labelled input and a *Search* button (AC-32). Presentational.
- *
- * SKELETON (T19): the markup and its submit; the page's `onSearch` is a no-op until T21.
  */
 export function UserSearchForm({ q, onSearch }: UserSearchFormProps): React.JSX.Element {
   const inputId = useId();

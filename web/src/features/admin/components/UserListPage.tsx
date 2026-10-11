@@ -1,4 +1,5 @@
-import { useLocation, useSearchParams } from 'react-router';
+import { useEffect, useState } from 'react';
+import { useLocation, useNavigate, useSearchParams } from 'react-router';
 
 import { ApiError } from '@/api/client';
 
@@ -32,7 +33,9 @@ const BUTTON =
  * `/admin`: the user directory (AC-31, AC-32). The search lives in the URL (`?q=`), so a submit is
  * a navigation, back/forward restore it, and a new search is a new query key from page 1 — no
  * search state of our own and no request per keystroke. The erase notice comes from
- * `location.state` (AC-35).
+ * `location.state` (AC-35), read **once** into component state; the history entry is then replaced
+ * with the same URL and no state, so the erased email does not outlive the notice in history
+ * (AC-38) — `AccountDeletedNotice`'s pattern, and that replacement is the effect's whole job.
  *
  * The heading and the form always render, so a refused search (422 `invalid_search`) keeps what
  * was typed beside its message.
@@ -41,7 +44,19 @@ export function UserListPage({ actorId }: UserListPageProps): React.JSX.Element 
   const [params, setParams] = useSearchParams();
   const q = params.get('q') ?? '';
   const directory = useUserDirectory(actorId, q);
-  const erased = erasedNoticeFrom(useLocation().state);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [erased] = useState(() => erasedNoticeFrom(location.state));
+  const carriesNotice = erasedNoticeFrom(location.state) !== null;
+
+  useEffect(() => {
+    if (carriesNotice) {
+      void navigate(
+        { pathname: location.pathname, search: location.search, hash: location.hash },
+        { replace: true, state: null },
+      );
+    }
+  }, [carriesNotice, navigate, location.pathname, location.search, location.hash]);
 
   return (
     <section aria-labelledby="admin-users-heading" className="mb-10 space-y-4">
