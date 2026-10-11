@@ -21,6 +21,8 @@ Postgres-down 503s of AC-19 (the bearer check reads the database first) and AC-1
 
 from __future__ import annotations
 
+import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -39,6 +41,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session
 
+from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import UserId
@@ -59,7 +62,13 @@ from tailorcraft.domain.posting.value_objects import (
     SourceUrl,
 )
 from tailorcraft.domain.shared.files import FileRef
-from tailorcraft.domain.tailoring.value_objects import CoverLetter, TailoredCv, TailoredDocuments
+from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
+from tailorcraft.domain.tailoring.value_objects import (
+    CoverLetter,
+    TailoredCv,
+    TailoredDocuments,
+    TailoringRunId,
+)
 from tailorcraft.infrastructure.api.deps import (
     get_delete_saved_base_cv,
     get_erase_history_entry,
@@ -78,6 +87,9 @@ from tailorcraft.infrastructure.persistence.repositories.posting.job_posting imp
 )
 from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
     SqlAlchemyTailoringRunRepository,
+)
+from tailorcraft.infrastructure.persistence.retention.history_entry_data import (
+    SqlAlchemyHistoryEntryData,
 )
 from tailorcraft.infrastructure.settings import Settings
 from tests.api.me_support import (
@@ -1891,3 +1903,122 @@ def test_ac24_the_user_schemas_are_unchanged_and_the_admin_one_is_the_saved_one_
     assert "ADR-0034" in doc
     assert "SavedBaseCvResponse" in doc
     assert "no text" in doc, "names the contradiction with the parent's 'no text and no bytes'"
+
+
+# ============================================================================= T9 (test-after)
+# F-20: an admin and the owner delete one history entry at the same time.
+
+
+async def test_f20_an_admin_and_the_owner_deleting_one_entry_are_one_success_and_one_404(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    engine: AsyncEngine,
+) -> None:
+    """Both requests read the run, then wait at a barrier until **both** hold an open transaction
+    (proved from `pg_stat_activity`: `idle in transaction`, the state of a backend waiting for its
+    client's next statement, 4.2's `618af74`), and only then race into `delete_history_entry`. Which
+    wins is Postgres' row lock; the loser must reach the adapter's `None` branch (not a read-time
+    404), unlink nothing, and the final state is read on a fresh connection."""
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    export_path = settings.upload_dir / entry.jobs[0].storage_ref.key
+    assert export_path.exists(), "premise: the export file exists"
+    admin_url = f"{ADMIN_USERS}/{target.id}/tailoring-runs/{entry.run_id.value}"
+    user_url = f"/api/me/tailoring-runs/{entry.run_id.value}"
+
+    role: contextvars.ContextVar[str] = contextvars.ContextVar("role", default="unset")
+    arrived: list[str] = []
+    both_read = asyncio.Event()
+    idle_in_transaction: list[int] = []
+    delete_returned_none: dict[str, bool] = {}
+    unlinks: list[str] = []
+    original_get = GetTailoringRun.__call__
+    original_delete_entry = SqlAlchemyHistoryEntryData.delete_history_entry
+    original_unlink = LocalFileStore.delete
+
+    async def _barrier_get(
+        self: GetTailoringRun, run_id: TailoringRunId, requester: Owner
+    ) -> TailoringRun:
+        result = await original_get(self, run_id, requester)
+        arrived.append(role.get())
+        if len(arrived) == 2:
+            async with engine.connect() as probe:
+                idle_in_transaction.append(
+                    int(
+                        (
+                            await probe.execute(
+                                text(
+                                    "SELECT count(*) FROM pg_stat_activity "
+                                    "WHERE datname = current_database() "
+                                    "AND pid <> pg_backend_pid() "
+                                    "AND state = 'idle in transaction'"
+                                )
+                            )
+                        ).scalar_one()
+                    )
+                )
+            both_read.set()
+        await asyncio.wait_for(both_read.wait(), timeout=5)
+        return result
+
+    async def _recording_delete(
+        self: SqlAlchemyHistoryEntryData, user_id: UserId, run_id: UUID
+    ) -> Any:
+        result = await original_delete_entry(self, user_id, run_id)
+        delete_returned_none[role.get()] = result is None
+        return result
+
+    async def _recording_unlink(self: LocalFileStore, ref: FileRef) -> None:
+        unlinks.append(role.get())
+        await original_unlink(self, ref)
+
+    async def _as_admin() -> Response:
+        role.set("admin")
+        async with new_client(world_app) as client:
+            return await client.delete(admin_url, headers=admin.headers)
+
+    async def _as_owner() -> Response:
+        role.set("owner")
+        async with new_client(world_app) as client:
+            return await client.delete(user_url, headers=target.headers)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(GetTailoringRun, "__call__", _barrier_get)
+        mp.setattr(SqlAlchemyHistoryEntryData, "delete_history_entry", _recording_delete)
+        mp.setattr(LocalFileStore, "delete", _recording_unlink)
+        by_admin, by_owner = await asyncio.wait_for(
+            asyncio.gather(_as_admin(), _as_owner()), timeout=15
+        )
+
+    assert sorted(arrived) == ["admin", "owner"], "both requests read the run before either deleted"
+    assert idle_in_transaction
+    assert idle_in_transaction[0] >= 2, (
+        f"both requests held an open transaction at the barrier: {idle_in_transaction}"
+    )
+    outcomes = {"admin": by_admin, "owner": by_owner}
+    assert sorted(r.status_code for r in outcomes.values() if r.status_code != 404) in (
+        [200],
+        [204],
+    ), {k: v.text for k, v in outcomes.items()}
+    assert sum(r.status_code == 404 for r in outcomes.values()) == 1
+    loser = next(k for k, v in outcomes.items() if v.status_code == 404)
+    winner = "owner" if loser == "admin" else "admin"
+    assert outcomes[winner].status_code == (200 if winner == "admin" else 204)
+    assert error_code(outcomes[loser]) == "tailoring_run_not_found"
+    assert delete_returned_none[loser] is True, "the loser reached the adapter's None branch"
+    assert delete_returned_none[winner] is False
+    assert unlinks == [winner], "the file is unlinked once, by the winner"
+    assert not export_path.exists()
+    assert await _rows(engine, "tailoring_run", entry.run_id.value) == 0
+    assert await _rows(engine, "posting_job_posting", entry.posting_id.value) == 0
+    assert (
+        await _count(
+            engine,
+            "SELECT count(*) FROM export_job WHERE tailoring_run_id = :r",
+            r=entry.run_id.value,
+        )
+        == 0
+    )
