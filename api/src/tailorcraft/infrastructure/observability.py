@@ -129,6 +129,40 @@ _SILENCED_VENDOR_LOGGERS = (
 )
 
 
+class StripAccessLogQuery(logging.Filter):
+    """Drop the query string from uvicorn's access-log request line; keep everything else.
+
+    uvicorn logs every request on `uvicorn.access` as `'%s - "%s %s HTTP/%s" %d'` with
+    `record.args = (client_addr, method, path_with_query, http_version, status)`. The query is
+    caller-chosen text: the admin directory's `?q=` is a fragment of a stranger's email, and found in
+    slice 4.2's T26 in the line `"GET /api/admin/users?q=t26-user-k7q2xm HTTP/1.1" 200`. Constitution
+    §8 says a log line carries ids and outcomes, so the path stays and the query goes, for every route
+    (owner decision). Rewritten before formatting, on the record's arguments, so no handler or
+    formatter ever sees the query. A record of any other shape passes through untouched.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            path, separator, _ = args[2].partition("?")
+            if separator:
+                record.args = (args[0], args[1], path, args[3], args[4])
+        return True
+
+
+def install_access_log_query_filter() -> None:
+    """Put `StripAccessLogQuery` on `uvicorn.access`, once.
+
+    A **logger** filter, not a handler filter: uvicorn logs straight on `uvicorn.access`, and
+    `dictConfig` (which uvicorn applies before importing the app) replaces handlers, not a logger's
+    filters. Called from `configure_logging`, which `create_app` runs in every process that imports
+    the app — each `--workers` child and the `--reload` child — after uvicorn's own config.
+    """
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, StripAccessLogQuery) for f in access.filters):
+        access.addFilter(StripAccessLogQuery())
+
+
 def configure_logging(settings: Settings) -> None:
     """Install structlog as the single logging path for the process."""
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
@@ -137,6 +171,8 @@ def configure_logging(settings: Settings) -> None:
 
     for name in _SILENCED_VENDOR_LOGGERS:
         logging.getLogger(name).setLevel(logging.CRITICAL + 1)
+
+    install_access_log_query_filter()
 
     processors: list[structlog.typing.Processor] = [
         structlog.contextvars.merge_contextvars,
