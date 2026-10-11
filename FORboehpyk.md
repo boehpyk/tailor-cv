@@ -6127,6 +6127,29 @@ box, has its own access log that nobody has looked at. That's a manual check for
 It's a good reminder of why the manual pass greps *everything*. The privacy test proved what it
 looked at. The leak was somewhere it didn't look.
 
+**The third copy: Sentry.** The access-log fix closed two places the search term was written down.
+`/verify`'s reviewer found a third by reading the installed Sentry SDK, not our code. Its ASGI
+integration copies the query string into every event's `request` block, and
+`send_default_pii=False` doesn't cover it. Production has a DSN, so after release about one admin
+search in ten (the trace sample rate), and every error on that route, would have sent part of a
+stranger's email to a third party. Reading further turned up an older leak: the SDK also records the
+query string of every **outgoing** httpx call on breadcrumbs and spans, regardless of PII settings.
+The posting fetch requests a URL the user supplied, so those query strings had been reaching Sentry
+since slice 1.2.
+
+The fix (`9984003`) is one function, `strip_query_strings`, passed as **both** `before_send` and
+`before_send_transaction`, because a transaction never goes through `before_send`. Forget the
+second hook and the sampled traces leak while the error reports look clean. The test drives the
+real SDK with a capturing transport and was proven twice by mutation. With the hooks removed it went
+red on the incoming request. With only the outgoing branch removed, it went red on the httpx
+breadcrumb. That second mutation matters: the first red stopped at an earlier assertion, so until
+it ran, the outgoing half had never been seen failing. Left as a recorded gap: the outgoing URL's
+**path** still reaches Sentry, and nginx's `error_log` still writes the full request line
+(owner-accepted).
+
+The lesson: "where does this request line get written down?" has more answers than the logs you
+configured. Every library that observes requests keeps its own copy.
+
 **A small one.** The `commit-msg` hook rejects a subject over 72 characters, but it runs after the
 pre-commit hook, and that one runs the whole suite. So a 74-character subject costs about four
 minutes before you find out. Count first.
@@ -6143,7 +6166,8 @@ minutes before you find out. Count first.
   re-check: 1. Login `DELETE` before the user lock: 4, plus 2 deadlocks in the race tests.
   `strpos` back to `LIKE`: 2. The target's 404 through the global 401 map: 4. Login's disabled
   branch removed: 3. Client refreshing on `account_disabled`: 1. `AdminPage` error-first again: 1.
-- **Tests**: 4777 backend, 1409 frontend after the log fix.
+- **Tests**: 4777 backend, 1409 frontend after the log fix; 4778 / 1410 after `/verify`'s fixes,
+  green twice in a row.
 
 ## The common thread
 
@@ -6155,8 +6179,8 @@ about what it covered. It just didn't cover the access logs.
 
 ## What's next
 
-- **`/verify`** (T28): the reviewer, every AC, every RED's recorded failure, the mutations.
-- **Release** (T29): the read-only count before approval, and **Traefik's access log** checked by
-  hand. Firefox still hasn't been exercised.
+- **Done**: `/verify` passed in round 2 (round 1: the Sentry MAJOR, three MINORs). Merged as PR
+  #30 (`16fbe47`) and released 2026-10-11, deploy run 38161380305. Firefox still hasn't been
+  exercised.
 - **4.3**: user content across accounts. The admin will be able to read CVs, so the
   privacy sentence 4.1 added becomes something the code actually does.
