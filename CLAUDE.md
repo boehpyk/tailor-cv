@@ -1758,6 +1758,13 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   imports the app, after uvicorn's own `dictConfig` (which replaces handlers, not a logger's
   filters) (`abef0a2`), and a `noquery` `log_format` (`$request_method $uri $server_protocol`) in
   both nginx configs (`f77b1d6`). **Traefik's access log, on the box, is unchecked.**
+  **Accepted gap (owner, 2026-10-11): nginx's `error_log` still writes the full request line,
+  query included** (`log_format` governs `access_log` only), e.g. every admin search during a 502
+  window after an api restart. **Sentry was the third copy and is closed** (`9984003`):
+  `strip_query_strings` runs as `before_send` **and** `before_send_transaction` (a transaction
+  skips `before_send`), dropping the incoming `request.query_string` and the outgoing httpx /
+  `http.client` `http.query`/`url` query on spans and breadcrumbs. The outgoing URL **path** still
+  reaches Sentry.
 
 ## SDLC
 
