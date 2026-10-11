@@ -172,6 +172,17 @@ def invalid_access_token_exception() -> HTTPException:
     )
 
 
+def account_disabled_exception() -> HTTPException:
+    """403 `account_disabled` with `Cache-Control: no-store` and **no** `WWW-Authenticate` (a 403 is
+    not a credential challenge) — one builder for `deps.require_user`, the login route and this
+    module's `AccountDisabled` branch, so the three cannot drift (slice 4.2, ADR-0033)."""
+    return HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        detail=ACCOUNT_DISABLED_DETAIL,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     """Map one `DomainError` to the `HTTPException` the API returns for it.
 
@@ -215,7 +226,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
 
     # -- the admin users area (slice 4.2, ADR-0033) ---------------------------------------------
     if isinstance(exc, AccountDisabled):
-        return HTTPException(status.HTTP_403_FORBIDDEN, detail=ACCOUNT_DISABLED_DETAIL)
+        return account_disabled_exception()
     if isinstance(exc, InvalidEmailSearch):
         # A fixed sentence: the search is something a person typed, never echoed (AC-18).
         return HTTPException(

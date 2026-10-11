@@ -115,6 +115,7 @@ from tailorcraft.domain.tracking.ports import ApplicationBoardQuery, TrackedAppl
 from tailorcraft.infrastructure.api.errors import (
     GUEST_SESSION_EXPIRED_DETAIL,
     ORIGIN_NOT_ALLOWED_DETAIL,
+    account_disabled_exception,
     domain_error_to_http_exception,
     invalid_access_token_exception,
 )
@@ -983,7 +984,9 @@ AccessTokensDep = Annotated[AccessTokenPort, Depends(get_access_tokens)]
 _MAX_BEARER_LENGTH: Final = 4096
 
 
-async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDep) -> UserId:
+async def require_user(
+    request: Request, tokens: AccessTokensDep, clock: ClockDep, users: UserRepositoryDep
+) -> UserId:
     """The bearer rule (AC-34, I-32 … I-38): the `UserId` an `Authorization: Bearer <jwt>` header
     speaks for, or 401 `invalid_access_token` with `WWW-Authenticate: Bearer error="invalid_token"`.
 
@@ -991,9 +994,16 @@ async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDe
     — `expired` at `debug`, because every client's token expires every 15 minutes and that is not
     news. **The token is never logged**, and neither is the header.
 
-    Verification is stateless (a keyed hash, microseconds) and touches neither Postgres nor Redis, so
-    a Redis outage cannot sign anybody out (I-18). A missing header, or a scheme other than `Bearer`,
-    is refused without a log line (I-32): an anonymous request is not an event.
+    Verification is stateless (a keyed hash, microseconds) and touches never Redis; Postgres once,
+    after the signature, for the disabled bit (ADR-0008 (j)) — so a Redis outage cannot sign anybody
+    out (I-18), and a bad bearer never reaches the database (4.1's AC-16). A missing header, or a
+    scheme other than `Bearer`, is refused without a log line (I-32): an anonymous request is not an
+    event.
+
+    **A disabled account is 403 `account_disabled`** (slice 4.2, OQ-1 = B), never a 401: the token
+    is valid, and a 401 would send the client to refresh. `is_disabled` is `False` for a missing
+    row, so a vanished user is still handled where each route handles it today (AC-29). A
+    `SQLAlchemyError` from that read propagates: `main.py` renders it 503.
     """
     header = request.headers.get("authorization")
     if header is None:
@@ -1006,7 +1016,7 @@ async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDe
     try:
         if len(token) > _MAX_BEARER_LENGTH:
             raise AccessTokenInvalid(AccessTokenRefusal.MALFORMED)
-        return tokens.verify(token, clock.now())
+        user_id = tokens.verify(token, clock.now())
     except AccessTokenInvalid as exc:
         if exc.reason is AccessTokenRefusal.EXPIRED:
             log.debug("identity.access_token_refused", reason=exc.reason.value)
@@ -1014,6 +1024,10 @@ async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDe
             log.info("identity.access_token_refused", reason=exc.reason.value)
         # `from None`: the chained frame holds the token.
         raise invalid_access_token_exception() from None
+    if await users.is_disabled(user_id):
+        log.info("identity.access_refused", reason="account_disabled", user_id=str(user_id.value))
+        raise account_disabled_exception()
+    return user_id
 
 
 RequireUserDep = Annotated[UserId, Depends(require_user)]

@@ -55,6 +55,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.identity.results import Authenticated
 from tailorcraft.domain.identity.errors import (
+    AccountDisabled,
     ConfirmationTokenInvalid,
     EmailAlreadyRegistered,
     InvalidCredentials,
@@ -102,6 +103,7 @@ from tailorcraft.infrastructure.api.deps import (
 )
 from tailorcraft.infrastructure.api.errors import (
     NOT_SIGNED_IN_DETAIL,
+    account_disabled_exception,
     domain_error_to_http_exception,
 )
 from tailorcraft.infrastructure.api.refresh_cookie import (
@@ -172,6 +174,8 @@ EVENT_REFRESH_REFUSED: Final = "identity.refresh_refused"
 EVENT_REFRESH_RACED: Final = "identity.refresh_raced"
 EVENT_USER_MISSING: Final = "identity.user_missing"
 EVENT_ACCOUNT_DELETION_REFUSED: Final = "identity.account_deletion_refused"
+# Slice 4.2 (AC-27): a correct password for a disabled account. The id only.
+EVENT_LOGIN_REFUSED: Final = "identity.login_refused"
 # Slice 2.5 (feature spec, the V-rows' "Logged" column). Ids and closed reasons only — never an
 # address, a token, a token's hash or a password.
 EVENT_REGISTRATION_REQUESTED: Final = "identity.registration_requested"
@@ -407,6 +411,13 @@ async def register(
                 "(AC-28)."
             ),
         },
+        status.HTTP_403_FORBIDDEN: {
+            "model": ErrorResponse,
+            "description": (
+                "origin_not_allowed | account_disabled — the correct password for an account an "
+                "administrator disabled; no cookie, no login (slice 4.2)."
+            ),
+        },
         status.HTTP_422_UNPROCESSABLE_CONTENT: {
             "model": ErrorResponse,
             "description": "invalid_email | validation_error",
@@ -452,6 +463,14 @@ async def login(
     minted = mint_refresh_token()
     try:
         result = await log_in(body.email, body.password.get_secret_value(), minted.token_hash)
+    except AccountDisabled as exc:
+        # Slice 4.2 (AC-24): a correct password for a disabled account. `LogIn` refused before any
+        # rehash or `Login`, so the unit of work is empty: the commit writes nothing, ends the
+        # transaction (releasing the row's `FOR SHARE`) and keeps this route's one shape — every
+        # refusal commits, then raises. No cookie; the line carries the id only.
+        log.info(EVENT_LOGIN_REFUSED, reason="account_disabled", user_id=str(exc.user_id.value))
+        await _commit(session)
+        raise account_disabled_exception() from None
     except DomainError as exc:
         if isinstance(exc, InvalidEmailAddress):
             # I-12. `unknown_email` and `wrong_password` are the observer's lines (I-9, I-10); this
