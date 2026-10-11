@@ -14,6 +14,9 @@ Mutation (recorded 2026-10-11): removing `before_send=` / `before_send_transacti
 `configure_sentry` turns this red: `AssertionError: assert 'query_string' not in {'method': 'GET',
 ..., 'query_string': 'q=reqmarker-9f3a', 'url': 'http://t/probe'}` (the planted marker is in the
 captured error event); source restored byte-exact (`git diff --stat -- api/src` empty).
+Second mutation (span/breadcrumb/trace branch of `strip_query_strings` deleted, request scrubbing
+kept): red on `assert 'outmarker-71bc' not in '{"level":"e...'` with the payload showing
+`query":"q=outmarker-71bc","http.fragment":""` (the httpx breadcrumb's `http.query`); restored.
 """
 
 from __future__ import annotations
