@@ -430,17 +430,20 @@ function signOut(reason: SignOutReason): void {
 }
 
 /**
- * A bearer-authenticated request sent with `sentToken` answered 401 `not_signed_in`: the server
- * says the login behind that token is gone (the user was deleted). Dispatch `SIGNED_OUT` with
- * reason `expired` — **only if the store still holds `sentToken`**. If the token has changed since
+ * A bearer-authenticated request sent with `sentToken` answered about the login rather than the
+ * request: 401 `not_signed_in` (the user was deleted → reason `expired`) or, since slice 4.2, 403
+ * `account_disabled` (→ reason `account_disabled`). Dispatch `SIGNED_OUT` with `reason` — **only
+ * if the store still holds `sentToken`**, and say whether it did, so the caller broadcasts once. If the token has changed since
  * the request went out (a rotation, or a logout and a new login), the answer describes a login
  * this tab has already moved past, and ending the current one on its word would be wrong. Called
  * by `api/client.ts`, which is where the server's codes are classified.
  */
-function signOutIfHolding(sentToken: string): void {
-  if (heldToken(current) === sentToken) {
-    signOut('expired');
+function signOutIfHolding(sentToken: string, reason: SignOutReason = 'expired'): boolean {
+  if (heldToken(current) !== sentToken) {
+    return false;
   }
+  signOut(reason);
+  return true;
 }
 
 /** `useSyncExternalStore`'s subscribe: call `listener` after every state change; returns unsubscribe. */

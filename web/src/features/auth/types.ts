@@ -67,6 +67,8 @@ export const AUTH_ERROR_CODES = [
   'invalid_access_token',
   /** Slice 2.5: a confirmation or reset link that is expired, used, or was never issued. */
   'link_invalid',
+  /** Slice 4.2: `/login` with a disabled account's correct password (OQ-3). */
+  'account_disabled',
 ] as const;
 
 export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];

@@ -139,3 +139,19 @@ or the measured payload exceeds the recorded size.
 
 The Consequence *"Phase 3's tracking board reads this way … keyset pages"* is corrected: the board
 reads through a query port, **whole, under (a)**.
+
+## Amendment: 2026-10-11, from the plan of slice 4.2 (`admin-users`)
+
+**(b) The admin's user directory is a read model of one context, keyset-paged, with a literal
+substring search.** `UserDirectoryQuery` in `domain/identity/user_directory.py`, Core SQL under
+`infrastructure/persistence/queries/`, as decisions 1–3 prescribe, although it joins nothing: it lists
+many aggregates at once and must never load `password_hash`, which `UserRepository` (one aggregate at
+a time) would.
+
+- **Keyset on `(created_at, id)`, newest first** (decision 4), with `LIMIT n + 1` deciding the next
+  cursor. **No index** at today's size; the slice measures 10 000 users and records the plan.
+- **The cursor is unsigned**, like history's: it is base64url `"<epoch>.<uuid>"` decoded with
+  `validate=True`, and the reader is an admin who may see every row anyway. The codec is shared with
+  history's (`routers/_keyset_cursor.py`), not copied.
+- **The search is a case-insensitive literal substring** (`strpos`, never `LIKE`): `%`, `_` and `\`
+  match themselves, and there is no pattern syntax to escape. A trigram index is a later decision.

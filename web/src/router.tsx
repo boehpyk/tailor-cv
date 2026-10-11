@@ -38,7 +38,7 @@ import type { RouteObject } from 'react-router';
  * | `/history/:runId`         | redirect → `/history/:runId/cv` (2.3)                 |
  * | `/history/:runId/:document` | `RequireAuth` → `AccountScope` → `RunPage` (2.3)    |
  * | `/board`                  | `RequireAuth` → `AccountScope` → `BoardPage` (3.1)    |
- * | `/admin`                  | `AdminRoute`: `RequireAuth` → `AccountScope` → lazy `AdminPage` (4.1) |
+ * | `/admin/*`                | `AdminRoute`: `RequireAuth` → `AccountScope` → lazy `AdminPage` → `AdminRoutes` (4.1, 4.2) |
  * | `*`                       | `NotFoundPage` (E-28)         |
  *
  * `App` is the layout route: every page renders through its `<Outlet />`, between the header and
@@ -131,7 +131,7 @@ export const routes: RouteObject[] = [
           </RequireAuth>
         ),
       },
-      { path: 'admin', element: <AdminRoute /> },
+      { path: 'admin/*', element: <AdminRoute /> },
       { path: '*', element: <NotFoundPage /> },
     ],
   },

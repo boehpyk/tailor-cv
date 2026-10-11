@@ -38,7 +38,10 @@ from tailorcraft.application.identity.authorize_administrator import AuthorizeAd
 from tailorcraft.application.identity.claim_guest_work import ClaimGuestWork
 from tailorcraft.application.identity.confirm_registration import ConfirmRegistration
 from tailorcraft.application.identity.delete_own_account import DeleteOwnAccount
+from tailorcraft.application.identity.disable_account import DisableAccount
+from tailorcraft.application.identity.enable_account import EnableAccount
 from tailorcraft.application.identity.get_current_user import GetCurrentUser
+from tailorcraft.application.identity.list_users import ListUsers
 from tailorcraft.application.identity.log_in import LogIn
 from tailorcraft.application.identity.log_out import LogOut
 from tailorcraft.application.identity.refresh_login import RefreshLogin
@@ -58,6 +61,7 @@ from tailorcraft.application.posting.list_job_postings import ListJobPostingsFor
 from tailorcraft.application.posting.list_recent_job_postings import ListRecentJobPostingsForUser
 from tailorcraft.application.retention.erase_account import EraseAccount
 from tailorcraft.application.retention.erase_history_entry import EraseHistoryEntry
+from tailorcraft.application.retention.get_account_overview import GetAccountOverview
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
@@ -88,6 +92,7 @@ from tailorcraft.domain.identity.ports import (
     UserRepository,
 )
 from tailorcraft.domain.identity.user import User
+from tailorcraft.domain.identity.user_directory import UserDirectoryQuery
 from tailorcraft.domain.identity.value_objects import (
     AccessTokenRefusal,
     EmailAddress,
@@ -110,6 +115,7 @@ from tailorcraft.domain.tracking.ports import ApplicationBoardQuery, TrackedAppl
 from tailorcraft.infrastructure.api.errors import (
     GUEST_SESSION_EXPIRED_DETAIL,
     ORIGIN_NOT_ALLOWED_DETAIL,
+    account_disabled_exception,
     domain_error_to_http_exception,
     invalid_access_token_exception,
 )
@@ -978,7 +984,9 @@ AccessTokensDep = Annotated[AccessTokenPort, Depends(get_access_tokens)]
 _MAX_BEARER_LENGTH: Final = 4096
 
 
-async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDep) -> UserId:
+async def require_user(
+    request: Request, tokens: AccessTokensDep, clock: ClockDep, users: UserRepositoryDep
+) -> UserId:
     """The bearer rule (AC-34, I-32 … I-38): the `UserId` an `Authorization: Bearer <jwt>` header
     speaks for, or 401 `invalid_access_token` with `WWW-Authenticate: Bearer error="invalid_token"`.
 
@@ -986,9 +994,16 @@ async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDe
     — `expired` at `debug`, because every client's token expires every 15 minutes and that is not
     news. **The token is never logged**, and neither is the header.
 
-    Verification is stateless (a keyed hash, microseconds) and touches neither Postgres nor Redis, so
-    a Redis outage cannot sign anybody out (I-18). A missing header, or a scheme other than `Bearer`,
-    is refused without a log line (I-32): an anonymous request is not an event.
+    Verification is stateless (a keyed hash, microseconds) and touches never Redis; Postgres once,
+    after the signature, for the disabled bit (ADR-0008 (j)) — so a Redis outage cannot sign anybody
+    out (I-18), and a bad bearer never reaches the database (4.1's AC-16). A missing header, or a
+    scheme other than `Bearer`, is refused without a log line (I-32): an anonymous request is not an
+    event.
+
+    **A disabled account is 403 `account_disabled`** (slice 4.2, OQ-1 = B), never a 401: the token
+    is valid, and a 401 would send the client to refresh. `is_disabled` is `False` for a missing
+    row, so a vanished user is still handled where each route handles it today (AC-29). A
+    `SQLAlchemyError` from that read propagates: `main.py` renders it 503.
     """
     header = request.headers.get("authorization")
     if header is None:
@@ -1001,7 +1016,7 @@ async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDe
     try:
         if len(token) > _MAX_BEARER_LENGTH:
             raise AccessTokenInvalid(AccessTokenRefusal.MALFORMED)
-        return tokens.verify(token, clock.now())
+        user_id = tokens.verify(token, clock.now())
     except AccessTokenInvalid as exc:
         if exc.reason is AccessTokenRefusal.EXPIRED:
             log.debug("identity.access_token_refused", reason=exc.reason.value)
@@ -1009,6 +1024,10 @@ async def require_user(request: Request, tokens: AccessTokensDep, clock: ClockDe
             log.info("identity.access_token_refused", reason=exc.reason.value)
         # `from None`: the chained frame holds the token.
         raise invalid_access_token_exception() from None
+    if await users.is_disabled(user_id):
+        log.info("identity.access_refused", reason="account_disabled", user_id=str(user_id.value))
+        raise account_disabled_exception()
+    return user_id
 
 
 RequireUserDep = Annotated[UserId, Depends(require_user)]
@@ -1382,6 +1401,77 @@ def get_tailoring_history_query(session: SessionDep) -> TailoringHistoryQuery:
 
 
 TailoringHistoryQueryDep = Annotated[TailoringHistoryQuery, Depends(get_tailoring_history_query)]
+
+
+def get_user_directory_query(session: SessionDep) -> UserDirectoryQuery:
+    """Binds `UserDirectoryQuery` -> `SqlAlchemyUserDirectoryQuery` (slice 4.2, ADR-0033): a
+    read-side port, one Core statement over the request's session. Bound once a route depends on it
+    (`routers/admin_users.py`)."""
+    from tailorcraft.infrastructure.persistence.queries.user_directory import (
+        SqlAlchemyUserDirectoryQuery,
+    )
+
+    return SqlAlchemyUserDirectoryQuery(session)
+
+
+UserDirectoryQueryDep = Annotated[UserDirectoryQuery, Depends(get_user_directory_query)]
+
+
+# ---------------------------------------------------------------------------------------------
+# The admin users area — slice 4.2 (technical plan §3 "Wiring"). Every route is behind
+# `routers/admin_users.py`'s router-level `require_admin`; the erase reuses `get_erase_account`.
+# ---------------------------------------------------------------------------------------------
+
+
+def get_disable_account(
+    users: UserRepositoryDep,
+    logins: LoginRepositoryDep,
+    clock: ClockDep,
+    events: EventPublisherDep,
+) -> DisableAccount:
+    return DisableAccount(users, logins, clock, events)
+
+
+DisableAccountDep = Annotated[DisableAccount, Depends(get_disable_account)]
+
+
+def get_enable_account(
+    users: UserRepositoryDep, clock: ClockDep, events: EventPublisherDep
+) -> EnableAccount:
+    return EnableAccount(users, clock, events)
+
+
+EnableAccountDep = Annotated[EnableAccount, Depends(get_enable_account)]
+
+
+def get_list_users(directory: UserDirectoryQueryDep) -> ListUsers:
+    return ListUsers(directory)
+
+
+ListUsersDep = Annotated[ListUsers, Depends(get_list_users)]
+
+
+def get_overview_account_data(session: SessionDep) -> AccountDataPort:
+    """`AccountDataPort` -> `SqlAlchemyAccountData` **without** `CommittingAccountData`: the
+    overview only counts, so there is nothing to commit before a file is touched.
+
+    Deferred import, for the mapper-configuration reason `get_base_cv_repository` documents.
+    """
+    from tailorcraft.infrastructure.persistence.retention.account_data import (
+        SqlAlchemyAccountData,
+    )
+
+    return SqlAlchemyAccountData(session)
+
+
+def get_account_overview(
+    users: UserRepositoryDep,
+    accounts: Annotated[AccountDataPort, Depends(get_overview_account_data)],
+) -> GetAccountOverview:
+    return GetAccountOverview(users, accounts)
+
+
+GetAccountOverviewDep = Annotated[GetAccountOverview, Depends(get_account_overview)]
 
 
 def get_list_tailoring_history(

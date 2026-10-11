@@ -27,7 +27,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > `workspace-rate-limit-retry-feedback` was merged as PR #25 (`279a0b7`) and released 2026-10-09
 > (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was verified
 > 2026-10-10 (reviewer PASS round 1), merged as PR #28 (`26472b1`) and released the same day**
-> (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). **Slice
+> 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2) and awaits release**
+> (T29). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -560,6 +562,65 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   the guard. **Carried to 4.2:** the view puts every error ahead of a cached 204, so a transient
 >   503 on focus replaces the admin page. Decide whether only a 404 outranks cached data.
 >
+> - **4.2 `admin-users`** (**verified 2026-10-11, reviewer PASS round 2** — then the
+>   owner's release, T29; round 1's MAJOR, the search term reaching Sentry, fixed in `9984003`) — a user directory at `/admin` and three actions on an account: disable,
+>   enable, erase (**ADR-0033**; ADR-0008 amendment (j), ADR-0024 amendment (b); notes on ADR-0020,
+>   0028, 0032). **Disabled is a timestamp**: `User.disabled_at` (`None` is active), `disable(at,
+>   logins_revoked)` / `enable(at)` record `UserDisabled` / `UserEnabled`, and a repeat records
+>   nothing. Migration **`669b75917559`** adds `identity_user.disabled_at TIMESTAMPTZ NULL`; its
+>   **downgrade refuses** while any account is disabled, because dropping the column would silently
+>   re-enable them. **`DisableAccount` takes the user row `FOR UPDATE`, then deletes every `Login`**,
+>   in one transaction (the user lock first, ADR-0028's order). After that, **two refusals**:
+>   `LogIn` answers 403 `account_disabled` only after a **correct** password (a fresh read while
+>   its `FOR SHARE` re-check holds the row; a wrong password stays the byte-identical 401), and
+>   **every bearer request** reads the bit after the signature check (`UserRepository.is_disabled`,
+>   one Core primary-key read, `False` for a missing row) and answers 403 `account_disabled`. The
+>   second exists because an access token is stateless for 15 minutes: deleting logins alone would
+>   leave the open tab working, paid runs included (OQ-1 = B). Enable restores the right to log in
+>   and no session; a password reset still works and does **not** re-enable. Admin actions lock only
+>   the target and never re-check the actor's role (ADR-0032's window, OQ-6). The **directory** is a
+>   read model behind `UserDirectoryQuery`: one Core statement, no `password_hash`, newest first,
+>   **keyset on `(created_at, id)`**, and search as **`strpos(email, :term) > 0`**, never `LIKE`, so
+>   `%`, `_` and `\` are literal and there is nothing to escape (`EmailSearch`: stripped,
+>   lower-cased, 1–254 characters, no `Cc`). The base64url cursor codec is **shared** with history
+>   (`routers/_keyset_cursor.py`; `_history_cursor.py` is two wrappers). Five routes under
+>   `/api/admin/users`, behind 4.1's router-level `require_admin`, `no-store`: `GET` (list, `q`,
+>   `cursor`, `limit` 1–50 = 20), `GET /{id}` (the account and `GetAccountOverview`'s counts: CVs,
+>   runs, postings, exports, cards, active logins), `POST /{id}/disable`, `POST /{id}/enable`,
+>   `DELETE /{id}` (`EraseAccount`, unchanged, 200 with its report). A missing target is 404
+>   `user_not_found` by a local translation, never the global map's 401. Self-disable and
+>   self-erase are allowed; if the last admin disables itself, recovery is `grant-role` on another
+>   account. React: `/admin` (list, search, *Load more*) and `/admin/users/:userId` (overview,
+>   actions, confirm dialogs, not optimistic). The **descendant routes live in the lazy chunk** via
+>   **`useRoutes`**, because `<Routes>` JSX pulled `createRoutesFromChildren` into the main chunk
+>   (+0.69 kB gzip, over the 0.5 kB budget). A 403 `account_disabled` signs the tab out **without a
+>   refresh** (reason `account_disabled`, broadcast) and lands on `/` with *Your account has been
+>   disabled, so you were signed out.*; `/login` says *This account has been disabled.* 4.1's carry
+>   is settled (OQ-5): **only a 404 outranks a cached 204**, so a transient 503 keeps the admin page.
+>   **4777 backend and 1409 frontend tests** after the access-log fix (`make check` twice at
+>   `5443e52`: 4773 / 1409). Measured: main bundle **+0.20 kB gzip** (budget 0.5), admin chunk
+>   **4.04 kB** (8). On the production image, 10 000 seeded users, n = 200, p95: list page 1
+>   **10.3 ms**, page 20 **10.6**, search `e` (every row) **11.7**, `z` **7.5**, overview of a
+>   full user **8.7** (budgets 100); disable with 50 logins **9.8** (150); erase of a full user
+>   (1 005 files) **415 ms** (2 000, n = 20). The bearer check costs `/me` **+0.51 ms p95** and
+>   `/board` **+0.69** (budget +2). The list seq-scans (no index, as OQ-9 planned): ~3 ms at 10 000
+>   rows. **Eight mutations recorded:** the bearer check off (4 red); `is_disabled` before the
+>   re-check (1); the login `DELETE` before the user lock (4, and 2 races deadlock); `strpos` →
+>   `LIKE` (2); the target's 404 through the global map (4); login's `AccountDisabled` branch
+>   removed (3); the client refreshing on `account_disabled` (1); `AdminPage` error-first (1). AC-44
+>   holds: `git diff main --stat` over `infrastructure/llm`, `domain/tailoring` and
+>   `application/tailoring` is empty. **Owner amendments:** AC-24, a disabled login's refusal ends
+>   its unit of work with an **empty commit**, as the route's other refusals do; AC-29, "existing
+>   tests pass unedited" now allows **listed harness-only fixes**, and the one listed is `b1cc08f`
+>   (Conventions). Two RED corrections landed in their own commits (`ab88358`, `618af74`;
+>   Conventions). **T26's manual pass (Chromium 145, `:8080`, two contexts, Mailpit, 360 px)**
+>   walked every step as AC-43 states, and **its log grep found what no test did**: the search term
+>   rode `GET /api/admin/users?q=…` into the **nginx and uvicorn access logs** (2 hits). The owner
+>   chose to strip query strings from access logs on **every** route: a `logging.Filter` on
+>   `uvicorn.access` (`abef0a2`, mutation-proven) and a `noquery` `log_format` in both nginx configs
+>   (`f77b1d6`); a marker re-check read 0 hits in either. **Not checked: Traefik's access log** (the
+>   other stack on the box). **Firefox not exercised.**
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -975,6 +1036,12 @@ python -m tailorcraft.cli grant-role  --user-id <uuid>             # user <id>: 
 python -m tailorcraft.cli revoke-role --user-id <uuid>             # the last admin may be revoked; recovery is grant-role
 # Exit: 0 changed or already held (no event) · 1 no such account / db failure / foreign database · 2 usage.
 
+# Disable / enable an account (slice 4.2, ADR-0033) — BROWSER ONLY, in /admin/users/<id>. There is
+# no CLI for either (OQ-19). Disable deletes the account's logins; its open tabs are refused 403
+# account_disabled on their next request. If the only admin disables itself, recovery is
+# `grant-role` on another account, which then enables the first from /admin. Erase is also in
+# /admin now; `erase-account` above stays the break-glass.
+
 # Job-posting egress (slice 1.2). Bounds live in Settings: POSTING_FETCH_* (timeouts, the 2 MiB
 # decoded-byte cap, 3 redirect hops), POSTING_*_RATE_LIMIT_* and JSON_REQUEST_MAX_BYTES. There is
 # deliberately NO setting that weakens the SSRF address policy.
@@ -1059,6 +1126,9 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   **A lazy route's main-bundle half imports nothing from its chunk's modules (4.1).** One import of
   `adminCopy.ts` from `AdminRoute` would have pulled the whole module into the main chunk; the
   fallback strings live in `lazyCopy.ts`. Check with a grep of `dist/assets/index-*.js`.
+  **Descendant routes inside a lazy chunk use `useRoutes`, not `<Routes>` JSX (4.2).** react-router
+  lives in the main chunk, and `<Routes>` pulls `createRoutesFromChildren` in with it: +0.69 kB gzip
+  on the main chunk for three admin routes. Route objects through `useRoutes` cost +0.20 in all.
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
   **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
@@ -1227,6 +1297,22 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   hooked `confirm_credential_unchanged` — the very method the fix stopped calling — so its "was the
   race staged?" guard failed against the correct code. Stage at the *moment* the spec names (after
   the verify, before the first lock), wrapping every entry point that can occupy it.
+- **A race test's seed uses the same `Clock` as the action under test** (4.2, `ab88358`). AC-9's
+  seed registered its user with a private clock at 2026-10-11 while the disable ran on the
+  `clock` fixture (2026-09-04), so `User.disable` refused, correctly, to disable a user before it
+  existed, and the race was never staged. A domain time invariant turns a mismatched seed clock
+  into a test that measures nothing.
+- **An idle-in-transaction backend reports `wait_event_type = 'Client'`, not NULL** (4.2,
+  `618af74`). It is waiting for its client's next statement. An overlap proof from
+  `pg_stat_activity` asserts `state = 'idle in transaction'`, not an empty wait event.
+- **A new database read in `require_user` reaches the shared-session harness** (4.2, `b1cc08f`).
+  Every bearer route now reads Postgres before the rate limiter, so the `app` fixture's savepoint
+  is open when a 429 is raised, and the refused request's rollback **expires every instance the
+  test has loaded**: the next `run.version` read is a lazy load, `MissingGreenlet`. Read loaded
+  values into locals before the requests (and `refresh` what a later request needs). Harness only;
+  production has a session per request. AC-29 lists it as the one allowed edit to an existing test.
+- **`commit-msg` rejects a subject over 72 characters only after `pre-commit` has run the full
+  suite** (4.2). Count the subject before you commit, or pay four minutes to learn it is 74.
 - **A spy installed before the test's setup records the setup** (2.5, `feec266`). A
   `replaceState` spy saw the harness's own `openLink()` put the token in the URL. Clear the spy
   after setup, and give the absence assertion a positive control (the app made ≥ 2 calls).
@@ -1664,6 +1750,21 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   Parse `Set-Cookie` and re-attach it by hand in such a script. The same jar *stores* a `Secure`
   cookie set over `http://` and silently never sends it back, so since the `__Host-tc_guest` slice
   every test client's base URL is `https://testserver` (reverting it: 186 tests red).
+- **Access logs record query strings by default** (4.2, T26). nginx's `combined` format logs
+  `$request` and uvicorn's `uvicorn.access` logs the path with its query, so anything an operator
+  types into a `GET` query (the admin search, `?q=<part of an email>`) becomes a log line. Found
+  only by T26's manual log grep. Both now strip it on **every** route: a `logging.Filter`
+  (`observability.StripAccessLogQuery`) installed by `configure_logging` in every process that
+  imports the app, after uvicorn's own `dictConfig` (which replaces handlers, not a logger's
+  filters) (`abef0a2`), and a `noquery` `log_format` (`$request_method $uri $server_protocol`) in
+  both nginx configs (`f77b1d6`). **Traefik's access log, on the box, is unchecked.**
+  **Accepted gap (owner, 2026-10-11): nginx's `error_log` still writes the full request line,
+  query included** (`log_format` governs `access_log` only), e.g. every admin search during a 502
+  window after an api restart. **Sentry was the third copy and is closed** (`9984003`):
+  `strip_query_strings` runs as `before_send` **and** `before_send_transaction` (a transaction
+  skips `before_send`), dropping the incoming `request.query_string` and the outgoing httpx /
+  `http.client` `http.query`/`url` query on spans and breadcrumbs. The outgoing URL **path** still
+  reaches Sentry.
 
 ## SDLC
 

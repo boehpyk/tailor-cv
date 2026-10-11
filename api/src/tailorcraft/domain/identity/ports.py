@@ -160,6 +160,11 @@ class UserRepository(Protocol):
         """
         ...
 
+    async def is_disabled(self, user_id: UserId) -> bool:
+        """Whether `user_id`'s account is disabled, read from the row as it is now (slice 4.2,
+        ADR-0033). `False` when there is no such user: answering "gone" is each caller's own rule."""
+        ...
+
 
 class LoginRepository(Protocol):
     """Persistence for the `Login` aggregate and its append-only index of retired tokens.

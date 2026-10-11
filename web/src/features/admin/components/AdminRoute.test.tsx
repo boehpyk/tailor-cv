@@ -17,13 +17,7 @@ import {
 import { createAppQueryClient } from '@/queryClient';
 import { renderWithRouter } from '@/test/render';
 
-import {
-  ADMIN_CHECKING,
-  ADMIN_EMPTY,
-  ADMIN_HEADING,
-  ADMIN_RETRY_LABEL,
-  ADMIN_UNAVAILABLE,
-} from '../adminCopy';
+import { ADMIN_CHECKING, ADMIN_RETRY_LABEL, ADMIN_UNAVAILABLE, USERS_HEADING } from '../adminCopy';
 
 import type { User } from '@/features/auth/types';
 
@@ -69,20 +63,18 @@ describe('/admin — AC-31', () => {
 
     const checking = await screen.findByText(ADMIN_CHECKING);
     expect(checking).toHaveAttribute('role', 'status');
-    expect(screen.queryByRole('heading', { name: ADMIN_HEADING })).not.toBeInTheDocument();
-    expect(screen.queryByText(ADMIN_EMPTY)).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: USERS_HEADING })).not.toBeInTheDocument();
   });
 
-  it('204: the shell, an h1 "Admin" and the empty state', async () => {
+  it('204: the shell, an h1 "Users"', async () => {
     stubAccountFetch({ ...signedInRoutes(ADMIN), 'GET /api/admin/access': noContent });
     signInAs(ADMIN);
 
     renderWithRouter('/admin', { queryClient: clientWithRetriesOff() });
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
+      await screen.findByRole('heading', { level: 1, name: USERS_HEADING }),
     ).toBeInTheDocument();
-    expect(screen.getByText(ADMIN_EMPTY)).toBeInTheDocument();
   });
 
   it('404: the ordinary not-found view, with no "forbidden" wording', async () => {
@@ -95,7 +87,7 @@ describe('/admin — AC-31', () => {
     expect(
       screen.queryByText(/forbidden|not allowed|permission|admin only/i),
     ).not.toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: ADMIN_HEADING })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: USERS_HEADING })).not.toBeInTheDocument();
   });
 
   it('a 404 is not retried', async () => {
@@ -143,7 +135,7 @@ describe('/admin — AC-31', () => {
     await userEvent.setup().click(retry);
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
+      await screen.findByRole('heading', { level: 1, name: USERS_HEADING }),
     ).toBeInTheDocument();
     expect(callsTo(fetch, 'GET', '/api/admin/access').length).toBeGreaterThan(before);
   });
@@ -160,14 +152,14 @@ describe('/admin — AC-31', () => {
     // comes straight after the 204, so the cached answer is still fresh under the app's staleTime.
     renderWithRouter('/admin', { queryClient: createAppQueryClient() });
     expect(
-      await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
+      await screen.findByRole('heading', { level: 1, name: USERS_HEADING }),
     ).toBeInTheDocument();
 
     // TanStack v5's focusManager listens on window, and the event does not bubble.
     fireEvent(window, new Event('visibilitychange'));
 
     expect(await screen.findByRole('heading', { name: NOT_FOUND_HEADING })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: ADMIN_HEADING })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: USERS_HEADING })).not.toBeInTheDocument();
     expect(callsTo(fetch, 'GET', '/api/admin/access')).toHaveLength(2);
   });
 });
@@ -210,7 +202,7 @@ describe('/admin — AC-32', () => {
     const { router } = await logInAt(ADMIN);
 
     expect(
-      await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
+      await screen.findByRole('heading', { level: 1, name: USERS_HEADING }),
     ).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/admin');
   });
@@ -220,6 +212,6 @@ describe('/admin — AC-32', () => {
 
     expect(await screen.findByRole('heading', { name: NOT_FOUND_HEADING })).toBeInTheDocument();
     expect(router.state.location.pathname).toBe('/admin');
-    expect(screen.queryByRole('heading', { name: ADMIN_HEADING })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: USERS_HEADING })).not.toBeInTheDocument();
   });
 });

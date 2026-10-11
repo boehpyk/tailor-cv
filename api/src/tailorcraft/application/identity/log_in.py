@@ -30,7 +30,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from tailorcraft.application.identity.results import Authenticated
-from tailorcraft.domain.identity.errors import InvalidCredentials
+from tailorcraft.domain.identity.errors import AccountDisabled, InvalidCredentials
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.ports import (
     AccessTokenPort,
@@ -70,6 +70,8 @@ class LogIn:
        No `Login` is created and nothing is written on either.
        Then, on a match only, `users.confirm_credential_unchanged(user.id, user.password_hash)`:
        `False` (a reset committed during the verify) → `wrong_password`, `InvalidCredentials`.
+    4b. `users.is_disabled(user.id)` → raise `AccountDisabled(user.id)` (slice 4.2, ADR-0033).
+       Not reported to `failed_logins`: the credentials were right.
     5. `MATCH_NEEDS_REHASH` → `user.replace_password_hash(await hasher.hash(password), now)`;
        `await users.save(user)` — in the same unit of work (I-11).
     6. `Login.start(logins.next_identity(), user.id, refresh_token_hash, now, refresh_lifetime)`;
@@ -126,6 +128,13 @@ class LogIn:
         if not await self._users.confirm_credential_unchanged(user.id, user.password_hash):
             self._failed_logins.wrong_password(user.id)
             raise InvalidCredentials()
+
+        # Step 4b (slice 4.2, technical plan §0.5): read *under* the `FOR SHARE` just taken, as a
+        # fresh statement, so it sees the latest committed state and a disable cannot commit until
+        # this login has. Only after a correct password, so the two refusals above keep their equal
+        # cost; before any rehash or `Login`, so a disabled account writes nothing.
+        if await self._users.is_disabled(user.id):
+            raise AccountDisabled(user.id)
 
         now = self._clock.now()
         if verdict is PasswordVerdict.MATCH_NEEDS_REHASH:

@@ -190,6 +190,24 @@ class SqlAlchemyUserRepository:
         )
         return result.first() is not None
 
+    async def is_disabled(self, user_id: UserId) -> bool:
+        """`SELECT disabled_at IS NOT NULL FROM identity_user WHERE id = :u`; `False` for no row.
+
+        Core, against the table, never the ORM — for `confirm_credential_unchanged`'s reason. An
+        ORM `select(User)` that hits the identity map keeps the attributes this session already
+        loaded, so a `User` read before a concurrent disable committed would answer "active".
+        `LogIn` asks this *after* taking the row `FOR SHARE` (plan §0.5) and depends on a fresh
+        statement seeing the latest committed value; the bearer check (plan §0.4) asks it once per
+        request without loading the password hash.
+
+        **A missing row is `False`, not `UserNotFound`**: each route already handles a vanished user
+        where it does today, and this read must not move that into a new early refusal (AC-29).
+        """
+        result = await self._session.execute(
+            select(user_table.c.disabled_at.is_not(None)).where(user_table.c.id == user_id)
+        )
+        return bool(result.scalar_one_or_none())
+
 
 if TYPE_CHECKING:
     # Makes mypy prove the class structurally satisfies the port rather than trusting the shape by

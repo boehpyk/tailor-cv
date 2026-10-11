@@ -15,6 +15,7 @@ it must put in the cookie, and this layer never had it to return. The login's ow
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from tailorcraft.domain.identity.login import Login
 from tailorcraft.domain.identity.user import User
@@ -50,3 +51,18 @@ class RoleChange:
     from_role: Role
     to_role: Role
     changed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AccountStatusChange:
+    """What `DisableAccount` or `EnableAccount` did (slice 4.2, ADR-0033).
+
+    `disabled_at` is the account's state afterwards (`None` = enabled); `changed` is `False` for a
+    no-op; `logins_revoked` is how many logins the disable deleted (always 0 for an enable). Ids, an
+    instant and a count — nothing a log line could not carry.
+    """
+
+    user_id: UserId
+    disabled_at: datetime | None
+    changed: bool
+    logins_revoked: int

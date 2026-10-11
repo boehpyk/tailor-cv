@@ -7,7 +7,7 @@ import { __resetForTests } from '@/features/auth/authStore';
 import { USER_A, callsTo, signInAs, signedInRoutes, stubAccountFetch } from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 
-import { ADMIN_HEADING } from '../adminCopy';
+import { USERS_HEADING } from '../adminCopy';
 import { adminAccessQueryKey } from './useAdminAccess';
 
 /** T22 — AC-34: the probe's key and the server being asked whatever the cached role says. */
@@ -53,7 +53,7 @@ describe('the admin access probe — AC-34', () => {
 
     // A just-promoted admin with a stale /me still gets the screen: the server is the control.
     expect(
-      await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING }),
+      await screen.findByRole('heading', { level: 1, name: USERS_HEADING }),
     ).toBeInTheDocument();
     expect(callsTo(fetch, 'GET', '/api/admin/access')).toHaveLength(1);
   });

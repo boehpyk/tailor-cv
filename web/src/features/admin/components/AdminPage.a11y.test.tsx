@@ -7,7 +7,7 @@ import { AuthStatus } from '@/features/auth/components/AuthStatus';
 import { __resetForTests } from '@/features/auth/authStore';
 import { USER_A, ok, signInAs, hang, status, stubAccountFetch } from '@/test/accountFetch';
 
-import { ADMIN_CHECKING, ADMIN_HEADING, ADMIN_UNAVAILABLE } from '../adminCopy';
+import { ADMIN_CHECKING, ADMIN_UNAVAILABLE, USERS_HEADING } from '../adminCopy';
 
 import AdminPage from './AdminPage';
 
@@ -66,7 +66,7 @@ describe('accessibility — AC-36', () => {
     stubAccountFetch({ 'GET /api/admin/access': () => new Response(null, { status: 204 }) });
     renderPage();
 
-    const region = await screen.findByRole('region', { name: ADMIN_HEADING });
+    const region = await screen.findByRole('region', { name: USERS_HEADING });
     const h1 = within(region).getByRole('heading', { level: 1 });
     expect(region).toHaveAttribute('aria-labelledby', h1.id);
     expect(h1.id).not.toBe('');
@@ -95,7 +95,7 @@ describe('accessibility — AC-36', () => {
     stubAccountFetch({ 'GET /api/admin/access': () => new Response(null, { status: 204 }) });
     renderPage();
 
-    await screen.findByRole('heading', { level: 1, name: ADMIN_HEADING });
+    await screen.findByRole('heading', { level: 1, name: USERS_HEADING });
     expect(document.activeElement).toBe(document.body);
   });
 });

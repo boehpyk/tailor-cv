@@ -5978,3 +5978,185 @@ couldn't tell its own client from the real one.
   hasn't been exercised.
 - **4.2**: the admin page gets something to manage. Its plan has to close OQ-16, the gap between
   "is this an admin?" and a destructive action taken a moment later.
+
+# Slice 4.2 — the off switch, or: a key card that stops working mid-corridor
+
+*Implemented 2026-10-11. Not yet verified or released: `/verify` is next, then the owner's release.*
+
+## What the admin sees now
+
+4.1's empty page has something on it. `/admin` is a list of accounts, newest first, with a search
+box that takes any piece of an email and a *Load more* button. Click an address and you get the
+account's page: its role, when it signed up, whether it is disabled and since when, and how much it
+keeps (saved CVs, runs, postings, exports, board cards, active logins). Below that are three
+buttons: **Disable**, **Enable**, **Erase**. Each asks before it acts.
+
+Erase isn't new. It's `EraseAccount`, the same use case behind `erase-account` on the command line
+and behind a user's own *Delete my account*. What's new is *disabled*: the account stays, its data
+stays, but nobody can use it until an admin turns it back on.
+
+## Why disable does two things
+
+The owner's decision was short: a disabled user can't log in, their logins are revoked, and their
+open tab is sent home with a message. The first two sound like one job. They aren't, and the gap
+between them is the most interesting design question in the slice.
+
+Remember how sign-in works here (2.1). A **login** is a row, the refresh-token family, and revoking
+it means deleting it. But a tab doesn't show the login row on every request. It shows a 15-minute
+**access token**, a signed note that says "this is user X" and nothing else. The server checks the
+signature and believes it. It doesn't look anything up.
+
+So imagine disable did only the obvious thing and deleted the logins. The user's open tab would
+keep working for up to 15 minutes, still allowed to start paid tailoring runs. Then the token would
+expire, the silent refresh would find no login row, and the tab would quietly fall back to *signed
+out* with no reason given. The user wouldn't know they'd been disabled. They'd think the site had
+logged them out and try to sign in again.
+
+It's the hotel again, from 4.1. Deleting the logins is like cancelling the reservation at the front
+desk. The guest's key card still opens the room until checkout. 4.1's answer for roles was "don't
+put the role on the card". 4.2's answer is the same idea from the other side: the door reads one fact
+from the front desk every time.
+
+That's OQ-1, and the owner chose option B. **Every bearer request now reads one bit**, `disabled_at
+IS NOT NULL`, with a single primary-key lookup after the signature check. A disabled account gets
+**403 `account_disabled`**, not 401. A 401 would make the client try a refresh first, spend a call,
+and end up on the wrong reason (`expired`). A 403 says "your credential is fine, the account isn't
+allowed", and the client signs the tab out at once, tells the other tabs, and puts up *Your account
+has been disabled, so you were signed out.*
+
+What does the extra read cost? On the production image with 10 000 users: **+0.51 ms p95** on
+`/me` and **+0.69 ms** on `/board`, against a budget of +2. The ADR adds one warning for the future:
+if this read is ever too slow, fix the query, never add a cache. A cached "enabled" is exactly the bug
+this column exists to stop.
+
+Three smaller choices follow from the same thinking:
+
+- **Login says "disabled" only to someone who knows the password.** A wrong password still gets
+  the ordinary 401, byte for byte. Otherwise the login form would become a way to check whether an
+  address belongs to a disabled account. It also keeps 2.1's timing equality between "wrong
+  password" and "no such email", because the disabled check only runs after a correct verify.
+- **Disable locks the user row first, then deletes the logins.** That's the lock order the
+  codebase already follows (2.5: the user before any login or reset). Mutation 3 swapped the two
+  statements. Four tests went red, and two of the race tests didn't just fail, they **deadlocked**
+  into a 503. The rule isn't paperwork.
+- **A password reset still works and doesn't re-enable.** Otherwise "forgot my password" would be a
+  way out of a ban.
+
+## A search with nothing to escape
+
+The admin search box takes "any piece of an email". The SQL everyone writes first is
+`WHERE email LIKE '%' || :term || '%'`. It looks safe, since the term is a bound parameter and
+there's no injection. But inside `LIKE`, `%` and `_` are wildcards, so a search for `a_b` also
+matches `axb`, and a search for `%` matches everyone. The usual fix is an escape function, and the
+usual bug is an escape function that misses a case (the backslash, usually).
+
+The directory uses `strpos(email, :term) > 0` instead. `strpos` has no wildcards. It finds a
+literal substring, so `%`, `_` and `\` are just characters and there's nothing to escape and nothing
+to forget. A test searches for each of the three literally, and mutation 4 (back to `LIKE`) turns it
+red. The lesson isn't really about SQL: **when a tool needs careful escaping, look first for a
+tool that doesn't interpret the input at all.**
+
+The rest of the query follows the house pattern from history (2.3). It's one statement that never
+selects `password_hash`, and it pages with a **keyset** on `(created_at, id)` rather than `OFFSET`,
+so a user who signs up while you page doesn't push a row onto the next page twice. The base64url
+cursor codec that history already had was **lifted into one shared module** rather than copied, in
+its own commit, with history's tests passing unedited. With 10 000 users the list has no index and
+scans all of them. That was planned (OQ-9): the scan plus a top-21 sort takes about 3 ms, and page 1
+answers at **10.3 ms p95** against a budget of 100.
+
+## Descendant routes in a lazy chunk
+
+4.1 made `/admin` the app's first lazily loaded page. 4.2 needs pages *inside* it: the list at
+`/admin` and an account at `/admin/users/:userId`. The natural React Router code is a `<Routes>`
+block with `<Route>` children, and that cost **+0.69 kB gzip on the main bundle**, over the
+0.5 kB budget, for three routes nobody but an admin will visit.
+
+Why would code inside a lazy chunk grow the main bundle? React Router itself already lives in the
+main bundle, and `<Routes>` JSX needs a helper, `createRoutesFromChildren`, that the main app never
+used. Pulling it in from the admin chunk made the bundler put it with the rest of React Router. The
+fix is to describe the same three routes as plain objects and hand them to `useRoutes`, which the
+main bundle already had. The main chunk grew by **+0.20 kB** in total and the admin chunk is
+**4.04 kB**. It's a small number, but it's a habit: in a lazy chunk, check what your imports drag in
+*outside* it.
+
+## War stories
+
+**The race that never started.** AC-9 stages a disable landing mid-login, on two real database
+connections. The test was red, as a RED should be, but for the wrong reason. The seed registered
+its user with a private clock set to 2026-10-11, while the disable ran on the test suite's shared
+clock, set to 2026-09-04. So the domain was asked to disable a user **five weeks before it existed**,
+and `User.disable` refused, correctly. The race was never staged. The correction (`ab88358`) seeds on
+the same clock, in its own commit, with no assertion changed. It's the time-travel version of an
+old lesson: a test that shares no clock with the code it tests can be refuted by its own setup.
+
+**"Waiting for nothing" isn't NULL.** The same race test proved the overlap by reading
+`pg_stat_activity`: the login's connection should be sitting inside its open transaction, waiting.
+The test expected `wait_event_type` to be empty. PostgreSQL reports an idle-in-transaction
+backend as waiting on **`Client`**, because it *is* waiting, for its client's next statement.
+The check now asserts the state (`idle in transaction`) and nothing more (`618af74`).
+
+**One extra read, one broken test that wasn't broken.** When the bearer check went in, the full
+suite turned one unrelated test red: the per-user save limiter, failing with `MissingGreenlet`. The
+production code was fine. The cause was the test harness. Tests share one database session across
+requests, wrapped in a savepoint that rolls back when a request fails. Before 4.2 the limiter's 429
+came before any database read, so no savepoint was open. Now `require_user` reads the disabled bit
+first, so the savepoint opens, the 429 rolls it back, and SQLAlchemy **expires every object the test
+had loaded**. The test's next `run.version` was a lazy load on an async session, which fails.
+Production has a fresh session per request and can't meet this.
+
+The fix (`b1cc08f`) reads the values into locals before the requests. That edits a pre-existing
+test, which AC-29 forbade ("every existing test passes unedited"). Rather than bend the rule
+quietly, the owner amended it: harness-only fixes are allowed **if each one is listed**, and this is
+the only one on the list.
+
+**The search term in the logs.** This is the one no test found. The privacy-marker test (AC-27)
+planted unique markers in the target's email, the search term and the cursor, ran the routes, and
+checked that no **application** log record carried any of them. It passed. Then T26's manual pass
+did its usual last step, a grep of every container's logs for the test accounts. No full email
+appeared, but there were **2 hits** on the search term. The search is a `GET`, so the term rides in
+the query string: `GET /api/admin/users?q=t26-user-k7q2xm`. Both nginx's and uvicorn's **access logs**
+write the request line, query string included, by default. They aren't application log records,
+so a test that captures the app's logs can't see them.
+
+The owner chose the broad fix: **no access log records a query string, on any route.** uvicorn's
+lines go through a small `logging.Filter` that cuts everything from the first `?` (`abef0a2`,
+mutation-proven), and nginx logs `$uri` instead of `$request` (`f77b1d6`). A marker re-check read 0
+hits in both. One gap is left and recorded: **Traefik**, which belongs to the other stack on the
+box, has its own access log that nobody has looked at. That's a manual check for the release.
+
+It's a good reminder of why the manual pass greps *everything*. The privacy test proved what it
+looked at. The leak was somewhere it didn't look.
+
+**A small one.** The `commit-msg` hook rejects a subject over 72 characters, but it runs after the
+pre-commit hook, and that one runs the whole suite. So a 74-character subject costs about four
+minutes before you find out. Count first.
+
+## The numbers
+
+- **Bearer check**: `/me` +0.51 ms p95, `/board` +0.69 ms (budget +2), production image, n = 200
+  interleaved against `main`.
+- **Admin routes** (10 000 users, p95): list page 1 10.3 ms, page 20 10.6, search for `e` (every
+  row matches) 11.7, for `z` (none) 7.5, account overview 8.7 (budgets 100); disable with 50
+  logins 9.8 ms (150); erase of a full account with 1 005 files 415 ms (2 000).
+- **Bundle**: main +0.20 kB gzip (budget 0.5), admin chunk 4.04 kB (budget 8).
+- **Mutations**: eight, all recorded. Bearer check off: 4 red. Disabled check before the locked
+  re-check: 1. Login `DELETE` before the user lock: 4, plus 2 deadlocks in the race tests.
+  `strpos` back to `LIKE`: 2. The target's 404 through the global 401 map: 4. Login's disabled
+  branch removed: 3. Client refreshing on `account_disabled`: 1. `AdminPage` error-first again: 1.
+- **Tests**: 4777 backend, 1409 frontend after the log fix.
+
+## The common thread
+
+4.1 kept the role off the token so a revoke would land on the next request. 4.2 finds the same
+problem at a larger scale: a stateless token is a promise you can't take back, so anything that has to
+take effect *now* has to be read *now*. And the bug that got through is a cousin of 4.1's. A test
+checked the logs it captured, and the leak went to a log it didn't capture. The test was correct
+about what it covered. It just didn't cover the access logs.
+
+## What's next
+
+- **`/verify`** (T28): the reviewer, every AC, every RED's recorded failure, the mutations.
+- **Release** (T29): the read-only count before approval, and **Traefik's access log** checked by
+  hand. Firefox still hasn't been exercised.
+- **4.3**: user content across accounts. The admin will be able to read CVs, so the
+  privacy sentence 4.1 added becomes something the code actually does.

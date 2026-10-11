@@ -59,6 +59,12 @@ def test_the_identity_package_includes_the_claim_module() -> None:
     assert "claim.py" in {p.name for p in _identity_modules()}
 
 
+def test_the_identity_package_includes_the_user_directory_module() -> None:
+    """Guard the guard (slice 4.2, AC-6): the parametrized tests below must cover
+    `user_directory.py`."""
+    assert "user_directory.py" in {p.name for p in _identity_modules()}
+
+
 @pytest.mark.parametrize("module_path", _identity_modules(), ids=lambda p: p.name)
 def test_identity_module_names_only_shared_from_domain(module_path: Path) -> None:
     imported = _imported_domain_packages(module_path.read_text())
