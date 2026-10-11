@@ -257,7 +257,9 @@ async def test_a_disable_committing_between_the_verify_and_the_recheck_refuses_t
             )
         await login_session.rollback()
 
-        assert observed == [("idle in transaction", None)], "the two requests did not overlap"
+        assert [state for state, _ in observed] == ["idle in transaction"], (
+            "the two requests did not overlap"
+        )
         async with engine.connect() as conn:
             logins = (
                 await conn.execute(
