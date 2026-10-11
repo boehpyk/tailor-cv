@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import uuid4
 
 import pytest
@@ -163,8 +163,7 @@ async def actors(engine: AsyncEngine) -> AsyncIterator[Callable[[], AsyncSession
         await s.close()
 
 
-async def _committed_user(engine: AsyncEngine, address: str) -> UserId:
-    clock = FixedClock(datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC))
+async def _committed_user(engine: AsyncEngine, address: str, clock: FixedClock) -> UserId:
     async with async_sessionmaker(engine, expire_on_commit=False)() as s:
         user = User.register_with_password(
             SpyUsers(s, []).next_identity(), EmailAddress.parse(address), PHC, clock.now()
@@ -238,7 +237,7 @@ async def test_a_disable_committing_between_the_verify_and_the_recheck_refuses_t
     engine: AsyncEngine, clock: FixedClock, actors: Callable[[], AsyncSession]
 ) -> None:
     address = _email(uuid4().hex[:12])
-    target = await _committed_user(engine, address)
+    target = await _committed_user(engine, address, clock)
     try:
         login_session = actors()
         pid = await _backend_pid(login_session)
@@ -283,7 +282,7 @@ async def test_a_disable_starting_while_the_login_holds_its_share_lock_waits_and
     engine: AsyncEngine, clock: FixedClock, actors: Callable[[], AsyncSession]
 ) -> None:
     address = _email(uuid4().hex[:12])
-    target = await _committed_user(engine, address)
+    target = await _committed_user(engine, address, clock)
     try:
         login_session = actors()
         disable_session = actors()
