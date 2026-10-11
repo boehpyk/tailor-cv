@@ -497,13 +497,14 @@ async def get_tailoring_run(
     requester: Owner,
     expires_at: datetime | None,
     get_use_case: GetTailoringRun,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> TailoringRunResponse:
     """`GET /api/tailoring-runs/{id}`'s body — the endpoint a client polls."""
     no_store(response)
     try:
         run = await get_use_case(tailoring_run_id, requester)
     except DomainError as exc:
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     return to_response(run, expires_at)
 

@@ -287,6 +287,7 @@ async def download_document_inline(
     format: str,
     requester: Owner,
     render_inline: RenderDocumentInline,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> Response:
     """The inline `md`/`txt` download's body. `format` is the route's inline literal, widened to
     `ExportFormat` here, once. Headers go on the returned `Response` (see `download_headers`)."""
@@ -311,7 +312,7 @@ async def download_document_inline(
         # **`SQLAlchemyError` is deliberately not caught here** (X-7): it is not a `DomainError`, so
         # it passes straight through to the app-level handler that answers 503 `service_unavailable`
         # without this frame — whose locals would otherwise hold the document — in the chain.
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     return Response(
         content=rendered.data,
@@ -499,13 +500,14 @@ async def list_exports_for_run(
     expires_at: datetime | None,
     jobs_prefix: str,
     list_exports: ListExportsForRun,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> ExportJobListResponse:
     """`GET …/exports`'s body."""
     no_store(response)
     try:
         listing = await list_exports(run_id, requester)
     except DomainError as exc:
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     # One `run_version` for every row: the listing is a single instant's answer, and judging half
     # the rows against one fact and half against another read a moment later is how a client ends
@@ -555,6 +557,7 @@ async def download_export_file(
     export_job_id: ExportJobId,
     requester: Owner,
     download: DownloadExportFile,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> Response:
     """The file download's body. Headers go on the returned `Response` (see `download_headers`)."""
     try:
@@ -566,7 +569,7 @@ async def download_export_file(
         # above the wide one in `errors.py`, where the comment between them explains why the order
         # is the branch. A stale `ready` job is not an error at all and never reaches here (X-46):
         # the file is the user's own, and the UI is what declines to offer it.
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     return Response(
         content=data,
