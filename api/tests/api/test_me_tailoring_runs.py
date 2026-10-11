@@ -852,9 +852,15 @@ async def test_the_save_limiter_is_per_user(
     )
     bob_run = await _add_run(session, succeeded_run(bob.owner, clock.now() - timedelta(minutes=1)))
 
-    first = await _put(client, alice, alice_run, alice_run.version)
-    second = await _put(client, alice, alice_run, alice_run.version + 1)
-    other = await _put(client, bob, bob_run, bob_run.version)
+    # Read before the first request: this harness shares one `AsyncSession` between the test and the
+    # app, and a refused request's rollback expires every instance it has loaded, so a later
+    # attribute read is a lazy load (`MissingGreenlet`). Production has a session per request.
+    alice_version, bob_version = alice_run.version, bob_run.version
+
+    first = await _put(client, alice, alice_run, alice_version)
+    second = await _put(client, alice, alice_run, alice_version + 1)
+    await session.refresh(bob_run)  # the 429's rollback expired it; same harness reason as above
+    other = await _put(client, bob, bob_run, bob_version)
 
     assert first.status_code == 200, first.text
     assert second.status_code == 429, second.text
