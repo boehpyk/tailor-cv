@@ -20,6 +20,7 @@ import sys
 
 import sentry_sdk
 import structlog
+from sentry_sdk.types import Event, Hint
 
 from tailorcraft.infrastructure.settings import Settings
 
@@ -196,6 +197,58 @@ def configure_logging(settings: Settings) -> None:
     )
 
 
+# Span and breadcrumb keys that carry a query string or fragment verbatim (sentry_sdk 2.68.1: the httpx
+# and stdlib integrations set `http.query` / `http.fragment` on every outbound span and breadcrumb,
+# whatever `send_default_pii` says; `url.query` / `url.fragment` are their span-streaming names).
+_QUERY_DATA_KEYS = ("http.query", "http.fragment", "url.query", "url.fragment")
+# Keys holding a URL that may still end in `?…` or `#…`.
+_URL_DATA_KEYS = ("url", "url.full")
+
+
+def _without_query(url: str) -> str:
+    return url.split("#", 1)[0].split("?", 1)[0]
+
+
+def _scrub_data(data: object) -> None:
+    if not isinstance(data, dict):
+        return
+    for key in _QUERY_DATA_KEYS:
+        data.pop(key, None)
+    for key in _URL_DATA_KEYS:
+        if isinstance(data.get(key), str):
+            data[key] = _without_query(data[key])
+
+
+def strip_query_strings(event: Event, hint: Hint) -> Event:
+    """`before_send` **and** `before_send_transaction`: take every query string off an event.
+
+    The access logs already lose theirs on every route (`StripAccessLogQuery`, the nginx `noquery`
+    format); this is the third copy. `send_default_pii=False` does not cover it: the ASGI integration
+    sets `request.query_string` on **every** event, error and transaction alike, so the admin search
+    (`GET /api/admin/users?q=<part of an email>`) would reach Sentry on every error and on the sampled
+    transactions. Outbound spans and breadcrumbs carry the query of the URL fetched (a posting link a
+    stranger chose). Runs after serialization, so everything here is plain dicts and lists.
+    """
+    request = event.get("request")
+    if isinstance(request, dict):
+        request.pop("query_string", None)
+        _scrub_data(request)
+    spans: object = event.get("spans")
+    if isinstance(spans, list):
+        for span in spans:
+            if isinstance(span, dict):
+                _scrub_data(span.get("data"))
+    trace = (event.get("contexts") or {}).get("trace")
+    if isinstance(trace, dict):
+        _scrub_data(trace.get("data"))
+    crumbs: object = event.get("breadcrumbs")
+    if isinstance(crumbs, dict):
+        for crumb in crumbs.get("values") or ():
+            if isinstance(crumb, dict):
+                _scrub_data(crumb.get("data"))
+    return event
+
+
 def configure_sentry(settings: Settings) -> None:
     """Initialise error reporting, if a DSN is configured.
 
@@ -224,4 +277,10 @@ def configure_sentry(settings: Settings) -> None:
         # floor underneath that, for every frame nobody thought about. Two settings that sound like
         # they cover PII, one that does (CLAUDE.md's footgun list; feature-spec AC-23).
         include_local_variables=False,
+        # Query strings are request data `send_default_pii` does not govern: the ASGI integration
+        # attaches them to every event, and outbound spans and breadcrumbs carry the fetched URL's.
+        # One scrubber for both paths, because a transaction is not an error event and skips
+        # `before_send` (4.2's /verify; the access logs strip theirs the same way).
+        before_send=strip_query_strings,
+        before_send_transaction=strip_query_strings,
     )
