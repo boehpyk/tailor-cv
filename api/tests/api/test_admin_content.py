@@ -35,6 +35,7 @@ from httpx import AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from sqlalchemy.orm import Session
 
 from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat
 from tailorcraft.domain.identity.ownership import Owner, UserOwner
@@ -359,6 +360,8 @@ async def test_ac4_one_cv_has_the_saved_cv_keys_plus_extracted_text_and_no_store
     admin, target = await make_account(admin=True), await make_account()
     cv = extracted_cv(target.owner, _at(clock, 10))
     await _add_cv(world_app, cv, settings, with_file=False)
+    assert cv.extracted_text is not None
+    stored_text = cv.extracted_text.value  # the value object stores it trimmed
 
     response = await http.get(
         f"{ADMIN_USERS}/{target.id}/base-cvs/{cv.id.value}", headers=admin.headers
@@ -368,7 +371,7 @@ async def test_ac4_one_cv_has_the_saved_cv_keys_plus_extracted_text_and_no_store
     _no_store(response)
     body = response.json()
     assert set(body) == SAVED_CV_KEYS | {"extracted_text"}
-    assert body["extracted_text"] == "word " * 60
+    assert body["extracted_text"] == stored_text
 
 
 async def test_ac4_a_250000_character_cv_is_returned_whole(
@@ -431,7 +434,7 @@ async def test_ac5_the_posting_list_is_summaries_newest_first_and_the_owners_own
     items = response.json()["items"]
     assert [i["id"] for i in items] == [str(newer.id.value), str(older.id.value)]
     assert all(set(i) == JOB_POSTING_SUMMARY_KEYS and "text" not in i for i in items)
-    own = await http.get("/api/me/job-postings", headers=target.headers)
+    own = await http.get("/api/me/job-postings", params={"limit": "20"}, headers=target.headers)
     assert items == own.json()["items"]
 
 
@@ -463,6 +466,7 @@ async def test_ac5_one_posting_has_its_text_and_no_expiry_and_no_store(
     admin, target = await make_account(admin=True), await make_account()
     posting = pasted_posting(target.owner, _at(clock, 10), marker="z")
     await _add_posting(world_app, posting)
+    stored_text = posting.text.value  # the value object stores it trimmed
 
     response = await http.get(
         f"{ADMIN_USERS}/{target.id}/job-postings/{posting.id.value}", headers=admin.headers
@@ -472,7 +476,7 @@ async def test_ac5_one_posting_has_its_text_and_no_expiry_and_no_store(
     _no_store(response)
     body = response.json()
     assert set(body) == JOB_POSTING_RESPONSE_KEYS
-    assert body["text"] == "zost " * 40
+    assert body["text"] == stored_text
     assert body["expires_at"] is None
 
 
@@ -1341,20 +1345,28 @@ _CONTENT_TABLES = ("intake_base_cv", "posting_job_posting", "tailoring_run", "ex
 async def test_ac19_postgres_failing_below_the_repository_is_503_never_404_or_200(
     http: AsyncClient,
     make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
     monkeypatch: pytest.MonkeyPatch,
     route: str,
 ) -> None:
-    """Fails any statement that touches a content table, so the handler's own read is what breaks."""
-    admin = await make_account(admin=True)
-    method, url = _random_routes(uuid4())[route]
-    original = AsyncSession.execute
+    """Fails any statement that touches a content table, so the handler's own read is what breaks.
 
-    async def _down(self: AsyncSession, statement: Any, *args: Any, **kwargs: Any) -> Any:
+    The target is a real account with content: for an unknown one the correct answer is 404
+    `user_not_found`, decided before any content table is read."""
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    method, url = _entry_routes(target.id, entry)[route]
+    # The sync `Session.execute` is what `AsyncSession.execute` *and* `AsyncSession.get` reach.
+    original = Session.execute
+
+    def _down(self: Session, statement: Any, *args: Any, **kwargs: Any) -> Any:
         if any(table in str(statement) for table in _CONTENT_TABLES):
             raise SQLAlchemyError("simulated: postgres unavailable (AC-19)")
-        return await original(self, statement, *args, **kwargs)
+        return original(self, statement, *args, **kwargs)
 
-    monkeypatch.setattr(AsyncSession, "execute", _down)
+    monkeypatch.setattr(Session, "execute", _down)
 
     response = await http.request(method, url, headers=admin.headers)
 
