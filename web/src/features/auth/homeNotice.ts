@@ -1,6 +1,7 @@
 /**
- * A one-off notice carried to `/` in React Router's location state — today only AC-40's "Your
- * account and saved CVs were deleted.", which has to outlive the page that deleted the account.
+ * A one-off notice carried to `/` in React Router's location state — AC-40's "Your account
+ * and saved CVs were deleted." and 4.2's "Your account has been disabled, so you were signed
+ * out." (AC-36): each has to outlive the page that ended the session.
  *
  * **The reader only ever renders a notice it knows.** History state is same-origin, so nobody else
  * can write it, but it survives reloads and outlives releases; a reader that rendered whatever
@@ -10,7 +11,9 @@
  */
 import { ACCOUNT_DELETED_NOTICE } from '@/features/savedCvs/savedCvsCopy';
 
-const KNOWN_NOTICES: readonly string[] = [ACCOUNT_DELETED_NOTICE];
+import { ACCOUNT_DISABLED_NOTICE } from './authCopy';
+
+const KNOWN_NOTICES: readonly string[] = [ACCOUNT_DELETED_NOTICE, ACCOUNT_DISABLED_NOTICE];
 
 export interface HomeNoticeState {
   readonly notice: string;

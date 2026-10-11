@@ -151,6 +151,10 @@ function copyForCode(
         message: "That email and password don't match an account.",
         ...(action === 'login' ? { note: CONFIRM_EMAIL_FIRST_NOTE } : {}),
       };
+    case 'account_disabled':
+      // Only `/login` answers it (after a correct password, OQ-3); a bearer request answering it
+      // signs the tab out in `client.ts` instead, so no other form shows this.
+      return { message: LOGIN_ACCOUNT_DISABLED };
     case 'invalid_email':
       return { message: "That doesn't look like an email address. Check it and try again." };
     case 'password_too_short':

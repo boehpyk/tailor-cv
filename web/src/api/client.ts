@@ -233,8 +233,9 @@ async function requestWithAuth<T>(sendOnce: (bearer: string | null) => Promise<T
 }
 
 /**
- * One attempt, plus the one answer to a bearer request that is about the **login** rather than the
- * request: 401 `not_signed_in` means the token verified but the user behind it no longer exists
+ * One attempt, plus the answers to a bearer request that are about the **login** rather than the
+ * request — 403 `account_disabled` (slice 4.2: reason `account_disabled`, broadcast to other
+ * tabs) and 401 `not_signed_in` means the token verified but the user behind it no longer exists
  * (/verify round 1, finding 2). Refreshing cannot fix that, and neither can asking again, so the
  * store is told — `SIGNED_OUT` reason `expired`, which sends `RequireAuth` to `/login` — instead of
  * leaving the tab `authenticated` with a query that fails the same way on every Retry.
@@ -250,8 +251,20 @@ async function sendWithBearer<T>(
   try {
     return await sendOnce(bearer);
   } catch (error) {
-    if (bearer !== null && error instanceof ApiError && error.code === 'not_signed_in') {
-      authStore.signOutIfHolding(bearer);
+    if (bearer !== null && error instanceof ApiError) {
+      if (error.code === 'not_signed_in') {
+        authStore.signOutIfHolding(bearer);
+      } else if (
+        error.status === 403 &&
+        error.code === 'account_disabled' &&
+        authStore.signOutIfHolding(bearer, 'account_disabled')
+      ) {
+        // Slice 4.2 (AC-36): an admin disabled the account and the server deleted every login,
+        // so a refresh could only fail — this branch is reached with no refresh attempt, because
+        // `requestWithAuth` refreshes on 401 `invalid_access_token` alone. Every other tab hears
+        // it once: only the request that actually ended the login broadcasts.
+        authStore.broadcastSignOut();
+      }
     }
     throw error;
   }

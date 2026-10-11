@@ -15,19 +15,19 @@ export interface AdminPageProps {
 export type AdminView = 'checking' | 'allowed' | 'not_found' | 'unavailable';
 
 /**
- * **Error first.** A refetch on focus that answers 404 leaves the earlier 204 in `data`; checking
- * `data`/`isPending` before `error` would keep showing the shell to a demoted admin (R-26).
+ * **Only a 404 outranks data** (slice 4.2, OQ-5; 4.1's carried MINOR). A refetch on focus that
+ * answers 404 leaves the earlier 204 in `data`, and a demoted admin must still lose the page
+ * (R-26) — so the 404 is checked first. A 503 or a network failure on that refetch says nothing
+ * about the role, so a cached 204 keeps the page; only with no answer yet does an error show
+ * *Couldn't check admin access.*
  */
 function adminView(query: {
   readonly error: Error | null;
-  readonly isPending: boolean;
+  readonly data: true | undefined;
 }): AdminView {
-  if (query.error !== null) {
-    return query.error instanceof ApiError && query.error.status === 404
-      ? 'not_found'
-      : 'unavailable';
-  }
-  return query.isPending ? 'checking' : 'allowed';
+  if (query.error instanceof ApiError && query.error.status === 404) return 'not_found';
+  if (query.data !== undefined) return 'allowed';
+  return query.error === null ? 'checking' : 'unavailable';
 }
 
 /**
