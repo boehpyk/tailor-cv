@@ -18,6 +18,7 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Protocol
 from uuid import UUID, uuid4
 
 import pytest
@@ -116,10 +117,14 @@ class _Who:
         return bearer(self.token)
 
 
+class MakeAccount(Protocol):
+    async def __call__(self, *, admin: bool = False, email: str | None = None) -> _Who: ...
+
+
 @pytest_asyncio.fixture
 async def make_account(
     world_app: FastAPI, settings: Settings, engine: AsyncEngine, seeded_ids: list[UUID]
-) -> AsyncIterator[object]:
+) -> AsyncIterator[MakeAccount]:
     clients: list[AsyncClient] = []
 
     async def make(*, admin: bool = False, email: str | None = None) -> _Who:
@@ -191,9 +196,9 @@ def _comparable(response: Response) -> dict[str, str]:
 
 
 async def test_ac17_an_admin_gets_a_page_with_exactly_the_documented_keys_and_no_store(
-    http: AsyncClient, make_account: object, engine: AsyncEngine, seeded_ids: list[UUID]
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine, seeded_ids: list[UUID]
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
     token = uuid4().hex
     await _seed_directory_users(engine, seeded_ids, token, 3)
 
@@ -210,9 +215,9 @@ async def test_ac17_an_admin_gets_a_page_with_exactly_the_documented_keys_and_no
 
 
 async def test_ac17_paging_25_users_at_limit_10_returns_25_distinct_ids_in_order_then_null(
-    http: AsyncClient, make_account: object, engine: AsyncEngine, seeded_ids: list[UUID]
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine, seeded_ids: list[UUID]
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
     token = uuid4().hex
     ids = await _seed_directory_users(engine, seeded_ids, token, 25)
 
@@ -235,9 +240,9 @@ async def test_ac17_paging_25_users_at_limit_10_returns_25_distinct_ids_in_order
 
 
 async def test_ac17_the_default_limit_is_20(
-    http: AsyncClient, make_account: object, engine: AsyncEngine, seeded_ids: list[UUID]
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine, seeded_ids: list[UUID]
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
     token = uuid4().hex
     await _seed_directory_users(engine, seeded_ids, token, 25)
 
@@ -250,9 +255,9 @@ async def test_ac17_the_default_limit_is_20(
 
 @pytest.mark.parametrize("limit", ["1", "50"])
 async def test_ac17_the_limit_bounds_are_inclusive(
-    http: AsyncClient, make_account: object, limit: str
+    http: AsyncClient, make_account: MakeAccount, limit: str
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(USERS, params={"limit": limit}, headers=admin.headers)
 
@@ -264,9 +269,9 @@ async def test_ac17_the_limit_bounds_are_inclusive(
 
 
 async def test_ac18_the_search_is_a_case_insensitive_substring(
-    http: AsyncClient, make_account: object, engine: AsyncEngine, seeded_ids: list[UUID]
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine, seeded_ids: list[UUID]
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
     token = uuid4().hex
     ids = await _seed_directory_users(engine, seeded_ids, token, 2)
 
@@ -280,9 +285,9 @@ async def test_ac18_the_search_is_a_case_insensitive_substring(
     "q", ["a" * 255, "al\x01ex", "al\nex"], ids=["too-long", "control-char", "newline"]
 )
 async def test_ac18_an_invalid_search_is_422_invalid_search(
-    http: AsyncClient, make_account: object, q: str
+    http: AsyncClient, make_account: MakeAccount, q: str
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(USERS, params={"q": q}, headers=admin.headers)
 
@@ -291,12 +296,12 @@ async def test_ac18_an_invalid_search_is_422_invalid_search(
 
 
 @pytest.mark.parametrize(
-    "cursor", ["not-base64!!", "AAAA", "e30"], ids=["garbage", "short", "empty-json"]
+    "cursor", ["not-base64!!", "AAAA", "e30"], ids=["garbage", "short", "base64-of-empty-object"]
 )
 async def test_ac18_a_malformed_or_tampered_cursor_is_422_invalid_cursor(
-    http: AsyncClient, make_account: object, cursor: str
+    http: AsyncClient, make_account: MakeAccount, cursor: str
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(USERS, params={"cursor": cursor}, headers=admin.headers)
 
@@ -306,9 +311,9 @@ async def test_ac18_a_malformed_or_tampered_cursor_is_422_invalid_cursor(
 
 @pytest.mark.parametrize("limit", ["0", "51", "-1", "abc"])
 async def test_ac18_a_limit_outside_1_to_50_is_422_validation_error(
-    http: AsyncClient, make_account: object, limit: str
+    http: AsyncClient, make_account: MakeAccount, limit: str
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(USERS, params={"limit": limit}, headers=admin.headers)
 
@@ -320,9 +325,9 @@ async def test_ac18_a_limit_outside_1_to_50_is_422_validation_error(
     ("param", "value"), [("q", "a" * 513), ("cursor", "a" * 257)], ids=["q-raw", "cursor-raw"]
 )
 async def test_ac18_a_value_over_the_raw_bound_is_422_validation_error(
-    http: AsyncClient, make_account: object, param: str, value: str
+    http: AsyncClient, make_account: MakeAccount, param: str, value: str
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(USERS, params={param: value}, headers=admin.headers)
 
@@ -331,9 +336,9 @@ async def test_ac18_a_value_over_the_raw_bound_is_422_validation_error(
 
 
 async def test_ac18_neither_the_search_nor_the_cursor_appears_in_a_response_or_a_log_line(
-    http: AsyncClient, make_account: object, caplog: pytest.LogCaptureFixture
+    http: AsyncClient, make_account: MakeAccount, caplog: pytest.LogCaptureFixture
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
     q_marker = f"QMARKER{uuid4().hex}"
     cursor_marker = f"CMARKER{uuid4().hex}"
     bad_search = "\x01" + q_marker
@@ -376,9 +381,9 @@ _FIREWALLED = [
     ("method", "url"), [(m, u) for m, u, _ in _FIREWALLED], ids=[i for _, _, i in _FIREWALLED]
 )
 async def test_ac19_a_plain_user_gets_the_404_of_an_unmatched_path_on_every_route(
-    http: AsyncClient, make_account: object, method: str, url: str
+    http: AsyncClient, make_account: MakeAccount, method: str, url: str
 ) -> None:
-    user = await make_account()  # type: ignore[operator]
+    user = await make_account()
 
     unmatched = await http.get(UNMATCHED, headers=user.headers)
     refused = await http.request(method, url, headers=user.headers)
@@ -406,10 +411,10 @@ async def test_ac19_anonymous_is_401_invalid_access_token_on_every_route(
 
 
 async def test_ac20_detail_returns_the_account_and_its_counts_with_no_store(
-    http: AsyncClient, make_account: object, engine: AsyncEngine
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     upload = await http.post(
         "/api/me/base-cvs",
         files={"file": ("a.txt", ("word " * 200).encode(), "text/plain")},
@@ -432,9 +437,9 @@ async def test_ac20_detail_returns_the_account_and_its_counts_with_no_store(
 
 
 async def test_ac20_an_unknown_id_is_404_user_not_found_in_the_envelope_with_no_store(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(f"{USERS}/{uuid4()}", headers=admin.headers)
 
@@ -444,9 +449,9 @@ async def test_ac20_an_unknown_id_is_404_user_not_found_in_the_envelope_with_no_
 
 
 async def test_ac20_a_malformed_id_is_422_validation_error_for_an_admin(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.get(f"{USERS}/not-a-uuid", headers=admin.headers)
 
@@ -458,10 +463,10 @@ async def test_ac20_a_malformed_id_is_422_validation_error_for_an_admin(
 
 
 async def test_ac21_disable_deletes_the_logins_and_kills_the_refresh_cookie_and_the_bearer(
-    http: AsyncClient, make_account: object, engine: AsyncEngine, settings: Settings
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine, settings: Settings
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     assert await _logins(engine, target.id) == 1, "premise: the target is signed in"
 
     response = await http.post(f"{USERS}/{target.id}/disable", headers=admin.headers)
@@ -487,10 +492,10 @@ async def test_ac21_disable_deletes_the_logins_and_kills_the_refresh_cookie_and_
 
 
 async def test_ac21_a_second_disable_is_200_unchanged_with_zero_revoked(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     first = await http.post(f"{USERS}/{target.id}/disable", headers=admin.headers)
 
     second = await http.post(f"{USERS}/{target.id}/disable", headers=admin.headers)
@@ -503,9 +508,9 @@ async def test_ac21_a_second_disable_is_200_unchanged_with_zero_revoked(
 
 
 async def test_ac21_disabling_an_unknown_id_is_404_user_not_found(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.post(f"{USERS}/{uuid4()}/disable", headers=admin.headers)
 
@@ -518,11 +523,11 @@ async def test_ac21_disabling_an_unknown_id_is_404_user_not_found(
 
 
 async def test_ac22_enable_lets_the_target_log_in_again_and_resurrects_no_session(
-    http: AsyncClient, make_account: object, settings: Settings, engine: AsyncEngine
+    http: AsyncClient, make_account: MakeAccount, settings: Settings, engine: AsyncEngine
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
     email = f"enable-{uuid4().hex}@example.com"
-    target = await make_account(email=email)  # type: ignore[operator]
+    target = await make_account(email=email)
     old_refresh = target.client.cookies.get(REFRESH_COOKIE_NAME)
     assert old_refresh, "premise: the target holds a refresh cookie"
     await http.post(f"{USERS}/{target.id}/disable", headers=admin.headers)
@@ -550,10 +555,10 @@ async def test_ac22_enable_lets_the_target_log_in_again_and_resurrects_no_sessio
 
 
 async def test_ac22_enabling_an_enabled_account_is_200_unchanged(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
 
     response = await http.post(f"{USERS}/{target.id}/enable", headers=admin.headers)
 
@@ -563,9 +568,9 @@ async def test_ac22_enabling_an_enabled_account_is_200_unchanged(
 
 
 async def test_ac22_enabling_an_unknown_id_is_404_user_not_found(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.post(f"{USERS}/{uuid4()}/enable", headers=admin.headers)
 
@@ -592,10 +597,10 @@ async def _upload(http: AsyncClient, who: _Who, name: str) -> str:
 
 
 async def test_ac23_erase_removes_every_row_and_file_and_reports_integer_counts(
-    http: AsyncClient, make_account: object, settings: Settings, engine: AsyncEngine
+    http: AsyncClient, make_account: MakeAccount, settings: Settings, engine: AsyncEngine
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     cv_ids = [await _upload(http, target, "a.txt"), await _upload(http, target, "b.txt")]
     paths = [_saved_cv_path(settings, c) for c in cv_ids]
     assert all(p.exists() for p in paths), "premise: the files exist"
@@ -618,10 +623,10 @@ async def test_ac23_erase_removes_every_row_and_file_and_reports_integer_counts(
 
 
 async def test_ac23_a_second_erase_is_404_user_not_found(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     first = await http.delete(f"{USERS}/{target.id}", headers=admin.headers)
     assert first.status_code == 200, first.text
 
@@ -634,14 +639,14 @@ async def test_ac23_a_second_erase_is_404_user_not_found(
 
 async def test_ac23_a_failing_unlink_is_still_200_with_the_rows_gone(
     http: AsyncClient,
-    make_account: object,
+    make_account: MakeAccount,
     settings: Settings,
     engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Injected below `LocalFileStore`'s own floor (`Path.unlink`, matched by exact path)."""
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     ok_id = await _upload(http, target, "a.txt")
     failing_id = await _upload(http, target, "b.txt")
     failing_path = _saved_cv_path(settings, failing_id)
@@ -669,9 +674,9 @@ async def test_ac23_a_failing_unlink_is_still_200_with_the_rows_gone(
 
 
 async def test_ac25a_an_admin_disabling_itself_is_200_and_its_next_request_is_403(
-    http: AsyncClient, make_account: object
+    http: AsyncClient, make_account: MakeAccount
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.post(f"{USERS}/{admin.id}/disable", headers=admin.headers)
     assert response.status_code == 200, response.text
@@ -683,9 +688,9 @@ async def test_ac25a_an_admin_disabling_itself_is_200_and_its_next_request_is_40
 
 
 async def test_ac25b_an_admin_erasing_itself_is_200_and_its_next_request_is_401_not_signed_in(
-    http: AsyncClient, make_account: object, engine: AsyncEngine
+    http: AsyncClient, make_account: MakeAccount, engine: AsyncEngine
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     response = await http.delete(f"{USERS}/{admin.id}", headers=admin.headers)
     assert response.status_code == 200, response.text
@@ -713,12 +718,12 @@ _ROUTES = [
 )
 async def test_ac26_a_failing_database_is_503_on_every_admin_route_never_404_403_or_200(
     http: AsyncClient,
-    make_account: object,
+    make_account: MakeAccount,
     monkeypatch: pytest.MonkeyPatch,
     method: str,
     url: str,
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
+    admin = await make_account(admin=True)
 
     async def _down(self: AsyncSession, *args: object, **kwargs: object) -> None:
         raise SQLAlchemyError("simulated: postgres unavailable (AC-26)")
@@ -732,9 +737,9 @@ async def test_ac26_a_failing_database_is_503_on_every_admin_route_never_404_403
 
 
 async def test_ac26_a_failing_database_during_the_bearer_check_is_503(
-    http: AsyncClient, make_account: object, monkeypatch: pytest.MonkeyPatch
+    http: AsyncClient, make_account: MakeAccount, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    user = await make_account()  # type: ignore[operator]
+    user = await make_account()
 
     async def _down(self: AsyncSession, *args: object, **kwargs: object) -> None:
         raise SQLAlchemyError("simulated: postgres unavailable (AC-26)")
@@ -748,10 +753,10 @@ async def test_ac26_a_failing_database_during_the_bearer_check_is_503(
 
 
 async def test_ac26_with_redis_unreachable_every_admin_route_answers_as_normal(
-    http: AsyncClient, make_account: object, world_app: FastAPI, settings: Settings
+    http: AsyncClient, make_account: MakeAccount, world_app: FastAPI, settings: Settings
 ) -> None:
-    admin = await make_account(admin=True)  # type: ignore[operator]
-    target = await make_account()  # type: ignore[operator]
+    admin = await make_account(admin=True)
+    target = await make_account()
     override_settings(world_app, settings, redis_url="redis://127.0.0.1:1/0")
 
     listed = await http.get(USERS, headers=admin.headers)
