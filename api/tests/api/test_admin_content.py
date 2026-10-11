@@ -21,6 +21,8 @@ Postgres-down 503s of AC-19 (the bearer check reads the database first) and AC-1
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timedelta
@@ -37,11 +39,27 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from sqlalchemy.orm import Session
 
-from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat
+from tailorcraft.domain.export.value_objects import ExportFailureReason, ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import UserId
-from tailorcraft.domain.intake.value_objects import BaseCvId, CvContentType, ExtractedText
+from tailorcraft.domain.intake.base_cv import BaseCv
+from tailorcraft.domain.intake.value_objects import (
+    BaseCvId,
+    BaseCvLabel,
+    CvContentType,
+    ExtractedText,
+    OriginalFilename,
+)
+from tailorcraft.domain.posting.job_posting import JobPosting
+from tailorcraft.domain.posting.value_objects import (
+    FetchedPosting,
+    JobPostingId,
+    JobPostingText,
+    PostingTitle,
+    SourceUrl,
+)
 from tailorcraft.domain.shared.files import FileRef
+from tailorcraft.domain.tailoring.value_objects import CoverLetter, TailoredCv, TailoredDocuments
 from tailorcraft.infrastructure.api.deps import (
     get_delete_saved_base_cv,
     get_erase_history_entry,
@@ -58,6 +76,9 @@ from tailorcraft.infrastructure.persistence.repositories.intake.base_cv import (
 from tailorcraft.infrastructure.persistence.repositories.posting.job_posting import (
     SqlAlchemyJobPostingRepository,
 )
+from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+    SqlAlchemyTailoringRunRepository,
+)
 from tailorcraft.infrastructure.settings import Settings
 from tests.api.me_support import (
     HISTORY_ENTRY_KEYS,
@@ -69,6 +90,7 @@ from tests.api.me_support import (
     build_concurrent_app,
     error_body,
     error_code,
+    export_bytes,
     mint_guest,
     new_client,
     override_settings,
@@ -77,12 +99,14 @@ from tests.api.me_support import (
 )
 from tests.api.test_auth_route_dependency_boundary import _all_dependency_calls, _iter_api_routes
 from tests.integration.owners import (
+    a_draft,
     extracted_cv,
     extraction_failed_cv,
     failed_run,
     pasted_posting,
     queued_export,
     queued_run,
+    ready_export,
     running_run,
     uploaded_cv,
 )
@@ -1441,3 +1465,429 @@ async def test_ac19_with_redis_unreachable_every_content_route_answers_as_normal
         statuses[name] = (await http.request(method, url, headers=admin.headers)).status_code
 
     assert statuses == dict.fromkeys(ROUTE_NAMES, 200), statuses
+
+
+# ============================================================================= T7 (test-after)
+# AC-20 ... AC-24: the access log, privacy, the guest cookie, no-store everywhere, the schemas.
+
+ACCESS_EVENT = "admin.content_access"
+EXPECTED_ACCESS = {
+    "list_cvs": ("base_cv", "list", None),
+    "get_cv": ("base_cv", "read", "cv"),
+    "delete_cv": ("base_cv", "delete", "cv"),
+    "list_postings": ("job_posting", "list", None),
+    "get_posting": ("job_posting", "read", "posting"),
+    "list_history": ("history", "list", None),
+    "get_run": ("tailoring_run", "read", "run"),
+    "download": ("tailoring_run", "download", "run"),
+    "list_exports": ("export_job", "list", None),
+    "delete_run": ("history", "delete", "run"),
+    "export_file": ("export_job", "download", "job"),
+}
+
+
+def _lines(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, Any]]:
+    return [json.loads(r.getMessage()) for r in caplog.records if event in r.getMessage()]
+
+
+def _ordered(routes: dict[str, tuple[str, str]]) -> list[str]:
+    return sorted(ROUTE_NAMES, key=lambda n: routes[n][0] == "DELETE")  # deletes last
+
+
+async def test_ac20_each_route_writes_exactly_one_access_line_with_its_fields(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    ids = {
+        "cv": str(entry.cv_id.value),
+        "posting": str(entry.posting_id.value),
+        "run": str(entry.run_id.value),
+        "job": str(entry.jobs[0].id.value),
+    }
+    routes = _entry_routes(target.id, entry)
+
+    for name in _ordered(routes):
+        method, url = routes[name]
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            response = await http.request(method, url, headers=admin.headers)
+        assert response.status_code == 200, f"{name}: {response.text}"
+        lines = _lines(caplog, ACCESS_EVENT)
+        assert len(lines) == 1, f"{name}: {lines}"
+        kind, action, item = EXPECTED_ACCESS[name]
+        line = lines[0]
+        assert line["actor_id"] == str(admin.id), name
+        assert line["target_user_id"] == str(target.id), name
+        assert (line["kind"], line["action"], line["outcome"]) == (kind, action, "ok"), name
+        assert line.get("item_id") == (ids[item] if item else None), name
+        assert "item_id" not in line or item is not None, f"{name}: lists carry no item_id"
+        assert str(admin.id) in caplog.text
+        reads_only = [r for r in caplog.records if str(target.id) in r.getMessage()]
+        if method == "GET":
+            assert len(reads_only) == 1, f"{name}: nothing else mentions the target"
+
+
+async def test_ac20_refusals_log_not_found_or_refused_with_the_item_id(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    admin, target = await make_account(admin=True), await make_account()
+    missing_cv = uuid4()
+    run = queued_run(target.owner, _at(clock, 10))
+    entry = await _entry(
+        world_app, settings, target.owner, _at(clock, 10), run=run, ready_formats=()
+    )
+
+    with caplog.at_level(logging.INFO):
+        gone = await http.get(
+            f"{ADMIN_USERS}/{target.id}/base-cvs/{missing_cv}", headers=admin.headers
+        )
+        busy = await http.delete(
+            f"{ADMIN_USERS}/{target.id}/tailoring-runs/{entry.run_id.value}", headers=admin.headers
+        )
+        nobody = await http.get(f"{ADMIN_USERS}/{uuid4()}/base-cvs", headers=admin.headers)
+
+    assert (gone.status_code, busy.status_code, nobody.status_code) == (404, 409, 404)
+    outcomes = [
+        (line["kind"], line["action"], line["outcome"], line.get("item_id"))
+        for line in _lines(caplog, ACCESS_EVENT)
+    ]
+    assert outcomes == [
+        ("base_cv", "read", "not_found", str(missing_cv)),
+        ("history", "delete", "refused", str(entry.run_id.value)),
+        ("base_cv", "list", "not_found", None),
+    ]
+
+
+async def _entry_with_a_blocked_export(
+    world_app: FastAPI, settings: Settings, owner: Owner, at: datetime
+) -> Entry:
+    entry = await _entry(
+        world_app, settings, owner, at, ready_formats=(ExportFormat.PDF, ExportFormat.DOCX)
+    )
+    blocked = settings.upload_dir / entry.jobs[0].storage_ref.key
+    blocked.unlink()
+    blocked.mkdir()
+    (blocked / "keep").write_bytes(b"x")
+    return entry
+
+
+def _without_ids(line: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in line.items() if k not in {"tailoring_run_id", "timestamp"}}
+
+
+async def test_ac20_the_deletes_write_the_users_erasure_and_unlink_lines_unchanged(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same entry shape deleted from both seats writes the same lines (ids aside)."""
+    admin, target = await make_account(admin=True), await make_account()
+    by_admin = await _entry_with_a_blocked_export(world_app, settings, target.owner, _at(clock, 20))
+    by_user = await _entry_with_a_blocked_export(world_app, settings, target.owner, _at(clock, 10))
+
+    with caplog.at_level(logging.INFO):
+        mine = await http.delete(
+            f"{ADMIN_USERS}/{target.id}/tailoring-runs/{by_admin.run_id.value}",
+            headers=admin.headers,
+        )
+    admin_erased = _lines(caplog, "retention.history_entry_erased")
+    admin_failed = _lines(caplog, "retention.history_entry_file_unlink_failed")
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        theirs = await http.delete(
+            f"/api/me/tailoring-runs/{by_user.run_id.value}", headers=target.headers
+        )
+    user_erased = _lines(caplog, "retention.history_entry_erased")
+    user_failed = _lines(caplog, "retention.history_entry_file_unlink_failed")
+
+    assert mine.status_code == 200, mine.text
+    assert theirs.status_code == 204, theirs.text
+    assert len(admin_erased) == len(user_erased) == 1
+    assert _without_ids(admin_erased[0]) == _without_ids(user_erased[0])
+    assert admin_erased[0]["tailoring_run_id"] == str(by_admin.run_id.value)
+    assert len(admin_failed) == len(user_failed) == 1
+    assert _without_ids(admin_failed[0]) == _without_ids(user_failed[0])
+
+
+# --- AC-21: planted markers --------------------------------------------------------------------
+
+
+async def _marked_entry(
+    world_app: FastAPI, settings: Settings, owner: UserOwner, at: datetime, marks: dict[str, str]
+) -> tuple[Entry, ExportJobId]:
+    cv_id = BaseCvId(uuid4())
+    cv = BaseCv.upload(
+        id=cv_id,
+        owner=owner,
+        original_filename=OriginalFilename(f"{marks['filename']}.pdf"),
+        content_type=CvContentType.PDF,
+        size_bytes=1024,
+        file=FileRef.for_base_cv(cv_id, CvContentType.PDF),
+        uploaded_at=at,
+    )
+    cv.mark_extracted(ExtractedText(f"{marks['cv_text']} " * 30), at)
+    cv.rename(BaseCvLabel(marks["label"]), at)
+    cv.release_events()
+    posting = JobPosting.from_fetched_url(
+        id=JobPostingId(uuid4()),
+        owner=owner,
+        url=SourceUrl(f"https://example.com/{marks['url']}"),
+        fetched=FetchedPosting(
+            text=JobPostingText(f"{marks['posting_text']} " * 30),
+            title=PostingTitle(marks["title"]),
+        ),
+        created_at=at,
+    )
+    posting.release_events()
+    run = running_run(owner, at, base_cv_id=cv.id, job_posting_id=posting.id)
+    run.mark_succeeded(
+        TailoredDocuments(
+            cv=TailoredCv(f"{marks['draft']} " + "c" * 500), cover_letter=CoverLetter("l" * 300)
+        ),
+        a_draft().metrics,
+        at,
+    )
+    run.release_events()
+    run.revise_cv(
+        TailoredCv(f"{marks['revision']} " + "r" * 500), expected_version=run.version, at=at
+    )
+    run.release_events()
+    job = ready_export(owner, run, at)
+    async with world_app.state.session_factory() as session:
+        await SqlAlchemyBaseCvRepository(session).add(cv)
+        await SqlAlchemyJobPostingRepository(session).add(posting)
+        await SqlAlchemyTailoringRunRepository(session).add(run)
+        await SqlAlchemyExportJobRepository(session).add(job)
+        await session.commit()
+    files = LocalFileStore(settings.upload_dir)
+    await files.put(cv.file, b"original upload bytes")
+    await files.put(job.storage_ref, export_bytes(job.id))
+    entry = Entry(
+        cv_id=cv.id,
+        posting_id=posting.id,
+        posting_preview="",
+        run_id=run.id,
+        run_version=run.version,
+        jobs=[],
+        run=run,
+    )
+    return entry, job.id
+
+
+async def test_ac21_no_planted_marker_reaches_a_log_record_over_a_full_run_but_ids_do(
+    http: AsyncClient,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    engine: AsyncEngine,
+    seeded_ids: list[UUID],
+    make_account: MakeAccount,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    admin = await make_account(admin=True)
+    tag = uuid4().hex[:12]
+    marks = {
+        k: f"MK{k.upper().replace('_', '')}{tag}"
+        for k in (
+            "filename",
+            "cv_text",
+            "label",
+            "posting_text",
+            "title",
+            "url",
+            "draft",
+            "revision",
+        )
+    }
+    email = f"mkemail{tag}@example.com"
+    client = new_client(world_app)
+    try:
+        _token, target_id = await seed_user_and_sign_in(client, settings, email=email)
+        seeded_ids.append(target_id)
+        owner = UserOwner(UserId(target_id))
+        entry, job_id = await _marked_entry(world_app, settings, owner, _at(clock, 10), marks)
+        p = f"{ADMIN_USERS}/{target_id}"
+        run_p = f"{p}/tailoring-runs/{entry.run_id.value}"
+        steps = [
+            ("GET", f"{p}/base-cvs"),
+            ("GET", f"{p}/base-cvs/{entry.cv_id.value}"),
+            ("GET", f"{p}/job-postings"),
+            ("GET", f"{p}/job-postings/{entry.posting_id.value}"),
+            ("GET", f"{p}/tailoring-runs"),
+            ("GET", run_p),
+            ("GET", f"{run_p}/documents/cv/download?format=md"),
+            ("GET", f"{run_p}/documents/cv/download?format=txt"),
+            ("GET", f"{run_p}/exports"),
+            ("GET", f"{p}/export-jobs/{job_id.value}/file"),
+            ("GET", p),
+            ("DELETE", f"{p}/base-cvs/{entry.cv_id.value}"),
+            ("DELETE", run_p),
+        ]
+        bodies: list[str] = []
+        with caplog.at_level(logging.DEBUG):
+            for method, url in steps:
+                response = await http.request(method, url, headers=admin.headers)
+                assert response.status_code == 200, f"{method} {url}: {response.text}"
+                bodies.append(response.text)
+    finally:
+        await client.aclose()
+
+    log_text = caplog.text
+    for name, marker in [*marks.items(), ("email", email)]:
+        assert marker not in log_text, f"{name} reached a log record"
+    served = "\n".join(bodies)
+    for name in ("filename", "cv_text", "label", "posting_text", "title", "url", "revision"):
+        assert marks[name] in served, f"{name} should be in a response body (the reads were real)"
+    assert email in served
+    assert marks["draft"] not in served, "the model's draft is never served, only the revision"
+    for identifier in (
+        str(admin.id),
+        str(target_id),
+        str(entry.cv_id.value),
+        str(entry.run_id.value),
+    ):
+        assert identifier in log_text, "ids are the positive control"
+
+
+# --- AC-22: the guest cookie is never read -----------------------------------------------------
+
+
+async def test_ac22_every_content_route_answers_identically_with_and_without_a_guest_cookie(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+) -> None:
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    async with new_client(world_app) as guest_client, world_app.state.session_factory() as session:
+        guest = await mint_guest(guest_client, session)
+        guest_cookie = guest_client.cookies.get("__Host-tc_guest")
+    _GUESTS.append(guest.guest_session_id.value)
+    assert guest_cookie, "premise: a real guest cookie"
+    routes = _entry_routes(target.id, entry)
+
+    for name in _ordered(routes):
+        method, url = routes[name]
+        if method == "DELETE":
+            continue
+        plain = await http.request(method, url, headers=admin.headers)
+        with_cookie = await http.request(
+            method, url, headers={**admin.headers, "Cookie": f"__Host-tc_guest={guest_cookie}"}
+        )
+        assert plain.status_code == with_cookie.status_code == 200, name
+        assert plain.content == with_cookie.content, name
+        assert "set-cookie" not in with_cookie.headers, f"{name}: nothing is minted or cleared"
+
+
+# --- AC-23: no-store everywhere ----------------------------------------------------------------
+
+
+async def test_ac23_every_response_a_handler_builds_carries_no_store_success_or_refusal(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    busy = await _entry(
+        world_app,
+        settings,
+        target.owner,
+        _at(clock, 20),
+        run=queued_run(target.owner, _at(clock, 20)),
+        ready_formats=(),
+    )
+    queued_job = queued_export(target.owner, busy.run, _at(clock, 5), format=ExportFormat.DOCX)
+    async with world_app.state.session_factory() as session:
+        await SqlAlchemyExportJobRepository(session).add(queued_job)
+        await session.commit()
+    gone = await _entry(world_app, settings, target.owner, _at(clock, 30))
+    (settings.upload_dir / gone.jobs[0].storage_ref.key).unlink()
+    p = f"{ADMIN_USERS}/{target.id}"
+    requests: list[tuple[str, str, str]] = []
+    # refusals: unknown target on all eleven, unknown item on the eight item routes
+    for name, (method, url) in _random_routes(uuid4()).items():
+        requests.append((f"unknown-target {name}", method, url))
+    for name in ITEM_ROUTES:
+        method, url = _random_routes(target.id)[name]
+        requests.append((f"unknown-item {name}", method, url))
+    requests += [
+        (
+            "not-exportable",
+            "GET",
+            f"{p}/tailoring-runs/{busy.run_id.value}/documents/cv/download?format=md",
+        ),
+        ("export-not-ready", "GET", f"{p}/export-jobs/{queued_job.id.value}/file"),
+        ("file-gone", "GET", f"{p}/export-jobs/{gone.jobs[0].id.value}/file"),
+        ("in-progress", "DELETE", f"{p}/tailoring-runs/{busy.run_id.value}"),
+    ]
+
+    def _eio(self: LocalFileStore, ref: FileRef) -> bytes:
+        raise OSError(5, "Input/output error")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(LocalFileStore, "_get_sync", _eio)
+        unavailable = await http.get(
+            f"{p}/export-jobs/{entry.jobs[0].id.value}/file", headers=admin.headers
+        )
+        assert unavailable.status_code == 503, unavailable.text
+        _no_store(unavailable)
+
+    # successes on every route, JSON and binary (deletes last)
+    ok = _entry_routes(target.id, entry)
+    requests += [(f"ok {n}", ok[n][0], ok[n][1]) for n in _ordered(ok)]
+
+    for label, method, url in requests:
+        response = await http.request(method, url, headers=admin.headers)
+        assert response.status_code != 500, f"{label}: {response.text}"
+        _no_store(response)
+
+
+# --- AC-24: the schemas ------------------------------------------------------------------------
+
+
+def test_ac24_the_user_schemas_are_unchanged_and_the_admin_one_is_the_saved_one_plus_text() -> None:
+    from tailorcraft.infrastructure.api.schemas.admin import AdminSavedBaseCvResponse
+    from tailorcraft.infrastructure.api.schemas.intake import (
+        BaseCvResponse,
+        SavedBaseCvResponse,
+    )
+
+    assert set(SavedBaseCvResponse.model_fields) == SAVED_CV_KEYS
+    assert set(BaseCvResponse.model_fields) == {
+        "character_count",
+        "content_type",
+        "expires_at",
+        "failure_message",
+        "failure_reason",
+        "id",
+        "origin",
+        "original_filename",
+        "size_bytes",
+        "status",
+        "uploaded_at",
+    }
+    assert set(AdminSavedBaseCvResponse.model_fields) == SAVED_CV_KEYS | {"extracted_text"}
+    doc = AdminSavedBaseCvResponse.__doc__ or ""
+    assert "ADR-0034" in doc
+    assert "SavedBaseCvResponse" in doc
+    assert "no text" in doc, "names the contradiction with the parent's 'no text and no bytes'"
