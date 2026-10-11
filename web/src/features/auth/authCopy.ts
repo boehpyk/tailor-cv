@@ -87,6 +87,14 @@ export const ACCOUNT_ERROR_NOTE = "Couldn't load your account";
 export const ACCOUNT_NEXT_RELEASE_NOTE =
   'Saving your tailored documents to your account arrives in a later release.';
 
+/**
+ * Slice 4.2 (AC-36, OQ-4), verbatim. Main bundle: a disabled user never loads the admin chunk.
+ * `/login`'s form alert for 403 `account_disabled` (only after a correct password, OQ-3)…
+ */
+export const LOGIN_ACCOUNT_DISABLED = 'This account has been disabled.';
+/** …and the notice on `/` after a tab is signed out with reason `account_disabled`. */
+export const ACCOUNT_DISABLED_NOTICE = 'Your account has been disabled, so you were signed out.';
+
 // --- Refusals -------------------------------------------------------------------------------------
 
 /** A thrown value that is not an `ApiError` never reached a response: offline, DNS, a dead proxy. */

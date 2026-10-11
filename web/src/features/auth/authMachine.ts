@@ -57,7 +57,12 @@ export type SignOutReason =
    * This tab set a new password through a reset link (slice 2.5, AC-48): the server revoked every
    * login of the account, this one included, so there is nothing to refresh.
    */
-  | 'password_changed';
+  | 'password_changed'
+  /**
+   * A request answered 403 `account_disabled`: an admin disabled the account (slice 4.2, AC-36),
+   * or this tab's admin disabled its own. The server revoked every login, so nothing to refresh.
+   */
+  | 'account_disabled';
 
 /**
  * A usable access token and the moment it stops being usable, on the `performance.now()` clock
