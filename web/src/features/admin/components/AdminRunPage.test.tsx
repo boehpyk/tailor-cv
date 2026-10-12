@@ -119,6 +119,15 @@ describe('the run page — AC-28', () => {
     expect(await screen.findByText(CV_DELETED_NOTE)).toBeVisible();
   });
 
+  it('a failing CV list says "Couldn\'t load the CV." — never "CV deleted" — and the rest renders', async () => {
+    open(world(), { [`GET ${P}/base-cvs`]: status(503, 'service_unavailable') });
+
+    expect(await screen.findByText("Couldn't load the CV.", {}, SLOW)).toBeVisible();
+    expect(screen.queryByText(CV_DELETED_NOTE)).toBeNull();
+    expect(await screen.findByText('TAILORED CV BODY')).toBeVisible();
+    expect(screen.getByText(historyStatusCopy(entry()))).toBeVisible();
+  });
+
   it('AC-25: both documents are pre-wrap text nodes — markup and Markdown stay literal', async () => {
     const cvBody = '<img src=x onerror="window.__pwned=1"> and **bold**';
     const letterBody = '<script>window.__pwned=2</script> and _em_';

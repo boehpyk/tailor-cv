@@ -102,6 +102,13 @@ describe('the CV page — AC-27', () => {
     ).toBeVisible();
   });
 
+  it('an un-extracted CV says the text has not been extracted yet, not that it failed', async () => {
+    open(savedCv({ status: 'uploaded', extracted_text: null, character_count: null }));
+
+    expect(await screen.findByText('The text has not been extracted yet.')).toBeVisible();
+    expect(screen.queryByText(/could not be extracted/)).toBeNull();
+  });
+
   it('AC-25: the CV text is a pre-wrap text node — markup and Markdown stay literal', async () => {
     const body = '<img src=x onerror="window.__pwned=1"> and **bold**';
     const { container } = open(savedCv({ extracted_text: body }));
