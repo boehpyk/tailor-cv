@@ -1581,6 +1581,133 @@ async def test_ac20_refusals_log_not_found_or_refused_with_the_item_id(
     ]
 
 
+def _one_access_line(caplog: pytest.LogCaptureFixture) -> dict[str, Any]:
+    lines = _lines(caplog, ACCESS_EVENT)
+    assert len(lines) == 1, f"exactly one {ACCESS_EVENT} line expected, got {lines}"
+    return lines[0]
+
+
+@pytest.mark.parametrize("route", ROUTE_NAMES)
+async def test_ac20_a_database_failure_writes_exactly_one_refused_access_line(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    method, url = _entry_routes(target.id, entry)[route]
+    ids = {
+        "cv": str(entry.cv_id.value),
+        "posting": str(entry.posting_id.value),
+        "run": str(entry.run_id.value),
+        "job": str(entry.jobs[0].id.value),
+    }
+    original = Session.execute
+
+    def _down(self: Session, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        if any(table in str(statement) for table in _CONTENT_TABLES):
+            raise SQLAlchemyError("simulated: postgres unavailable (AC-19)")
+        return original(self, statement, *args, **kwargs)
+
+    monkeypatch.setattr(Session, "execute", _down)
+
+    with caplog.at_level(logging.INFO):
+        response = await http.request(method, url, headers=admin.headers)
+
+    assert response.status_code == 503, response.text
+    line = _one_access_line(caplog)
+    kind, action, item = EXPECTED_ACCESS[route]
+    assert line["actor_id"] == str(admin.id)
+    assert line["target_user_id"] == str(target.id)
+    assert (line["kind"], line["action"], line["outcome"]) == (kind, action, "refused")
+    assert line.get("item_id") == (ids[item] if item else None)
+
+
+async def test_ac20_a_history_delete_whose_commit_fails_writes_one_refused_line(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    method, url = _entry_routes(target.id, entry)["delete_run"]
+
+    async def _commit_fails(self: AsyncSession) -> None:
+        raise SQLAlchemyError("simulated commit failure (AC-20)")
+
+    monkeypatch.setattr(AsyncSession, "commit", _commit_fails)
+
+    with caplog.at_level(logging.INFO):
+        response = await http.request(method, url, headers=admin.headers)
+
+    assert response.status_code == 503, response.text
+    assert await _rows(engine, "tailoring_run", entry.run_id.value) == 1
+    line = _one_access_line(caplog)
+    assert (line["kind"], line["action"], line["outcome"]) == ("history", "delete", "refused")
+    assert line["item_id"] == str(entry.run_id.value)
+
+
+@pytest.mark.parametrize("route", ["delete_cv", "delete_run"])
+async def test_ac20_a_delete_whose_trailing_commit_fails_still_logs_one_ok_line(
+    http: AsyncClient,
+    make_account: MakeAccount,
+    world_app: FastAPI,
+    settings: Settings,
+    clock: FixedClock,
+    engine: AsyncEngine,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    """The use case commits the rows and unlinks the files; only a commit made once a file is
+    already gone (the handler's trailing one) fails. The deletion is real, so the line says ok."""
+    admin, target = await make_account(admin=True), await make_account()
+    entry = await _entry(world_app, settings, target.owner, _at(clock, 10))
+    await LocalFileStore(settings.upload_dir).put(
+        FileRef.for_base_cv(entry.cv_id, CvContentType.PDF), b"original upload bytes"
+    )
+    method, url = _entry_routes(target.id, entry)[route]
+    watched = (
+        [_cv_path(settings, entry.cv_id)]
+        if route == "delete_cv"
+        else [settings.upload_dir / j.storage_ref.key for j in entry.jobs]
+    )
+    original = AsyncSession.commit
+    staged: list[bool] = []
+
+    async def _fails_after_unlink(self: AsyncSession) -> None:
+        if any(not path.exists() for path in watched):
+            staged.append(True)
+            raise SQLAlchemyError("simulated trailing commit failure (AC-20)")
+        await original(self)
+
+    monkeypatch.setattr(AsyncSession, "commit", _fails_after_unlink)
+
+    with caplog.at_level(logging.INFO):
+        await http.request(method, url, headers=admin.headers)
+
+    assert staged, "the failure was never staged: no commit ran after the unlink"
+    assert await _rows(engine, "intake_base_cv", entry.cv_id.value) == (
+        0 if route == "delete_cv" else 1
+    )
+    assert await _rows(engine, "tailoring_run", entry.run_id.value) == (
+        0 if route == "delete_run" else 1
+    )
+    line = _one_access_line(caplog)
+    kind, action, _ = EXPECTED_ACCESS[route]
+    assert (line["kind"], line["action"], line["outcome"]) == (kind, action, "ok")
+
+
 async def _entry_with_a_blocked_export(
     world_app: FastAPI, settings: Settings, owner: Owner, at: datetime
 ) -> Entry:
