@@ -21,7 +21,8 @@ global map's 401 would sign the administrator out. Every response a handler buil
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass, field
+from types import TracebackType
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
@@ -167,18 +168,18 @@ async def list_user_base_cvs(
 ) -> SavedBaseCvListResponse:
     """The account's saved CVs, newest first — the owner's list shape, **no text** (AC-3)."""
     set_no_store(response)
-    access = _Access(actor, user_id, "base_cv", "list")
-    try:
-        summaries = await list_saved(UserId(user_id))
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
+    with _Access(actor, user_id, "base_cv", "list") as access:
+        try:
+            summaries = await list_saved(UserId(user_id))
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
 
-    wire = SavedBaseCvListResponse(
-        items=[summary_to_response(summary, settings) for summary in summaries]
-    )
-    await db.commit()
-    access.log("ok")
-    return wire
+        wire = SavedBaseCvListResponse(
+            items=[summary_to_response(summary, settings) for summary in summaries]
+        )
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.get(
@@ -197,19 +198,19 @@ async def get_user_base_cv(
 ) -> AdminSavedBaseCvResponse:
     """One of the account's saved CVs **with its extracted text** (`null` while not extracted)."""
     set_no_store(response)
-    access = _Access(actor, user_id, "base_cv", "read", base_cv_id)
-    try:
-        cv = await get_base_cv(BaseCvId(base_cv_id), _owner(user_id))
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
+    with _Access(actor, user_id, "base_cv", "read", base_cv_id) as access:
+        try:
+            cv = await get_base_cv(BaseCvId(base_cv_id), _owner(user_id))
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
 
-    wire = AdminSavedBaseCvResponse(
-        **aggregate_to_response(cv, settings).model_dump(),
-        extracted_text=cv.extracted_text.value if cv.extracted_text is not None else None,
-    )
-    await db.commit()
-    access.log("ok")
-    return wire
+        wire = AdminSavedBaseCvResponse(
+            **aggregate_to_response(cv, settings).model_dump(),
+            extracted_text=cv.extracted_text.value if cv.extracted_text is not None else None,
+        )
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.delete(
@@ -229,19 +230,21 @@ async def delete_user_base_cv(
     `DeleteSavedBaseCv`, bound to `CommittingBaseCvRemoval`). A failed unlink is still a 200 with
     `file_unlinked: false`; the bytes are an orphan for the sweep."""
     set_no_store(response)
-    access = _Access(actor, user_id, "base_cv", "delete", base_cv_id)
-    target = UserId(user_id)
-    try:
-        result = await delete_saved(BaseCvId(base_cv_id), target)
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
+    with _Access(actor, user_id, "base_cv", "delete", base_cv_id) as access:
+        target = UserId(user_id)
+        try:
+            result = await delete_saved(BaseCvId(base_cv_id), target)
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
 
-    if not result.file_unlinked:
-        # The user route's own warning line, byte-identical (AC-20).
-        log_unlink_failure(base_cv_id, target, result.unlink_error_type)
-    await db.commit()
-    access.log("ok")
-    return AdminBaseCvDeletionResponse(file_unlinked=result.file_unlinked)
+        if not result.file_unlinked:
+            # The user route's own warning line, byte-identical (AC-20).
+            log_unlink_failure(base_cv_id, target, result.unlink_error_type)
+        # The row is committed and the file unlinked by now, so the line says ok before the
+        # trailing commit: if that fails, the deletion still happened (AC-20).
+        access.log("ok")
+        await db.commit()
+        return AdminBaseCvDeletionResponse(file_unlinked=result.file_unlinked)
 
 
 # --- Job postings -------------------------------------------------------------------------------
@@ -263,18 +266,18 @@ async def list_user_job_postings(
     """The account's most recent postings, newest first, as summaries (a preview, never `text`);
     `limit` 1…20, default 20 (AC-5)."""
     set_no_store(response)
-    access = _Access(actor, user_id, "job_posting", "list")
-    try:
-        postings = await list_recent(UserId(user_id), limit)
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
+    with _Access(actor, user_id, "job_posting", "list") as access:
+        try:
+            postings = await list_recent(UserId(user_id), limit)
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
 
-    wire = JobPostingListResponse(
-        items=[posting_handlers.to_summary(posting, None) for posting in postings]
-    )
-    await db.commit()
-    access.log("ok")
-    return wire
+        wire = JobPostingListResponse(
+            items=[posting_handlers.to_summary(posting, None) for posting in postings]
+        )
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.get(
@@ -292,16 +295,16 @@ async def get_user_job_posting(
 ) -> JobPostingResponse:
     """One of the account's postings in full, with its text; `expires_at: null`."""
     set_no_store(response)
-    access = _Access(actor, user_id, "job_posting", "read", job_posting_id)
-    try:
-        posting = await get_job_posting(JobPostingId(job_posting_id), _owner(user_id))
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
+    with _Access(actor, user_id, "job_posting", "read", job_posting_id) as access:
+        try:
+            posting = await get_job_posting(JobPostingId(job_posting_id), _owner(user_id))
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
 
-    wire = posting_handlers.to_response(posting, None)
-    await db.commit()
-    access.log("ok")
-    return wire
+        wire = posting_handlers.to_response(posting, None)
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 # --- Tailoring runs (history) -------------------------------------------------------------------
@@ -336,20 +339,20 @@ async def list_user_tailoring_history(
 ) -> HistoryPageResponse:
     """One keyset page of the account's history, newest first — the user's own shape (AC-6)."""
     set_no_store(response)
-    access = _Access(actor, user_id, "history", "list")
-    try:
-        after = decode_cursor(cursor) if cursor is not None else None
-        page = await list_history(UserId(user_id), after, HistoryPageSize(limit))
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
+    with _Access(actor, user_id, "history", "list") as access:
+        try:
+            after = decode_cursor(cursor) if cursor is not None else None
+            page = await list_history(UserId(user_id), after, HistoryPageSize(limit))
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
 
-    wire = HistoryPageResponse(
-        items=[tailoring_handlers.to_history_entry(entry) for entry in page.entries],
-        next_cursor=encode_cursor(page.next_cursor) if page.next_cursor is not None else None,
-    )
-    await db.commit()
-    access.log("ok")
-    return wire
+        wire = HistoryPageResponse(
+            items=[tailoring_handlers.to_history_entry(entry) for entry in page.entries],
+            next_cursor=encode_cursor(page.next_cursor) if page.next_cursor is not None else None,
+        )
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.get(
@@ -366,22 +369,22 @@ async def get_user_tailoring_run(
     db: SessionDep,
 ) -> TailoringRunResponse:
     """One of the account's runs in full with its **current** documents; `expires_at: null`."""
-    access = _Access(actor, user_id, "tailoring_run", "read", tailoring_run_id)
-    try:
-        wire = await tailoring_handlers.get_tailoring_run(
-            tailoring_run_id=TailoringRunId(tailoring_run_id),
-            response=response,
-            requester=_owner(user_id),
-            expires_at=None,
-            get_use_case=get_use_case,
-            translate=_translate,
-        )
-    except HTTPException as http:
-        raise access.refuse(http) from None
+    with _Access(actor, user_id, "tailoring_run", "read", tailoring_run_id) as access:
+        try:
+            wire = await tailoring_handlers.get_tailoring_run(
+                tailoring_run_id=TailoringRunId(tailoring_run_id),
+                response=response,
+                requester=_owner(user_id),
+                expires_at=None,
+                get_use_case=get_use_case,
+                translate=_translate,
+            )
+        except HTTPException as http:
+            raise access.refuse(http) from None
 
-    await db.commit()
-    access.log("ok")
-    return wire
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.get(
@@ -421,22 +424,22 @@ async def download_user_document_inline(
 ) -> Response:
     """A current document of one of the account's runs as Markdown or plain text, rendered in the
     request. Returns its own `Response` (an injected one's headers would be dropped)."""
-    access = _Access(actor, user_id, "tailoring_run", "download", tailoring_run_id)
-    try:
-        wire = await export_handlers.download_document_inline(
-            run_id=TailoringRunId(tailoring_run_id),
-            kind=kind,
-            format=format,
-            requester=_owner(user_id),
-            render_inline=render_inline,
-            translate=_translate,
-        )
-    except HTTPException as http:
-        raise access.refuse(http) from None
+    with _Access(actor, user_id, "tailoring_run", "download", tailoring_run_id) as access:
+        try:
+            wire = await export_handlers.download_document_inline(
+                run_id=TailoringRunId(tailoring_run_id),
+                kind=kind,
+                format=format,
+                requester=_owner(user_id),
+                render_inline=render_inline,
+                translate=_translate,
+            )
+        except HTTPException as http:
+            raise access.refuse(http) from None
 
-    await db.commit()
-    access.log("ok")
-    return wire
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.get(
@@ -454,23 +457,23 @@ async def list_user_exports_for_run(
 ) -> ExportJobListResponse:
     """Every export job of one of the account's runs, newest first; `file_url` points under
     `/api/admin/users/{user_id}/export-jobs/` when ready."""
-    access = _Access(actor, user_id, "export_job", "list")
-    try:
-        wire = await export_handlers.list_exports_for_run(
-            run_id=TailoringRunId(tailoring_run_id),
-            response=response,
-            requester=_owner(user_id),
-            expires_at=None,
-            jobs_prefix=f"{_ADMIN_PREFIX}/{user_id}/export-jobs",
-            list_exports=list_exports,
-            translate=_translate,
-        )
-    except HTTPException as http:
-        raise access.refuse(http) from None
+    with _Access(actor, user_id, "export_job", "list") as access:
+        try:
+            wire = await export_handlers.list_exports_for_run(
+                run_id=TailoringRunId(tailoring_run_id),
+                response=response,
+                requester=_owner(user_id),
+                expires_at=None,
+                jobs_prefix=f"{_ADMIN_PREFIX}/{user_id}/export-jobs",
+                list_exports=list_exports,
+                translate=_translate,
+            )
+        except HTTPException as http:
+            raise access.refuse(http) from None
 
-    await db.commit()
-    access.log("ok")
-    return wire
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 @router.delete(
@@ -501,38 +504,41 @@ async def delete_user_history_entry(
     `CommittingHistoryEntryData`): rows committed, then files. A failed commit is 503 with nothing
     deleted; a failed unlink is counted in `unlink_failures`."""
     set_no_store(response)
-    access = _Access(actor, user_id, "history", "delete", tailoring_run_id)
-    target = UserId(user_id)
-    run_id = TailoringRunId(tailoring_run_id)
-    try:
-        report = await erase_entry(target, run_id)
-    except DomainError as exc:
-        raise access.refuse(_translate(exc)) from None
-    except SQLAlchemyError:
-        # The user twin's H-46: the committing adapter's commit failed, so nothing was deleted and
-        # no file was touched. Rolled back here, not left to the session's teardown.
-        await db.rollback()
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={
-                "code": "service_unavailable",
-                "message": "Could not delete that entry just now. Please try again.",
-            },
-            headers=dict(NO_STORE),
-        ) from None
+    with _Access(actor, user_id, "history", "delete", tailoring_run_id) as access:
+        target = UserId(user_id)
+        run_id = TailoringRunId(tailoring_run_id)
+        try:
+            report = await erase_entry(target, run_id)
+        except DomainError as exc:
+            raise access.refuse(_translate(exc)) from None
+        except SQLAlchemyError:
+            # The user twin's H-46: the committing adapter's commit failed, so nothing was deleted and
+            # no file was touched. Rolled back here, not left to the session's teardown.
+            await db.rollback()
+            raise access.refuse(
+                HTTPException(
+                    status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail={
+                        "code": "service_unavailable",
+                        "message": "Could not delete that entry just now. Please try again.",
+                    },
+                    headers=dict(NO_STORE),
+                )
+            ) from None
 
-    # The user route's own lines, byte-identical (AC-20).
-    log_history_entry_erasure(target, run_id, report)
-    await db.commit()
-    access.log("ok")
-    return AdminHistoryEntryErasureResponse(
-        tailoring_runs=1,
-        job_postings=int(report.posting_deleted),
-        export_jobs=report.export_jobs,
-        tracked_applications=int(report.tracked_application_deleted),
-        files_unlinked=report.files_unlinked,
-        unlink_failures=len(report.unlink_failures),
-    )
+        # The user route's own lines, byte-identical (AC-20).
+        log_history_entry_erasure(target, run_id, report)
+        # Rows committed and files unlinked: ok before the trailing commit, as above (AC-20).
+        access.log("ok")
+        await db.commit()
+        return AdminHistoryEntryErasureResponse(
+            tailoring_runs=1,
+            job_postings=int(report.posting_deleted),
+            export_jobs=report.export_jobs,
+            tracked_applications=int(report.tracked_application_deleted),
+            files_unlinked=report.files_unlinked,
+            unlink_failures=len(report.unlink_failures),
+        )
 
 
 # --- Export files -------------------------------------------------------------------------------
@@ -575,20 +581,20 @@ async def download_user_export_file(
 ) -> Response:
     """The rendered file of one of the account's `ready` export jobs, any layout or run version.
     Returns its own `Response`, which carries `no-store`."""
-    access = _Access(actor, user_id, "export_job", "download", export_job_id)
-    try:
-        wire = await export_handlers.download_export_file(
-            export_job_id=ExportJobId(export_job_id),
-            requester=_owner(user_id),
-            download=download,
-            translate=_translate,
-        )
-    except HTTPException as http:
-        raise access.refuse(http) from None
+    with _Access(actor, user_id, "export_job", "download", export_job_id) as access:
+        try:
+            wire = await export_handlers.download_export_file(
+                export_job_id=ExportJobId(export_job_id),
+                requester=_owner(user_id),
+                download=download,
+                translate=_translate,
+            )
+        except HTTPException as http:
+            raise access.refuse(http) from None
 
-    await db.commit()
-    access.log("ok")
-    return wire
+        await db.commit()
+        access.log("ok")
+        return wire
 
 
 # --- Helpers ------------------------------------------------------------------------------------
@@ -607,20 +613,46 @@ def _translate(exc: DomainError) -> HTTPException:
     return refusal(exc)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _Access:
     """One `admin.content_access` line per request (§0.7): two ids, the item's id (absent on a
-    list) and three closed words — never a body, a filename, a label, a title or an email."""
+    list) and three closed words — never a body, a filename, a label, a title or an email.
 
-    actor: User
+    Used as `with _Access(...) as access:` around a handler's body, so a `SQLAlchemyError` that
+    leaves it unlogged (the global 503) still writes its one `refused` line (AC-20). The exception
+    is never swallowed and its message never logged; a second `log` is a no-op."""
+
+    actor: InitVar[User]
     target: UUID
     kind: Literal["base_cv", "job_posting", "tailoring_run", "export_job", "history"]
     action: Literal["list", "read", "download", "delete"]
     item_id: UUID | None = None
+    _actor_id: str = field(init=False)
+    _logged: bool = field(default=False, init=False)
+
+    def __post_init__(self, actor: User) -> None:
+        # Read now: a handler's rollback expires the loaded `User`, and a lazy load on an
+        # `AsyncSession` is `MissingGreenlet`.
+        self._actor_id = str(actor.id.value)
+
+    def __enter__(self) -> _Access:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if isinstance(exc, SQLAlchemyError):
+            self.log("refused")
 
     def log(self, outcome: Literal["ok", "not_found", "refused"]) -> None:
+        if self._logged:
+            return
+        self._logged = True
         fields: dict[str, str] = {
-            "actor_id": str(self.actor.id.value),
+            "actor_id": self._actor_id,
             "target_user_id": str(self.target),
             "kind": self.kind,
             "action": self.action,
