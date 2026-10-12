@@ -46,9 +46,10 @@ export const DELETE_ENTRY_ALREADY_GONE_NOTE = 'That entry was already deleted.';
 
 /**
  * An entry's status, in words. A failure is 1.3's own copy for its reason (`failureCopy.ts`) —
- * including H-22's `base_cv_deleted` — so a failed run reads the same here as on its page.
+ * including H-22's `base_cv_deleted` — so a failed run reads the same here as on its page. Takes
+ * only the two fields it reads, so a `TailoringRun` words the same (slice 4.3's admin run page).
  */
-export function historyStatusCopy(entry: HistoryEntry): string {
+export function historyStatusCopy(entry: Pick<HistoryEntry, 'status' | 'failure_reason'>): string {
   switch (entry.status) {
     case 'queued':
       return 'Waiting for a worker…';

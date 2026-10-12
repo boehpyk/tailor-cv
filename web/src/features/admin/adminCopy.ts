@@ -133,8 +133,16 @@ export const CONTENT_HEADINGS = {
   history: 'History',
   postings: 'Job postings',
 } as const;
-/** Every section's and page's loading line (`role="status"`). */
-export const CONTENT_LOADING = 'Loading…';
+/**
+ * Each section's own loading line (`role="status"`), per section (owner's AC-26 amendment,
+ * 2026-10-12): it shares the account page with the overview's *Loading…*, and three identical
+ * lines beside it could not be told apart. A read page's loading line is `USER_LOADING`.
+ */
+export const CONTENT_LOADING = {
+  cvs: 'Loading saved CVs…',
+  history: 'Loading history…',
+  postings: 'Loading job postings…',
+} as const;
 export const CONTENT_EMPTY = {
   cvs: 'No saved CVs.',
   history: 'No tailoring history.',
@@ -188,6 +196,10 @@ export const POSTING_ERROR = "Couldn't load this job posting.";
 
 // Run page (AC-28)
 export const RUN_HEADING = 'Tailoring run';
+export const RUN_FIELD_STATUS = 'Status';
+export const RUN_FIELD_POSTING = 'Job posting';
+export const RUN_FIELD_CV = 'CV';
+export const RUN_FIELD_REQUESTED = 'Requested';
 export const DOCUMENT_HEADINGS = { cv: 'Tailored CV', cover_letter: 'Cover letter' } as const;
 export const RUN_STILL_RUNNING = 'Still running — the documents appear when it finishes.';
 export const RUN_REFRESH_LABEL = 'Refresh';
@@ -200,6 +212,12 @@ export const EXPORTS_EMPTY = 'No exports.';
 export const EXPORTS_ERROR = "Couldn't load the exports.";
 export const EXPORT_DOWNLOAD_LABEL = 'Download';
 export const EXPORT_OLDER_VERSION = 'older version';
+export const EXPORT_STATUS_LABELS = {
+  queued: 'Queued',
+  rendering: 'Rendering',
+  ready: 'Ready',
+  failed: 'Failed',
+} as const;
 /** 410 `export_file_gone`. */
 export const DOWNLOAD_FILE_GONE = 'That file is no longer on the server.';
 export const DOWNLOAD_FAILED = "Couldn't download this file. Try again.";
