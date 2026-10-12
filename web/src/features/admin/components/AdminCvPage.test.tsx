@@ -1,10 +1,10 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetForTests } from '@/features/auth/authStore';
 import { createAppQueryClient } from '@/queryClient';
-import { hang, signInAs, status, stubAccountFetch } from '@/test/accountFetch';
+import { callsTo, hang, signInAs, status, stubAccountFetch } from '@/test/accountFetch';
 import { ADMIN, TARGET_ID, contentRoutes, savedCv, world } from '@/test/adminContentFetch';
 import { firewallNotFound, userGone } from '@/test/adminFetch';
 import { renderWithRouter } from '@/test/render';
@@ -15,6 +15,7 @@ import {
   CV_ERROR,
   CV_GONE,
   USER_GONE,
+  USER_LOADING,
   cvExtractionFailed,
 } from '../adminCopy';
 
@@ -39,23 +40,31 @@ const P = '/api/admin/users/:id';
 const CV_PATH = `/admin/users/${TARGET_ID}/cvs/cv-1`;
 
 function open(cv: AdminSavedBaseCv = savedCv(), overrides: Record<string, RouteHandler> = {}) {
-  stubAccountFetch(contentRoutes(world({ cvs: [cv] }), overrides));
+  const fetch = stubAccountFetch(contentRoutes(world({ cvs: [cv] }), overrides));
   signInAs(ADMIN);
-  return renderWithRouter(CV_PATH, { queryClient: createAppQueryClient() });
+  const view = renderWithRouter(CV_PATH, { queryClient: createAppQueryClient() });
+  return { fetch, ...view };
 }
 
 describe('the CV page — AC-27', () => {
   it('loading: a status line while the CV is pending', async () => {
-    open(savedCv(), { [`GET ${P}/base-cvs/:cvId`]: hang });
+    const { fetch } = open(savedCv(), { [`GET ${P}/base-cvs/:cvId`]: hang });
 
-    expect(await screen.findByText(/^Loading/)).toHaveAttribute('role', 'status');
+    // Not the lazy chunk's Suspense fallback (also a status): wait until the page asked for its CV.
+    await waitFor(() => {
+      expect(callsTo(fetch, 'GET', `${P}/base-cvs/cv-1`)).toHaveLength(1);
+    });
+    expect(within(screen.getByRole('main')).getByText(USER_LOADING)).toHaveAttribute(
+      'role',
+      'status',
+    );
   });
 
   it('the label is the h1, with the filename, type, size, uploaded and character count', async () => {
     open();
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Backend roles' })).toBeVisible();
-    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(within(screen.getByRole('main')).getAllByRole('heading', { level: 1 })).toHaveLength(1);
     const field = (term: string): HTMLElement | null =>
       screen.getByText(term, { selector: 'dt' }).nextElementSibling as HTMLElement | null;
     expect(field('Filename')).toHaveTextContent('jane.pdf');

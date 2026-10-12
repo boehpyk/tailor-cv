@@ -1,13 +1,13 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetForTests } from '@/features/auth/authStore';
 import { createAppQueryClient } from '@/queryClient';
-import { hang, signInAs, status, stubAccountFetch } from '@/test/accountFetch';
+import { callsTo, hang, signInAs, status, stubAccountFetch } from '@/test/accountFetch';
 import { ADMIN, TARGET_ID, contentRoutes, posting, world } from '@/test/adminContentFetch';
 import { renderWithRouter } from '@/test/render';
 
-import { BACK_TO_ACCOUNT, POSTING_GONE } from '../adminCopy';
+import { BACK_TO_ACCOUNT, POSTING_GONE, USER_LOADING } from '../adminCopy';
 
 import type { JobPosting } from '@/features/posting/types';
 import type { RouteHandler } from '@/test/accountFetch';
@@ -29,18 +29,26 @@ afterEach(() => {
 const P = '/api/admin/users/:id';
 
 function open(p: JobPosting = posting(), overrides: Record<string, RouteHandler> = {}) {
-  stubAccountFetch(contentRoutes(world({ postings: [p] }), overrides));
+  const fetch = stubAccountFetch(contentRoutes(world({ postings: [p] }), overrides));
   signInAs(ADMIN);
-  return renderWithRouter(`/admin/users/${TARGET_ID}/postings/posting-1`, {
+  const view = renderWithRouter(`/admin/users/${TARGET_ID}/postings/posting-1`, {
     queryClient: createAppQueryClient(),
   });
+  return { fetch, ...view };
 }
 
 describe('the posting page — AC-25', () => {
   it('loading: a status line', async () => {
-    open(posting(), { [`GET ${P}/job-postings/:pid`]: hang });
+    const { fetch } = open(posting(), { [`GET ${P}/job-postings/:pid`]: hang });
 
-    expect(await screen.findByText(/^Loading/)).toHaveAttribute('role', 'status');
+    // Not the lazy chunk's Suspense fallback (also a status): wait until the page asked for its posting.
+    await waitFor(() => {
+      expect(callsTo(fetch, 'GET', `${P}/job-postings/posting-1`)).toHaveLength(1);
+    });
+    expect(within(screen.getByRole('main')).getByText(USER_LOADING)).toHaveAttribute(
+      'role',
+      'status',
+    );
   });
 
   it('the title is the h1 and the text is shown', async () => {

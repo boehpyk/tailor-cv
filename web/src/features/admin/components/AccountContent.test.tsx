@@ -126,7 +126,7 @@ describe('the Content area — AC-26', () => {
   });
 
   it('a failing section leaves the other two sections working', async () => {
-    serve(world(), { [`GET ${P}/job-postings`]: status(403, 'account_disabled') });
+    serve(world(), { [`GET ${P}/job-postings`]: status(503, 'service_unavailable') });
     open();
 
     expect(await within(await section('Job postings')).findByRole('alert', {}, SLOW)).toBeVisible();

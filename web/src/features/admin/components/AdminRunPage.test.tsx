@@ -23,6 +23,7 @@ import {
   DOWNLOAD_FILE_GONE,
   RUN_GONE,
   RUN_STILL_RUNNING,
+  USER_LOADING,
   historyStatusCopy,
 } from '../adminCopy';
 
@@ -74,16 +75,23 @@ async function clickWhenEnabled(button: HTMLElement): Promise<void> {
 
 describe('the run page — AC-28', () => {
   it('loading: a status line while the run is pending', async () => {
-    open(world(), { [`GET ${P}/tailoring-runs/:rid`]: hang });
+    const { fetch } = open(world(), { [`GET ${P}/tailoring-runs/:rid`]: hang });
 
-    expect(await screen.findByText(/^Loading/)).toHaveAttribute('role', 'status');
+    // Not the lazy chunk's Suspense fallback (also a status): wait until the page asked for its run.
+    await waitFor(() => {
+      expect(callsTo(fetch, 'GET', `${P}/tailoring-runs/run-1`)).toHaveLength(1);
+    });
+    expect(within(screen.getByRole('main')).getByText(USER_LOADING)).toHaveAttribute(
+      'role',
+      'status',
+    );
   });
 
   it('a succeeded run: one h1, the status as the history row words it, both documents as text', async () => {
     open();
 
     expect(await screen.findByText(historyStatusCopy(entry()))).toBeVisible();
-    expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
+    expect(within(screen.getByRole('main')).getAllByRole('heading', { level: 1 })).toHaveLength(1);
     const cv = await section('Tailored CV');
     const letter = await section('Cover letter');
     expect(within(cv).getByText('TAILORED CV BODY')).toBeVisible();
