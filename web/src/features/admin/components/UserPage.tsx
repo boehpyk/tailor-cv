@@ -13,6 +13,7 @@ import {
 import { useAdminUser } from '../hooks/useAdminUser';
 
 import { AccountActions } from './AccountActions';
+import { AccountContent } from './AccountContent';
 import { AccountOverview } from './AccountOverview';
 
 export interface UserPageProps {
@@ -47,6 +48,7 @@ export function UserPage({ actorId }: UserPageProps): React.JSX.Element {
       <section className="mb-10">
         <AccountOverview user={user.data} />
         <AccountActions actorId={actorId} user={user.data} />
+        <AccountContent actorId={actorId} userId={userId} />
       </section>
     );
   }
