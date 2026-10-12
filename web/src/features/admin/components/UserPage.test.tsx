@@ -106,6 +106,13 @@ function serve(
       ADMIN,
       overrides.get ?? (() => (current === null ? userGone() : Response.json(current))),
     ),
+    // Slice 4.3 (owner's amendment, harness-only): the page now mounts the account's content lists.
+    'GET /api/admin/users/:id/base-cvs': adminOnly(ADMIN, ok({ items: [] })),
+    'GET /api/admin/users/:id/job-postings': adminOnly(ADMIN, ok({ items: [] })),
+    'GET /api/admin/users/:id/tailoring-runs': adminOnly(
+      ADMIN,
+      ok({ items: [], next_cursor: null }),
+    ),
     'POST /api/admin/users/:id/disable': adminOnly(
       ADMIN,
       overrides.disable ?? (() => change('2026-10-11T08:00:00Z')),

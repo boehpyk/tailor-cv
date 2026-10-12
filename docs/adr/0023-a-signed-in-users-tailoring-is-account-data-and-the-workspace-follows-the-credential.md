@@ -191,3 +191,9 @@ ADR-0024's query-port pattern. `tailoring_run` does not grow those columns.
 **Decision 5 gains a table.** Deleting a history entry also deletes its card, in the same
 transaction, as a separate statement after the run's `DELETE` (ADR-0029 decision 6). An entry with no
 card is deleted exactly as before. `tailoring_run` grows no columns, as decision 8 required.
+
+## Note: 2026-10-11, from slice 4.3 (`admin-content`)
+
+Decision 1 ("the workspace follows the credential") holds for every user-facing route. The admin
+content routes (ADR-0034) are the named exception: they name the owner by path, and they create
+nothing — they read, and delete through the user's own use cases.

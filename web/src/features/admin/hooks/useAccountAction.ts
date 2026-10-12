@@ -51,8 +51,9 @@ export interface UseAccountActionOptions {
  *   (`useDeleteAccount`'s order); `RequireAuth` takes it to `/` with the notice;
  * - **disable / enable** of another: the detail takes the answer's `disabled_at`, the directory
  *   is invalidated;
- * - **erase** of another: `onErased` (the navigation), then the detail is removed and the
- *   directory invalidated.
+ * - **erase** of another: `onErased` (the navigation, so no page under the key is mounted), then
+ *   the detail **and everything under it** — the content bodies (slice 4.3, AC-32) — is removed,
+ *   and the directory invalidated.
  */
 export function useAccountAction(
   actorId: string,
@@ -75,7 +76,7 @@ export function useAccountAction(
       const detailKey = adminUserKey(actorId, userId);
       if (result.action === 'erase') {
         await onErased?.(result.report);
-        queryClient.removeQueries({ queryKey: detailKey, exact: true });
+        queryClient.removeQueries({ queryKey: detailKey });
       } else {
         queryClient.setQueryData<AdminUserDetail>(detailKey, (detail) =>
           detail === undefined ? detail : { ...detail, disabled_at: result.change.disabled_at },

@@ -122,3 +122,128 @@ export const ACTION_FAILED = {
   enable: "Couldn't enable this account. Try again.",
   erase: "Couldn't erase this account. Try again.",
 } as const;
+
+// --- Slice 4.3: an account's content (AC-25…AC-29) ------------------------------------------------
+// Reused from above: ADMIN_RETRY_LABEL, LOAD_MORE_LABEL, LOADING_MORE_LABEL, USER_GONE,
+// BACK_TO_USERS, CANCEL_LABEL, unlinkFailuresNote.
+
+/** AC-26: the three sections on `/admin/users/:userId`, below the actions. */
+export const CONTENT_HEADINGS = {
+  cvs: 'Saved CVs',
+  history: 'History',
+  postings: 'Job postings',
+} as const;
+/**
+ * Each section's own loading line (`role="status"`), per section (owner's AC-26 amendment,
+ * 2026-10-12): it shares the account page with the overview's *Loading…*, and three identical
+ * lines beside it could not be told apart. A read page's loading line is `USER_LOADING`.
+ */
+export const CONTENT_LOADING = {
+  cvs: 'Loading saved CVs…',
+  history: 'Loading history…',
+  postings: 'Loading job postings…',
+} as const;
+export const CONTENT_EMPTY = {
+  cvs: 'No saved CVs.',
+  history: 'No tailoring history.',
+  postings: 'No job postings.',
+} as const;
+/** `role="alert"` with Retry, visibly distinct from loading. */
+export const CONTENT_ERROR = {
+  cvs: "Couldn't load saved CVs.",
+  history: "Couldn't load the history.",
+  postings: "Couldn't load job postings.",
+} as const;
+/** OQ-6: the postings section holds the 20 most recent and says so when full. */
+export const POSTINGS_WINDOW_NOTE = 'Showing the 20 most recent.';
+export const UNTITLED_POSTING = 'Untitled job posting';
+/**
+ * A run reads as its history row does (AC-28): status words, *CV deleted*, a missing posting. The
+ * history feature is in the main chunk, so re-exporting its copy costs the admin chunk nothing.
+ */
+export {
+  CV_DELETED_NOTE,
+  POSTING_MISSING_NOTE,
+  historyStatusCopy,
+} from '@/features/history/historyCopy';
+
+/** A read page's link back to the account it belongs to. */
+export const BACK_TO_ACCOUNT = 'Back to the account';
+
+// CV page (AC-27)
+export const CV_FIELD_FILENAME = 'Filename';
+export const CV_FIELD_TYPE = 'Type';
+export const CV_FIELD_SIZE = 'Size';
+export const CV_FIELD_UPLOADED = 'Uploaded';
+export const CV_FIELD_CHARACTERS = 'Characters';
+export const CV_TEXT_HEADING = 'Extracted text';
+export function cvExtractionFailed(message: string): string {
+  return `Text could not be extracted: ${message}`;
+}
+/** `status: 'uploaded'` — extraction has not run yet, so there is neither text nor a failure. */
+export const CV_NOT_YET_EXTRACTED = 'The text has not been extracted yet.';
+/** 404 `base_cv_not_found`. */
+export const CV_GONE = 'This CV no longer exists.';
+export const CV_ERROR = "Couldn't load this CV.";
+/** The run page's CV cell when the CV list itself failed — not evidence the CV was deleted. */
+export const RUN_CV_UNAVAILABLE = "Couldn't load the CV.";
+
+// Posting page (AC-25)
+export const POSTING_FIELD_SOURCE = 'Source';
+export const POSTING_FIELD_URL = 'URL';
+export const POSTING_FIELD_CAPTURED = 'Captured';
+export const POSTING_SOURCE_LABELS = { pasted: 'Pasted', fetched: 'Fetched from a link' } as const;
+export const POSTING_TEXT_HEADING = 'Posting text';
+/** 404 `job_posting_not_found`. */
+export const POSTING_GONE = 'This job posting no longer exists.';
+export const POSTING_ERROR = "Couldn't load this job posting.";
+
+// Run page (AC-28)
+export const RUN_HEADING = 'Tailoring run';
+export const RUN_FIELD_STATUS = 'Status';
+export const RUN_FIELD_POSTING = 'Job posting';
+export const RUN_FIELD_CV = 'CV';
+export const RUN_FIELD_REQUESTED = 'Requested';
+export const DOCUMENT_HEADINGS = { cv: 'Tailored CV', cover_letter: 'Cover letter' } as const;
+export const RUN_STILL_RUNNING = 'Still running — the documents appear when it finishes.';
+export const RUN_REFRESH_LABEL = 'Refresh';
+/** 404 `tailoring_run_not_found`. */
+export const RUN_GONE = 'This run no longer exists.';
+export const RUN_ERROR = "Couldn't load this run.";
+export const DOWNLOAD_INLINE_LABELS = { md: 'Download .md', txt: 'Download .txt' } as const;
+export const EXPORTS_HEADING = 'Exports';
+export const EXPORTS_EMPTY = 'No exports.';
+export const EXPORTS_ERROR = "Couldn't load the exports.";
+export const EXPORT_DOWNLOAD_LABEL = 'Download';
+export const EXPORT_OLDER_VERSION = 'older version';
+export const EXPORT_STATUS_LABELS = {
+  queued: 'Queued',
+  rendering: 'Rendering',
+  ready: 'Ready',
+  failed: 'Failed',
+} as const;
+/** 410 `export_file_gone`. */
+export const DOWNLOAD_FILE_GONE = 'That file is no longer on the server.';
+export const DOWNLOAD_FAILED = "Couldn't download this file. Try again.";
+
+// Deletes (AC-29)
+export const DELETE_CV_LABEL = 'Delete CV';
+export const DELETE_ENTRY_LABEL = 'Delete history entry';
+export const DELETE_PENDING_LABEL = 'Deleting…';
+export const DELETE_CV_DIALOG_TITLE = 'Delete this CV?';
+export const DELETE_ENTRY_DIALOG_TITLE = 'Delete this history entry?';
+export function deleteCvDialogMessage(name: string): string {
+  return `${name} and its file will be deleted. This cannot be undone.`;
+}
+export function deleteEntryDialogMessage(postingTitle: string, requestedOn: string): string {
+  return `The entry for ${postingTitle} from ${requestedOn} will be deleted, with its exports and its card on the board. This cannot be undone.`;
+}
+/** The account page's notice after a delete, from `location.state`. */
+export function deletedNotice(name: string): string {
+  return `Deleted ${name}.`;
+}
+/** 409 `tailoring_run_in_progress`: the dialog closes, nothing changed. */
+export const DELETE_IN_PROGRESS = 'This run is still working. Try again when it finishes.';
+/** The kind's 404. */
+export const DELETE_ALREADY_GONE = 'Already deleted.';
+export const DELETE_FAILED = "Couldn't delete. Try again.";

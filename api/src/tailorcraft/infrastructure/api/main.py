@@ -22,6 +22,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
 from tailorcraft.infrastructure.api.routers import (
     admin,
+    admin_content,
     admin_users,
     auth,
     export,
@@ -262,6 +263,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin.router)
     # `/api/admin/users` (slice 4.2): its own router under the same firewall (technical plan §0.8).
     app.include_router(admin_users.router)
+    # `/api/admin/users/{user_id}/…` (slice 4.3): an account's content, the same firewall (§0.10).
+    # Its paths never collide with `admin_users`' (`/{user_id}`, `/{user_id}/disable|enable`).
+    app.include_router(admin_content.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

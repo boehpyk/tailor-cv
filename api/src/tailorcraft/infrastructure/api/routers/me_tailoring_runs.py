@@ -38,9 +38,8 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.value_objects import UserId
-from tailorcraft.domain.retention.value_objects import HistoryEntryErasureReport
 from tailorcraft.domain.shared.errors import DomainError
-from tailorcraft.domain.tailoring.history import HistoryPageSize, TailoringHistoryEntry
+from tailorcraft.domain.tailoring.history import HistoryPageSize
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 from tailorcraft.infrastructure.api.deps import (
     ClockDep,
@@ -70,6 +69,7 @@ from tailorcraft.infrastructure.api.errors import (
 )
 from tailorcraft.infrastructure.api.routers import _export_handlers as export_handlers
 from tailorcraft.infrastructure.api.routers import _tailoring_handlers as handlers
+from tailorcraft.infrastructure.api.routers._erasure_log import log_history_entry_erasure
 from tailorcraft.infrastructure.api.routers._history_cursor import decode_cursor, encode_cursor
 from tailorcraft.infrastructure.api.routers._me_responses import (
     NOT_SIGNED_IN,
@@ -87,18 +87,12 @@ from tailorcraft.infrastructure.api.schemas.export import (
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 from tailorcraft.infrastructure.api.schemas.tailoring import (
     CreateTailoringRunRequest,
-    HistoryBaseCvResponse,
-    HistoryEntryResponse,
     HistoryPageResponse,
-    HistoryPostingResponse,
     ReviseDocumentRequest,
     TailoringRunResponse,
 )
 
 log = structlog.get_logger(__name__)
-
-EVENT_HISTORY_ENTRY_ERASED: Final = "retention.history_entry_erased"
-EVENT_HISTORY_ENTRY_FILE_UNLINK_FAILED: Final = "retention.history_entry_file_unlink_failed"
 
 router = APIRouter(prefix="/api/me/tailoring-runs", tags=["tailoring"])
 
@@ -130,70 +124,6 @@ def _refusal_no_store(exc: DomainError, *, max_job_postings_per_user: int) -> HT
 def _principal(user_id: UserId) -> tuple[Literal["user"], str]:
     """The per-principal rate-limit key for an account: every budget is the user's (plan §3)."""
     return ("user", str(user_id.value))
-
-
-def _to_history_entry(entry: TailoringHistoryEntry) -> HistoryEntryResponse:
-    """One read-model entry on the wire. `retryable` is the API's rule, as on the run."""
-    base_cv = entry.base_cv
-    posting = entry.posting
-    return HistoryEntryResponse(
-        id=entry.tailoring_run_id.value,
-        status=entry.status,
-        failure_reason=entry.failure_reason,
-        retryable=handlers.is_retryable(entry.failure_reason),
-        retry_not_before=handlers.retry_not_before(entry.failure_reason, entry.completed_at),
-        requested_at=entry.requested_at,
-        completed_at=entry.completed_at,
-        version=entry.version,
-        edited=entry.edited,
-        base_cv_id=entry.base_cv_id.value,
-        base_cv=(
-            HistoryBaseCvResponse(
-                id=base_cv.base_cv_id.value,
-                label=base_cv.label,
-                original_filename=base_cv.original_filename,
-            )
-            if base_cv is not None
-            else None
-        ),
-        posting=(
-            HistoryPostingResponse(
-                id=posting.job_posting_id.value,
-                source=posting.source,
-                title=posting.title,
-                source_url=posting.source_url,
-                preview=posting.preview,
-            )
-            if posting is not None
-            else None
-        ),
-    )
-
-
-def _log_entry_erasure(
-    user_id: UserId, run_id: TailoringRunId, report: HistoryEntryErasureReport
-) -> None:
-    """One `retention.history_entry_erased` line with the counts, and one
-    `retention.history_entry_file_unlink_failed` per failed unlink — ids, counts and class names,
-    never a storage key or a path. `EraseHistoryEntry` returns its failures rather than logging them
-    (the application layer does not log); `routers/_erasure_log.py::log_erasure` is the same shape."""
-    log.info(
-        EVENT_HISTORY_ENTRY_ERASED,
-        user_id=str(user_id.value),
-        tailoring_run_id=str(run_id.value),
-        export_jobs=report.export_jobs,
-        files_unlinked=report.files_unlinked,
-        files_failed=len(report.unlink_failures),
-        posting_deleted=report.posting_deleted,
-        # Slice 3.1 (T-32, AC-24): whether the entry's card went with it. A bool.
-        tracked_application_deleted=report.tracked_application_deleted,
-    )
-    for error_type in report.unlink_failures:
-        log.warning(
-            EVENT_HISTORY_ENTRY_FILE_UNLINK_FAILED,
-            tailoring_run_id=str(run_id.value),
-            error_type=error_type,
-        )
 
 
 @router.post(
@@ -318,7 +248,7 @@ async def list_my_tailoring_history(
         raise domain_error_to_http_exception(exc) from None
 
     wire = HistoryPageResponse(
-        items=[_to_history_entry(entry) for entry in page.entries],
+        items=[handlers.to_history_entry(entry) for entry in page.entries],
         next_cursor=encode_cursor(page.next_cursor) if page.next_cursor is not None else None,
     )
     await db.commit()
@@ -463,7 +393,7 @@ async def delete_my_history_entry(
             },
         ) from None
 
-    _log_entry_erasure(user_id, run_id, report)
+    log_history_entry_erasure(user_id, run_id, report)
     await db.commit()
 
 

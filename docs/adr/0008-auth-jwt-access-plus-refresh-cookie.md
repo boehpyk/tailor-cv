@@ -262,3 +262,19 @@ access token already issued would keep working for up to 15 minutes.
   password stays 401 `invalid_credentials`, byte-identical to before.
 - **(f) holds**: the disabled bit is a fact the server looks up for the user the bearer names, not a
   second credential.
+
+## Amendment: 2026-10-11, from the plan of slice 4.3 (`admin-content`)
+
+Slice 4.3 lets an admin read and delete a user's content through the `/api/me/` use cases (ADR-0034).
+
+**(k) Behind `require_admin` only, a route may pass a requester other than the credential's
+principal: `UserOwner(<path user_id>)`.**
+
+- **Still one credential.** The bearer authorizes the actor; `require_admin` authorizes the admin
+  area; the path's owner authorizes the **row**, through the use case's own equality.
+- **Not a transfer route** ((f), (g)): no data moves between principals, and no guest cookie is read.
+  The transfer set stays `{POST /api/me/guest-work/claim}`.
+- **Fenced by an AST scan**: a `UserOwner` built from a path parameter may appear only in
+  `routers/admin_content.py`, whose router carries `require_admin` at router level.
+- An erased target is 404 `user_not_found`, never the global map's 401, which would sign the admin
+  out.

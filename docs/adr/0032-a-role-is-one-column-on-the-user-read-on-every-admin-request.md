@@ -102,3 +102,9 @@ Three facts from the code decide the details:
   admin or not, pays one primary-key read for the disabled bit (ADR-0008 (j), ADR-0033).
 - **The open question in Watch is answered: destructive admin actions do not re-check the actor's
   role under lock** (ADR-0033 decision 6). They lock only the target; the one-request window stands.
+
+## Note: 2026-10-11, from slice 4.3 (`admin-content`)
+
+Decision 7's "an admin will read CV and document bodies" is now true (ADR-0034). Every admin content
+request writes one `admin.content_access` line (ids and closed words only); there is still no audit
+table.

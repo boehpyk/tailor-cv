@@ -6184,3 +6184,186 @@ about what it covered. It just didn't cover the access logs.
   exercised.
 - **4.3**: user content across accounts. The admin will be able to read CVs, so the
   privacy sentence 4.1 added becomes something the code actually does.
+
+# Slice 4.3 — the master key that is just a copy of yours
+
+*Implemented 2026-10-12. Not yet verified or released: `/verify` is next, then the owner's release.*
+
+## What the admin sees now
+
+Open an account in `/admin` and, below the counts and the three buttons from 4.2, there are now
+three more sections: **Saved CVs**, **History** (with *Load more*) and **Job postings** (the 20 most
+recent). Click a CV and you read its extracted text. Click a run and you read both tailored
+documents, download them as Markdown or text, and fetch any PDF or DOCX the user rendered, with
+*older version* on the ones made before the last edit. Click a posting and you read what was pasted
+or fetched. Two things can be deleted: a saved CV and a history entry, each behind a dialog that
+says what goes with it.
+
+Until now, a support question like "my cover letter came out wrong, can you look?" meant SSH,
+`psql` and a hand-written `SELECT` against a table full of other people's CVs. Now it's a page, and
+the page writes one log line saying who looked at what (ids only).
+
+## The hexagon pays off
+
+This is the slice the architecture was built for, even though nobody knew it at the time.
+
+Here is the whole backend change, in one sentence: **eleven new routes call use cases that already
+existed, with an owner taken from the URL.** No new use case. No domain change. No migration. AC-1
+checks it the blunt way: `git diff main --stat` over `domain/`, `application/`, `alembic/` and the
+LLM code is empty.
+
+Think of the use cases as a bank vault with a very particular teller. The teller doesn't care who's
+standing at the counter. They care about one question: "whose safe-deposit box is this, and does
+the slip in your hand name that owner?" The user's app has been handing the teller a slip that says
+`UserOwner(me)` since slice 2.2. The admin page walks up to the same teller with a slip that says
+`UserOwner(<the user id in the path>)`. The teller runs the same check, opens the same box, and
+applies the same rules: a history entry can't be deleted while its run is working (409), rows are
+committed before files are unlinked, and an unlink that fails is left for the orphan sweep.
+
+In hexagonal terms, the admin UI is a **second driving adapter** over an unchanged core. The first
+adapter was the user's `/api/me/` routes. If the business rules had lived in those routers, the
+admin would have needed a copy of every one, and copies drift. They didn't, so it doesn't. The
+admin's "delete a history entry" isn't *like* the user's. It *is* the user's, and a race test (F-20)
+proves it: admin and owner delete the same entry at the same moment on two real connections, and
+one wins, one gets a 404, and the file is unlinked exactly once.
+
+The routers did need a little rearranging. The shared handler bodies from 2.3 (`_tailoring_handlers`,
+`_export_handlers`) gained a `translate=` keyword, so the admin twin can word a refusal its own way.
+A few wire mappers moved out of the `/api/me/` routers into shared modules. Both refactors landed
+first, on their own, with every existing test passing unedited.
+
+## Authorization as a value
+
+The tempting design was an `AdminOwner`: a third kind of owner that matches everything. It would
+have touched every use case, every repository query and every "is this yours?" check, and each of
+those would have needed a new test. It would also have made "an admin can see anything" a property
+of the *data*, everywhere, forever.
+
+Instead, authorization is split into two questions answered in two places:
+
+1. **May this person act as an admin?** That's `require_admin`, on the router, before anything else.
+2. **Is this item this user's?** That's the use case's existing equality,
+   `item.owner == UserOwner(requester)`, with `requester` taken from the path.
+
+Ownership is a value, so the admin doesn't need a special path through the domain. It just
+supplies a different value. An AST scan (AC-31) makes sure only the two admin routers ever build a
+`UserOwner` from a path parameter. Anywhere else, that would be a hole.
+
+One trap was named before anyone fell in. If the user in the path doesn't exist, the use cases
+raise `UserNotFound`, and the global error map turns that into **401**, which means "you're not
+signed in." The admin's tab would sign itself out because the *target* was erased. So every admin
+handler translates it locally to 404 `user_not_found`. Mutation 3 put the global mapping back, and
+12 tests went red.
+
+## Showing untrusted text by not rendering it
+
+The admin now reads text that strangers wrote: CV bodies, pasted job postings, and LLM output
+produced from both. Any of it could contain `<script>`, or `<img onerror=…>`, or a link that goes
+somewhere bad. It's being shown to the one person in the system with the power to erase accounts.
+
+The defence is the boring one, and that's why it works: **don't render it.** `BodyText` puts the
+text in a React text node inside a `white-space: pre-wrap` block. React escapes text nodes, so
+`<script>` shows up as the characters `<`, `s`, `c`… and does nothing. A posting's source URL is
+shown as text, not a link. No sanitizer, no allow-list, no Markdown renderer in the admin chunk
+(T15 checked: no TipTap, ProseMirror or markdown-it code in it).
+
+Mutation 6 swapped the text node for `dangerouslySetInnerHTML`. Four tests went red, including the
+security grep that looks for that name anywhere it isn't allowed.
+
+## War stories
+
+**The erase that forgot the details.** T14's job was to test the query cache: content lives under
+the account's key, sign-out drops it, a delete refetches the lists. One test said: after 4.2's
+*Erase account*, every CV text and document body for that account is gone from the cache. It
+failed, and the cause wasn't in 4.3's code. It was in 4.2's.
+
+The erase removed the account's detail key with `removeQueries({ queryKey, exact: true })`. `exact`
+means *only this key*, not its children. So the account's summary went away, but every CV body,
+posting text and tailored document nested under it stayed in memory for its five-minute `gcTime`.
+That was harmless in 4.2, because nothing was nested under the key yet. 4.3 nested a stranger's CV
+under it. It's like shredding a folder's label and leaving the folder's pages in the tray.
+
+`qa` doesn't touch production code, so the test went in as `it.fails` with the finding in its
+docblock (3.1's strict-xfail habit, in Vitest). The fix (`301c75a`) dropped `exact: true` and
+removed only the marker. The lesson: **a cache removal is a statement about a tree, so decide if
+you mean the leaf or the branch.** 4.2's choice was right when the tree had one leaf.
+
+**The guard that guarded twice.** Mutation 1 was supposed to prove the firewall: remove
+`require_admin` from the router and watch the tests go red. Zero went red. The code wasn't broken.
+The mutation just didn't change anything, because every handler also takes `actor: AdminDep`, which
+*is* `Depends(require_admin)`. Two locks on one door: take one off and the door is still locked.
+That's an **equivalent mutant**, a change that can't alter behaviour, and no test can catch it.
+
+So the question became: what does the router-level dependency buy us? A future handler that forgets
+`AdminDep` would still be protected. To keep that true, AC-30(a) now pins the router's
+`dependencies` list directly (1 red when removed). 4.2's `admin_users.py` has the same shape, so
+the same blind spot was there all along.
+
+**Tests that tested the harness.** Six tests, each wrong in a way that had nothing to do with the
+app:
+
+- *Fault injection that missed.* An "the database fails → 503" test injected the fault at
+  `AsyncSession.execute`. But `AsyncSession.get` doesn't go through there. It reaches the sync
+  `Session.execute` underneath, so repository `get`s never saw the fault. The fault moved down a
+  layer, where both paths meet (`f5b461f`). It's the old rule again: inject below the floor.
+- *An oracle that compared the wrong things.* AC-5 compared the admin's posting list (20 per page)
+  with the user's own list at its default page size, 1. The same commit also stopped asserting the
+  seed's raw string, since the domain trims text.
+- *A loading test that couldn't fail.* `findByText(/^Loading/)` found the lazy route's Suspense
+  fallback, which also says "Loading…" and is also a `role="status"`, before the page had rendered
+  anything. The test passed against a page with no loading line at all. Now it waits until the
+  page has called its item route, then looks for the page's own line inside `<main>`
+  (`e7f68c2`; dropping `role="status"` now turns exactly those 3 tests red).
+- *Two `<h1>`s.* "One heading per page" counted App's shell `<h1>TailorCraft</h1>` as well. Scoped
+  to `<main>`.
+- *The wrong way to fail a section.* A test failed one section with 403 `account_disabled`. But by
+  4.2's design, that response signs the whole tab out, so the page unmounted. A 503 fails one
+  section and leaves the rest working.
+- *A grep that found the bundler.* AC-33 greps the admin chunk for `tiptap`. It hit, and the cause
+  wasn't the editor. React's runtime happens to live in a manual chunk *named* `tiptap`, so every
+  chunk imports a file with that word in its name. The fix was to grep for library identifiers, not
+  the file name.
+
+Each correction landed in its own commit, before the GREEN, with the assertion's meaning unchanged.
+The pattern from 4.2 holds: when a test fails, first make sure it's testing the app.
+
+**One edit to an old test, on the list.** 4.2's `UserPage` test fake didn't serve the three new
+content lists, because they didn't exist yet. The owner allowed one listed harness edit (`ce358e4`)
+rather than a quiet one. The owner also amended AC-26 so that each section has its own loading
+sentence (*Loading saved CVs…*), because a plain *Loading…* collided with the page's own.
+
+## The numbers
+
+- **Reads** (production image, one user at every cap, n = 200 interleaved, admin p95): CV list
+  13.9 ms, one 250 KB CV 12.1, postings list 44.0, one posting 9.3, history page 1 9.2 and page 20
+  9.3, one run 10.9, inline Markdown 11.3, export list 12.3, a 200 KB export 12.6.
+- **Deletes** (n = 20, reseeded each time): a CV 15.2 ms, a history entry with 20 files 23.9.
+- **Admin vs. the user's own route** on the same data: at most +2.3 ms p95 (limit +5). The admin
+  route is the user's route, plus one log line.
+- **Bundle**: main +0.06 kB gzip (budget 0.3), admin chunk 7.91 kB (budget 10).
+- **Mutations**: owner from the actor instead of the path 48 red; `UserNotFound` through the global
+  map 12; `no-store` off refusals 27; one access line removed 1; `dangerouslySetInnerHTML` +4;
+  content keys outside the account's key 7; a delete that never commits 2. The router-level
+  `require_admin`: an equivalent mutant, now pinned directly.
+- **Tests**: 4892 backend, 1484 frontend, green twice in a row.
+- **Manual pass**: one real-Gemini run, markers in every body and name field, 6 272 log lines, 0
+  hits. Not covered: the 409 was staged on a *queued* run, not a running one, and Firefox wasn't
+  exercised.
+
+## The common thread
+
+4.1 built a door that looks like a wall. 4.2 put an off switch behind it. 4.3 is the first slice
+where the admin can *read* the most private data the product holds, and the backend change was
+almost nothing, because the right questions were already in the right places. The use cases always
+asked "is this yours?", so the admin only had to say whose it was.
+
+The defect that got through was 4.2's, and it came from a choice that was right when it was made.
+`exact: true` was correct for a key with no children. Nothing changed in that line. What changed
+was what got nested under the key, and the line didn't know.
+
+## What's next
+
+- **`/verify`**: the eight mutations, every RED with its recorded failure, no GREEN editing a test.
+- **Release**: no migration or setting; after it, a browser-only walk on `cv.samolit.com` with a
+  throwaway account.
+- **4.4**: guest sessions and storage, the last things that still need SSH.

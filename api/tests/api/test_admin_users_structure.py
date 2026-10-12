@@ -33,6 +33,20 @@ _EXPECTED_ADMIN_ROUTES = {
     ("POST", "/api/admin/users/{user_id}/disable"),
     ("POST", "/api/admin/users/{user_id}/enable"),
     ("DELETE", "/api/admin/users/{user_id}"),
+    ("GET", "/api/admin/users/{user_id}/base-cvs"),
+    ("GET", "/api/admin/users/{user_id}/base-cvs/{base_cv_id}"),
+    ("DELETE", "/api/admin/users/{user_id}/base-cvs/{base_cv_id}"),
+    ("GET", "/api/admin/users/{user_id}/job-postings"),
+    ("GET", "/api/admin/users/{user_id}/job-postings/{job_posting_id}"),
+    ("GET", "/api/admin/users/{user_id}/tailoring-runs"),
+    ("GET", "/api/admin/users/{user_id}/tailoring-runs/{tailoring_run_id}"),
+    ("DELETE", "/api/admin/users/{user_id}/tailoring-runs/{tailoring_run_id}"),
+    (
+        "GET",
+        "/api/admin/users/{user_id}/tailoring-runs/{tailoring_run_id}/documents/{kind}/download",
+    ),
+    ("GET", "/api/admin/users/{user_id}/tailoring-runs/{tailoring_run_id}/exports"),
+    ("GET", "/api/admin/users/{user_id}/export-jobs/{export_job_id}/file"),
 }
 
 
@@ -48,7 +62,7 @@ def _admin_routes(app: FastAPI) -> dict[tuple[str, str], object]:
 # --- (a) --------------------------------------------------------------------------------------
 
 
-def test_ac28a_the_admin_surface_is_exactly_six_routes_each_behind_require_admin(
+def test_ac28a_the_admin_surface_is_exactly_seventeen_routes_each_behind_require_admin(
     app: FastAPI,
 ) -> None:
     routes = _admin_routes(app)

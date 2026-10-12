@@ -34,9 +34,7 @@ from tailorcraft.application.intake.upload_base_cv import UploadBaseCvCommand
 from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.value_objects import UserId
-from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.errors import TooManySavedBaseCvs
-from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvLabel
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import (
@@ -51,10 +49,14 @@ from tailorcraft.infrastructure.api.deps import (
     UploadBaseCvDep,
 )
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
+from tailorcraft.infrastructure.api.routers._saved_base_cv_handlers import (
+    aggregate_to_response,
+    log_unlink_failure,
+    summary_to_response,
+)
 from tailorcraft.infrastructure.api.routers._upload import (
     commit_or_503,
     enforce_upload_limit,
-    failure_message,
     read_validated_upload,
 )
 from tailorcraft.infrastructure.api.schemas.intake import (
@@ -70,7 +72,6 @@ log = structlog.get_logger(__name__)
 
 EVENT_USER_MISSING: Final = "identity.user_missing"
 EVENT_UPLOAD_REFUSED: Final = "intake.upload_refused"
-EVENT_FILE_UNLINK_FAILED: Final = "intake.saved_base_cv_file_unlink_failed"
 
 _NO_STORE: Final = "no-store"
 
@@ -101,51 +102,6 @@ _NOT_FOUND: dict[int | str, dict[str, Any]] = {
         ),
     },
 }
-
-
-# ---------------------------------------------------------------------------------------------
-# Response shaping — pure functions, no I/O. Two sources, one key set (AC-20).
-# ---------------------------------------------------------------------------------------------
-
-
-def _summary_to_response(summary: SavedBaseCvSummary, settings: Settings) -> SavedBaseCvResponse:
-    """The list's entry, from the read model (technical plan §3 amendment): no text was loaded."""
-    return SavedBaseCvResponse(
-        id=summary.id.value,
-        label=summary.label.value if summary.label is not None else None,
-        original_filename=summary.original_filename.value,
-        content_type=summary.content_type,
-        size_bytes=summary.size_bytes,
-        status=summary.status,
-        character_count=summary.character_count,
-        failure_reason=summary.failure_reason,
-        failure_message=(
-            failure_message(summary.failure_reason, settings)
-            if summary.failure_reason is not None
-            else None
-        ),
-        uploaded_at=summary.uploaded_at,
-    )
-
-
-def _aggregate_to_response(cv: BaseCv, settings: Settings) -> SavedBaseCvResponse:
-    """After an upload or a rename, from the aggregate the use case returned or saved."""
-    return SavedBaseCvResponse(
-        id=cv.id.value,
-        label=cv.label.value if cv.label is not None else None,
-        original_filename=cv.original_filename.value,
-        content_type=cv.content_type,
-        size_bytes=cv.size_bytes,
-        status=cv.status,
-        character_count=(
-            cv.extracted_text.character_count if cv.extracted_text is not None else None
-        ),
-        failure_reason=cv.failure_reason,
-        failure_message=(
-            failure_message(cv.failure_reason, settings) if cv.failure_reason is not None else None
-        ),
-        uploaded_at=cv.uploaded_at,
-    )
 
 
 def _no_store(response: Response) -> None:
@@ -212,7 +168,7 @@ async def list_saved_base_cvs(
         raise _translate(exc, user_id) from None
 
     wire = SavedBaseCvListResponse(
-        items=[_summary_to_response(summary, settings) for summary in summaries]
+        items=[summary_to_response(summary, settings) for summary in summaries]
     )
     await db.commit()
     _no_store(response)
@@ -301,7 +257,7 @@ async def upload_saved_base_cv(
         raise _translate(exc, user_id) from None
 
     saved_cv = await cvs.get(result.base_cv_id)
-    wire = _aggregate_to_response(saved_cv, settings)
+    wire = aggregate_to_response(saved_cv, settings)
 
     # FastAPI 0.141 runs `get_session`'s teardown after the response is sent: only this commit can
     # still become S-10's 503. The file is already on disk; on failure it is the sweep's orphan.
@@ -351,7 +307,7 @@ async def rename_saved_base_cv(
     except DomainError as exc:
         raise _translate(exc, user_id) from None
 
-    wire = _aggregate_to_response(cv, settings)
+    wire = aggregate_to_response(cv, settings)
     await db.commit()
     _no_store(response)
     return wire
@@ -386,15 +342,7 @@ async def delete_saved_base_cv(
         raise _translate(exc, user_id) from None
 
     if not result.file_unlinked:
-        # S-24 / R-5: the row is gone, the bytes are not. An orphan for the operator's sweep, and
-        # this line is how the operator learns there is one. Ids and a class name — never the key,
-        # never the path, never the exception's message.
-        log.warning(
-            EVENT_FILE_UNLINK_FAILED,
-            base_cv_id=str(base_cv_id),
-            user_id=str(user_id.value),
-            error_type=result.unlink_error_type,
-        )
+        log_unlink_failure(base_cv_id, user_id, result.unlink_error_type)
 
     await db.commit()
     _no_store(response)

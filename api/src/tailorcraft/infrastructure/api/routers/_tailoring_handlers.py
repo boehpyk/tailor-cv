@@ -49,6 +49,7 @@ from tailorcraft.domain.tailoring.errors import (
     TailoringNotQueued,
     TailoringRunNotEditable,
 )
+from tailorcraft.domain.tailoring.history import TailoringHistoryEntry
 from tailorcraft.domain.tailoring.ports import TailoringQueuePort, TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
@@ -61,6 +62,9 @@ from tailorcraft.domain.tailoring.value_objects import (
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.api.schemas.tailoring import (
     CreateTailoringRunRequest,
+    HistoryBaseCvResponse,
+    HistoryEntryResponse,
+    HistoryPostingResponse,
     ReviseDocumentRequest,
     TailoringRunResponse,
     TailoringRunSummary,
@@ -493,13 +497,14 @@ async def get_tailoring_run(
     requester: Owner,
     expires_at: datetime | None,
     get_use_case: GetTailoringRun,
+    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
 ) -> TailoringRunResponse:
     """`GET /api/tailoring-runs/{id}`'s body — the endpoint a client polls."""
     no_store(response)
     try:
         run = await get_use_case(tailoring_run_id, requester)
     except DomainError as exc:
-        raise domain_error_to_http_exception(exc) from exc
+        raise translate(exc) from exc
 
     return to_response(run, expires_at)
 
@@ -689,3 +694,41 @@ def conflict_fields(exc: DomainError) -> dict[str, str | int]:
     if isinstance(exc, TailoredDocumentVersionConflict):
         return {"current_version": exc.current_version}
     return {}
+
+
+def to_history_entry(entry: TailoringHistoryEntry) -> HistoryEntryResponse:
+    """One history read-model entry on the wire (shared by `/api/me/` and `/api/admin`, 4.3 §0.5). `retryable` is the API's rule, as on the run."""
+    base_cv = entry.base_cv
+    posting = entry.posting
+    return HistoryEntryResponse(
+        id=entry.tailoring_run_id.value,
+        status=entry.status,
+        failure_reason=entry.failure_reason,
+        retryable=is_retryable(entry.failure_reason),
+        retry_not_before=retry_not_before(entry.failure_reason, entry.completed_at),
+        requested_at=entry.requested_at,
+        completed_at=entry.completed_at,
+        version=entry.version,
+        edited=entry.edited,
+        base_cv_id=entry.base_cv_id.value,
+        base_cv=(
+            HistoryBaseCvResponse(
+                id=base_cv.base_cv_id.value,
+                label=base_cv.label,
+                original_filename=base_cv.original_filename,
+            )
+            if base_cv is not None
+            else None
+        ),
+        posting=(
+            HistoryPostingResponse(
+                id=posting.job_posting_id.value,
+                source=posting.source,
+                title=posting.title,
+                source_url=posting.source_url,
+                preview=posting.preview,
+            )
+            if posting is not None
+            else None
+        ),
+    )

@@ -1,6 +1,12 @@
-import { request } from './client';
+import { request, requestBlob } from './client';
+import { HISTORY_PAGE_SIZE } from './history';
 
 import type { Role } from '@/features/auth/types';
+import type { ExportJobListResponse, InlineExportFormat } from '@/features/export/types';
+import type { HistoryPage } from '@/features/history/types';
+import type { JobPosting, JobPostingListResponse } from '@/features/posting/types';
+import type { SavedBaseCv, SavedBaseCvList } from '@/features/savedCvs/types';
+import type { TailoredDocumentKind, TailoringRun } from '@/features/tailoring/types';
 
 /**
  * The admin probe — `GET /api/admin/access` (slice 4.1, technical plan §4). Transport only.
@@ -133,6 +139,156 @@ export function enableUser(userId: string): Promise<AccountStatusChange> {
 /** Erase an account: rows committed, then files. Irreversible. 404 `user_not_found`. */
 export function eraseUser(userId: string): Promise<AccountErasureReport> {
   return request<AccountErasureReport>(userPath(userId), {
+    method: 'DELETE',
+    auth: 'required',
+  });
+}
+
+// --- An account's content (slice 4.3, technical plan §5, ADR-0034) --------------------------------
+//
+// Support reads and two deletes under `/api/admin/users/{id}/…`, behind the same firewall. The
+// shapes are the account's own `/api/me/` shapes — the server calls the same use cases — except one
+// CV, which carries its text. Every refusal is an `ApiError`: 404 `user_not_found` (the account is
+// gone), the item kind's own 404, the firewall's code-less 404, 403 `account_disabled`, 503.
+
+/** One saved CV **with its extracted text** — `null` while not extracted. Admin only (ADR-0034). */
+export interface AdminSavedBaseCv extends SavedBaseCv {
+  readonly extracted_text: string | null;
+}
+
+/** A saved CV's deletion. `file_unlinked: false` leaves the bytes to the orphan sweep. */
+export interface AdminBaseCvDeletion {
+  readonly file_unlinked: boolean;
+}
+
+/** What deleting one history entry removed: rows committed, then files. */
+export interface AdminHistoryEntryErasure {
+  readonly tailoring_runs: number;
+  readonly job_postings: number;
+  readonly export_jobs: number;
+  readonly tracked_applications: number;
+  readonly files_unlinked: number;
+  readonly unlink_failures: number;
+}
+
+function contentPath(userId: string, ...segments: readonly string[]): string {
+  return [userPath(userId), ...segments.map(encodeURIComponent)].join('/');
+}
+
+function read<T>(path: string, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, { auth: 'required', ...(signal ? { signal } : {}) });
+}
+
+/** The account's saved CVs, newest first, without text. */
+export function listUserCvs(userId: string, signal?: AbortSignal): Promise<SavedBaseCvList> {
+  return read(contentPath(userId, 'base-cvs'), signal);
+}
+
+/** One saved CV with its text. 404 `base_cv_not_found`. */
+export function getUserCv(
+  userId: string,
+  baseCvId: string,
+  signal?: AbortSignal,
+): Promise<AdminSavedBaseCv> {
+  return read(contentPath(userId, 'base-cvs', baseCvId), signal);
+}
+
+/** Delete a saved CV: the row, then its file. Irreversible. 404 `base_cv_not_found`. */
+export function deleteUserCv(userId: string, baseCvId: string): Promise<AdminBaseCvDeletion> {
+  return request<AdminBaseCvDeletion>(contentPath(userId, 'base-cvs', baseCvId), {
+    method: 'DELETE',
+    auth: 'required',
+  });
+}
+
+/** The account's 20 most recent job postings, as summaries (OQ-6: no cursor). */
+export function listUserPostings(
+  userId: string,
+  signal?: AbortSignal,
+): Promise<JobPostingListResponse> {
+  return read(contentPath(userId, 'job-postings'), signal);
+}
+
+/** One job posting in full. 404 `job_posting_not_found`. */
+export function getUserPosting(
+  userId: string,
+  postingId: string,
+  signal?: AbortSignal,
+): Promise<JobPosting> {
+  return read(contentPath(userId, 'job-postings', postingId), signal);
+}
+
+/** One page of the account's history; `cursor` is opaque, `null` for the first page. */
+export function fetchUserHistoryPage(
+  userId: string,
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<HistoryPage> {
+  const query = new URLSearchParams({ limit: String(HISTORY_PAGE_SIZE) });
+  if (cursor !== null) query.set('cursor', cursor);
+  return read(`${contentPath(userId, 'tailoring-runs')}?${query.toString()}`, signal);
+}
+
+/** One run with both documents. 404 `tailoring_run_not_found`. */
+export function getUserRun(
+  userId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<TailoringRun> {
+  return read(contentPath(userId, 'tailoring-runs', runId), signal);
+}
+
+/** Every export job of one run, newest first. 404 `tailoring_run_not_found`. */
+export function listUserRunExports(
+  userId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<ExportJobListResponse> {
+  return read(contentPath(userId, 'tailoring-runs', runId, 'exports'), signal);
+}
+
+/**
+ * A succeeded run's document as `.md` / `.txt`, rendered in the request. 409
+ * `tailoring_run_not_exportable`; 500 `render_failed`; 503 `render_timed_out`.
+ */
+export function downloadUserDocument(
+  userId: string,
+  runId: string,
+  document: TailoredDocumentKind,
+  format: InlineExportFormat,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const path = contentPath(userId, 'tailoring-runs', runId, 'documents', document, 'download');
+  return requestBlob(`${path}?format=${format}`, {
+    auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * An export job's stored file. 404 `export_job_not_found`; 409 `export_not_ready`; 410
+ * `export_file_gone`; 503 `storage_unavailable`.
+ */
+export function downloadUserExportFile(
+  userId: string,
+  exportJobId: string,
+  signal?: AbortSignal,
+): Promise<Blob> {
+  return requestBlob(contentPath(userId, 'export-jobs', exportJobId, 'file'), {
+    auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Delete one history entry (the run, its exports and files, its posting if unused, its card).
+ * 404 `tailoring_run_not_found`; 409 `tailoring_run_in_progress` (+ `status`) deletes nothing.
+ */
+export function deleteUserHistoryEntry(
+  userId: string,
+  runId: string,
+): Promise<AdminHistoryEntryErasure> {
+  return request<AdminHistoryEntryErasure>(contentPath(userId, 'tailoring-runs', runId), {
     method: 'DELETE',
     auth: 'required',
   });

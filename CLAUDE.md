@@ -29,7 +29,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > 2026-10-10 (reviewer PASS round 1), merged as PR #28 (`26472b1`) and released the same day**
 > (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). **Slice
 > 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2), merged as PR #30
-> (`16fbe47`) and released the same day** (deploy run 38161380305). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> (`16fbe47`) and released the same day** (deploy run 38161380305). **Slice 4.3 `admin-content`
+> was implemented 2026-10-12 on `feature/admin-content` and awaits `/verify`; not merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -621,6 +622,51 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`f77b1d6`); a marker re-check read 0 hits in either. **Not checked: Traefik's access log** (the
 >   other stack on the box). **Firefox not exercised.**
 >
+> - **4.3 `admin-content`** (**implemented 2026-10-12, awaiting `/verify`; not merged**) — an admin
+>   lists, reads, downloads and deletes a user's saved CVs, postings, runs/history and exports
+>   (**ADR-0034**; ADR-0008 amendment (k)). **No new use case**: the admin passes
+>   `UserOwner(<path user_id>)` to the **unchanged** `/api/me/` use cases, so "may this admin see
+>   it?" is `require_admin` and "is it this user's?" is the use case's own equality. There is no
+>   `AdminOwner`. **AC-1 holds**: `git diff main --stat` over `domain/`, `application/`, `alembic/`
+>   and the LLM paths is empty — no migration, setting, queue or container. Eleven routes under
+>   `/api/admin/users/{user_id}/…` (`routers/admin_content.py`), a **router-level** `require_admin`,
+>   `no-store` on every answer and refusal (`_admin_responses.refusal`, lifted from 4.2), and a
+>   **local** 404 `user_not_found` for a missing target, never the global map's 401 (which would
+>   sign the admin out). The shared `_tailoring_handlers` / `_export_handlers` bodies gained a
+>   `translate=` keyword so the admin twin words a refusal its own way; history and saved-CV wire
+>   mappers were lifted out of the `/api/me/` routers (behaviour-neutral, every test unedited).
+>   `AdminSavedBaseCvResponse` is the saved shape **plus `extracted_text`**; the user's schemas are
+>   pinned unchanged (AC-24). **One `admin.content_access` line per request** (`actor_id`,
+>   `target_user_id`, `kind`, `action`, `item_id`, `outcome`): ids and closed words only. The two
+>   deletes (`DeleteSavedBaseCv`, `EraseHistoryEntry`) answer **200 with their report**, where the
+>   user's twins answer 204. React: three sections on `/admin/users/:id` (saved CVs, history with
+>   *Load more*, the 20 most recent postings) plus CV, run and posting pages, all in the **lazy
+>   admin chunk**; every body is a **text node** in a `pre-wrap` block, never
+>   `dangerouslySetInnerHTML`, and a posting's source URL is text, never a link. **4892 backend
+>   and 1484 frontend tests** at T17 (`make check` twice). Measured: main bundle **+0.06 kB gzip**
+>   (budget 0.3), admin chunk **7.91 kB** (10). T16 on production images, one user at every cap,
+>   n = 200 interleaved, admin p95: CV list **13.9 ms**, one CV (250 KB body) **12.1**, postings
+>   list **44.0**, one posting **9.3**, history p1 **9.2** / p20 **9.3**, one run **10.9**, inline
+>   md **11.3**, export list **12.3**, a 200 KB export **12.6**; deletes (n = 20) CV **15.2**, an
+>   entry with 20 files **23.9** — every budget holds, admin-vs-user Δ at most **+2.3 ms** (limit
+>   +5). **Mutations:** (2) `UserOwner(actor.id)` 48 red; (3) `UserNotFound` through the global map
+>   12; (4) `no-store` off `refusal()` 27; (5) one access line removed 1; (6) `BodyText` via
+>   `dangerouslySetInnerHTML` +4; (7) content keys outside `adminUserKey` 7; (8) a fresh,
+>   non-committing `DeleteSavedBaseCv` 2. **(1), dropping the router-level `require_admin`, is an
+>   equivalent mutant**: every handler also takes `actor: AdminDep`, so the graph walk stays green.
+>   AC-30(a) now also pins `router.dependencies` (1 red). **4.2's `admin_users.py` has the same
+>   shape** and the same blind spot. **Found by T14, a 4.2 defect:** the erase removed the
+>   account's detail key with `exact: true`, so every content body under it (CV text, posting
+>   text, documents) stayed cached for `gcTime`. Held as `it.fails`, fixed in `301c75a` (removal
+>   by prefix). **T18's manual pass** (`:8080`, Chromium, two contexts, one real-Gemini run, markers
+>   in every body and name field): every read and download agreed with the user's own; both deletes
+>   agreed with the user's tab; 360 px held; a plain user saw the not-found view; 6 272 log lines,
+>   **0 marker or email hits**. Limits: the 409 was staged on a **queued** run (worker stopped), not
+>   a running one; a fetched posting's title carries no marker; **Firefox not exercised**. **Owner
+>   amendments, 2026-10-12:** AC-26, each section has its own loading sentence (*Loading saved
+>   CVs…*, …), because *Loading…* collided with the page's own; AC-29, the one listed harness edit
+>   to an existing test is `ce358e4` (4.2's `UserPage` fake serves the three lists).
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -1129,6 +1175,15 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   **Descendant routes inside a lazy chunk use `useRoutes`, not `<Routes>` JSX (4.2).** react-router
   lives in the main chunk, and `<Routes>` pulls `createRoutesFromChildren` in with it: +0.69 kB gzip
   on the main chunk for three admin routes. Route objects through `useRoutes` cost +0.20 in all.
+  **`removeQueries({ queryKey, exact: true })` keeps the key's children (4.3, `301c75a`).** 4.2's
+  erase dropped the account's detail key exactly, and every content body nested under it stayed
+  cached for `gcTime`. To drop a subtree, drop by prefix.
+  **A test fake's 403 `account_disabled` signs the tab out (4.3, `e7f68c2`)**, by 4.2's design, and
+  unmounts the page. To fail one section, answer 503.
+  **Count a page's `<h1>` inside `main`:** App's shell renders `<h1>TailorCraft</h1>` too.
+  **A page-level `findByText(/^Loading/)` matches the lazy route's Suspense fallback first** (also a
+  `role="status"`), so it cannot fail. Wait until the item route has been called, then assert the
+  page's own loading line inside `main` (`e7f68c2`).
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
   **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
@@ -1311,6 +1366,15 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   test has loaded**: the next `run.version` read is a lazy load, `MissingGreenlet`. Read loaded
   values into locals before the requests (and `refresh` what a later request needs). Harness only;
   production has a session per request. AC-29 lists it as the one allowed edit to an existing test.
+- **`AsyncSession.get` reaches the sync `Session.execute`, not `AsyncSession.execute`** (4.3,
+  `f5b461f`). A fault injected at the async `execute` misses every repository `get`. Install it on
+  the sync `Session.execute`, which both paths reach.
+- **A router-level dependency duplicated by a handler parameter is an equivalent mutant** (4.3,
+  `c2b83bb`). Every admin handler takes `actor: AdminDep`, so dropping the router's
+  `require_admin` changes no dependency graph and no request. Pin `router.dependencies` itself.
+- **AC-33's `tiptap`/`markdown` grep of the admin chunk hits chunk-filename imports** (4.3): React's
+  runtime lives in the `tiptap` manual chunk, so every chunk names it. Grep for library
+  identifiers (ProseMirror, markdown-it), not the word.
 - **`commit-msg` rejects a subject over 72 characters only after `pre-commit` has run the full
   suite** (4.2). Count the subject before you commit, or pay four minutes to learn it is 74.
 - **A spy installed before the test's setup records the setup** (2.5, `feec266`). A
