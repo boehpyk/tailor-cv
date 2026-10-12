@@ -132,7 +132,7 @@ describe('AC-32 — what drops them', () => {
    * CV text, posting text, both documents — in the cache for its 5-minute `gcTime`. The fix is to
    * drop `exact: true` (react-dev); 4.2's own detail-removal test is the thing to re-check.
    */
-  it.fails("4.2's erase of the account drops every body the admin loaded", async () => {
+  it("4.2's erase of the account drops every body the admin loaded", async () => {
     serve();
     const client = createAppQueryClient();
     await loadedAccountPage(client);
