@@ -180,9 +180,13 @@ export const CV_TEXT_HEADING = 'Extracted text';
 export function cvExtractionFailed(message: string): string {
   return `Text could not be extracted: ${message}`;
 }
+/** `status: 'uploaded'` — extraction has not run yet, so there is neither text nor a failure. */
+export const CV_NOT_YET_EXTRACTED = 'The text has not been extracted yet.';
 /** 404 `base_cv_not_found`. */
 export const CV_GONE = 'This CV no longer exists.';
 export const CV_ERROR = "Couldn't load this CV.";
+/** The run page's CV cell when the CV list itself failed — not evidence the CV was deleted. */
+export const RUN_CV_UNAVAILABLE = "Couldn't load the CV.";
 
 // Posting page (AC-25)
 export const POSTING_FIELD_SOURCE = 'Source';

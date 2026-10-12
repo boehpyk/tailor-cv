@@ -1,5 +1,7 @@
 import { useParams } from 'react-router';
 
+import type { AdminSavedBaseCv } from '@/api/admin';
+
 import {
   CV_ERROR,
   CV_FIELD_CHARACTERS,
@@ -8,6 +10,7 @@ import {
   CV_FIELD_TYPE,
   CV_FIELD_UPLOADED,
   CV_GONE,
+  CV_NOT_YET_EXTRACTED,
   CV_TEXT_HEADING,
   cvExtractionFailed,
 } from '../adminCopy';
@@ -64,13 +67,7 @@ export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
               <h2 id="admin-cv-text" className="text-base font-semibold text-slate-900">
                 {CV_TEXT_HEADING}
               </h2>
-              {data.extracted_text !== null ? (
-                <BodyText text={data.extracted_text} />
-              ) : (
-                <p className="text-sm text-slate-700">
-                  {cvExtractionFailed(data.failure_message ?? '')}
-                </p>
-              )}
+              <CvText cv={data} />
             </section>
             <DeleteContentButton
               actorId={actorId}
@@ -82,4 +79,28 @@ export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
       }}
     </ContentPage>
   );
+}
+
+/** Branches on `status`, not on `extracted_text`: an `uploaded` CV has no text and no failure. */
+function CvText({ cv }: { readonly cv: AdminSavedBaseCv }): React.JSX.Element {
+  const note = (text: string): React.JSX.Element => (
+    <p className="text-sm text-slate-700">{text}</p>
+  );
+  switch (cv.status) {
+    case 'extracted':
+      // The server pairs `extracted` with text; a null here would be its bug, so say so plainly.
+      return cv.extracted_text !== null ? (
+        <BodyText text={cv.extracted_text} />
+      ) : (
+        note(CV_NOT_YET_EXTRACTED)
+      );
+    case 'extraction_failed':
+      return note(cvExtractionFailed(cv.failure_message ?? ''));
+    case 'uploaded':
+      return note(CV_NOT_YET_EXTRACTED);
+    default: {
+      const unreachable: never = cv.status;
+      return unreachable;
+    }
+  }
 }

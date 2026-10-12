@@ -6,6 +6,7 @@ import {
   CV_DELETED_NOTE,
   DOCUMENT_HEADINGS,
   POSTING_MISSING_NOTE,
+  RUN_CV_UNAVAILABLE,
   RUN_ERROR,
   RUN_FIELD_CV,
   RUN_FIELD_POSTING,
@@ -109,11 +110,13 @@ function RunView({ actorId, userId, run, refreshing, onRefresh }: RunViewProps):
         </dd>
         <dt className={TERM}>{RUN_FIELD_CV}</dt>
         <dd className={VALUE}>
-          {cvs.data === undefined
-            ? null
-            : cv === undefined
+          {cvs.data !== undefined
+            ? cv === undefined
               ? CV_DELETED_NOTE
-              : (cv.label ?? cv.original_filename)}
+              : (cv.label ?? cv.original_filename)
+            : cvs.error !== null
+              ? RUN_CV_UNAVAILABLE
+              : null}
         </dd>
         <dt className={TERM}>{RUN_FIELD_REQUESTED}</dt>
         <dd className={VALUE}>{new Date(run.requested_at).toLocaleString()}</dd>
