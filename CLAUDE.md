@@ -30,7 +30,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). **Slice
 > 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2), merged as PR #30
 > (`16fbe47`) and released the same day** (deploy run 38161380305). **Slice 4.3 `admin-content`
-> was implemented 2026-10-12 on `feature/admin-content` and awaits `/verify`; not merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> was verified 2026-10-12 (reviewer PASS round 1; MINORs 1/3/4 fixed, PASS round 2), merged as PR
+> #32 (`5e9bce2`) and released the same day** (deploy run 38297123697). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -622,7 +623,11 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   (`f77b1d6`); a marker re-check read 0 hits in either. **Not checked: Traefik's access log** (the
 >   other stack on the box). **Firefox not exercised.**
 >
-> - **4.3 `admin-content`** (**implemented 2026-10-12, awaiting `/verify`; not merged**) — an admin
+> - **4.3 `admin-content`** (PR #32, `5e9bce2`, **verified and released 2026-10-12**, deploy run
+>   38297123697; `/verify` PASS round 1, then MINORs 1/3/4 fixed red-first: `1e92e97`/`44c76ca` RED,
+>   `6332bce`/`f6f47f4` GREEN, PASS round 2. `_Access` is a context manager writing one line per
+>   request, `refused` on a `SQLAlchemyError` — **not** on any other exception, an accepted gap;
+>   global 422/503 on `/api/admin` carry no `no-store`, also accepted) — an admin
 >   lists, reads, downloads and deletes a user's saved CVs, postings, runs/history and exports
 >   (**ADR-0034**; ADR-0008 amendment (k)). **No new use case**: the admin passes
 >   `UserOwner(<path user_id>)` to the **unchanged** `/api/me/` use cases, so "may this admin see
