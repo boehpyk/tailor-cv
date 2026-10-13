@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
 from typing import Annotated, Final
 
@@ -60,8 +60,14 @@ from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.posting.list_job_postings import ListJobPostingsForSession
 from tailorcraft.application.posting.list_recent_job_postings import ListRecentJobPostingsForUser
 from tailorcraft.application.retention.erase_account import EraseAccount
+from tailorcraft.application.retention.erase_guest_session import EraseGuestSession
 from tailorcraft.application.retention.erase_history_entry import EraseHistoryEntry
 from tailorcraft.application.retention.get_account_overview import GetAccountOverview
+from tailorcraft.application.retention.get_guest_session_overview import GetGuestSessionOverview
+from tailorcraft.application.retention.list_live_guest_sessions import ListLiveGuestSessions
+from tailorcraft.application.retention.purge_expired_guest_sessions import PurgeExpiredGuestSessions
+from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
+from tailorcraft.application.retention.summarize_storage import SummarizeStorage
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
@@ -101,7 +107,14 @@ from tailorcraft.domain.identity.value_objects import (
 )
 from tailorcraft.domain.intake.ports import BaseCvRepository, CvTextExtractorPort
 from tailorcraft.domain.posting.ports import JobPostingFetcherPort, JobPostingRepository
-from tailorcraft.domain.retention.ports import AccountDataPort, HistoryEntryDataPort
+from tailorcraft.domain.retention.guest_sessions import GuestSessionDirectoryQuery
+from tailorcraft.domain.retention.ports import (
+    AccountDataPort,
+    ExpiredGuestDataPort,
+    HistoryEntryDataPort,
+    OrphanFileScannerPort,
+)
+from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
@@ -130,6 +143,7 @@ from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPubl
 from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
+from tailorcraft.infrastructure.files.orphan_scanner import LocalOrphanFileScanner
 from tailorcraft.infrastructure.identity.access_tokens import JwtAccessTokens
 from tailorcraft.infrastructure.identity.claim_access import CommittingGuestWorkClaim
 from tailorcraft.infrastructure.identity.failed_login_log import LoggingFailedLoginObserver
@@ -148,10 +162,18 @@ from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention.data_access import (
     CommittingAccountData,
+    CommittingExpiredGuestDataAdapter,
     CommittingHistoryEntryData,
+    OverdueBacklog,
 )
+from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
+from tailorcraft.infrastructure.retention.lock import RedisPurgeLock
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
+
+# The purge task's own TTL (ADR-0018 decision 7): one key, one TTL, every holder. `main.py` already
+# imports `tasks.app` for the Celery app, so this costs the API no new import.
+from tailorcraft.infrastructure.tasks.app import PURGE_LOCK_TTL_SECONDS
 
 log = structlog.get_logger(__name__)
 
@@ -1900,3 +1922,195 @@ def get_tracking_write_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimi
 TrackingWriteRateLimiterDep = Annotated[
     RedisFixedWindowRateLimiter, Depends(get_tracking_write_rate_limiter)
 ]
+
+
+# --------------------------------------------------------------------------------------------------
+# Slice 4.4 — guest sessions and retention from `/admin` (ADR-0035, technical plan §3 "Wiring").
+# Every route is behind `admin_guests.py`'s / `admin_retention.py`'s router-level `require_admin`.
+# The purge and the sweep are built from **the CLI root's constructors** (`purge_command.py`), with
+# `dry_run` and the limit as the only differences (AC-8). Deferred imports, for the
+# mapper-configuration reason `get_base_cv_repository` documents.
+# --------------------------------------------------------------------------------------------------
+
+# The CLI's `--grace-hours` default (`cli.py`): the sweep's floor is the window plus 24 h.
+_ORPHAN_SWEEP_GRACE: Final = timedelta(hours=24)
+
+
+def get_guest_session_directory_query(session: SessionDep) -> GuestSessionDirectoryQuery:
+    """Binds `GuestSessionDirectoryQuery` -> `SqlGuestSessionDirectory` (ADR-0024's read-model
+    shape): one Core statement over the request's session, `token_hash` never selected."""
+    from tailorcraft.infrastructure.persistence.queries.guest_session_directory import (
+        SqlGuestSessionDirectory,
+    )
+
+    return SqlGuestSessionDirectory(session)
+
+
+GuestSessionDirectoryQueryDep = Annotated[
+    GuestSessionDirectoryQuery, Depends(get_guest_session_directory_query)
+]
+
+
+def get_expired_guest_data(session: SessionDep) -> ExpiredGuestDataPort:
+    """`ExpiredGuestDataPort` -> the **plain** `SqlAlchemyExpiredGuestData`, for the read-only uses
+    (storage's `owners_of`, the sweep's cross-check) — the CLI's sweep root binds it the same way."""
+    from tailorcraft.infrastructure.persistence.retention.expired_guest_data import (
+        SqlAlchemyExpiredGuestData,
+    )
+
+    return SqlAlchemyExpiredGuestData(session)
+
+
+ExpiredGuestDataDep = Annotated[ExpiredGuestDataPort, Depends(get_expired_guest_data)]
+
+
+def get_committing_expired_guest_data(session: SessionDep) -> ExpiredGuestDataPort:
+    """`ExpiredGuestDataPort` -> `CommittingExpiredGuestDataAdapter(SqlAlchemyExpiredGuestData)`:
+    each `delete_session` commits before a file is unlinked (the purge's rule, ADR-0006)."""
+    from tailorcraft.infrastructure.persistence.retention.expired_guest_data import (
+        SqlAlchemyExpiredGuestData,
+    )
+
+    return CommittingExpiredGuestDataAdapter(SqlAlchemyExpiredGuestData(session), session)
+
+
+CommittingExpiredGuestDataDep = Annotated[
+    ExpiredGuestDataPort, Depends(get_committing_expired_guest_data)
+]
+
+
+def get_orphan_file_scanner(settings: SettingsDep) -> OrphanFileScannerPort:
+    """Binds `OrphanFileScannerPort` -> `LocalOrphanFileScanner` — **the API's first binding of the
+    scanner**; the root it walks is `LocalFileStore`'s (ADR-0011)."""
+    return LocalOrphanFileScanner(settings.upload_dir)
+
+
+OrphanFileScannerDep = Annotated[OrphanFileScannerPort, Depends(get_orphan_file_scanner)]
+
+
+def get_retention_window(settings: SettingsDep) -> RetentionWindow:
+    return RetentionWindow(hours=settings.guest_retention_hours)
+
+
+RetentionWindowDep = Annotated[RetentionWindow, Depends(get_retention_window)]
+
+
+def get_list_live_guest_sessions(
+    directory: GuestSessionDirectoryQueryDep, clock: ClockDep
+) -> ListLiveGuestSessions:
+    return ListLiveGuestSessions(directory, clock)
+
+
+ListLiveGuestSessionsDep = Annotated[ListLiveGuestSessions, Depends(get_list_live_guest_sessions)]
+
+
+def get_guest_session_overview(
+    directory: GuestSessionDirectoryQueryDep, clock: ClockDep
+) -> GetGuestSessionOverview:
+    return GetGuestSessionOverview(directory, clock)
+
+
+GetGuestSessionOverviewDep = Annotated[GetGuestSessionOverview, Depends(get_guest_session_overview)]
+
+
+def get_erase_guest_session(
+    data: CommittingExpiredGuestDataDep, files: FileStoreDep
+) -> EraseGuestSession:
+    """The committing adapter: rows committed, then files, as the purge (plan §0.3)."""
+    return EraseGuestSession(data, files)
+
+
+EraseGuestSessionDep = Annotated[EraseGuestSession, Depends(get_erase_guest_session)]
+
+
+def get_summarize_storage(
+    scanner: OrphanFileScannerDep, data: ExpiredGuestDataDep, clock: ClockDep
+) -> SummarizeStorage:
+    return SummarizeStorage(scanner, data, clock)
+
+
+SummarizeStorageDep = Annotated[SummarizeStorage, Depends(get_summarize_storage)]
+
+
+# Built per request because `limit` and `dry_run` arrive with it (a query on a preview, a body on a
+# run). Called as `build(limit, dry_run)`.
+PurgeFactory = Callable[[int, bool], PurgeExpiredGuestSessions]
+SweepFactory = Callable[[int | None, bool], ReclaimOrphanedFiles]
+
+
+def get_purge_factory(
+    data: CommittingExpiredGuestDataDep,
+    files: FileStoreDep,
+    clock: ClockDep,
+    window: RetentionWindowDep,
+) -> PurgeFactory:
+    """`PurgeExpiredGuestSessions` over the committing adapter and `LocalFileStore` — the CLI's
+    `_purge_use_case` constructors (AC-8)."""
+
+    def build(limit: int, dry_run: bool) -> PurgeExpiredGuestSessions:
+        return PurgeExpiredGuestSessions(
+            data=data,
+            files=files,
+            clock=clock,
+            window=window,
+            batch_limit=limit,
+            dry_run=dry_run,
+        )
+
+    return build
+
+
+PurgeFactoryDep = Annotated[PurgeFactory, Depends(get_purge_factory)]
+
+
+def get_overdue_backlog(
+    data: ExpiredGuestDataDep, clock: ClockDep, window: RetentionWindowDep
+) -> OverdueBacklog:
+    """The backlog asked with the purge's own predicate — the CLI's `overdue_after` (ADR-0018 (4))."""
+    return OverdueBacklog(data, clock, window)
+
+
+OverdueBacklogDep = Annotated[OverdueBacklog, Depends(get_overdue_backlog)]
+
+
+def get_sweep_factory(
+    scanner: OrphanFileScannerDep,
+    data: ExpiredGuestDataDep,
+    files: FileStoreDep,
+    clock: ClockDep,
+    window: RetentionWindowDep,
+) -> SweepFactory:
+    """`ReclaimOrphanedFiles` over the **plain** adapter (it deletes files, never rows), the scanner
+    and `LocalFileStore` — the CLI's `_orphan_use_case` constructors, with its default grace (AC-8)."""
+
+    def build(limit: int | None, dry_run: bool) -> ReclaimOrphanedFiles:
+        return ReclaimOrphanedFiles(
+            scanner=scanner,
+            data=data,
+            files=files,
+            clock=clock,
+            window=window,
+            grace=_ORPHAN_SWEEP_GRACE,
+            limit=limit,
+            dry_run=dry_run,
+        )
+
+    return build
+
+
+SweepFactoryDep = Annotated[SweepFactory, Depends(get_sweep_factory)]
+
+
+def get_purge_lock(redis: RedisDep) -> RedisPurgeLock:
+    """The task's and the CLI's lock: the same key and the same TTL (ADR-0018 decision 7)."""
+    return RedisPurgeLock(redis, PURGE_LOCK_TTL_SECONDS)
+
+
+PurgeLockDep = Annotated[RedisPurgeLock, Depends(get_purge_lock)]
+
+
+def get_purge_heartbeat(redis: RedisDep) -> RedisPurgeHeartbeat:
+    return RedisPurgeHeartbeat(redis)
+
+
+PurgeHeartbeatDep = Annotated[RedisPurgeHeartbeat, Depends(get_purge_heartbeat)]

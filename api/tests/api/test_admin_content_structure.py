@@ -43,13 +43,13 @@ def _content_routes(app: FastAPI) -> dict[tuple[str, str], object]:
 # --- (a) --------------------------------------------------------------------------------------
 
 
-def test_ac30a_seventeen_admin_routes_eleven_of_them_content_each_behind_require_admin(
+def test_ac30a_thirty_one_admin_routes_eleven_of_them_content_each_behind_require_admin(
     app: FastAPI,
 ) -> None:
     routes = _admin_routes(app)
     content = _content_routes(app)
 
-    assert len(routes) == 17
+    assert len(routes) == 31
     assert len(content) == 11
     assert _unguarded_admin_routes(app) == []
     for key, route in content.items():

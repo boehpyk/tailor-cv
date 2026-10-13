@@ -51,16 +51,7 @@ from tailorcraft.infrastructure.tasks import container
 from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 
 # Ports bound by a composition root other than the two checked here. Each entry names that root.
-_BOUND_ELSEWHERE: dict[str, str] = {
-    # TEMPORARY (slice 4.4, T4 skeleton): T13 binds `GuestSessionDirectoryQuery` in the api root
-    # and removes this exemption.
-    "GuestSessionDirectoryQuery": "unbound until slice 4.4 T13.",
-    "OrphanFileScannerPort": (
-        "bound only by the operator's `purge-guests --orphans` CLI "
-        "(`retention/purge_command.py::_reclaim_orphans`); the sweep is never on beat and never "
-        "behind a route (ADR-0018)."
-    ),
-}
+_BOUND_ELSEWHERE: dict[str, str] = {}
 
 
 def _domain_protocols() -> dict[str, type]:

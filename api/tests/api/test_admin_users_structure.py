@@ -47,6 +47,23 @@ _EXPECTED_ADMIN_ROUTES = {
     ),
     ("GET", "/api/admin/users/{user_id}/tailoring-runs/{tailoring_run_id}/exports"),
     ("GET", "/api/admin/users/{user_id}/export-jobs/{export_job_id}/file"),
+    ("GET", "/api/admin/guest-sessions"),
+    ("GET", "/api/admin/guest-sessions/{session_id}"),
+    ("DELETE", "/api/admin/guest-sessions/{session_id}"),
+    ("GET", "/api/admin/guest-sessions/{session_id}/base-cvs/{base_cv_id}"),
+    ("GET", "/api/admin/guest-sessions/{session_id}/job-postings/{job_posting_id}"),
+    ("GET", "/api/admin/guest-sessions/{session_id}/tailoring-runs/{tailoring_run_id}"),
+    (
+        "GET",
+        "/api/admin/guest-sessions/{session_id}/tailoring-runs/{tailoring_run_id}/documents/{kind}/download",
+    ),
+    ("GET", "/api/admin/guest-sessions/{session_id}/tailoring-runs/{tailoring_run_id}/exports"),
+    ("GET", "/api/admin/guest-sessions/{session_id}/export-jobs/{export_job_id}/file"),
+    ("GET", "/api/admin/storage"),
+    ("GET", "/api/admin/guest-purge"),
+    ("POST", "/api/admin/guest-purge"),
+    ("GET", "/api/admin/orphan-sweep"),
+    ("POST", "/api/admin/orphan-sweep"),
 }
 
 
@@ -62,7 +79,7 @@ def _admin_routes(app: FastAPI) -> dict[tuple[str, str], object]:
 # --- (a) --------------------------------------------------------------------------------------
 
 
-def test_ac28a_the_admin_surface_is_exactly_seventeen_routes_each_behind_require_admin(
+def test_ac28a_the_admin_surface_is_exactly_thirty_one_routes_each_behind_require_admin(
     app: FastAPI,
 ) -> None:
     routes = _admin_routes(app)
