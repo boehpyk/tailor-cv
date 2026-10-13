@@ -305,6 +305,23 @@ class PurgeReport:
 
 
 @dataclass(frozen=True, slots=True)
+class GuestSessionErasureReport:
+    """What erasing one guest session from `/admin` did to its files (slice 4.4, ADR-0035).
+
+    `PurgeReport`'s file pair and nothing else: the erase is the purge's per-session step
+    (`purge_one`) with one candidate, so the rows went or the use case raised, and what is left to
+    say is how many keys were unlinked and which kinds of refusal the store gave. No session id, no
+    key — the entry point already holds the id it asked about.
+    """
+
+    files_unlinked: int
+    file_unlink_failures: tuple[FileUnlinkFailure, ...]
+
+    def __post_init__(self) -> None:
+        pass  # SKELETON (4.4 T4): `files_unlinked >= 0` lands in T6.
+
+
+@dataclass(frozen=True, slots=True)
 class OrphanScanReport:
     """What one orphan sweep did, in counts — the same rules as `PurgeReport`: no defaults, exact
     field set, nothing that can carry a name.
@@ -350,6 +367,12 @@ class ScannedFile:
     ref: FileRef | None
     created_at: datetime
     is_partial: bool
+    # Slice 4.4 (ADR-0035): read off the `lstat` the walk already holds, for the storage overview.
+    # Required, no default — a default would let a second construction site report a confident zero.
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        pass  # SKELETON (4.4 T4): `size_bytes >= 0` lands in T6.
 
 
 # --------------------------------------------------------------------------------------------------

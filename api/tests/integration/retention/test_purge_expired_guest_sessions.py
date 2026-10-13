@@ -36,7 +36,7 @@ failures are caught, both per-item" (the skeleton's own docstring) means in prac
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
@@ -47,6 +47,7 @@ from tailorcraft.application.retention.purge_expired_guest_sessions import (
     PurgeExpiredGuestSessions,
 )
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import (
     ExpiringGuestSession,
     PurgeReport,
@@ -164,6 +165,12 @@ class _RecordingExpiredGuestDataPort:
         self.candidates = [c for c in self.candidates if c.session_id != session_id]
         self.log.entries.append(("delete_session", session_id))
         return present  # True iff this call removed the row; False if it was already gone
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        raise NotImplementedError
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        raise NotImplementedError
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         raise NotImplementedError(

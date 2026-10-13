@@ -291,7 +291,12 @@ def test_scanned_file_field_set_is_exactly_the_agreed_fields_with_no_defaults() 
     loggable. `ref` is `None` for exactly that case."""
     fields = dataclasses.fields(ScannedFile)
 
-    assert tuple(field.name for field in fields) == ("ref", "created_at", "is_partial")
+    assert tuple(field.name for field in fields) == (
+        "ref",
+        "created_at",
+        "is_partial",
+        "size_bytes",
+    )
     for field in fields:
         assert field.default is dataclasses.MISSING
         assert field.default_factory is dataclasses.MISSING

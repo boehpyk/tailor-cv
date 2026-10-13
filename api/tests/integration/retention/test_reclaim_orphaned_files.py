@@ -44,7 +44,7 @@ and records every `cutoff` it was called with so the floor arithmetic itself can
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -54,6 +54,7 @@ import pytest
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.errors import OrphanScanAborted
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import (
     ExpiringGuestSession,
     OrphanScanReport,
@@ -77,7 +78,7 @@ def _a_file_ref() -> FileRef:
 def _scanned_file(
     *, ref: FileRef | None, created_at: datetime, is_partial: bool = False
 ) -> ScannedFile:
-    return ScannedFile(ref=ref, created_at=created_at, is_partial=is_partial)
+    return ScannedFile(ref=ref, created_at=created_at, is_partial=is_partial, size_bytes=0)
 
 
 @dataclass
@@ -121,6 +122,12 @@ class _RecordingExpiredGuestDataPort:
 
     async def delete_session(self, session_id: GuestSessionId) -> bool:
         raise AssertionError("not used by this sweep")
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        raise NotImplementedError
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        raise NotImplementedError
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         asked = frozenset(keys)

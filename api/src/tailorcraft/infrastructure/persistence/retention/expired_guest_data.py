@@ -28,7 +28,7 @@ which is the trap one table over.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat, ExportJobId
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import ExpiringGuestSession
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
@@ -349,6 +350,12 @@ class SqlAlchemyExpiredGuestData:
             )
         )
         return frozenset(result.scalars().all())
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        raise NotImplementedError  # SKELETON (4.4 T4); T10 implements it.
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        raise NotImplementedError  # SKELETON (4.4 T4); T10 implements it.
 
 
 if TYPE_CHECKING:

@@ -21,12 +21,13 @@ presents as "the app is slow" and never as an error.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Protocol
 from uuid import UUID
 
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import (
     AccountCounts,
     DeletedHistoryEntry,
@@ -122,6 +123,18 @@ class ExpiredGuestDataPort(Protocol):
         `OrphanScanAborted` and unlinks nothing. Deleting a file because we could not ask whether it
         is referenced is the one irreversible mistake this tool can make (ADR-0018 decision 6).
         """
+        ...
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        """That one session with its file keys, collected as `list_expired` collects them, **with
+        no expiry predicate** — the admin's erase deletes a live session now (slice 4.4, ADR-0035).
+        `None` when there is no such session (never was, purged, or claimed)."""
+        ...
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        """For each key a row names, whose row it is — guest or user (ADR-0022 makes it exactly
+        one). Keys no row names are **absent** from the answer, so "unreferenced" is the caller's
+        difference, not a third kind. The storage overview's one lookup (slice 4.4, plan §0.5)."""
         ...
 
 
