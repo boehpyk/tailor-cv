@@ -122,10 +122,12 @@ class CommittingExpiredGuestDataAdapter:
         return await self._inner.which_are_referenced(keys)
 
     async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
-        raise NotImplementedError  # SKELETON (4.4 T4); T10 implements it.
+        """A read, so **no commit**."""
+        return await self._inner.session_with_files(session_id)
 
     async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
-        raise NotImplementedError  # SKELETON (4.4 T4); T10 implements it.
+        """A read, so **no commit**."""
+        return await self._inner.owners_of(keys)
 
 
 class CommittingAccountData:

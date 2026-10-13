@@ -61,6 +61,10 @@ _QUEUED_FORMATS: Final[tuple[ExportFormat, ...]] = tuple(
 )
 
 
+# `owners_of`'s keys per statement: the storage overview asks about every file on the volume.
+_OWNERS_CHUNK: Final = 1000
+
+
 class SqlAlchemyExpiredGuestData:
     """Everything retention asks the store of record, over one `AsyncSession` it never hands out.
 
@@ -352,10 +356,55 @@ class SqlAlchemyExpiredGuestData:
         return frozenset(result.scalars().all())
 
     async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
-        raise NotImplementedError  # SKELETON (4.4 T4); T10 implements it.
+        """That one session with its file keys, collected by `_files_by_session` exactly as
+        `list_expired` collects them (export keys **derived**, so a `rendering` job's bytes are
+        named too) — and **no expiry predicate**: the admin's erase deletes a live session (slice
+        4.4, ADR-0035). `None` when the row is gone. Selects `id` and `expires_at` only, never
+        `token_hash`."""
+        row = (
+            await self._session.execute(
+                select(guest_session_table.c.id, guest_session_table.c.expires_at).where(
+                    guest_session_table.c.id == session_id
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        files = await self._files_by_session([row.id])
+        return ExpiringGuestSession(
+            session_id=row.id, expires_at=row.expires_at, files=tuple(files[row.id])
+        )
 
     async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
-        raise NotImplementedError  # SKELETON (4.4 T4); T10 implements it.
+        """For each key a row names, whether that row is a guest's or a user's — `which_are_referenced`
+        with the owner attached, and the **same stored-`file_key` semantics**: a `rendering` job's
+        `NULL` key names nothing, so its bytes read as unreferenced ("any file whose row is
+        mid-write", the spec's glossary), exactly as the sweep sees them. Deriving export keys here,
+        as `list_expired` does, would make the overview and the sweep disagree about one file.
+
+        `guest_session_id IS NOT NULL` decides the kind; ADR-0022's `ck_*_exactly_one_owner` makes
+        the other column the user's. Chunks of `_OWNERS_CHUNK` keys per statement, so a volume of
+        any size never binds an unbounded parameter list (asyncpg's ceiling is 32 767)."""
+        unique: list[FileRef] = list(dict.fromkeys(keys))
+        owners: dict[FileRef, FileOwnerKind] = {}
+        for start in range(0, len(unique), _OWNERS_CHUNK):
+            chunk = unique[start : start + _OWNERS_CHUNK]
+            result = await self._session.execute(
+                union_all(
+                    select(
+                        base_cv_table.c.file_key.label("file_key"),
+                        base_cv_table.c.guest_session_id.is_not(None).label("is_guest"),
+                    ).where(base_cv_table.c.file_key.in_(chunk)),
+                    select(
+                        export_job_table.c.file_key,
+                        export_job_table.c.guest_session_id.is_not(None),
+                    ).where(export_job_table.c.file_key.in_(chunk)),
+                )
+            )
+            for row in result.all():
+                ref: FileRef = row.file_key
+                owners[ref] = FileOwnerKind.GUEST if row.is_guest else FileOwnerKind.USER
+        return owners
 
 
 if TYPE_CHECKING:
