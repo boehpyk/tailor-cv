@@ -78,3 +78,11 @@ file; an admin supporting them does not.
   outside retention — that is the explicit click's purpose.
 - **Watch:** a new path-built owner outside `admin_content.py` (the AST scan fails); a user-facing
   schema gaining `extracted_text`; a body rendered through `dangerouslySetInnerHTML`.
+
+## Note: 2026-10-13, from slice 4.4 (`admin-guests-and-storage`)
+
+Decision 4's "guests are 4.4's" is now answered with this ADR's own pattern: a guest session's data
+is read through the guest's unchanged use cases with `GuestOwner(<path session_id>)` (ADR-0035
+decision 3, ADR-0008 (l)), under `/api/admin/guest-sessions/{session_id}/…`. A guest CV's admin
+shape is `BaseCvResponse` plus `extracted_text`; guest reads write the same `admin.content_access`
+line with a guest target. Deletion stays the purge's step, not a content delete.

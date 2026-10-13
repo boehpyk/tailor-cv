@@ -204,3 +204,9 @@ erases the account; they are never guest data.**
 - **Stated where it happens.** The history-entry delete dialog says the card goes with the entry.
   The card holds a stage, an optional title of at most 120 characters typed by the user, and two
   timestamps; no notes, salary, contacts or dates.
+
+## Note: 2026-10-13, from slice 4.4 (`admin-guests-and-storage`)
+
+Guest data may now go **before** 24 hours, when an operator erases one session from `/admin`
+(ADR-0035), through the purge's own per-session step: rows committed, then files, as §2 says. The
+24-hour bound itself is unchanged — nothing keeps guest data longer.

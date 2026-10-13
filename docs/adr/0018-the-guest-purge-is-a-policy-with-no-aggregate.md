@@ -232,3 +232,30 @@ job**. Decisions 1–9 and amendment (a) stand.
 - **Constitution §4's `retention` row** says *"the guest 1-day purge on a timer"*; the identity token
   sweep is a second timer of the same kind, and the row's wording, which names what retention owns
   rather than listing its jobs, needs no change.
+
+## Amendment: 2026-10-13, from the plan of slice 4.4 (`admin-guests-and-storage`)
+
+Slice 4.4 lets the operator run the purge and the orphan sweep from `/admin`, and delete one guest
+session before it expires (ADR-0035). Decisions 1–9 and amendments (a) and (b) stand.
+
+**(c) The purge gains a third entry point, and its per-session step a second caller.**
+
+- **The step is lifted, not forked.** The per-candidate body of `PurgeExpiredGuestSessions` becomes
+  one function, behaviour-neutral (every existing test unedited). The batch keeps its own
+  `except Exception` around it; `EraseGuestSession` calls it for one session read by
+  `session_with_files` with no expiry predicate, and lets a refused `DELETE` escape. Amendment (a)'s
+  boolean governs both: files are unlinked only when this call's `DELETE` removed the session.
+- **The admin route is an entry point like the CLI and the task** (decision 8): it owns the lock,
+  the heartbeat and its status codes. A preview is a `GET` and touches neither. A run takes the same
+  lock with the same TTL (decision 7); **held → 409 `purge_in_progress`**, nothing done — the CLI's
+  exit 3 and the task's skip are unchanged; **unreachable → it runs** and says so (decision 6, fail
+  open); success writes the heartbeat. One request is one batch of at most 100.
+- **The sweep stays operator-run and lock-free**, now from the browser too: the default grace only,
+  failing closed (503, nothing unlinked) when the cross-check cannot run (decision 6). It is still not
+  on beat.
+- **The port and a value object widen.** `ExpiredGuestDataPort` gains `session_with_files` (one
+  session with its keys, no expiry predicate) and `owners_of` (whether a guest or a user row names
+  each key; the storage overview's one lookup). `ScannedFile` gains `size_bytes`, read off the
+  `lstat` the walk already holds.
+- **Decision 5's rehearsal can now be done from `/admin`.** Turning the production schedule on stays
+  a separate, deliberate owner step.
