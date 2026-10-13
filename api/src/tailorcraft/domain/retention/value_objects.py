@@ -318,7 +318,8 @@ class GuestSessionErasureReport:
     file_unlink_failures: tuple[FileUnlinkFailure, ...]
 
     def __post_init__(self) -> None:
-        pass  # SKELETON (4.4 T4): `files_unlinked >= 0` lands in T6.
+        if self.files_unlinked < 0:
+            raise InvariantViolated(f"files_unlinked must be >= 0 ({self.files_unlinked})")
 
 
 @dataclass(frozen=True, slots=True)
@@ -372,7 +373,8 @@ class ScannedFile:
     size_bytes: int
 
     def __post_init__(self) -> None:
-        pass  # SKELETON (4.4 T4): `size_bytes >= 0` lands in T6.
+        if self.size_bytes < 0:
+            raise InvariantViolated(f"size_bytes must be >= 0 ({self.size_bytes})")
 
 
 # --------------------------------------------------------------------------------------------------

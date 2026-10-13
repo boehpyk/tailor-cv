@@ -4,9 +4,6 @@ The overview is a walk plus one lookup, never a read of a file: the scanner repo
 its size, `ExpiredGuestDataPort.owners_of` says which keys a guest's row or a user's row names, and
 `SummarizeStorage` adds them up into five buckets. No key, path or filename leaves this shape —
 only counts — so the overview cannot leak what is on the volume (Constitution §8).
-
-**SKELETON step (T4).** Fields are real; `__post_init__` is a no-op and `StorageBucket.__add__`
-raises `NotImplementedError` until T6.
 """
 
 from __future__ import annotations
@@ -14,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+
+from tailorcraft.domain.shared.errors import InvariantViolated
 
 
 class FileOwnerKind(StrEnum):
@@ -26,16 +25,17 @@ class FileOwnerKind(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class StorageBucket:
-    """A number of files and their total size in bytes, both `>= 0` (T6). Buckets add."""
+    """A number of files and their total size in bytes, both `>= 0`. Buckets add."""
 
     files: int
     bytes: int
 
     def __post_init__(self) -> None:
-        pass  # SKELETON: validation lands in T6.
+        if self.files < 0 or self.bytes < 0:
+            raise InvariantViolated("a storage bucket's files and bytes must be >= 0")
 
     def __add__(self, other: StorageBucket) -> StorageBucket:
-        raise NotImplementedError
+        return StorageBucket(files=self.files + other.files, bytes=self.bytes + other.bytes)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,3 +53,7 @@ class StorageOverview:
     partial: StorageBucket
     unrecognized: StorageBucket
     scanned_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.scanned_at.utcoffset() is None:
+            raise InvariantViolated("scanned_at must be timezone-aware")
