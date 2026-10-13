@@ -71,7 +71,11 @@ from tailorcraft.domain.posting.errors import (
     TooManyJobPostings,
 )
 from tailorcraft.domain.posting.value_objects import FetchFailureReason
-from tailorcraft.domain.retention.errors import AccountNotFound, HistoryEntryInProgress
+from tailorcraft.domain.retention.errors import (
+    AccountNotFound,
+    HistoryEntryInProgress,
+    InvalidGuestSessionCursor,
+)
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -236,7 +240,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
                 "message": "That search is not valid. Use up to 254 characters of an email.",
             },
         )
-    if isinstance(exc, InvalidUserDirectoryCursor):
+    if isinstance(exc, InvalidUserDirectoryCursor | InvalidGuestSessionCursor):
         # History's code and sentence (H-26): one meaning for a refused page link everywhere.
         return HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,

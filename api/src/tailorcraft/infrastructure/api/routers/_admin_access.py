@@ -77,3 +77,73 @@ class AdminAccess:
         """Log the refusal (a 404 is `not_found`, anything else `refused`) and hand it back."""
         self.log("not_found" if http.status_code == status.HTTP_404_NOT_FOUND else "refused")
         return http
+
+
+EVENT_ADMIN_RETENTION_ACTION: Final = "admin.retention_action"
+
+RetentionActionName = Literal[
+    "guest_list",
+    "guest_overview",
+    "guest_erase",
+    "storage_overview",
+    "purge_preview",
+    "purge_run",
+    "sweep_preview",
+    "sweep_run",
+]
+
+
+@dataclass(slots=True)
+class RetentionAction:
+    """One `admin.retention_action` line per request (slice 4.4, AC-29): the actor, a closed action
+    word, a closed outcome, the guest session's id where there is one, and **counts only**.
+
+    `AdminAccess`'s sibling and its shape: a `SQLAlchemyError` that leaves the block unlogged (the
+    global 503) still writes its one `refused` line; the exception is never swallowed and its
+    message never logged; a second `log` is a no-op."""
+
+    actor: InitVar[User]
+    action: RetentionActionName
+    guest_session_id: UUID | None = None
+    _actor_id: str = field(init=False)
+    _logged: bool = field(default=False, init=False)
+
+    def __post_init__(self, actor: User) -> None:
+        # Read now, as `AdminAccess` does: a rollback expires the loaded `User`.
+        self._actor_id = str(actor.id.value)
+
+    def __enter__(self) -> RetentionAction:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if isinstance(exc, SQLAlchemyError):
+            self.log("refused")
+
+    def log(self, outcome: Literal["ok", "not_found", "refused", "failed"], **counts: int) -> None:
+        if self._logged:
+            return
+        self._logged = True
+        fields: dict[str, str | int] = {
+            "actor_id": self._actor_id,
+            "action": self.action,
+            "outcome": outcome,
+        }
+        if self.guest_session_id is not None:
+            fields["guest_session_id"] = str(self.guest_session_id)
+        log.info(EVENT_ADMIN_RETENTION_ACTION, **fields, **counts)
+
+    def refuse(self, http: HTTPException) -> HTTPException:
+        """Log the refusal — a 404 is `not_found`, a 5xx `failed`, anything else `refused` — and
+        hand it back."""
+        if http.status_code == status.HTTP_404_NOT_FOUND:
+            self.log("not_found")
+        elif http.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
+            self.log("failed")
+        else:
+            self.log("refused")
+        return http

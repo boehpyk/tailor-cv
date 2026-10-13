@@ -77,6 +77,9 @@ from tailorcraft.infrastructure.retention.data_access import (
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import PurgeLockHold, RedisPurgeLock
 from tailorcraft.infrastructure.retention.log_events import (
+    EVENT_ORPHANS_ABORTED,
+    EVENT_ORPHANS_COMPLETED,
+    EVENT_ORPHANS_FAILED,
     EVENT_PURGE_COMPLETED,
     EVENT_PURGE_FAILED,
     EVENT_PURGE_SKIPPED,
@@ -101,12 +104,11 @@ asserting a successful run passes against a run that never happened. The Celery 
 identical outcome as a quiet return, because a tick colliding with a long manual purge is normal
 operation; an operator standing at a terminal is owed the news."""
 
-# The orphan sweep's two lines. They are not in `log_events.py` with the purge's three, because the
-# sweep has exactly one entry point — this one, never beat (ADR-0018) — so there is no second
-# speller to keep in step.
-_EVENT_ORPHANS_COMPLETED: Final = "retention.orphan_scan_completed"
-_EVENT_ORPHANS_ABORTED: Final = "retention.orphan_scan_aborted"
-_EVENT_ORPHANS_FAILED: Final = "retention.orphan_scan_failed"
+# The orphan sweep's lines, spelled once in `log_events.py` since `/admin` became its second entry
+# point (slice 4.4).
+_EVENT_ORPHANS_COMPLETED: Final = EVENT_ORPHANS_COMPLETED
+_EVENT_ORPHANS_ABORTED: Final = EVENT_ORPHANS_ABORTED
+_EVENT_ORPHANS_FAILED: Final = EVENT_ORPHANS_FAILED
 
 _DEFAULT_BATCH_LIMIT: Final = 100
 """The unbounded run's batch size — the use case's own default, restated here because this module
