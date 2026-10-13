@@ -127,7 +127,15 @@ def test_ac30d_the_content_router_raises_no_429() -> None:
 
 # --- AC-31 ------------------------------------------------------------------------------------
 
-_ALLOWED_PATH_OWNER_MODULES = {"admin_content.py", "admin_users.py"}
+_USER_OWNER_NAMES = {"UserOwner", "UserId"}
+_GUEST_OWNER_NAMES = {"GuestOwner", "GuestSessionId"}  # slice 4.4, AC-27 (c)
+# Each admin module may build the owner it acts as, from a path parameter, and no other kind.
+_PATH_OWNER_NAMES = {
+    "admin_content.py": _USER_OWNER_NAMES,
+    "admin_users.py": _USER_OWNER_NAMES,
+    "admin_guests.py": _GUEST_OWNER_NAMES,
+}
+_ALLOWED_PATH_OWNER_MODULES = set(_PATH_OWNER_NAMES)
 
 
 def _path_parameter_names(tree: ast.Module) -> set[str]:
@@ -165,7 +173,9 @@ def _bare_names(node: ast.expr) -> set[str]:
     }
 
 
-def _path_built_owners(tree: ast.Module) -> list[tuple[int, str]]:
+def _path_built_owners(
+    tree: ast.Module, names: set[str] = _USER_OWNER_NAMES | _GUEST_OWNER_NAMES
+) -> list[tuple[int, str]]:
     """`UserOwner(...)` / `UserId(...)` built from a **path parameter** of one of the module's routes
     (a credential's id is read off an object, `user.id`, or arrives under a name no path declares)."""
     path_names = _path_parameter_names(tree)
@@ -175,7 +185,7 @@ def _path_built_owners(tree: ast.Module) -> list[tuple[int, str]]:
             for call in ast.walk(tree)
             if isinstance(call, ast.Call)
             and isinstance(call.func, ast.Name)
-            and call.func.id in {"UserOwner", "UserId"}
+            and call.func.id in names
             and any(_bare_names(a) & path_names for a in call.args)
         }
     )
@@ -185,8 +195,13 @@ def test_ac31_a_path_built_owner_appears_only_in_the_two_admin_routers() -> None
     offenders = {
         path.name: hits
         for path in sorted(_ROUTERS.glob("*.py"))
-        if path.name not in _ALLOWED_PATH_OWNER_MODULES
-        and (hits := _path_built_owners(ast.parse(path.read_text())))
+        if (
+            hits := _path_built_owners(
+                ast.parse(path.read_text()),
+                # Outside the allow-list nothing may be built; inside it, only the module's own kind.
+                (_USER_OWNER_NAMES | _GUEST_OWNER_NAMES) - _PATH_OWNER_NAMES.get(path.name, set()),
+            )
+        )
     }
     assert offenders == {}
 
@@ -194,6 +209,21 @@ def test_ac31_a_path_built_owner_appears_only_in_the_two_admin_routers() -> None
 def test_ac31_the_scan_finds_the_admin_content_routers_own_owner() -> None:
     """Positive control on the real tree: the allowed module is flagged by the very scan."""
     assert _path_built_owners(ast.parse(_CONTENT_ROUTER.read_text()))
+
+
+def test_ac27c_the_scan_finds_the_guest_routers_own_owner_and_only_that_kind() -> None:
+    """4.4 widening, positive control: `admin_guests.py` builds `GuestOwner` from its path, and
+    builds no user owner (which the scan would reject there)."""
+    tree = ast.parse((_ROUTERS / "admin_guests.py").read_text())
+    assert _path_built_owners(tree, _GUEST_OWNER_NAMES)
+    assert _path_built_owners(tree, _USER_OWNER_NAMES) == []
+
+
+def test_ac27c_a_guest_owner_from_a_path_is_caught_outside_admin_guests() -> None:
+    planted = (
+        "@router.get('/x/{sid}')\nasync def f(sid):\n    return GuestOwner(GuestSessionId(sid))\n"
+    )
+    assert _path_built_owners(ast.parse(planted)) == [(3, "GuestOwner"), (3, "GuestSessionId")]
 
 
 def test_ac31_a_planted_module_with_a_path_built_owner_is_caught_and_a_credential_one_is_not() -> (
