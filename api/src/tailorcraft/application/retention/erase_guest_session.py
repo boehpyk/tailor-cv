@@ -15,6 +15,8 @@ returned as type names in the report, and the route writes the lines.
 
 from __future__ import annotations
 
+from tailorcraft.application.retention.purge_expired_guest_sessions import purge_one
+from tailorcraft.domain.identity.errors import GuestSessionNotFound
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
 from tailorcraft.domain.retention.value_objects import GuestSessionErasureReport
@@ -32,4 +34,16 @@ class EraseGuestSession:
         self._files = files
 
     async def __call__(self, session_id: GuestSessionId) -> GuestSessionErasureReport:
-        raise NotImplementedError
+        candidate = await self._data.session_with_files(session_id)
+        if candidate is None:
+            raise GuestSessionNotFound("no guest session with that id")
+        # A `delete_session` raise escapes from here: one session, no next candidate.
+        outcome = await purge_one(self._data, self._files, candidate)
+        if not outcome.deleted:
+            # A claim, a purge or another erase removed the row first; `purge_one` unlinked
+            # nothing, because those keys may name a user's files now (ADR-0018 (a)).
+            raise GuestSessionNotFound("the guest session was removed before the erase")
+        return GuestSessionErasureReport(
+            files_unlinked=outcome.files_unlinked,
+            file_unlink_failures=outcome.file_unlink_failures,
+        )

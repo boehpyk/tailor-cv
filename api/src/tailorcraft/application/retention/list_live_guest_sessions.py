@@ -9,11 +9,13 @@ place. "Live" is judged at **one** instant, the clock's. Read-only; takes no loc
 from __future__ import annotations
 
 from tailorcraft.domain.retention.guest_sessions import (
+    PAGE_SIZE_MAX,
     GuestSessionCursor,
     GuestSessionDirectoryQuery,
     GuestSessionPage,
 )
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.errors import InvariantViolated
 
 
 class ListLiveGuestSessions:
@@ -25,4 +27,6 @@ class ListLiveGuestSessions:
         self._clock = clock
 
     async def __call__(self, after: GuestSessionCursor | None, limit: int) -> GuestSessionPage:
-        raise NotImplementedError
+        if not 1 <= limit <= PAGE_SIZE_MAX:
+            raise InvariantViolated(f"a directory page holds 1..{PAGE_SIZE_MAX} entries")
+        return await self._directory.page(as_of=self._clock.now(), after=after, limit=limit)

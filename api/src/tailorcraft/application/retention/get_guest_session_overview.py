@@ -7,6 +7,7 @@ from "expired" from "claimed", and need not. Read-only; takes no lock.
 
 from __future__ import annotations
 
+from tailorcraft.domain.identity.errors import GuestSessionNotFound
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.retention.guest_sessions import (
     GuestSessionDirectoryQuery,
@@ -24,4 +25,7 @@ class GetGuestSessionOverview:
         self._clock = clock
 
     async def __call__(self, session_id: GuestSessionId) -> GuestSessionSummary:
-        raise NotImplementedError
+        summary = await self._directory.get(session_id, as_of=self._clock.now())
+        if summary is None:
+            raise GuestSessionNotFound("no live guest session with that id")
+        return summary
