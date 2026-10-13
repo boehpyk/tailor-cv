@@ -51,11 +51,10 @@ from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import RedisPurgeLock
 from tailorcraft.infrastructure.retention.log_events import (
-    EVENT_FILE_UNLINK_FAILED,
     EVENT_PURGE_COMPLETED,
     EVENT_PURGE_FAILED,
     EVENT_PURGE_SKIPPED,
-    EVENT_SESSION_PURGE_FAILED,
+    log_purge_failures,
 )
 from tailorcraft.infrastructure.settings import get_settings
 from tailorcraft.infrastructure.tasks.app import (
@@ -82,8 +81,6 @@ log = structlog.get_logger(__name__)
 _EVENT_COMPLETED: Final = EVENT_PURGE_COMPLETED
 _EVENT_SKIPPED: Final = EVENT_PURGE_SKIPPED
 _EVENT_FAILED: Final = EVENT_PURGE_FAILED
-_EVENT_SESSION_FAILED: Final = EVENT_SESSION_PURGE_FAILED
-_EVENT_FILE_UNLINK_FAILED: Final = EVENT_FILE_UNLINK_FAILED
 
 
 # `celery` is untyped, so the same narrow ignore as the sweeps'. The signature is fully annotated,
@@ -185,15 +182,9 @@ async def _purge() -> None:
             #
             # Neither line can carry a message, an `exc_info`, a `FileRef` or a path — not by care
             # here but because `SessionPurgeFailure` and `FileUnlinkFailure` have no field to hold
-            # one. `error_type` is `type(exc).__name__` at its only construction site.
-            for session_failure in report.session_purge_failures:
-                log.warning(
-                    _EVENT_SESSION_FAILED,
-                    guest_session_id=str(session_failure.session_id.value),
-                    error_type=session_failure.error_type,
-                )
-            for file_failure in report.file_unlink_failures:
-                log.warning(_EVENT_FILE_UNLINK_FAILED, error_type=file_failure.error_type)
+            # one. `error_type` is `type(exc).__name__` at its only construction site. Both lines
+            # are spelled once, in `log_events.log_purge_failures`, for every runner of the purge.
+            log_purge_failures(report)
 
             # AC-21's eight fields plus `sessions_skipped` (ADR-0018 amendment (a), slice 2.4: the
             # sessions whose `DELETE` found the row already gone — claimed or taken by another run —

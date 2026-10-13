@@ -183,7 +183,23 @@ class SqlAlchemyExpiredGuestData:
         if not candidates:
             return ()
 
-        session_ids: list[GuestSessionId] = [row.id for row in candidates]
+        files_by_session = await self._files_by_session([row.id for row in candidates])
+
+        return tuple(
+            ExpiringGuestSession(
+                session_id=row.id,
+                expires_at=row.expires_at,
+                files=tuple(files_by_session[row.id]),
+            )
+            for row in candidates
+        )
+
+    async def _files_by_session(
+        self, session_ids: Sequence[GuestSessionId]
+    ) -> dict[GuestSessionId, list[FileRef]]:
+        """Every file key belonging to `session_ids`, bucketed by session: `list_expired`'s
+        statement 2 (its docstring argues the two asymmetric halves). Every id gets a list, empty
+        for a session with no files."""
         files_by_session: dict[GuestSessionId, list[FileRef]] = {sid: [] for sid in session_ids}
 
         # The first half's labels name the compound's result columns, and its column *types* are the
@@ -235,15 +251,7 @@ class SqlAlchemyExpiredGuestData:
             job_id: ExportJobId = row.export_job_id
             job_format: ExportFormat = row.export_format
             files_by_session[owner].append(FileRef.for_export(job_id, job_format))
-
-        return tuple(
-            ExpiringGuestSession(
-                session_id=row.id,
-                expires_at=row.expires_at,
-                files=tuple(files_by_session[row.id]),
-            )
-            for row in candidates
-        )
+        return files_by_session
 
     async def delete_session(self, session_id: GuestSessionId) -> bool:
         """`DELETE FROM identity_guest_session WHERE id = :id`, inside a SAVEPOINT; `True` iff **this**

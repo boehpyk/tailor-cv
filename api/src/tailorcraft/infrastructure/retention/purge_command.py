@@ -77,11 +77,10 @@ from tailorcraft.infrastructure.retention.data_access import (
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import PurgeLockHold, RedisPurgeLock
 from tailorcraft.infrastructure.retention.log_events import (
-    EVENT_FILE_UNLINK_FAILED,
     EVENT_PURGE_COMPLETED,
     EVENT_PURGE_FAILED,
     EVENT_PURGE_SKIPPED,
-    EVENT_SESSION_PURGE_FAILED,
+    log_purge_failures,
 )
 from tailorcraft.infrastructure.settings import Settings, get_settings
 
@@ -361,7 +360,7 @@ async def _purge_batches(
             report = await purge()
             totals.add(report)
             _print_batch_line(totals.batches, report)
-            _log_batch_failures(report)
+            log_purge_failures(report)
             if limit is not None or report.sessions_deleted + report.sessions_skipped == 0:
                 break
             await hold.refresh()
@@ -373,35 +372,6 @@ async def _purge_batches(
         overdue_after = await backlog.count()
         await session.commit()
         return _PurgeRun(totals=totals, overdue_before=overdue_before, overdue_after=overdue_after)
-
-
-def _log_batch_failures(report: PurgeReport) -> None:
-    """R-3 and R-4: one line per refused session and per refused unlink, for **this batch**.
-
-    **Per batch, and that is the constraint that shapes this function.** `_Totals` sums counts
-    across batches and deliberately does not carry the two tuples: it is a running sum, and growing
-    it into a second `PurgeReport` would give the command two types that mean the same thing and can
-    disagree. So the detail is emitted where it exists — inside the loop, against the report that
-    produced it — and the summary line at the end goes on quoting totals.
-
-    It sits beside `_print_batch_line` rather than inside it because the two answer different
-    audiences: that one writes a progress line to an operator's terminal, this one writes structured
-    records that outlive the terminal and that the Celery task emits identically (`tasks/retention.py`).
-    The task's asymmetries are its own; this is not one of them.
-
-    `warning`, matching `EVENT_PURGE_FAILED` — a refused `DELETE` that repeats every run is the
-    silence this slice exists to break, and the run's own outcome line is an `info` that cannot say
-    so. Neither line can carry a message, an `exc_info`, a `FileRef` or a path, because neither
-    failure type has a field to hold one.
-    """
-    for session_failure in report.session_purge_failures:
-        log.warning(
-            EVENT_SESSION_PURGE_FAILED,
-            guest_session_id=str(session_failure.session_id.value),
-            error_type=session_failure.error_type,
-        )
-    for file_failure in report.file_unlink_failures:
-        log.warning(EVENT_FILE_UNLINK_FAILED, error_type=file_failure.error_type)
 
 
 @asynccontextmanager

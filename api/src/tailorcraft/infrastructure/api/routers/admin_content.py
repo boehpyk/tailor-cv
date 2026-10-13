@@ -21,8 +21,6 @@ global map's 401 would sign the administrator out. Every response a handler buil
 
 from __future__ import annotations
 
-from dataclasses import InitVar, dataclass, field
-from types import TracebackType
 from typing import Annotated, Any, Final, Literal
 from uuid import UUID
 
@@ -33,7 +31,6 @@ from sqlalchemy.exc import SQLAlchemyError
 from tailorcraft.domain.export.value_objects import ExportJobId
 from tailorcraft.domain.identity.errors import UserNotFound
 from tailorcraft.domain.identity.ownership import UserOwner
-from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
@@ -61,6 +58,7 @@ from tailorcraft.infrastructure.api.deps import (
 from tailorcraft.infrastructure.api.routers import _export_handlers as export_handlers
 from tailorcraft.infrastructure.api.routers import _posting_handlers as posting_handlers
 from tailorcraft.infrastructure.api.routers import _tailoring_handlers as tailoring_handlers
+from tailorcraft.infrastructure.api.routers._admin_access import AdminAccess
 from tailorcraft.infrastructure.api.routers._admin_responses import (
     FIREWALL,
     NO_STORE,
@@ -100,7 +98,6 @@ from tailorcraft.infrastructure.api.schemas.tailoring import (
 
 log = structlog.get_logger(__name__)
 
-EVENT_ADMIN_CONTENT_ACCESS: Final = "admin.content_access"
 _ADMIN_PREFIX: Final = "/api/admin/users"
 
 router = APIRouter(
@@ -168,7 +165,7 @@ async def list_user_base_cvs(
 ) -> SavedBaseCvListResponse:
     """The account's saved CVs, newest first — the owner's list shape, **no text** (AC-3)."""
     set_no_store(response)
-    with _Access(actor, user_id, "base_cv", "list") as access:
+    with AdminAccess(actor, user_id, "base_cv", "list", target_key="target_user_id") as access:
         try:
             summaries = await list_saved(UserId(user_id))
         except DomainError as exc:
@@ -198,7 +195,9 @@ async def get_user_base_cv(
 ) -> AdminSavedBaseCvResponse:
     """One of the account's saved CVs **with its extracted text** (`null` while not extracted)."""
     set_no_store(response)
-    with _Access(actor, user_id, "base_cv", "read", base_cv_id) as access:
+    with AdminAccess(
+        actor, user_id, "base_cv", "read", base_cv_id, target_key="target_user_id"
+    ) as access:
         try:
             cv = await get_base_cv(BaseCvId(base_cv_id), _owner(user_id))
         except DomainError as exc:
@@ -230,7 +229,9 @@ async def delete_user_base_cv(
     `DeleteSavedBaseCv`, bound to `CommittingBaseCvRemoval`). A failed unlink is still a 200 with
     `file_unlinked: false`; the bytes are an orphan for the sweep."""
     set_no_store(response)
-    with _Access(actor, user_id, "base_cv", "delete", base_cv_id) as access:
+    with AdminAccess(
+        actor, user_id, "base_cv", "delete", base_cv_id, target_key="target_user_id"
+    ) as access:
         target = UserId(user_id)
         try:
             result = await delete_saved(BaseCvId(base_cv_id), target)
@@ -266,7 +267,7 @@ async def list_user_job_postings(
     """The account's most recent postings, newest first, as summaries (a preview, never `text`);
     `limit` 1…20, default 20 (AC-5)."""
     set_no_store(response)
-    with _Access(actor, user_id, "job_posting", "list") as access:
+    with AdminAccess(actor, user_id, "job_posting", "list", target_key="target_user_id") as access:
         try:
             postings = await list_recent(UserId(user_id), limit)
         except DomainError as exc:
@@ -295,7 +296,9 @@ async def get_user_job_posting(
 ) -> JobPostingResponse:
     """One of the account's postings in full, with its text; `expires_at: null`."""
     set_no_store(response)
-    with _Access(actor, user_id, "job_posting", "read", job_posting_id) as access:
+    with AdminAccess(
+        actor, user_id, "job_posting", "read", job_posting_id, target_key="target_user_id"
+    ) as access:
         try:
             posting = await get_job_posting(JobPostingId(job_posting_id), _owner(user_id))
         except DomainError as exc:
@@ -339,7 +342,7 @@ async def list_user_tailoring_history(
 ) -> HistoryPageResponse:
     """One keyset page of the account's history, newest first — the user's own shape (AC-6)."""
     set_no_store(response)
-    with _Access(actor, user_id, "history", "list") as access:
+    with AdminAccess(actor, user_id, "history", "list", target_key="target_user_id") as access:
         try:
             after = decode_cursor(cursor) if cursor is not None else None
             page = await list_history(UserId(user_id), after, HistoryPageSize(limit))
@@ -369,7 +372,9 @@ async def get_user_tailoring_run(
     db: SessionDep,
 ) -> TailoringRunResponse:
     """One of the account's runs in full with its **current** documents; `expires_at: null`."""
-    with _Access(actor, user_id, "tailoring_run", "read", tailoring_run_id) as access:
+    with AdminAccess(
+        actor, user_id, "tailoring_run", "read", tailoring_run_id, target_key="target_user_id"
+    ) as access:
         try:
             wire = await tailoring_handlers.get_tailoring_run(
                 tailoring_run_id=TailoringRunId(tailoring_run_id),
@@ -424,7 +429,9 @@ async def download_user_document_inline(
 ) -> Response:
     """A current document of one of the account's runs as Markdown or plain text, rendered in the
     request. Returns its own `Response` (an injected one's headers would be dropped)."""
-    with _Access(actor, user_id, "tailoring_run", "download", tailoring_run_id) as access:
+    with AdminAccess(
+        actor, user_id, "tailoring_run", "download", tailoring_run_id, target_key="target_user_id"
+    ) as access:
         try:
             wire = await export_handlers.download_document_inline(
                 run_id=TailoringRunId(tailoring_run_id),
@@ -457,7 +464,7 @@ async def list_user_exports_for_run(
 ) -> ExportJobListResponse:
     """Every export job of one of the account's runs, newest first; `file_url` points under
     `/api/admin/users/{user_id}/export-jobs/` when ready."""
-    with _Access(actor, user_id, "export_job", "list") as access:
+    with AdminAccess(actor, user_id, "export_job", "list", target_key="target_user_id") as access:
         try:
             wire = await export_handlers.list_exports_for_run(
                 run_id=TailoringRunId(tailoring_run_id),
@@ -504,7 +511,9 @@ async def delete_user_history_entry(
     `CommittingHistoryEntryData`): rows committed, then files. A failed commit is 503 with nothing
     deleted; a failed unlink is counted in `unlink_failures`."""
     set_no_store(response)
-    with _Access(actor, user_id, "history", "delete", tailoring_run_id) as access:
+    with AdminAccess(
+        actor, user_id, "history", "delete", tailoring_run_id, target_key="target_user_id"
+    ) as access:
         target = UserId(user_id)
         run_id = TailoringRunId(tailoring_run_id)
         try:
@@ -581,7 +590,9 @@ async def download_user_export_file(
 ) -> Response:
     """The rendered file of one of the account's `ready` export jobs, any layout or run version.
     Returns its own `Response`, which carries `no-store`."""
-    with _Access(actor, user_id, "export_job", "download", export_job_id) as access:
+    with AdminAccess(
+        actor, user_id, "export_job", "download", export_job_id, target_key="target_user_id"
+    ) as access:
         try:
             wire = await export_handlers.download_export_file(
                 export_job_id=ExportJobId(export_job_id),
@@ -611,58 +622,3 @@ def _translate(exc: DomainError) -> HTTPException:
     if isinstance(exc, UserNotFound | AccountNotFound):
         return user_not_found()
     return refusal(exc)
-
-
-@dataclass(slots=True)
-class _Access:
-    """One `admin.content_access` line per request (§0.7): two ids, the item's id (absent on a
-    list) and three closed words — never a body, a filename, a label, a title or an email.
-
-    Used as `with _Access(...) as access:` around a handler's body, so a `SQLAlchemyError` that
-    leaves it unlogged (the global 503) still writes its one `refused` line (AC-20). The exception
-    is never swallowed and its message never logged; a second `log` is a no-op."""
-
-    actor: InitVar[User]
-    target: UUID
-    kind: Literal["base_cv", "job_posting", "tailoring_run", "export_job", "history"]
-    action: Literal["list", "read", "download", "delete"]
-    item_id: UUID | None = None
-    _actor_id: str = field(init=False)
-    _logged: bool = field(default=False, init=False)
-
-    def __post_init__(self, actor: User) -> None:
-        # Read now: a handler's rollback expires the loaded `User`, and a lazy load on an
-        # `AsyncSession` is `MissingGreenlet`.
-        self._actor_id = str(actor.id.value)
-
-    def __enter__(self) -> _Access:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        if isinstance(exc, SQLAlchemyError):
-            self.log("refused")
-
-    def log(self, outcome: Literal["ok", "not_found", "refused"]) -> None:
-        if self._logged:
-            return
-        self._logged = True
-        fields: dict[str, str] = {
-            "actor_id": self._actor_id,
-            "target_user_id": str(self.target),
-            "kind": self.kind,
-            "action": self.action,
-            "outcome": outcome,
-        }
-        if self.item_id is not None:
-            fields["item_id"] = str(self.item_id)
-        log.info(EVENT_ADMIN_CONTENT_ACCESS, **fields)
-
-    def refuse(self, http: HTTPException) -> HTTPException:
-        """Log the refusal (a 404 is `not_found`, anything else `refused`) and hand it back."""
-        self.log("not_found" if http.status_code == status.HTTP_404_NOT_FOUND else "refused")
-        return http
