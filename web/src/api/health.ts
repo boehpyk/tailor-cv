@@ -40,6 +40,13 @@ export interface GuestPurgeStatus {
   readonly detail: string | null;
 }
 
+/** The identity token sweep: `overdue` is `null` (with a `detail`, never rendered) when uncounted. */
+export interface IdentityTokenSweepStatus {
+  readonly scheduled: boolean;
+  readonly overdue: number | null;
+  readonly detail: string | null;
+}
+
 export interface Readiness {
   readonly ready: boolean;
   readonly dependencies: Record<string, DependencyStatus>;
@@ -61,6 +68,8 @@ export interface Readiness {
    */
   readonly jobs?: {
     readonly guest_purge?: GuestPurgeStatus;
+    /** Slice 2.5's sweep (ADR-0019 (a)): a backlog fact, no heartbeat. Optional for the same reason. */
+    readonly identity_token_sweep?: IdentityTokenSweepStatus;
   };
 }
 

@@ -4,9 +4,18 @@ import { HISTORY_PAGE_SIZE } from './history';
 import type { Role } from '@/features/auth/types';
 import type { ExportJobListResponse, InlineExportFormat } from '@/features/export/types';
 import type { HistoryPage } from '@/features/history/types';
-import type { JobPosting, JobPostingListResponse } from '@/features/posting/types';
+import type { BaseCv } from '@/features/intake/types';
+import type {
+  JobPosting,
+  JobPostingListResponse,
+  JobPostingSummary,
+} from '@/features/posting/types';
 import type { SavedBaseCv, SavedBaseCvList } from '@/features/savedCvs/types';
-import type { TailoredDocumentKind, TailoringRun } from '@/features/tailoring/types';
+import type {
+  TailoredDocumentKind,
+  TailoringRun,
+  TailoringRunSummary,
+} from '@/features/tailoring/types';
 
 /**
  * The admin probe — `GET /api/admin/access` (slice 4.1, technical plan §4). Transport only.
@@ -317,5 +326,148 @@ export function deleteUserHistoryEntry(
   return request<AdminHistoryEntryErasure>(contentPath(userId, 'tailoring-runs', runId), {
     method: 'DELETE',
     auth: 'required',
+  });
+}
+
+// --- Guest sessions (slice 4.4, plan §4, ADR-0035) ------------------------------------------------
+//
+// Live guest sessions under `/api/admin/guest-sessions`, behind the same firewall. A gone session
+// is 404 `guest_session_not_found` — translated by the server, never the global map's 401, so it
+// cannot trip the admin's refresh-on-401. The read pages reuse 4.3's functions with a guest subject.
+
+const GUEST_SESSIONS_PATH = '/api/admin/guest-sessions';
+
+/** One live session and what it owns — counts only. Instants ISO-8601 with an offset. */
+export interface AdminGuestSessionSummary {
+  readonly id: string;
+  readonly created_at: string;
+  readonly expires_at: string;
+  readonly base_cvs: number;
+  readonly job_postings: number;
+  readonly tailoring_runs: number;
+  readonly export_jobs: number;
+}
+
+/** One page, latest `expires_at` first; `next_cursor` is opaque, `null` on the last page. */
+export interface GuestSessionPage {
+  readonly items: readonly AdminGuestSessionSummary[];
+  readonly next_cursor: string | null;
+}
+
+/** The session and its own list items, in the guest's own list shapes. */
+export interface AdminGuestSessionDetail {
+  readonly session: AdminGuestSessionSummary;
+  readonly base_cvs: readonly BaseCv[];
+  readonly job_postings: readonly JobPostingSummary[];
+  readonly tailoring_runs: readonly TailoringRunSummary[];
+}
+
+/** What an erase unlinked; `unlink_failures > 0` leaves orphans for the sweep. */
+export interface GuestSessionErasure {
+  readonly files_unlinked: number;
+  readonly unlink_failures: number;
+}
+
+/** One page of live sessions; `cursor` is `null` for the first. 422 `invalid_cursor`. */
+export function listGuestSessions(
+  cursor: string | null,
+  signal?: AbortSignal,
+): Promise<GuestSessionPage> {
+  const path =
+    cursor === null
+      ? GUEST_SESSIONS_PATH
+      : `${GUEST_SESSIONS_PATH}?${new URLSearchParams({ cursor }).toString()}`;
+  return read(path, signal);
+}
+
+/** One session and its content lists. 404 `guest_session_not_found`. */
+export function getGuestSession(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<AdminGuestSessionDetail> {
+  return read(subjectPath({ kind: 'guest', sessionId }), signal);
+}
+
+/** Erase a session ahead of the purge: rows committed, then files. 404 `guest_session_not_found`. */
+export function eraseGuestSession(sessionId: string): Promise<GuestSessionErasure> {
+  return request<GuestSessionErasure>(subjectPath({ kind: 'guest', sessionId }), {
+    method: 'DELETE',
+    auth: 'required',
+  });
+}
+
+// --- Storage and retention runs (slice 4.4, plan §4) ----------------------------------------------
+
+export interface StorageBucket {
+  readonly files: number;
+  readonly bytes: number;
+}
+
+/** The uploads volume split five ways. No name, key or path. 503 `storage_unavailable`. */
+export interface AdminStorage {
+  readonly scanned_at: string;
+  readonly guest: StorageBucket;
+  readonly user: StorageBucket;
+  readonly unreferenced: StorageBucket;
+  readonly partial: StorageBucket;
+  readonly unrecognized: StorageBucket;
+}
+
+/**
+ * One purge batch. `overdue` is the backlog now (preview) or after the batch (run); `lock` is
+ * `null` on a preview. A held lock is never a 200: it is 409 `purge_in_progress`.
+ */
+export interface PurgeReport {
+  readonly examined: number;
+  readonly sessions_deleted: number;
+  readonly sessions_skipped: number;
+  readonly sessions_failed: number;
+  readonly files_unlinked: number;
+  readonly files_failed: number;
+  readonly overdue: number;
+  readonly dry_run: boolean;
+  readonly lock: 'acquired' | 'unavailable' | null;
+}
+
+/** The orphan sweep's counts. 503 `orphan_check_unavailable` / `storage_unavailable`. */
+export interface SweepReport {
+  readonly scanned: number;
+  readonly referenced: number;
+  readonly too_young: number;
+  readonly unrecognized: number;
+  readonly reclaimed: number;
+  readonly failed: number;
+  readonly dry_run: boolean;
+}
+
+export function getStorage(signal?: AbortSignal): Promise<AdminStorage> {
+  return read('/api/admin/storage', signal);
+}
+
+/** What one batch (server default: 100 sessions) would delete; nothing is deleted, no lock. */
+export function previewPurge(signal?: AbortSignal): Promise<PurgeReport> {
+  return read('/api/admin/guest-purge', signal);
+}
+
+/** One batch. 409 `purge_in_progress` (nothing deleted) · 503 `purge_failed`. */
+export function runPurge(): Promise<PurgeReport> {
+  return request<PurgeReport>('/api/admin/guest-purge', {
+    method: 'POST',
+    auth: 'required',
+    body: {},
+  });
+}
+
+/** What the sweep would reclaim; nothing is unlinked. */
+export function previewSweep(signal?: AbortSignal): Promise<SweepReport> {
+  return read('/api/admin/orphan-sweep', signal);
+}
+
+/** Reclaim every orphan past the age floor (no limit). */
+export function runSweep(): Promise<SweepReport> {
+  return request<SweepReport>('/api/admin/orphan-sweep', {
+    method: 'POST',
+    auth: 'required',
+    body: {},
   });
 }

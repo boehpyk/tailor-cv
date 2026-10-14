@@ -8,14 +8,19 @@ import { isClientError } from './useUserDirectory';
 import type { AdminUserDetail } from '@/api/admin';
 import type { UseQueryResult } from '@tanstack/react-query';
 
+/** Every admin key's root, under the actor's account root, so a sign-out drops it all (AC-38). */
+export function adminKey(actorId: string): readonly string[] {
+  return [...accountKeyRoot(actorId), 'admin'];
+}
+
 /** One account's overview, under the actor's account root (AC-38). */
 export function adminUserKey(actorId: string, userId: string): readonly string[] {
-  return [...accountKeyRoot(actorId), 'admin', 'user', userId];
+  return [...adminKey(actorId), 'user', userId];
 }
 
 /** One guest session's overview and content, under the actor's account root (slice 4.4, AC-40). */
 export function adminGuestKey(actorId: string, sessionId: string): readonly string[] {
-  return [...accountKeyRoot(actorId), 'admin', 'guest', sessionId];
+  return [...adminKey(actorId), 'guest', sessionId];
 }
 
 /**
