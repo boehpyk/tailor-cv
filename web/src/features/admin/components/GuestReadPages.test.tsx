@@ -91,6 +91,8 @@ describe('a guest session’s run page — AC-35', () => {
     expectLiteral(container, await screen.findByText(MARKUP));
     expect(screen.getByText('Cover <b>letter</b>')).toBeVisible();
     expect(container.querySelector('b')).toBeNull();
+    // The delete button (user subjects) waits for the posting query: assert absence only after it.
+    expect(await screen.findByRole('link', { name: 'Senior Platform Engineer' })).toBeVisible();
     expect(screen.queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
 
     const user = userEvent.setup();
