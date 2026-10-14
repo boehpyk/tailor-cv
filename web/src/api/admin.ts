@@ -171,8 +171,27 @@ export interface AdminHistoryEntryErasure {
   readonly unlink_failures: number;
 }
 
+/**
+ * Whose content an admin read is about (slice 4.4, plan §5): an account or a guest session. It
+ * decides the API prefix only; the server authorizes the item against it.
+ */
+export type AdminSubject =
+  | { readonly kind: 'user'; readonly userId: string }
+  | { readonly kind: 'guest'; readonly sessionId: string };
+
+/** `/api/admin/users/{id}` or `/api/admin/guest-sessions/{id}`. */
+export function subjectPath(subject: AdminSubject): string {
+  return subject.kind === 'user'
+    ? userPath(subject.userId)
+    : `/api/admin/guest-sessions/${encodeURIComponent(subject.sessionId)}`;
+}
+
+function subjectContentPath(subject: AdminSubject, ...segments: readonly string[]): string {
+  return [subjectPath(subject), ...segments.map(encodeURIComponent)].join('/');
+}
+
 function contentPath(userId: string, ...segments: readonly string[]): string {
-  return [userPath(userId), ...segments.map(encodeURIComponent)].join('/');
+  return subjectContentPath({ kind: 'user', userId }, ...segments);
 }
 
 function read<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -186,11 +205,11 @@ export function listUserCvs(userId: string, signal?: AbortSignal): Promise<Saved
 
 /** One saved CV with its text. 404 `base_cv_not_found`. */
 export function getUserCv(
-  userId: string,
+  subject: AdminSubject,
   baseCvId: string,
   signal?: AbortSignal,
 ): Promise<AdminSavedBaseCv> {
-  return read(contentPath(userId, 'base-cvs', baseCvId), signal);
+  return read(subjectContentPath(subject, 'base-cvs', baseCvId), signal);
 }
 
 /** Delete a saved CV: the row, then its file. Irreversible. 404 `base_cv_not_found`. */
@@ -211,11 +230,11 @@ export function listUserPostings(
 
 /** One job posting in full. 404 `job_posting_not_found`. */
 export function getUserPosting(
-  userId: string,
+  subject: AdminSubject,
   postingId: string,
   signal?: AbortSignal,
 ): Promise<JobPosting> {
-  return read(contentPath(userId, 'job-postings', postingId), signal);
+  return read(subjectContentPath(subject, 'job-postings', postingId), signal);
 }
 
 /** One page of the account's history; `cursor` is opaque, `null` for the first page. */
@@ -231,20 +250,20 @@ export function fetchUserHistoryPage(
 
 /** One run with both documents. 404 `tailoring_run_not_found`. */
 export function getUserRun(
-  userId: string,
+  subject: AdminSubject,
   runId: string,
   signal?: AbortSignal,
 ): Promise<TailoringRun> {
-  return read(contentPath(userId, 'tailoring-runs', runId), signal);
+  return read(subjectContentPath(subject, 'tailoring-runs', runId), signal);
 }
 
 /** Every export job of one run, newest first. 404 `tailoring_run_not_found`. */
 export function listUserRunExports(
-  userId: string,
+  subject: AdminSubject,
   runId: string,
   signal?: AbortSignal,
 ): Promise<ExportJobListResponse> {
-  return read(contentPath(userId, 'tailoring-runs', runId, 'exports'), signal);
+  return read(subjectContentPath(subject, 'tailoring-runs', runId, 'exports'), signal);
 }
 
 /**
@@ -252,13 +271,20 @@ export function listUserRunExports(
  * `tailoring_run_not_exportable`; 500 `render_failed`; 503 `render_timed_out`.
  */
 export function downloadUserDocument(
-  userId: string,
+  subject: AdminSubject,
   runId: string,
   document: TailoredDocumentKind,
   format: InlineExportFormat,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  const path = contentPath(userId, 'tailoring-runs', runId, 'documents', document, 'download');
+  const path = subjectContentPath(
+    subject,
+    'tailoring-runs',
+    runId,
+    'documents',
+    document,
+    'download',
+  );
   return requestBlob(`${path}?format=${format}`, {
     auth: 'required',
     ...(signal ? { signal } : {}),
@@ -270,11 +296,11 @@ export function downloadUserDocument(
  * `export_file_gone`; 503 `storage_unavailable`.
  */
 export function downloadUserExportFile(
-  userId: string,
+  subject: AdminSubject,
   exportJobId: string,
   signal?: AbortSignal,
 ): Promise<Blob> {
-  return requestBlob(contentPath(userId, 'export-jobs', exportJobId, 'file'), {
+  return requestBlob(subjectContentPath(subject, 'export-jobs', exportJobId, 'file'), {
     auth: 'required',
     ...(signal ? { signal } : {}),
   });

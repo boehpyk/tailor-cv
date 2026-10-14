@@ -10,10 +10,10 @@ import {
   listUserRunExports,
 } from '@/api/admin';
 
-import { adminUserKey } from './useAdminUser';
+import { subjectKey } from './useAdminSubject';
 import { isClientError } from './useUserDirectory';
 
-import type { AdminSavedBaseCv } from '@/api/admin';
+import type { AdminSavedBaseCv, AdminSubject } from '@/api/admin';
 import type { ExportJobListResponse } from '@/features/export/types';
 import type { HistoryPage } from '@/features/history/types';
 import type { JobPosting, JobPostingListResponse } from '@/features/posting/types';
@@ -36,7 +36,16 @@ export function adminContentKey(
   userId: string,
   ...parts: readonly string[]
 ): readonly string[] {
-  return [...adminUserKey(actorId, userId), 'content', ...parts];
+  return subjectContentKey(actorId, { kind: 'user', userId }, ...parts);
+}
+
+/** The same shapes under any subject's root; a user's is `adminContentKey`, byte for byte. */
+export function subjectContentKey(
+  actorId: string,
+  subject: AdminSubject,
+  ...parts: readonly string[]
+): readonly string[] {
+  return [...subjectKey(actorId, subject), 'content', ...parts];
 }
 
 /** A 4xx (gone, firewall, malformed) is an answer; a 503 or a network failure is retried once. */
@@ -79,24 +88,24 @@ export function useAdminHistory(actorId: string, userId: string): AdminHistoryQu
 
 export function useAdminCv(
   actorId: string,
-  userId: string,
+  subject: AdminSubject,
   baseCvId: string,
 ): UseQueryResult<AdminSavedBaseCv> {
   return useQuery({
-    queryKey: adminContentKey(actorId, userId, 'cv', baseCvId),
-    queryFn: ({ signal }) => getUserCv(userId, baseCvId, signal),
+    queryKey: subjectContentKey(actorId, subject, 'cv', baseCvId),
+    queryFn: ({ signal }) => getUserCv(subject, baseCvId, signal),
     retry: retryOnce,
   });
 }
 
 export function useAdminPosting(
   actorId: string,
-  userId: string,
+  subject: AdminSubject,
   postingId: string,
 ): UseQueryResult<JobPosting> {
   return useQuery({
-    queryKey: adminContentKey(actorId, userId, 'posting', postingId),
-    queryFn: ({ signal }) => getUserPosting(userId, postingId, signal),
+    queryKey: subjectContentKey(actorId, subject, 'posting', postingId),
+    queryFn: ({ signal }) => getUserPosting(subject, postingId, signal),
     retry: retryOnce,
   });
 }
@@ -104,24 +113,24 @@ export function useAdminPosting(
 /** One run. No polling (OQ-12): a queued or running run is refreshed by the admin's click. */
 export function useAdminRun(
   actorId: string,
-  userId: string,
+  subject: AdminSubject,
   runId: string,
 ): UseQueryResult<TailoringRun> {
   return useQuery({
-    queryKey: adminContentKey(actorId, userId, 'run', runId),
-    queryFn: ({ signal }) => getUserRun(userId, runId, signal),
+    queryKey: subjectContentKey(actorId, subject, 'run', runId),
+    queryFn: ({ signal }) => getUserRun(subject, runId, signal),
     retry: retryOnce,
   });
 }
 
 export function useAdminRunExports(
   actorId: string,
-  userId: string,
+  subject: AdminSubject,
   runId: string,
 ): UseQueryResult<ExportJobListResponse> {
   return useQuery({
-    queryKey: adminContentKey(actorId, userId, 'run', runId, 'exports'),
-    queryFn: ({ signal }) => listUserRunExports(userId, runId, signal),
+    queryKey: subjectContentKey(actorId, subject, 'run', runId, 'exports'),
+    queryFn: ({ signal }) => listUserRunExports(subject, runId, signal),
     retry: retryOnce,
   });
 }

@@ -17,11 +17,12 @@ import { useAdminDownload } from '../hooks/useAdminDownload';
 
 import { ContentSection, EMPTY } from './ContentSection';
 
+import type { AdminSubject } from '@/api/admin';
 import type { ExportJob } from '@/features/export/types';
 
 export interface RunExportsProps {
   readonly actorId: string;
-  readonly userId: string;
+  readonly subject: AdminSubject;
   readonly runId: string;
 }
 
@@ -38,9 +39,9 @@ function describe(job: ExportJob): string {
  * (`current` is the server's answer, never re-derived). A refused download is shown on its row;
  * the button is usable again.
  */
-export function RunExports({ actorId, userId, runId }: RunExportsProps): React.JSX.Element {
-  const exports = useAdminRunExports(actorId, userId, runId);
-  const download = useAdminDownload(userId);
+export function RunExports({ actorId, subject, runId }: RunExportsProps): React.JSX.Element {
+  const exports = useAdminRunExports(actorId, subject, runId);
+  const download = useAdminDownload(subject);
   const items = exports.data?.items ?? [];
   const failedJobId =
     download.isError && download.variables.source === 'export' ? download.variables.job.id : null;

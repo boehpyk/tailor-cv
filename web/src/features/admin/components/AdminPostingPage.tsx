@@ -11,6 +11,7 @@ import {
   UNTITLED_POSTING,
 } from '../adminCopy';
 import { useAdminPosting } from '../hooks/useAccountContent';
+import { useAdminSubject } from '../hooks/useAdminSubject';
 
 import { BodyText } from './BodyText';
 import { BackToAccount, ContentPage } from './ContentPage';
@@ -30,19 +31,20 @@ const VALUE = 'font-medium text-slate-900 break-all';
  */
 export function AdminPostingPage({ actorId }: AdminPostingPageProps): React.JSX.Element {
   // Always set under this route; '' only satisfies the type.
-  const { userId = '', postingId = '' } = useParams();
-  const posting = useAdminPosting(actorId, userId, postingId);
+  const { postingId = '' } = useParams();
+  const subject = useAdminSubject();
+  const posting = useAdminPosting(actorId, subject, postingId);
   return (
     <ContentPage
       query={posting}
-      userId={userId}
+      subject={subject}
       goneCode="job_posting_not_found"
       goneText={POSTING_GONE}
       errorText={POSTING_ERROR}
     >
       {(data) => (
         <>
-          <BackToAccount userId={userId} />
+          <BackToAccount subject={subject} />
           <h1 className="text-lg font-semibold break-words text-slate-900">
             {data.title ?? UNTITLED_POSTING}
           </h1>

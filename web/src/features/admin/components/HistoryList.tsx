@@ -53,7 +53,10 @@ export function HistoryList({ actorId, userId }: HistoryListProps): React.JSX.El
         <ul className="space-y-2 text-sm">
           {entries.map((entry) => (
             <li key={entry.id} className="flex flex-wrap gap-x-3">
-              <Link to={contentLink(userId, 'runs', entry.id)} className={ROW_LINK}>
+              <Link
+                to={contentLink({ kind: 'user', userId }, 'runs', entry.id)}
+                className={ROW_LINK}
+              >
                 {entryName(entry)}
               </Link>
               <span className="text-slate-600">{historyStatusCopy(entry)}</span>

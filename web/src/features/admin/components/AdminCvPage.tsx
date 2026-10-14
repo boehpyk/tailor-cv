@@ -15,6 +15,7 @@ import {
   cvExtractionFailed,
 } from '../adminCopy';
 import { useAdminCv } from '../hooks/useAccountContent';
+import { useAdminSubject } from '../hooks/useAdminSubject';
 
 import { BodyText } from './BodyText';
 import { BackToAccount, ContentPage } from './ContentPage';
@@ -35,12 +36,13 @@ const VALUE = 'font-medium text-slate-900 break-all';
  */
 export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
   // Always set under this route; '' only satisfies the type.
-  const { userId = '', baseCvId = '' } = useParams();
-  const cv = useAdminCv(actorId, userId, baseCvId);
+  const { baseCvId = '' } = useParams();
+  const subject = useAdminSubject();
+  const cv = useAdminCv(actorId, subject, baseCvId);
   return (
     <ContentPage
       query={cv}
-      userId={userId}
+      subject={subject}
       goneCode="base_cv_not_found"
       goneText={CV_GONE}
       errorText={CV_ERROR}
@@ -49,7 +51,7 @@ export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
         const name = data.label ?? data.original_filename;
         return (
           <>
-            <BackToAccount userId={userId} />
+            <BackToAccount subject={subject} />
             <h1 className="text-lg font-semibold break-words text-slate-900">{name}</h1>
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
               <dt className={TERM}>{CV_FIELD_FILENAME}</dt>
@@ -69,11 +71,14 @@ export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
               </h2>
               <CvText cv={data} />
             </section>
-            <DeleteContentButton
-              actorId={actorId}
-              userId={userId}
-              target={{ kind: 'cv', id: data.id, name }}
-            />
+            {/* A guest's CV goes with its session, never alone (slice 4.4). */}
+            {subject.kind === 'user' && (
+              <DeleteContentButton
+                actorId={actorId}
+                userId={subject.userId}
+                target={{ kind: 'cv', id: data.id, name }}
+              />
+            )}
           </>
         );
       }}

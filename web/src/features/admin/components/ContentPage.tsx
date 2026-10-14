@@ -10,12 +10,14 @@ import {
   USER_GONE,
   USER_LOADING,
 } from '../adminCopy';
+import { subjectLink } from '../contentView';
 
+import type { AdminSubject } from '@/api/admin';
 import type { UseQueryResult } from '@tanstack/react-query';
 
 export interface ContentPageProps<T> {
   readonly query: UseQueryResult<T>;
-  readonly userId: string;
+  readonly subject: AdminSubject;
   /** The item kind's own 404 code, and what the page says for it. */
   readonly goneCode: string;
   readonly goneText: string;
@@ -34,7 +36,7 @@ const LINK = 'font-medium text-slate-900 underline underline-offset-2';
  */
 export function ContentPage<T>({
   query,
-  userId,
+  subject,
   goneCode,
   goneText,
   errorText,
@@ -56,7 +58,7 @@ export function ContentPage<T>({
       return (
         <section className="mb-10 space-y-3">
           <p className="text-slate-700">{goneText}</p>
-          <BackToAccount userId={userId} />
+          <BackToAccount subject={subject} />
         </section>
       );
     }
@@ -100,10 +102,10 @@ export function ErrorWithRetry({
   );
 }
 
-/** A link back to the account a read page belongs to. */
-export function BackToAccount({ userId }: { readonly userId: string }): React.JSX.Element {
+/** A link back to the subject a read page belongs to. */
+export function BackToAccount({ subject }: { readonly subject: AdminSubject }): React.JSX.Element {
   return (
-    <Link to={`/admin/users/${encodeURIComponent(userId)}`} className={LINK}>
+    <Link to={subjectLink(subject)} className={LINK}>
       {BACK_TO_ACCOUNT}
     </Link>
   );

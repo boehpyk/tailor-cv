@@ -13,6 +13,11 @@ export function adminUserKey(actorId: string, userId: string): readonly string[]
   return [...accountKeyRoot(actorId), 'admin', 'user', userId];
 }
 
+/** One guest session's overview and content, under the actor's account root (slice 4.4, AC-40). */
+export function adminGuestKey(actorId: string, sessionId: string): readonly string[] {
+  return [...accountKeyRoot(actorId), 'admin', 'guest', sessionId];
+}
+
 /**
  * One account and its counts (AC-33). A 404 `user_not_found` (gone) and the firewall's code-less
  * 404 (demoted) are answers, not retried; a 503 or a network failure is retried once.
