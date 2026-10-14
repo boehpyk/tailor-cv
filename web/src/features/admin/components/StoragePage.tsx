@@ -1,3 +1,5 @@
+import { STORAGE_HEADING } from '../adminCopy';
+
 import { JobHealth } from './JobHealth';
 import { PurgePanel } from './PurgePanel';
 import { StorageTable } from './StorageTable';
@@ -10,16 +12,18 @@ export interface StoragePageProps {
 
 /**
  * `/admin/storage` (AC-36 … AC-39): the storage table, the purge and sweep panels and job health.
- *
- * SKELETON (T20): composes the stubs; T22 adds the heading and sections.
+ * Each part has its own query and its own states, so one failing leaves the others usable.
  */
 export function StoragePage({ actorId }: StoragePageProps): React.JSX.Element {
   return (
-    <div data-admin-stub="storage">
+    <section aria-labelledby="admin-storage-heading" className="mb-10 min-w-0 space-y-8">
+      <h1 id="admin-storage-heading" className="text-lg font-semibold text-slate-900">
+        {STORAGE_HEADING}
+      </h1>
       <StorageTable actorId={actorId} />
       <PurgePanel actorId={actorId} />
       <SweepPanel actorId={actorId} />
       <JobHealth />
-    </div>
+    </section>
   );
 }

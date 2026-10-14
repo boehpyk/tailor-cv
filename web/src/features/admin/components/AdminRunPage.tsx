@@ -22,6 +22,7 @@ import {
 import { contentLink } from '../contentView';
 import { useAdminCvs, useAdminPosting, useAdminRun } from '../hooks/useAccountContent';
 import { useAdminSubject } from '../hooks/useAdminSubject';
+import { useGuestSession } from '../hooks/useGuestSessions';
 
 import { BodyText } from './BodyText';
 import { BackToAccount, ContentPage } from './ContentPage';
@@ -116,8 +117,10 @@ function RunView({
         </dd>
         <dt className={TERM}>{RUN_FIELD_CV}</dt>
         <dd className={VALUE}>
-          {subject.kind === 'user' && (
+          {subject.kind === 'user' ? (
             <UserRunCv actorId={actorId} userId={subject.userId} baseCvId={run.base_cv_id} />
+          ) : (
+            <GuestRunCv actorId={actorId} sessionId={subject.sessionId} baseCvId={run.base_cv_id} />
           )}
         </dd>
         <dt className={TERM}>{RUN_FIELD_REQUESTED}</dt>
@@ -178,6 +181,23 @@ function UserRunCv({
   if (cvs.data !== undefined)
     return <>{cv === undefined ? CV_DELETED_NOTE : (cv.label ?? cv.original_filename)}</>;
   return cvs.error !== null ? <>{RUN_CV_UNAVAILABLE}</> : null;
+}
+
+/** A guest run's CV filename, from the session's overview (its own key, usually cached). */
+function GuestRunCv({
+  actorId,
+  sessionId,
+  baseCvId,
+}: {
+  readonly actorId: string;
+  readonly sessionId: string;
+  readonly baseCvId: string;
+}): React.JSX.Element | null {
+  const session = useGuestSession(actorId, sessionId);
+  const cv = session.data?.base_cvs.find((item) => item.id === baseCvId);
+  if (session.data !== undefined)
+    return <>{cv === undefined ? CV_DELETED_NOTE : cv.original_filename}</>;
+  return session.error !== null ? <>{RUN_CV_UNAVAILABLE}</> : null;
 }
 
 interface DocumentSectionProps {

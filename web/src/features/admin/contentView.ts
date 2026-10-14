@@ -24,3 +24,11 @@ export function contentLink(
 export function downloadFailureCopy(error: Error): string {
   return error instanceof ApiError && error.status === 410 ? DOWNLOAD_FILE_GONE : DOWNLOAD_FAILED;
 }
+
+/**
+ * A count in a table cell or `<dd>`, padded with spaces: adjacent cells' text otherwise runs
+ * together (`…10:00 AM3456`), for copy-paste and for anything reading the row as one string.
+ */
+export function padded(count: number): string {
+  return ` ${String(count)} `;
+}
