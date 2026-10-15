@@ -6580,9 +6580,11 @@ page.
 
 ## What's next
 
-- **`/verify`**: the fifteen mutations, every RED with its recorded failure, no GREEN editing a test,
-  and T2's exception-routing footnote.
-- **Release**: no migration or setting. Then, from `cv.samolit.com` in the browser: the storage
-  read, both previews, and the purge rehearsal. Flipping `GUEST_PURGE_ENABLED` stays a separate,
-  deliberate step.
-- **Phase 4's gate**: two weeks of operating from `/admin` alone, starting at this release.
+- **Done:** `/verify` passed in round 1, and the footnote above turned out to be its one real
+  finding. The slice was released on 2026-10-15 as PR #34. The production purge was then rehearsed
+  from the browser. The preview showed two overdue sessions, a run with a limit took one, and a full
+  run took the other: `overdue` went 2 → 0 with `last_outcome: ok`, and nobody opened SSH. Before
+  this slice, that whole check was a terminal session.
+- **Still separate:** flipping `GUEST_PURGE_ENABLED` on in production. That is a deliberate step for
+  the owner.
+- **Phase 4's gate:** two weeks of operating from `/admin` alone, which runs to 2026-10-29.

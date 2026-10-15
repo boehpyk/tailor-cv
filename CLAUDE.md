@@ -18,9 +18,9 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: eighteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.3, and the `__Host-tc_guest`
-> security slice); slice 4.4 `admin-guests-and-storage` is verified (2026-10-15, reviewer PASS round 1), not yet
-> merged; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
+> **Status: nineteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, and the `__Host-tc_guest`
+> security slice); slice 4.4 `admin-guests-and-storage` was released 2026-10-15, and Phase 4's
+> two-week gate clock runs to 2026-10-29; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
 > merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
 > `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
@@ -33,7 +33,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (`16fbe47`) and released the same day** (deploy run 38161380305). **Slice 4.3 `admin-content`
 > was verified 2026-10-12 (reviewer PASS round 1; MINORs 1/3/4 fixed, PASS round 2), merged as PR
 > #32 (`5e9bce2`) and released the same day** (deploy run 38297123697). **Slice 4.4
-> `admin-guests-and-storage` was verified 2026-10-15 (reviewer PASS round 1; MINOR 1 fixed red-first, `49e2aef` → `5cfd637`); not merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> `admin-guests-and-storage` was verified 2026-10-15 (reviewer PASS round 1; MINOR 1 fixed red-first, `49e2aef` → `5cfd637`), merged as PR #34 (`97a213e`) and released the same day** (deploy run 38704657392; the production purge was rehearsed from `/admin/storage`, backlog 2 → 0). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -674,8 +674,10 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   CVs…*, …), because *Loading…* collided with the page's own; AC-29, the one listed harness edit
 >   to an existing test is `ce358e4` (4.2's `UserPage` fake serves the three lists).
 >
-> - **4.4 `admin-guests-and-storage`** (**verified 2026-10-15, reviewer PASS round 1 — not
->   merged, not released**) — an admin sees **live guest sessions** and their data, erases one
+> - **4.4 `admin-guests-and-storage`** (**verified 2026-10-15, reviewer PASS round 1;
+>   merged as PR #34 `97a213e` and released the same day**, deploy run 38704657392; T31's purge
+>   rehearsal ran from the browser, `overdue` 2 → 0, `last_outcome: ok`; `GUEST_PURGE_ENABLED`
+>   still `false` in production) — an admin sees **live guest sessions** and their data, erases one
 >   before its 24 hours are up, and runs the purge and the orphan sweep **from `/admin/storage`**
 >   instead of over SSH (**ADR-0035**; ADR-0008 amendment (l), ADR-0018 amendment (c); notes on
 >   ADR-0006, 0019, 0024, 0034). **Fourteen routes** behind a router-level `require_admin`,
