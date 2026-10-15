@@ -41,7 +41,8 @@ function failureCopy(error: Error): string {
 /**
  * The guest purge (AC-37): the job's facts from `useReadiness` (none while it loads or fails —
  * `JobHealth` words that), *Preview purge*, and *Run purge* behind a dialog naming the preview's
- * numbers or the batch bound. A 409 is never worded as success.
+ * numbers or the batch bound. A 409 is never worded as success. A dry run reports
+ * `sessions_deleted: 0`; its would-delete count is `examined` (AC-16).
  */
 export function PurgePanel({ actorId }: PurgePanelProps): React.JSX.Element {
   const job = useReadiness().data?.jobs?.guest_purge;
@@ -63,11 +64,9 @@ export function PurgePanel({ actorId }: PurgePanelProps): React.JSX.Element {
         dialogMessage={runPurgeDialogMessage(
           preview === undefined
             ? null
-            : { sessions: preview.sessions_deleted, files: preview.files_unlinked },
+            : { sessions: preview.examined, files: preview.files_unlinked },
         )}
-        previewSentence={(report) =>
-          purgePreviewSentence(report.sessions_deleted, report.files_unlinked)
-        }
+        previewSentence={(report) => purgePreviewSentence(report.examined, report.files_unlinked)}
         reportSentence={purgeReportSentence}
         failureCopy={failureCopy}
       />
