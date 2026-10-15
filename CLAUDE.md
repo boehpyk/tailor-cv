@@ -19,8 +19,8 @@ mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · Re
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
 > **Status: eighteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.3, and the `__Host-tc_guest`
-> security slice); slice 4.4 `admin-guests-and-storage` is implemented (2026-10-15), `/verify`
-> next; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
+> security slice); slice 4.4 `admin-guests-and-storage` is verified (2026-10-15, reviewer PASS round 1), not yet
+> merged; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
 > merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
 > `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
@@ -33,7 +33,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > (`16fbe47`) and released the same day** (deploy run 38161380305). **Slice 4.3 `admin-content`
 > was verified 2026-10-12 (reviewer PASS round 1; MINORs 1/3/4 fixed, PASS round 2), merged as PR
 > #32 (`5e9bce2`) and released the same day** (deploy run 38297123697). **Slice 4.4
-> `admin-guests-and-storage` was implemented 2026-10-15 (T1–T28 done); `/verify` next, not merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> `admin-guests-and-storage` was verified 2026-10-15 (reviewer PASS round 1; MINOR 1 fixed red-first, `49e2aef` → `5cfd637`); not merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -674,7 +674,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   CVs…*, …), because *Loading…* collided with the page's own; AC-29, the one listed harness edit
 >   to an existing test is `ce358e4` (4.2's `UserPage` fake serves the three lists).
 >
-> - **4.4 `admin-guests-and-storage`** (**implemented 2026-10-15, T1–T28 done; `/verify` next — not
+> - **4.4 `admin-guests-and-storage`** (**verified 2026-10-15, reviewer PASS round 1 — not
 >   merged, not released**) — an admin sees **live guest sessions** and their data, erases one
 >   before its 24 hours are up, and runs the purge and the orphan sweep **from `/admin/storage`**
 >   instead of over SSH (**ADR-0035**; ADR-0008 amendment (l), ADR-0018 amendment (c); notes on
@@ -743,9 +743,12 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   red-first (`cf65a91`), then the panel (`d3ea89b`); (b) every run's result appeared **~2.2 s after
 >   a 32 ms response**, because `onSettled` returned its invalidations, so the mutation stayed
 >   pending until `/health/ready` (2 s, 1.6's `probe_celery`) refetched — now fired, not awaited
->   (`4c7df0b`), guarded by `885fa1c` (reverting: 2 red). **Carried to `/verify`:** T2's lift moves a
->   non-`FileStoreUnavailable` raise from `files.delete` into the batch's catch instead of out of the
->   run (unreachable through `LocalFileStore`'s floor). **Firefox not exercised.**
+>   (`4c7df0b`), guarded by `885fa1c` (reverting: 2 red). **`/verify`'s MINOR 1:** T2's lift had put an
+>   untranslated `files.delete` raise inside the batch's per-session catch. That raise is reachable:
+>   `_resolve_contained`'s `RuntimeError` fires on a symlinked shard. The catch recorded a deleted
+>   session as failed and skipped its remaining files. The `try` now wraps only `delete_session`, so the
+>   raise escapes the run as it did before (`49e2aef` RED → `5cfd637`). **A broad catch justified by
+>   one `await` records the wrong fact once it covers two.** **Firefox not exercised.**
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**

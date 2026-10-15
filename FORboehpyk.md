@@ -6424,6 +6424,18 @@ ending the run. Today that can't happen, because the real file store already tur
 into `FileStoreUnavailable`. It's written down and carried to `/verify` anyway. "Behaviour-neutral"
 is a claim, and a claim with an exception should say so.
 
+`/verify` showed the footnote was wrong, and the honesty of writing it down paid for itself. The
+reviewer read the file store rather than the comment and found the case: if a shard directory is a
+symlink pointing out of the volume, `_resolve_contained` raises a plain `RuntimeError`, which the
+file store does not translate. In that case the batch's catch was telling a lie. The session's row was
+already deleted and committed, but the report counted the session as *failed*, skipped its remaining
+files, and the CLI exited 0. Before the lift, the same fault ended the run with exit 1. The fix
+(owner's choice) puts the old shape back. The batch's `try` wraps **only** `delete_session`, the
+unlinks run outside it, and `purge_one` stays as the erase's two-step body. A RED test went first
+(`DID NOT RAISE _UnlinkBug`) and the fix edited no test. The lesson is a general one about broad
+catches: an `except Exception` is justified by the one `await` it was written for, and once it
+covers a second step it starts recording the wrong fact about whichever step actually failed.
+
 ## An entry point owns its refusal codes
 
 The purge now has **three** front doors: beat's hourly timer, the CLI, and the admin's *Run purge*
