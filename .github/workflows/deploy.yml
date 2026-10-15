@@ -157,7 +157,12 @@ jobs:
             # header (AC-53, one-time tokens ride the URL) present in the loaded configuration.
             docker compose exec -T nginx cat /etc/nginx/conf.d/default.conf | cmp - docker/nginx/default.conf \
               || { echo "::error::nginx is serving a config that differs from the shipped one"; exit 1; }
-            docker compose exec -T nginx nginx -T 2>/dev/null | grep -q 'Referrer-Policy' \
+            # Captured, not piped into `grep -q`: under pipefail, grep exiting on its first match
+            # can SIGPIPE the still-writing exec and fail the release on a correct config (run
+            # 38710525932). stderr is kept so a real `nginx -T` failure says why.
+            loaded="$(docker compose exec -T nginx nginx -T 2>&1)" \
+              || { echo "::error::nginx -T failed"; echo "$loaded"; exit 1; }
+            grep -q 'Referrer-Policy' <<<"$loaded" \
               || { echo "::error::loaded nginx config has no Referrer-Policy"; exit 1; }
 
             # Right image is half of it: a worker that consumes the wrong queues is green on

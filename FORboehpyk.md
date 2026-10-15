@@ -6588,3 +6588,25 @@ page.
 - **Still separate:** flipping `GUEST_PURGE_ENABLED` on in production. That is a deliberate step for
   the owner.
 - **Phase 4's gate:** two weeks of operating from `/admin` alone, which runs to 2026-10-29.
+
+# Interlude — the smoke detector that went off on a clean kitchen
+
+The release after 4.4 changed nothing but docs, and it failed: *loaded nginx config has no
+Referrer-Policy*. The header was there. `curl -I https://cv.samolit.com/` showed it, the config file
+hadn't changed since 4.2, and eight earlier releases had passed the same check.
+
+The check was `nginx -T 2>/dev/null | grep -q 'Referrer-Policy'`, in a script running
+`set -o pipefail`. `grep -q` is impatient on purpose: it leaves at the first match. If the program
+writing into the pipe is still talking at that moment, its next write hits a closed pipe, it dies
+of `SIGPIPE`, and `pipefail` reports *that* as the pipeline's result. So the check could fail
+**because it found what it was looking for.** It's a race, which is why it passed eight times
+first. And `2>/dev/null` threw away nginx's own explanation, so a real failure would have looked
+exactly the same.
+
+The fix is to read everything first and then search it: `loaded="$(nginx -T 2>&1)"`, then
+`grep -q … <<<"$loaded"`, and print `$loaded` if `nginx -T` itself failed. The queue check a few
+lines below already worked this way, which is probably why it never flaked.
+
+**Lesson:** under `pipefail`, never pipe into something that exits early (`grep -q`, `head`). And a
+guard that can fail on a healthy system teaches people to ignore it. That is worse than having no
+guard, because the next real failure gets waved through as "the flaky one again".

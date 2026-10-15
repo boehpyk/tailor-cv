@@ -1633,6 +1633,11 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   shipped file and greps `nginx -T` for `Referrer-Policy`, under `set -euo pipefail`. Confirm what
   the running process serves, not what was shipped. (Rejected: mounting a directory — `dev.conf`
   shares `docker/nginx/`, and it would also need a reload.)
+- **Under `pipefail`, never pipe into a reader that exits early** (`grep -q`, `head`). It closes the
+  pipe on its first match, the writer dies of `SIGPIPE`, and the pipeline fails because it *found*
+  the text. That happened to the release after 4.4 (run 38710525932): *no Referrer-Policy* on a
+  config that had one. Capture first (`out="$(cmd 2>&1)"`), then `grep -q … <<<"$out"`, and print
+  `$out` when `cmd` fails. Don't send its stderr to `/dev/null`.
 
 - **`env_file:` outranks the image's `ENV`, so the root `.env` decides `APP_ENV` on a real box.**
   `.env.example` therefore defaults to `APP_ENV=production` (the safe value) and
