@@ -155,3 +155,10 @@ a time) would.
   history's (`routers/_keyset_cursor.py`), not copied.
 - **The search is a case-insensitive literal substring** (`strpos`, never `LIKE`): `%`, `_` and `\`
   match themselves, and there is no pattern syntax to escape. A trigram index is a later decision.
+
+## Note: 2026-10-13, from slice 4.4 (`admin-guests-and-storage`)
+
+The live guest-session directory is a query port of this shape (`GuestSessionDirectoryQuery` in
+`domain/retention`, ADR-0035 decision 4): keyset on `(expires_at, id)`, latest first, over the
+existing `expires_at` index; live sessions only; four counts by correlated subqueries; `token_hash`
+never selected. The cursor codec is the shared one.

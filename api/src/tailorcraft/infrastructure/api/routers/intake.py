@@ -81,7 +81,7 @@ _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
 # ---------------------------------------------------------------------------------------------
 
 
-def _to_response(cv: BaseCv, expires_at: datetime, settings: Settings) -> BaseCvResponse:
+def to_response(cv: BaseCv, expires_at: datetime, settings: Settings) -> BaseCvResponse:
     """Build the wire shape from a saved `BaseCv` plus the *session's* `expires_at` — the session,
     not the row, owns the 24-hour promise (technical-plan.md's API contract)."""
     return BaseCvResponse(
@@ -204,7 +204,7 @@ async def upload_base_cv(
     # guaranteed to match exactly what was persisted, rather than a second, hand-assembled copy of
     # the same facts this function already computed locally.
     saved_cv = await cvs.get(result.base_cv_id)
-    wire = _to_response(saved_cv, session.expires_at, settings)
+    wire = to_response(saved_cv, session.expires_at, settings)
 
     # Commit HERE, not in `get_session`'s teardown — which FastAPI 0.141 runs after the response is
     # sent, so only an in-handler commit can still become F-15's 503. See `commit_or_503`.
@@ -234,7 +234,7 @@ async def list_base_cvs(
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 
-    return BaseCvListResponse(items=[_to_response(cv, session.expires_at, settings) for cv in cvs])
+    return BaseCvListResponse(items=[to_response(cv, session.expires_at, settings) for cv in cvs])
 
 
 @router.get(
@@ -266,4 +266,4 @@ async def get_base_cv(
     except DomainError as exc:
         raise domain_error_to_http_exception(exc) from exc
 
-    return _to_response(cv, session.expires_at, settings)
+    return to_response(cv, session.expires_at, settings)

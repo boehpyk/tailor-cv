@@ -45,7 +45,10 @@ export function PostingList({ actorId, userId }: PostingListProps): React.JSX.El
           <ul className="space-y-2 text-sm">
             {items.map((p) => (
               <li key={p.id} className="flex flex-wrap gap-x-3">
-                <Link to={contentLink(userId, 'postings', p.id)} className={ROW_LINK}>
+                <Link
+                  to={contentLink({ kind: 'user', userId }, 'postings', p.id)}
+                  className={ROW_LINK}
+                >
                   {p.title ?? UNTITLED_POSTING}
                 </Link>
                 <span className="text-slate-600">

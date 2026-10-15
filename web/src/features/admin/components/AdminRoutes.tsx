@@ -3,8 +3,12 @@ import { useRoutes } from 'react-router';
 import { NotFoundPage } from '@/features/tailoring/components/NotFoundPage';
 
 import { AdminCvPage } from './AdminCvPage';
+import { AdminNav } from './AdminNav';
 import { AdminPostingPage } from './AdminPostingPage';
 import { AdminRunPage } from './AdminRunPage';
+import { GuestListPage } from './GuestListPage';
+import { GuestSessionPage } from './GuestSessionPage';
+import { StoragePage } from './StoragePage';
 import { UserListPage } from './UserListPage';
 import { UserPage } from './UserPage';
 
@@ -16,19 +20,35 @@ export interface AdminRoutesProps {
 /**
  * `/admin/*`'s descendant routes, **inside the lazy chunk** (AC-39): the list at the index, one
  * account at `users/:userId`, its content's three read pages under it (slice 4.3, AC-32), and
- * the app's `NotFoundPage` for anything else under `/admin`.
+ * the app's `NotFoundPage` for anything else under `/admin`. Slice 4.4 adds the guest list, one
+ * session, its three read pages (4.3's, subject-aware) and `storage`, below `AdminNav` (AC-31).
  *
  * `useRoutes` with route objects, not `<Routes>` JSX: react-router lives in the main chunk, and
  * `<Routes>` pulls its `createRoutesFromChildren` in with it — measured +0.69 kB gzip on the main
  * chunk (AC-40's budget is 0.5) for the same three routes.
  */
-export function AdminRoutes({ actorId }: AdminRoutesProps): React.JSX.Element | null {
-  return useRoutes([
+export function AdminRoutes({ actorId }: AdminRoutesProps): React.JSX.Element {
+  const routes = useRoutes([
     { index: true, element: <UserListPage actorId={actorId} /> },
     { path: 'users/:userId', element: <UserPage actorId={actorId} /> },
     { path: 'users/:userId/cvs/:baseCvId', element: <AdminCvPage actorId={actorId} /> },
     { path: 'users/:userId/runs/:runId', element: <AdminRunPage actorId={actorId} /> },
     { path: 'users/:userId/postings/:postingId', element: <AdminPostingPage actorId={actorId} /> },
+    { path: 'guests', element: <GuestListPage actorId={actorId} /> },
+    { path: 'guests/:sessionId', element: <GuestSessionPage actorId={actorId} /> },
+    { path: 'guests/:sessionId/cvs/:baseCvId', element: <AdminCvPage actorId={actorId} /> },
+    { path: 'guests/:sessionId/runs/:runId', element: <AdminRunPage actorId={actorId} /> },
+    {
+      path: 'guests/:sessionId/postings/:postingId',
+      element: <AdminPostingPage actorId={actorId} />,
+    },
+    { path: 'storage', element: <StoragePage actorId={actorId} /> },
     { path: '*', element: <NotFoundPage /> },
   ]);
+  return (
+    <>
+      <AdminNav />
+      {routes}
+    </>
+  );
 }

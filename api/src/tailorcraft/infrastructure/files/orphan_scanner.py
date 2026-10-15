@@ -219,6 +219,7 @@ class LocalOrphanFileScanner:
                             stat_result.st_mtime,
                             cutoff,
                             is_symlink=stat_module.S_ISLNK(stat_result.st_mode),
+                            size_bytes=stat_result.st_size,
                         )
                         if scanned is None:
                             continue
@@ -255,6 +256,7 @@ def _describe(
     cutoff: datetime,
     *,
     is_symlink: bool,
+    size_bytes: int,
 ) -> ScannedFile | None:
     """Turn one directory entry into a `ScannedFile`, or `None` if it is newer than the cutoff.
 
@@ -314,7 +316,7 @@ def _describe(
             # Recognisability, answered by the type. Nothing about the refused name is logged or
             # kept: this branch is the whole of what the system will ever know about it.
             ref = None
-    return ScannedFile(ref=ref, created_at=created_at, is_partial=is_partial)
+    return ScannedFile(ref=ref, created_at=created_at, is_partial=is_partial, size_bytes=size_bytes)
 
 
 if TYPE_CHECKING:

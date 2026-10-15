@@ -278,3 +278,22 @@ principal: `UserOwner(<path user_id>)`.**
   `routers/admin_content.py`, whose router carries `require_admin` at router level.
 - An erased target is 404 `user_not_found`, never the global map's 401, which would sign the admin
   out.
+
+## Amendment: 2026-10-13, from the plan of slice 4.4 (`admin-guests-and-storage`)
+
+Slice 4.4 lets an admin read one guest session's data through the guest's own use cases (ADR-0035).
+
+**(l) (k)'s path-named requester extends to `GuestOwner(<path session_id>)`, behind `require_admin`
+only.**
+
+- **Still one credential.** The bearer authorizes the actor and `require_admin` the area; the
+  path's session, as `GuestOwner`, authorizes each row through the use case's own equality.
+- **No guest cookie is read and nothing is minted.** The admin never holds the session's cookie and
+  never becomes that guest; `resolve_or_start_guest_session` and `require_guest_session` are not on
+  these routes.
+- **Not a transfer route** ((f), (g)): no row moves. The transfer set stays
+  `{POST /api/me/guest-work/claim}`.
+- **Fenced by the same AST scan**: a `GuestOwner` built from a path parameter may appear only in
+  `routers/admin_guests.py`, whose router carries `require_admin` at router level.
+- A gone or expired session is 404 `guest_session_not_found`, translated locally, never the global
+  map's 401, which on a bearer route would send the client into refresh-on-401.

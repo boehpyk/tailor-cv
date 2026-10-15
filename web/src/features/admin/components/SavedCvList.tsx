@@ -33,7 +33,7 @@ export function SavedCvList({ actorId, userId }: SavedCvListProps): React.JSX.El
         <ul className="space-y-2 text-sm">
           {items.map((cv) => (
             <li key={cv.id} className="flex flex-wrap gap-x-3">
-              <Link to={contentLink(userId, 'cvs', cv.id)} className={ROW_LINK}>
+              <Link to={contentLink({ kind: 'user', userId }, 'cvs', cv.id)} className={ROW_LINK}>
                 {cv.label ?? cv.original_filename}
               </Link>
               {cv.label !== null && (

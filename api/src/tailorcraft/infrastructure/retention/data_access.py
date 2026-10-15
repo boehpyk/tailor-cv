@@ -23,7 +23,7 @@ beside the lock and the heartbeat rather than in `domain/retention/ports.py`.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -37,6 +37,7 @@ from tailorcraft.domain.retention.ports import (
     ExpiredIdentityTokenPort,
     HistoryEntryDataPort,
 )
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import (
     AccountCounts,
     DeletedHistoryEntry,
@@ -119,6 +120,14 @@ class CommittingExpiredGuestDataAdapter:
         propagate untouched, because `ReclaimOrphanedFiles` turns any exception here into
         `OrphanScanAborted` and unlinks nothing (R-33, AC-23)."""
         return await self._inner.which_are_referenced(keys)
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        """A read, so **no commit**."""
+        return await self._inner.session_with_files(session_id)
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        """A read, so **no commit**."""
+        return await self._inner.owners_of(keys)
 
 
 class CommittingAccountData:

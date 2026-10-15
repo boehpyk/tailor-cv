@@ -18,8 +18,9 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: sixteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1, and the `__Host-tc_guest`
-> security slice); Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
+> **Status: eighteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.3, and the `__Host-tc_guest`
+> security slice); slice 4.4 `admin-guests-and-storage` is verified (2026-10-15, reviewer PASS round 1), not yet
+> merged; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
 > merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
 > `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
@@ -31,7 +32,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 > 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2), merged as PR #30
 > (`16fbe47`) and released the same day** (deploy run 38161380305). **Slice 4.3 `admin-content`
 > was verified 2026-10-12 (reviewer PASS round 1; MINORs 1/3/4 fixed, PASS round 2), merged as PR
-> #32 (`5e9bce2`) and released the same day** (deploy run 38297123697). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
+> #32 (`5e9bce2`) and released the same day** (deploy run 38297123697). **Slice 4.4
+> `admin-guests-and-storage` was verified 2026-10-15 (reviewer PASS round 1; MINOR 1 fixed red-first, `49e2aef` → `5cfd637`); not merged.** Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
 > and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
 > `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
 > fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
@@ -672,6 +674,82 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 >   CVs…*, …), because *Loading…* collided with the page's own; AC-29, the one listed harness edit
 >   to an existing test is `ce358e4` (4.2's `UserPage` fake serves the three lists).
 >
+> - **4.4 `admin-guests-and-storage`** (**verified 2026-10-15, reviewer PASS round 1 — not
+>   merged, not released**) — an admin sees **live guest sessions** and their data, erases one
+>   before its 24 hours are up, and runs the purge and the orphan sweep **from `/admin/storage`**
+>   instead of over SSH (**ADR-0035**; ADR-0008 amendment (l), ADR-0018 amendment (c); notes on
+>   ADR-0006, 0019, 0024, 0034). **Fourteen routes** behind a router-level `require_admin`,
+>   `no-store` on every answer and refusal: nine under `/api/admin/guest-sessions` (list, overview
+>   with the guest's three lists, erase, and the guest twins of 4.3's six reads) in
+>   `routers/admin_guests.py`; five in `routers/admin_retention.py` (`GET /api/admin/storage`,
+>   `GET`/`POST /api/admin/guest-purge`, `GET`/`POST /api/admin/orphan-sweep` — a `GET` is the
+>   preview and writes nothing anywhere: no lock, no heartbeat, no row, no file). **A guest is
+>   reached by path, like a user in 4.3**: the admin passes `GuestOwner(<path session_id>)` to the
+>   guest's **unchanged** use cases; the admin browser's own `__Host-tc_guest` is never read and no
+>   session is ever minted (the transfer-route set is unchanged). A gone or expired session is a
+>   **local** 404 `guest_session_not_found` on every guest route, never the global map's 401 (which
+>   would trip the admin's refresh-on-401). **Erasing one session is the purge's own step**:
+>   `PurgeExpiredGuestSessions`' per-candidate body was lifted into `purge_one(data, files,
+>   candidate)` (T2, behaviour-neutral, every retention test unedited), and `EraseGuestSession`
+>   calls it on one named session — rows committed, then files; a `DELETE` that removed nothing (a
+>   claim got there first) is 404 with **nothing unlinked**; 200 `{files_unlinked,
+>   unlink_failures}`. **An entry point owns its refusal codes**: a held `RedisPurgeLock` is the
+>   CLI's exit 3, beat's quiet skip, and here **409 `purge_in_progress`**, nothing deleted, the
+>   other holder's lock untouched; Redis unreachable still **fails open** (the run proceeds, 200
+>   with `lock: "unavailable"`); a mid-batch raise is 503 `purge_failed` with no heartbeat. The sweep
+>   still **fails closed** (cross-check down → 503 `orphan_check_unavailable`, not one file
+>   unlinked) and takes no lock. Runs write the CLI's `retention.*` lines byte-identical (the purge's
+>   failure loops lifted to `log_events.log_purge_failures`). **Storage is measured without reading a
+>   file**: the sweep's existing walk (now with `ScannedFile.size_bytes` from its `lstat`) plus
+>   **one** `owners_of` statement over the keys (`UNION ALL` over stored `file_key`s, chunks of
+>   1 000), five buckets — guest, user, unreferenced, partial, unrecognized — counts and bytes only,
+>   no name or key in the body. The **directory** is a read model behind
+>   `GuestSessionDirectoryQuery`: one Core statement, never `token_hash` (statement-captured, AC-28),
+>   live only, correlated counts, keyset on `(expires_at, id)` over the existing index. Two log
+>   lines: guest reads write 4.3's `admin.content_access` with `target_guest_session_id` (`_Access`
+>   lifted to `routers/_admin_access.py`); storage, purge, sweep and erase write
+>   `admin.retention_action`. **No migration, setting, queue, container or beat change**; **AC-1
+>   holds** (`git diff main --stat` over the listed domain/application/alembic/LLM paths: empty).
+>   React, all in the lazy admin chunk: an admin nav (*Users* · *Guests* · *Storage*),
+>   `/admin/guests` (*Load more*), `/admin/guests/:sessionId` (overview, three lists, *Delete guest
+>   session*, not optimistic), 4.3's three read pages reused through a **subject** seam
+>   (`AdminSubject = user | guest`, `subjectPath`, user keys byte-identical; no delete buttons for a
+>   guest), and `/admin/storage` (storage table, purge and sweep panels with preview → confirm →
+>   report, job health from `/health/ready`). **5100 backend and 1564 frontend tests** (`make
+>   check` twice at T27, 5100 / 1561, plus T28's three). Measured: main bundle **+0.01 kB gzip**
+>   (budget 0.3), admin chunk **12.33 kB** (14). T25 on production images, n = 200 interleaved, p95:
+>   directory p1 over 10 001 live sessions **7.6 ms**, page 50 **7.9** (100); a capped session's
+>   overview **28.9**, with heavy bodies **56.5** (150); guest reads vs. the guest's own routes at
+>   most **+2.9 ms** (limit +5); erase of a capped session, 45 files **23.6** (300, n = 20); over
+>   10 000 files storage **486.7** (1 500), sweep preview **427.5** (3 000); purge preview **141.5**
+>   (300); a purge run of 100 capped sessions / 4 500 files **1 766 ms** (10 000); a sweep run
+>   reclaiming 1 000 orphans **968 ms** (5 000). T26: `/health/live` turnaround p95 **1.82 ms**
+>   during storage and a sweep preview over 10 000 files; walk inlined **379.87 ms**. **Fifteen
+>   mutations recorded:** (1) `require_admin` off the router **and** `AdminDep` → any user 2 red;
+>   (2) `GuestOwner` from a fixed id 15; (3) gone session through the global map 5; (4) unlink after
+>   a skipped `DELETE` 1 at T9, 3 with T17's races; (5) unlink before `DELETE` 6; (6) held lock
+>   ignored 1; (7) preview takes the lock and writes the heartbeat 1; (8) `OrphanScanAborted`
+>   swallowed 1; (9) `owners_of` → "referenced ⇒ user" 1; (10) `token_hash` selected 1; (11) walk
+>   inline (above); (12) `no-store` off `refusal()` 36; (13) one access line removed 2; (14) guest
+>   key removed `exact: true` 0 at T22, 1 at T23; (15) guest `canDelete` 1 (CV page) at T22, the run
+>   page's 1 at `055857f`, whose assertion had run before the posting query settled. **T28's
+>   manual pass** (`:8080`, Chromium, two contexts, one real-Gemini run, a PDF, markers everywhere):
+>   every guest read and download sha256-identical to the guest's own; erase → the guest tab's
+>   *Your session has expired*; storage before/after; an orphan swept; a lock held by hand → 409
+>   copy, never success; 360 px held; 7 367 log lines, **0 marker hits**. **It found two defects no
+>   test did:** (a) the purge preview said *Would delete 0 session(s)*: `PurgePanel` read
+>   `sessions_deleted`, which a dry run always reports 0 (AC-16; the count is `examined`), and the
+>   test fake had `sessions_deleted: 3`, contradicting AC-16, so the suite was green — fake fixed
+>   red-first (`cf65a91`), then the panel (`d3ea89b`); (b) every run's result appeared **~2.2 s after
+>   a 32 ms response**, because `onSettled` returned its invalidations, so the mutation stayed
+>   pending until `/health/ready` (2 s, 1.6's `probe_celery`) refetched — now fired, not awaited
+>   (`4c7df0b`), guarded by `885fa1c` (reverting: 2 red). **`/verify`'s MINOR 1:** T2's lift had put an
+>   untranslated `files.delete` raise inside the batch's per-session catch. That raise is reachable:
+>   `_resolve_contained`'s `RuntimeError` fires on a symlinked shard. The catch recorded a deleted
+>   session as failed and skipped its remaining files. The `try` now wraps only `delete_session`, so the
+>   raise escapes the run as it did before (`49e2aef` RED → `5cfd637`). **A broad catch justified by
+>   one `await` records the wrong fact once it covers two.** **Firefox not exercised.**
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
@@ -1057,6 +1135,17 @@ python -m tailorcraft.cli purge-guests --orphans --dry-run
 # Exit codes: 0 success (including deleting nothing) · 1 failed · 2 usage · 3 THE LOCK WAS HELD.
 # 3 is the point: a run that did nothing because another holds the lock must not exit 0.
 
+# The same from the browser (slice 4.4, ADR-0035): /admin/storage, admins only. The CLI above stays
+# the break-glass; backups (`make db.dump` + the uploads volume) stay an SSH step.
+#   make purge.dry       → Preview purge   (GET  /api/admin/guest-purge?limit=; writes nothing)
+#   make purge limit=N   → Run purge       (POST /api/admin/guest-purge {"limit": 1..100}; ONE batch)
+#   --orphans --dry-run  → Preview sweep   (GET  /api/admin/orphan-sweep; writes nothing)
+#   --orphans            → Run sweep       (POST /api/admin/orphan-sweep {"limit": N | null})
+#   (no CLI twin)        → the storage table (GET /api/admin/storage: counts + bytes per bucket)
+# A held lock is 409 `purge_in_progress` (the CLI's exit 3): nothing ran, wait and try again.
+# A preview's would-delete count is `examined`; its `sessions_deleted` is always 0.
+# One session early: /admin/guests/<id> → Delete guest session (the purge's own step).
+
 # Identity (slice 2.1). THE BREAK-GLASS: deletes every login, signing every user out. Dry run first.
 # Rotating JWT_SIGNING_KEY is NOT this — it logs nobody out. Either way, access tokens already
 # issued stay valid until they expire (≤ 15 min). No make target, on purpose: not a routine step.
@@ -1189,6 +1278,11 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   **A page-level `findByText(/^Loading/)` matches the lazy route's Suspense fallback first** (also a
   `role="status"`), so it cannot fail. Wait until the item route has been called, then assert the
   page's own loading line inside `main` (`e7f68c2`).
+  **A mutation's `onSettled` that returns invalidation promises keeps the mutation pending until
+  they refetch (4.4, `4c7df0b`).** The purge panel's result waited ~2.2 s behind a 32 ms response,
+  because one invalidation was `/health/ready` (2 s). Fire invalidations without returning them
+  unless the UI must wait for fresh data; `885fa1c` holds the refetch open and asserts the result
+  renders meanwhile.
   **A credential is not server state:** the access token lives in one module store read through
   `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
   **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
@@ -1382,6 +1476,15 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
   identifiers (ProseMirror, markdown-it), not the word.
 - **`commit-msg` rejects a subject over 72 characters only after `pre-commit` has run the full
   suite** (4.2). Count the subject before you commit, or pay four minutes to learn it is 74.
+- **A test fake that disagrees with the API's real shape hides a UI bug** (4.4, T28). The purge
+  preview's fake answered `sessions_deleted: 3`, though a dry run always reports 0 (AC-16) and the
+  count is `examined`; the panel read the wrong field and the suite stayed green until the manual
+  pass read *Would delete 0 session(s)*. Build a fake from a real response (or the schema), and pin
+  its shape with a guard test (`cf65a91`).
+- **Known flakes seen in 4.4, each passing on re-run:** AC-20's login event-loop fraction (0.908
+  against 0.88, once); `test_me_tracked_applications…[control_character]` answering 401 once; the
+  first admin Vitest test in a file timing out under load. Re-run before chasing; if one recurs,
+  it is a finding.
 - **A spy installed before the test's setup records the setup** (2.5, `feec266`). A
   `replaceState` spy saw the harness's own `openLink()` put the token in the URL. Clear the spy
   after setup, and give the absence assertion a positive control (the app made ≥ 2 calls).

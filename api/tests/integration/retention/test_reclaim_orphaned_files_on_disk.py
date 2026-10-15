@@ -38,7 +38,7 @@ unit tests already cover in full, and nothing about *this* defect depends on how
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -46,6 +46,7 @@ from uuid import uuid4
 
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import ExpiringGuestSession, RetentionWindow
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.clock import FixedClock
@@ -109,6 +110,12 @@ class _ExpiredGuestDataDouble:
 
     async def delete_session(self, session_id: GuestSessionId) -> bool:
         raise AssertionError("not used by this sweep")
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        raise NotImplementedError
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        raise NotImplementedError
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         return frozenset(key for key in keys if key in self.referenced)

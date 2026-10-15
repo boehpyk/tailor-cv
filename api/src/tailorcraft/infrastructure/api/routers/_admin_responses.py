@@ -37,6 +37,16 @@ USER_NOT_FOUND: dict[int | str, dict[str, Any]] = {
     },
 }
 
+GUEST_SESSION_NOT_FOUND: dict[int | str, dict[str, Any]] = {
+    status.HTTP_404_NOT_FOUND: {
+        "model": ErrorResponse,
+        "description": (
+            "guest_session_not_found — no live guest session with that id (unknown, expired, "
+            "claimed or erased, one answer)."
+        ),
+    },
+}
+
 FIREWALL: dict[int | str, dict[str, Any]] = {
     **NOT_SIGNED_IN,
     **ACCOUNT_DISABLED,
@@ -66,5 +76,22 @@ def user_not_found() -> HTTPException:
     return HTTPException(
         status.HTTP_404_NOT_FOUND,
         detail={"code": "user_not_found", "message": "No account was found with that id."},
+        headers=dict(NO_STORE),
+    )
+
+
+def guest_session_not_found() -> HTTPException:
+    """404 `guest_session_not_found` for a missing **target** session (slice 4.4, plan §0.2).
+
+    Not the global map on purpose: it turns `GuestSessionNotFound`/`GuestSessionExpired` into 401
+    `guest_session_expired`, and a 401 on a bearer route trips the administrator's refresh-on-401.
+    The session that is gone is a guest's, not the administrator's credential.
+    """
+    return HTTPException(
+        status.HTTP_404_NOT_FOUND,
+        detail={
+            "code": "guest_session_not_found",
+            "message": "No live guest session was found with that id.",
+        },
         headers=dict(NO_STORE),
     )

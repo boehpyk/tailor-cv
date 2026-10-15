@@ -29,9 +29,11 @@ and a class name and room for nothing else, and the entry point emits one line p
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 
 from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
 from tailorcraft.domain.retention.value_objects import (
+    ExpiringGuestSession,
     FileUnlinkFailure,
     PurgeReport,
     RetentionWindow,
@@ -287,8 +289,12 @@ class PurgeExpiredGuestSessions:
         session_purge_failures: list[SessionPurgeFailure] = []
         file_unlink_failures: list[FileUnlinkFailure] = []
 
-        # Step 4. Per candidate, in the order the port handed them back; and within each candidate,
-        # the row before its files.
+        # Step 4. Per candidate, in the order the port handed them back; within each candidate,
+        # the row before its files. The `try` wraps **only** `delete_session`: a raise from
+        # `files.delete` other than `FileStoreUnavailable` (`LocalFileStore._resolve_contained`'s
+        # `RuntimeError` on a shard symlinked out of the root) comes after the row is deleted and
+        # committed, so it escapes the run (R-15) rather than being recorded as a failure of a
+        # session that is in fact gone. `purge_one` is the same two steps for the one-session erase.
         for candidate in candidates:
             try:
                 deleted = await self._data.delete_session(candidate.session_id)
@@ -332,42 +338,13 @@ class PurgeExpiredGuestSessions:
                 continue
 
             if not deleted:
-                # **Unlink only what you deleted** (ADR-0018 amendment (a), AC-4). This call's
-                # `DELETE` removed no row: another purge deleted the session first, or a claim
-                # committed between `list_expired` and here — re-keying the session's rows to a
-                # registered user and deleting the session row itself. The keys in
-                # `candidate.files` were collected without a lock, so in the claim case they now
-                # name a user's files, and unlinking them would destroy account data. Neither
-                # deleted nor failed: nothing went wrong, there was simply nothing left for this
-                # run to purge.
+                # A skip: see `purge_one` — this call removed no row, so none of the keys are ours.
                 sessions_skipped += 1
                 continue
-
             sessions_deleted += 1
-
-            # Only now the files: this session's row is deleted and — by the committing adapter's
-            # contract, not by anything this layer can say — committed (AC-8, ADR-0006 §2).
-            for ref in candidate.files:
-                try:
-                    await self._files.delete(ref)
-                except FileStoreUnavailable as exc:
-                    # R-4, AC-14. The row is already gone and committed; that is the crash window
-                    # ADR-0006 §2 chose, and the survivor is an orphan file that
-                    # `ReclaimOrphanedFiles` reclaims. Nothing is rolled back and nothing is
-                    # re-raised — a full volume must not stop a purge from deleting rows — and the
-                    # session still counts deleted, because it was.
-                    #
-                    # The record carries the error's class name and **not the ref** (R-4: never the
-                    # key, never the path). `StoredFileMissing` subclasses `FileStoreUnavailable`, so
-                    # the name is not always the same word and is worth having: `delete` is
-                    # `missing_ok` by contract, so that particular name here would mean the store's
-                    # own promise had broken rather than the disk being full.
-                    file_unlink_failures.append(FileUnlinkFailure.from_exception(exc))
-                    continue
-                # `files_unlinked` counts keys we asked the store to remove and does not claim the
-                # file existed (R-5): `delete` is `missing_ok` by contract, so nobody below this
-                # port can compute the honest version of that number.
-                files_unlinked += 1
+            step = await _unlink_files(self._files, candidate)
+            files_unlinked += step.files_unlinked
+            file_unlink_failures.extend(step.file_unlink_failures)
 
         # Step 5.
         return PurgeReport(
@@ -389,3 +366,76 @@ class PurgeExpiredGuestSessions:
         `render_duration_ms` argument, unchanged: the `Clock` port is whole-second by contract
         (ADR-0007), so it cannot measure a batch that finishes inside one second."""
         return int((time.perf_counter() - started) * 1000)
+
+
+@dataclass(frozen=True, slots=True)
+class PurgeStepOutcome:
+    """What `purge_one` did to one session: whether its row went, and what happened to its files.
+
+    ``deleted=False`` is a **skip** (the `DELETE` removed no row), and then the two file fields are
+    always empty — a skipped session's files are never handed to the store. A refused `DELETE` is
+    not an outcome at all: it is raised, and the caller decides whether there is a next candidate.
+    """
+
+    deleted: bool
+    files_unlinked: int
+    file_unlink_failures: tuple[FileUnlinkFailure, ...]
+
+
+async def purge_one(
+    data: ExpiredGuestDataPort, files: FileStorePort, candidate: ExpiringGuestSession
+) -> PurgeStepOutcome:
+    """Purge one expired guest session: its row first, then — only if that `DELETE` removed it —
+    its files (ADR-0006 §2, ADR-0018 amendment (a)).
+
+    Lifted out of `PurgeExpiredGuestSessions.__call__` (slice 4.4, ADR-0035) for the admin's
+    single-session erase. **Every raise propagates**: from `delete_session` (the session's files
+    are not touched, because its rows still name them) and from `files.delete` other than
+    `FileStoreUnavailable`. The batch runs the same two steps itself, because it records only the
+    first kind as a `SessionPurgeFailure` and must not catch the second.
+    """
+    if not await data.delete_session(candidate.session_id):
+        # **Unlink only what you deleted** (ADR-0018 amendment (a), AC-4). This call's
+        # `DELETE` removed no row: another purge deleted the session first, or a claim
+        # committed between `list_expired` and here — re-keying the session's rows to a
+        # registered user and deleting the session row itself. The keys in
+        # `candidate.files` were collected without a lock, so in the claim case they now
+        # name a user's files, and unlinking them would destroy account data. Neither
+        # deleted nor failed: nothing went wrong, there was simply nothing left to purge.
+        return PurgeStepOutcome(deleted=False, files_unlinked=0, file_unlink_failures=())
+    return await _unlink_files(files, candidate)
+
+
+async def _unlink_files(files: FileStorePort, candidate: ExpiringGuestSession) -> PurgeStepOutcome:
+    """The second half of `purge_one`, called only after `candidate`'s row was deleted. A
+    `FileStoreUnavailable` is recorded and the next key tried; any other raise escapes."""
+    files_unlinked = 0
+    file_unlink_failures: list[FileUnlinkFailure] = []
+    # Only now the files: this session's row is deleted and — by the committing adapter's
+    # contract, not by anything this layer can say — committed (AC-8, ADR-0006 §2).
+    for ref in candidate.files:
+        try:
+            await files.delete(ref)
+        except FileStoreUnavailable as exc:
+            # R-4, AC-14. The row is already gone and committed; that is the crash window
+            # ADR-0006 §2 chose, and the survivor is an orphan file that
+            # `ReclaimOrphanedFiles` reclaims. Nothing is rolled back and nothing is
+            # re-raised — a full volume must not stop a purge from deleting rows — and the
+            # session still counts deleted, because it was.
+            #
+            # The record carries the error's class name and **not the ref** (R-4: never the
+            # key, never the path). `StoredFileMissing` subclasses `FileStoreUnavailable`, so
+            # the name is not always the same word and is worth having: `delete` is
+            # `missing_ok` by contract, so that particular name here would mean the store's
+            # own promise had broken rather than the disk being full.
+            file_unlink_failures.append(FileUnlinkFailure.from_exception(exc))
+            continue
+        # `files_unlinked` counts keys we asked the store to remove and does not claim the
+        # file existed (R-5): `delete` is `missing_ok` by contract, so nobody below this
+        # port can compute the honest version of that number.
+        files_unlinked += 1
+    return PurgeStepOutcome(
+        deleted=True,
+        files_unlinked=files_unlinked,
+        file_unlink_failures=tuple(file_unlink_failures),
+    )

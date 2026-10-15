@@ -28,7 +28,7 @@ which is the trap one table over.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, Final
 
@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.export.value_objects import ExportDelivery, ExportFormat, ExportJobId
 from tailorcraft.domain.identity.value_objects import GuestSessionId
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import ExpiringGuestSession
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
@@ -58,6 +59,10 @@ if TYPE_CHECKING:
 _QUEUED_FORMATS: Final[tuple[ExportFormat, ...]] = tuple(
     fmt for fmt in ExportFormat if fmt.delivery is ExportDelivery.QUEUED
 )
+
+
+# `owners_of`'s keys per statement: the storage overview asks about every file on the volume.
+_OWNERS_CHUNK: Final = 1000
 
 
 class SqlAlchemyExpiredGuestData:
@@ -183,7 +188,23 @@ class SqlAlchemyExpiredGuestData:
         if not candidates:
             return ()
 
-        session_ids: list[GuestSessionId] = [row.id for row in candidates]
+        files_by_session = await self._files_by_session([row.id for row in candidates])
+
+        return tuple(
+            ExpiringGuestSession(
+                session_id=row.id,
+                expires_at=row.expires_at,
+                files=tuple(files_by_session[row.id]),
+            )
+            for row in candidates
+        )
+
+    async def _files_by_session(
+        self, session_ids: Sequence[GuestSessionId]
+    ) -> dict[GuestSessionId, list[FileRef]]:
+        """Every file key belonging to `session_ids`, bucketed by session: `list_expired`'s
+        statement 2 (its docstring argues the two asymmetric halves). Every id gets a list, empty
+        for a session with no files."""
         files_by_session: dict[GuestSessionId, list[FileRef]] = {sid: [] for sid in session_ids}
 
         # The first half's labels name the compound's result columns, and its column *types* are the
@@ -235,15 +256,7 @@ class SqlAlchemyExpiredGuestData:
             job_id: ExportJobId = row.export_job_id
             job_format: ExportFormat = row.export_format
             files_by_session[owner].append(FileRef.for_export(job_id, job_format))
-
-        return tuple(
-            ExpiringGuestSession(
-                session_id=row.id,
-                expires_at=row.expires_at,
-                files=tuple(files_by_session[row.id]),
-            )
-            for row in candidates
-        )
+        return files_by_session
 
     async def delete_session(self, session_id: GuestSessionId) -> bool:
         """`DELETE FROM identity_guest_session WHERE id = :id`, inside a SAVEPOINT; `True` iff **this**
@@ -341,6 +354,57 @@ class SqlAlchemyExpiredGuestData:
             )
         )
         return frozenset(result.scalars().all())
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        """That one session with its file keys, collected by `_files_by_session` exactly as
+        `list_expired` collects them (export keys **derived**, so a `rendering` job's bytes are
+        named too) — and **no expiry predicate**: the admin's erase deletes a live session (slice
+        4.4, ADR-0035). `None` when the row is gone. Selects `id` and `expires_at` only, never
+        `token_hash`."""
+        row = (
+            await self._session.execute(
+                select(guest_session_table.c.id, guest_session_table.c.expires_at).where(
+                    guest_session_table.c.id == session_id
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        files = await self._files_by_session([row.id])
+        return ExpiringGuestSession(
+            session_id=row.id, expires_at=row.expires_at, files=tuple(files[row.id])
+        )
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        """For each key a row names, whether that row is a guest's or a user's — `which_are_referenced`
+        with the owner attached, and the **same stored-`file_key` semantics**: a `rendering` job's
+        `NULL` key names nothing, so its bytes read as unreferenced ("any file whose row is
+        mid-write", the spec's glossary), exactly as the sweep sees them. Deriving export keys here,
+        as `list_expired` does, would make the overview and the sweep disagree about one file.
+
+        `guest_session_id IS NOT NULL` decides the kind; ADR-0022's `ck_*_exactly_one_owner` makes
+        the other column the user's. Chunks of `_OWNERS_CHUNK` keys per statement, so a volume of
+        any size never binds an unbounded parameter list (asyncpg's ceiling is 32 767)."""
+        unique: list[FileRef] = list(dict.fromkeys(keys))
+        owners: dict[FileRef, FileOwnerKind] = {}
+        for start in range(0, len(unique), _OWNERS_CHUNK):
+            chunk = unique[start : start + _OWNERS_CHUNK]
+            result = await self._session.execute(
+                union_all(
+                    select(
+                        base_cv_table.c.file_key.label("file_key"),
+                        base_cv_table.c.guest_session_id.is_not(None).label("is_guest"),
+                    ).where(base_cv_table.c.file_key.in_(chunk)),
+                    select(
+                        export_job_table.c.file_key,
+                        export_job_table.c.guest_session_id.is_not(None),
+                    ).where(export_job_table.c.file_key.in_(chunk)),
+                )
+            )
+            for row in result.all():
+                ref: FileRef = row.file_key
+                owners[ref] = FileOwnerKind.GUEST if row.is_guest else FileOwnerKind.USER
+        return owners
 
 
 if TYPE_CHECKING:

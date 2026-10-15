@@ -135,3 +135,9 @@ Slice 2.5 adds the second scheduled job decision 6 anticipated — retention's i
 - **The browser's status panel is not changed.** The field is operator JSON. The client type names
   only `guest_purge`, optionally, so a bundle that does not know the new member ignores it, and an
   older API that lacks it breaks nothing.
+
+## Note: 2026-10-13, from slice 4.4 (`admin-guests-and-storage`)
+
+The admin storage page renders `/health/ready`'s `dependencies` and `jobs` as facts (ADR-0035
+decision 6). No member is added and no admin health endpoint exists; the client type gains
+`identity_token_sweep` (type only), so the browser now reads amendment (a)'s member too.

@@ -6367,3 +6367,222 @@ was what got nested under the key, and the line didn't know.
 - **Release**: no migration or setting; after it, a browser-only walk on `cv.samolit.com` with a
   throwaway account.
 - **4.4**: guest sessions and storage, the last things that still need SSH.
+
+# Slice 4.4 — the janitor's keys, not a second janitor
+
+*Implemented 2026-10-15. Not yet verified or released: `/verify` is next, then the owner's release.*
+
+## What the admin can do now
+
+Two new tabs sit beside *Users* in `/admin`: **Guests** and **Storage**.
+
+*Guests* lists every live guest session, newest expiry first, with how many CVs, postings, runs and
+exports each one holds. Open one and you see the same three lists the guest sees in their own
+browser. Click through and you read the CV text, the posting and the tailored documents, and
+download the files, using the same pages 4.3 built for accounts. There's one button, *Delete guest
+session*, for the case where someone writes in and says "I uploaded my CV by mistake, please get rid
+of it now, not tomorrow."
+
+*Storage* answers a question that used to need SSH and `du`: what is on the uploads volume, and
+whose is it? A table splits it into five buckets (guest, user, unreferenced, half-written `.part`
+files, and names the system can't explain), each with a file count and bytes. Below it are two
+panels, **purge** and **orphan sweep**, each with *Preview* and *Run*, and a job-health block that
+shows `/health/ready`'s facts in words.
+
+That was the last routine job that needed a terminal. Phase 4's gate is "two weeks of operating
+from `/admin` with no SSH", and the clock can only start once this ships.
+
+## Extract a step, don't fork a use case
+
+The spec's owner decision (OQ-E) was short: deleting one guest session uses **the existing purge,
+narrowed to that session**. There were two obvious ways to do that, and one of them is a trap.
+
+The trap is to write a fresh `DELETE FROM identity_guest_session WHERE id = :id` and unlink the
+files after. It looks like five lines. It's actually a second copy of three hard-won rules from
+slices 1.6 and 2.4: commit the rows **before** touching files; unlink only if **this** `DELETE`
+actually removed the row (because if it didn't, a user may have just *claimed* that session, and
+those files are now theirs); and a refused `DELETE` keeps its files. A copy gets those rules right
+on the day it's written and drifts the day someone fixes the original.
+
+So T2 did something boring first. It took the body of the purge's per-session loop and lifted it
+out into a function, `purge_one(data, files, candidate)`, with no change in behaviour. Every
+existing retention test passed untouched. Then the new `EraseGuestSession` use case was written as
+*"look up this one session, then call `purge_one` on it."* The batch and the single erase now run
+the same step, so they can't disagree.
+
+Think of a bakery. The purge is the end-of-day clear-out: everything past its date goes in the bin.
+The admin's erase is a customer saying "throw out that one loaf, now." You don't hire a second
+person with their own idea of how to bin bread. You hand the same person a single loaf.
+
+Two mutations proved it. Unlinking the files even when the `DELETE` removed nothing turned 1 test red
+at T9, then 3 once T17's race tests existed (a real claim racing a real erase, on two real
+connections). Unlinking *before* the `DELETE` turned 6 red.
+
+One honest footnote. The lift moved where one kind of exception lands: a file-store error that
+*isn't* `FileStoreUnavailable` now gets caught by the batch's per-session `except` instead of
+ending the run. Today that can't happen, because the real file store already turns every failure
+into `FileStoreUnavailable`. It's written down and carried to `/verify` anyway. "Behaviour-neutral"
+is a claim, and a claim with an exception should say so.
+
+`/verify` showed the footnote was wrong, and the honesty of writing it down paid for itself. The
+reviewer read the file store rather than the comment and found the case: if a shard directory is a
+symlink pointing out of the volume, `_resolve_contained` raises a plain `RuntimeError`, which the
+file store does not translate. In that case the batch's catch was telling a lie. The session's row was
+already deleted and committed, but the report counted the session as *failed*, skipped its remaining
+files, and the CLI exited 0. Before the lift, the same fault ended the run with exit 1. The fix
+(owner's choice) puts the old shape back. The batch's `try` wraps **only** `delete_session`, the
+unlinks run outside it, and `purge_one` stays as the erase's two-step body. A RED test went first
+(`DID NOT RAISE _UnlinkBug`) and the fix edited no test. The lesson is a general one about broad
+catches: an `except Exception` is justified by the one `await` it was written for, and once it
+covers a second step it starts recording the wrong fact about whichever step actually failed.
+
+## An entry point owns its refusal codes
+
+The purge now has **three** front doors: beat's hourly timer, the CLI, and the admin's *Run purge*
+button. All three call the same use case under the same Redis lock. What they *don't* share is how
+they say "someone else is already doing this."
+
+- **Beat** skips quietly. Another run has it covered, and nobody is watching.
+- **The CLI** exits with code **3**. Since 1.6 that's been the point: a run that did nothing because
+  the lock was held must not exit 0, or a script that checks for success is fooled.
+- **The browser** gets **409 `purge_in_progress`**, and the page says *"A purge is already running.
+  Nothing was deleted by this request."* Never a green tick.
+
+Same fact, three languages. The use case reports what happened; each entry point translates it for
+its own audience, the same way a Celery task and an HTTP route are both thin adapters over one use
+case. The 409 test held a real lock with a stranger's token and checked three things: nothing was
+deleted, no heartbeat was written, and the other holder's lock was still there afterwards.
+
+The two failure directions from 1.6 carried over unchanged, deliberately. **The purge lock fails
+open**: if Redis is down, the purge runs anyway (200, with `lock: "unavailable"` in the body),
+because a skipped purge breaks the 24-hour privacy promise and an overlapping one just repeats
+idempotent work. **The orphan sweep fails closed**: if it can't ask the database whether a file is
+referenced, it deletes nothing and says 503. Deleting a file because you couldn't check is the one
+mistake you can't undo.
+
+## Measuring a volume without reading it
+
+The storage table could have been built the naive way: open every file, look inside, guess. That
+would be slow, and it would mean the admin page reading strangers' CVs just to count them.
+
+Instead it reuses two things that already existed. The orphan sweep's directory walk already calls
+`lstat` on every entry, to check its age, and `lstat` also returns the size. So `ScannedFile` gained
+one field, `size_bytes`, and the walk now does the measuring for free. Then **one** SQL statement,
+`owners_of`, takes all the keys at once (in chunks of 1 000) and says which belong to a guest row,
+which to a user row, and which to nothing. No file is opened. No file name or key goes into the
+response, only counts and bytes.
+
+It's like a building manager counting boxes in the storeroom by their labels and checking the labels
+against the tenant list. They never open a box.
+
+The walk runs in a worker thread, because 10 000 `lstat` calls on the event loop would freeze every
+other request. T26 measured that the way 1.6 taught us: time the turnaround of `/health/live` while
+the storage page and a sweep preview run over 10 000 files. Healthy p95 was **1.82 ms**. With the
+walk moved back onto the loop (mutation 11), it was **379.87 ms**. Both numbers are written into the
+test, so the test is known to be able to fail.
+
+## Reaching a guest by path
+
+Guest reads use 4.3's trick exactly. The admin's route builds `GuestOwner(<session id from the
+URL>)` and hands it to the guest's **unchanged** use cases, which run their usual "is this yours?"
+equality. The admin's own browser might have a `__Host-tc_guest` cookie for an unrelated session.
+It's never read, and no session is ever created for the admin. The URL names the guest; the cookie
+names nobody here.
+
+Trap from 4.3, again: a gone guest session raises `GuestSessionNotFound`/`Expired`, which the global
+error map turns into **401**, and a 401 makes the admin's tab try to refresh its own login. So every
+guest handler translates locally to 404 `guest_session_not_found`. Putting the global mapping back
+(mutation 3) turned 5 tests red.
+
+## War stories
+
+**The fake that lied.** T28 was the manual pass: two browser contexts (a guest and an admin), a real
+Gemini run, markers planted in every field. It seeded an expired session and clicked *Preview
+purge*. The page said: *Would delete 0 session(s) and 1 file(s).*
+
+Zero sessions and one file is nonsense. The spec (AC-16) is clear: a dry run always reports
+`sessions_deleted: 0`, because it deleted nothing, and the number it *would* delete is `examined`.
+The panel read the wrong field. So why were all the tests green? Because the test fake said
+`sessions_deleted: 3`. The fake had been written to match what the UI expected, not what the API
+returns. The test and the code agreed with each other, and both were wrong.
+
+It's like checking your translation with a dictionary you wrote yourself. Every word matches.
+
+The fix went in two commits, in the order this project insists on. First `qa` corrected the fake to
+the real shape and added a guard test pinning it (`cf65a91`): 3 tests went red, recorded. Then the
+panel and its confirm dialog read `examined` (`d3ea89b`), and no test was edited. The lesson: **a
+fake is a claim about the API. Build it from a real response, or it will happily confirm whatever
+the UI already believes.**
+
+**The 32 ms response that took 2.2 seconds.** Same pass. The admin clicked *Run purge*, the network
+tab showed the response back in 32 ms, and the page said *Running…* for over two seconds before
+showing the result.
+
+The cause was one word in TanStack Query. After a run, the mutation's `onSettled` refreshed three
+things (readiness, storage, the guest list) and **returned** those promises. When `onSettled`
+returns a promise, TanStack waits for it before it considers the mutation finished. One of the three
+was `/health/ready`, which takes about 2 seconds because of 1.6's Celery ping. So the result was
+ready, but held back until a health check came home.
+
+It's like a waiter who has your food but won't bring it until the kitchen finishes restocking the
+fridge. The fix (`4c7df0b`) fires the refreshes without waiting for them. A guard test (`885fa1c`)
+holds those refetches open on purpose and checks the result shows anyway. Reverting the fix turns
+it red (2 tests). **Return a promise from `onSettled` only when the UI really needs to wait for
+fresh data.**
+
+**A test that passed by being early.** Mutation 15 made *Delete* appear on a guest's pages (only
+accounts have it). The CV page's test caught it; the run page's didn't. The "no Delete button" check
+ran as soon as the document text appeared, but the button waits for the posting query, which hadn't
+landed yet. The test was checking an absence before the thing could possibly be present. Now it
+waits for the posting link first (`055857f`), and the mutation turns it red. An absence assertion
+needs a moment when the presence was possible.
+
+**A mutation with no test to catch it, yet.** Mutation 14 (removing the guest's cache key with
+`exact: true`, 4.3's bug in a new place) turned **0** tests red at T22. That wasn't a failure; the
+key tests were T23's job. T23 wrote them and re-ran the mutation: 1 red. Writing down "0 red, not
+covered yet" is better than skipping the mutation and assuming.
+
+**Flaky, not broken.** Three tests misbehaved once each and passed on re-run: AC-20's login
+event-loop fraction (0.908 against a bound of 0.88; 2.1 said to watch that thin margin), one
+tracking test answering 401, and the first admin Vitest test in a file timing out under load. None
+recurred. They're written down so the next person recognises them, and so a second appearance gets
+treated as a finding.
+
+## The numbers
+
+- **Reads** (production images, n = 200 interleaved, p95): the guest list over 10 001 live sessions
+  7.6 ms, page 50 7.9; a capped session's overview 28.9, with heavy bodies 56.5. Guest reads through
+  the admin vs. the guest's own routes: at most +2.9 ms (limit +5).
+- **Storage and retention over 10 000 files**: storage 486.7 ms (budget 1 500), sweep preview 427.5
+  (3 000), purge preview 141.5 (300). Purge run, 100 capped sessions and 4 500 files: 1 766 ms
+  (10 000). Sweep run reclaiming 1 000 orphans: 968 ms (5 000). Erase one capped session, 45 files:
+  23.6 ms (300).
+- **Event loop**: `/health/live` p95 1.82 ms during a storage read and sweep preview; 379.87 ms with
+  the walk inlined.
+- **Bundle**: main +0.01 kB gzip (budget 0.3), admin chunk 12.33 kB (14).
+- **Mutations**: fifteen, all recorded. A few: owner from a fixed id 15 red; `no-store` off
+  refusals 36; unlink before `DELETE` 6; gone session through the global map 5.
+- **Tests**: 5100 backend, 1564 frontend.
+- **Manual pass**: one real-Gemini run, every guest download sha256-identical to the guest's own,
+  7 367 log lines, 0 marker hits. Firefox not exercised.
+
+## The common thread
+
+Nothing in this slice is a new way to delete. The erase is the purge's step. The admin's purge and
+sweep are the CLI's use cases behind a button. The storage table is the sweep's walk plus one
+lookup. The guest pages are 4.3's pages with a different subject. The new code is almost all
+*entry points*: new ways to reach old rules, each translating the result for its own audience.
+
+And the two bugs that got through were both about the edges, not the rules: a fake that described
+the API wrong, and a promise that made the UI wait for something it didn't need. Both were found by
+a person clicking through the real thing. The suite was green, but nobody had actually looked at the
+page.
+
+## What's next
+
+- **`/verify`**: the fifteen mutations, every RED with its recorded failure, no GREEN editing a test,
+  and T2's exception-routing footnote.
+- **Release**: no migration or setting. Then, from `cv.samolit.com` in the browser: the storage
+  read, both previews, and the purge rehearsal. Flipping `GUEST_PURGE_ENABLED` stays a separate,
+  deliberate step.
+- **Phase 4's gate**: two weeks of operating from `/admin` alone, starting at this release.

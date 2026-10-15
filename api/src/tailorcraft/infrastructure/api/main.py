@@ -23,6 +23,8 @@ from tailorcraft.infrastructure.api.middleware import MaxBodySizeMiddleware
 from tailorcraft.infrastructure.api.routers import (
     admin,
     admin_content,
+    admin_guests,
+    admin_retention,
     admin_users,
     auth,
     export,
@@ -266,6 +268,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # `/api/admin/users/{user_id}/…` (slice 4.3): an account's content, the same firewall (§0.10).
     # Its paths never collide with `admin_users`' (`/{user_id}`, `/{user_id}/disable|enable`).
     app.include_router(admin_content.router)
+    # `/api/admin/guest-sessions/…` and `/api/admin/{storage,guest-purge,orphan-sweep}` (slice 4.4):
+    # guest sessions and retention, the same firewall (plan §0.6). No path collides with the routers
+    # above: `guest-sessions`, `storage`, `guest-purge` and `orphan-sweep` are not `users` or `access`.
+    app.include_router(admin_guests.router)
+    app.include_router(admin_retention.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

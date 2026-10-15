@@ -247,3 +247,178 @@ export const DELETE_IN_PROGRESS = 'This run is still working. Try again when it 
 /** The kind's 404. */
 export const DELETE_ALREADY_GONE = 'Already deleted.';
 export const DELETE_FAILED = "Couldn't delete. Try again.";
+
+// --- Slice 4.4: guest sessions, storage and retention runs (AC-31…AC-39) --------------------------
+// Reused from above: ADMIN_RETRY_LABEL, LOAD_MORE_LABEL, LOADING_MORE_LABEL, CANCEL_LABEL,
+// DELETE_PENDING_LABEL, CONTENT_HEADINGS.postings, unlinkFailuresNote.
+
+/** AC-31: the admin nav, *Users* · *Guests* · *Storage*. */
+export const ADMIN_NAV_LABEL = 'Admin';
+export const NAV_LABELS = { users: 'Users', guests: 'Guests', storage: 'Storage' } as const;
+
+// The guest list (AC-32)
+export const GUESTS_HEADING = 'Guest sessions';
+export const GUESTS_CAPTION = 'Live guest sessions, latest expiry first';
+export const GUESTS_LOADING = 'Loading guest sessions…';
+export const GUESTS_ERROR = "Couldn't load guest sessions.";
+export const GUESTS_EMPTY = 'No live guest sessions.';
+export const COLUMN_STARTED = 'Started';
+export const COLUMN_EXPIRES = 'Expires at';
+/** The four counts a session row and its overview show, in display order. */
+export const GUEST_COUNT_LABELS = {
+  base_cvs: 'CVs',
+  job_postings: 'Job postings',
+  tailoring_runs: 'Tailoring runs',
+  export_jobs: 'Exports',
+} as const;
+
+// One session (AC-33)
+export const GUEST_SESSION_HEADING = 'Guest session';
+export const GUEST_SESSION_LOADING = 'Loading guest session…';
+export const GUEST_SESSION_ERROR = "Couldn't load this guest session.";
+/** 404 `guest_session_not_found` — on the session page and on its read pages (AC-33, AC-35). */
+export const GUEST_SESSION_GONE =
+  'This guest session no longer exists — it expired, was kept in an account, or was deleted.';
+export const BACK_TO_GUESTS = 'Back to guest sessions';
+/** A guest read page's link back to its session (T18's carry-over). */
+export const BACK_TO_GUEST_SESSION = 'Back to the guest session';
+export const GUEST_SECTION_HEADINGS = {
+  cvs: 'CVs',
+  postings: 'Job postings',
+  runs: 'Tailoring runs',
+} as const;
+export const GUEST_SECTION_EMPTY = {
+  cvs: 'No CVs.',
+  postings: 'No job postings.',
+  runs: 'No tailoring runs.',
+} as const;
+
+// Delete a guest session (AC-34)
+export const DELETE_GUEST_LABEL = 'Delete guest session';
+export const DELETE_GUEST_DIALOG_TITLE = 'Delete this guest session?';
+export function deleteGuestDialogMessage(
+  counts: Readonly<Record<keyof typeof GUEST_COUNT_LABELS, number>>,
+  runInProgress: boolean,
+): string {
+  const held = (Object.keys(GUEST_COUNT_LABELS) as (keyof typeof GUEST_COUNT_LABELS)[])
+    .map((key) => `${GUEST_COUNT_LABELS[key]}: ${String(counts[key])}`)
+    .join(', ');
+  const message = `The session and everything it holds (${held}) will be deleted before the 24-hour purge. This cannot be undone.`;
+  return runInProgress ? `${message} A run still in progress is discarded.` : message;
+}
+/** The list's notice after an erase; `unlinkFailuresNote` follows when files stayed. */
+export function guestDeletedNotice(filesUnlinked: number): string {
+  return `Deleted the guest session. ${String(filesUnlinked)} file(s) removed.`;
+}
+/** AC-34's failure note: *M could not be removed; the orphan sweep will reclaim them.* */
+export function guestUnlinkFailuresNote(failures: number): string {
+  return `${String(failures)} could not be removed; the orphan sweep will reclaim them.`;
+}
+export const DELETE_GUEST_FAILED = "Couldn't delete this guest session. Try again.";
+
+// Storage (AC-36)
+export const STORAGE_HEADING = 'Storage';
+export const STORAGE_LOADING = 'Measuring storage…';
+export const STORAGE_ERROR = "Couldn't measure storage.";
+export const STORAGE_CAPTION = 'Files on the uploads volume';
+export const STORAGE_COLUMN_BUCKET = 'Kind';
+export const STORAGE_COLUMN_FILES = 'Files';
+export const STORAGE_COLUMN_SIZE = 'Size';
+export const STORAGE_BUCKET_LABELS = {
+  guest: 'Guest',
+  user: 'Account',
+  unreferenced: 'Unreferenced',
+  partial: 'Partial',
+  unrecognized: 'Unrecognized',
+} as const;
+export const STORAGE_UNREFERENCED_NOTE =
+  'The orphan sweep reclaims unreferenced files once they are past its age floor.';
+export function storageMeasuredAt(time: string): string {
+  return `Measured at ${time}`;
+}
+export const MEASURE_AGAIN_LABEL = 'Measure again';
+
+// The purge (AC-37)
+export const PURGE_HEADING = 'Guest purge';
+export const PURGE_SCHEDULED = 'Scheduled';
+export const PURGE_NOT_SCHEDULED =
+  'Not scheduled — guest data is deleted only when someone runs it';
+export const PURGE_NEVER_RUN = 'Never run';
+export function purgeLastRun(age: string, outcome: string): string {
+  return `Last run ${age} ago: ${outcome}`;
+}
+export const PURGE_OUTCOME_LABELS = { ok: 'ok', failed: 'failed' } as const;
+export function overdueLine(overdue: number): string {
+  return `Overdue: ${String(overdue)}`;
+}
+export const OVERDUE_UNKNOWN = 'Overdue: unknown';
+export const PURGE_STALE = 'The purge is stale: it has not run in over three hours.';
+export const PREVIEW_PURGE_LABEL = 'Preview purge';
+export const RUN_PURGE_LABEL = 'Run purge';
+export const RUNNING_LABEL = 'Running…';
+export const PREVIEWING_LABEL = 'Previewing…';
+export function purgePreviewSentence(sessions: number, files: number): string {
+  return `Would delete ${String(sessions)} session(s) and ${String(files)} file(s). Nothing was deleted.`;
+}
+export const RUN_PURGE_DIALOG_TITLE = 'Run the purge?';
+/** Names the preview's numbers, or the batch bound when there is no preview. */
+export function runPurgeDialogMessage(preview: { sessions: number; files: number } | null): string {
+  return preview === null
+    ? 'Up to 100 expired guest sessions and their files will be deleted. This cannot be undone.'
+    : `${String(preview.sessions)} expired guest session(s) and ${String(preview.files)} file(s) will be deleted. This cannot be undone.`;
+}
+export function purgeReportSentence(report: {
+  sessions_deleted: number;
+  files_unlinked: number;
+  sessions_failed: number;
+  files_failed: number;
+  overdue: number;
+}): string {
+  const failures =
+    report.sessions_failed + report.files_failed > 0
+      ? ` ${String(report.sessions_failed)} session(s) and ${String(report.files_failed)} file(s) could not be deleted.`
+      : '';
+  return `Deleted ${String(report.sessions_deleted)} session(s), ${String(report.files_unlinked)} file(s).${failures} ${String(report.overdue)} still overdue.`;
+}
+/** 409 `purge_in_progress` — never a success sentence (AC-37). */
+export const PURGE_IN_PROGRESS = 'A purge is already running. Nothing was deleted by this request.';
+/** 503 `purge_failed`. */
+export const PURGE_FAILED = 'The purge failed. Sessions already deleted stay deleted.';
+export const PREVIEW_FAILED = "Couldn't preview. Try again.";
+
+// The sweep (AC-38)
+export const SWEEP_HEADING = 'Orphan sweep';
+export const PREVIEW_SWEEP_LABEL = 'Preview sweep';
+export const RUN_SWEEP_LABEL = 'Run sweep';
+export function sweepPreviewSentence(report: {
+  reclaimed: number;
+  referenced: number;
+  too_young: number;
+  unrecognized: number;
+}): string {
+  return `Would reclaim ${String(report.reclaimed)} file(s); ${String(report.referenced)} referenced, ${String(report.too_young)} too young, ${String(report.unrecognized)} unrecognized. Nothing was deleted.`;
+}
+export const RUN_SWEEP_DIALOG_TITLE = 'Run the orphan sweep?';
+export const RUN_SWEEP_DIALOG_MESSAGE =
+  'Every unreferenced file past the age floor will be deleted. This cannot be undone.';
+export function sweepReportSentence(report: { reclaimed: number; failed: number }): string {
+  const failures = report.failed > 0 ? ` ${String(report.failed)} could not be removed.` : '';
+  return `Reclaimed ${String(report.reclaimed)} file(s).${failures}`;
+}
+/** 503 `orphan_check_unavailable` (AC-38). */
+export const SWEEP_CHECK_UNAVAILABLE = 'The database check could not run, so nothing was deleted.';
+export const SWEEP_FAILED = "The sweep couldn't run. Nothing was deleted.";
+
+// Job health (AC-39)
+export const JOB_HEALTH_HEADING = 'Job health';
+/** Keyed by `/health/ready`'s dependency names. */
+export const DEPENDENCY_LABELS = {
+  postgres: 'Database',
+  redis: 'Redis',
+  celery: 'Worker',
+} as const;
+export const DEPENDENCY_HEALTHY = 'Healthy';
+export const DEPENDENCY_UNHEALTHY = 'Not healthy';
+export const IDENTITY_SWEEP_LABEL = 'Identity token sweep';
+export const NOT_REPORTED = 'Not reported by this API.';
+export const READINESS_ERROR = "Couldn't read the job health.";

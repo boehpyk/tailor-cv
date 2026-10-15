@@ -40,7 +40,7 @@ going red, and the source restored byte-exact (`git diff --stat -- src` empty):
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -54,6 +54,7 @@ from tailorcraft.application.retention.purge_expired_guest_sessions import (
 from tailorcraft.domain.identity.claim import GuestWorkClaimReport
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.domain.retention.ports import ExpiredGuestDataPort
+from tailorcraft.domain.retention.storage import FileOwnerKind
 from tailorcraft.domain.retention.value_objects import ExpiringGuestSession, RetentionWindow
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.infrastructure.clock import FixedClock
@@ -154,6 +155,12 @@ class _OnlyThisSession:
         self._events.append(f"delete_session={deleted}")
         return deleted
 
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        raise NotImplementedError
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        raise NotImplementedError
+
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         return await self._inner.which_are_referenced(keys)
 
@@ -247,6 +254,12 @@ class _HoldingDelete:
         await asyncio.wait_for(self.release.wait(), _STEP_TIMEOUT)
         await self._session.commit()
         return deleted
+
+    async def session_with_files(self, session_id: GuestSessionId) -> ExpiringGuestSession | None:
+        raise NotImplementedError
+
+    async def owners_of(self, keys: Sequence[FileRef]) -> Mapping[FileRef, FileOwnerKind]:
+        raise NotImplementedError
 
     async def which_are_referenced(self, keys: Sequence[FileRef]) -> frozenset[FileRef]:
         return await self._inner.which_are_referenced(keys)

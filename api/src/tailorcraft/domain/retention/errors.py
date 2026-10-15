@@ -84,3 +84,10 @@ class HistoryEntryInProgress(RetentionError):
     def __init__(self, status: str) -> None:
         super().__init__(status)
         self.status = status
+
+
+class InvalidGuestSessionCursor(RetentionError):
+    """`GuestSessionCursor` was given an `expires_at` no stored value could have produced, or the
+    boundary could not decode `?cursor=` at all (slice 4.4, ADR-0035; 4.2's
+    `InvalidUserDirectoryCursor` pattern: one error per directory's cursor). The boundary answers
+    422 `invalid_cursor`. Carries no client input."""

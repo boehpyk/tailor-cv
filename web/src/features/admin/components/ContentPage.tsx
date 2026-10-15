@@ -6,16 +6,21 @@ import { NotFoundPage } from '@/features/tailoring/components/NotFoundPage';
 import {
   ADMIN_RETRY_LABEL,
   BACK_TO_ACCOUNT,
+  BACK_TO_GUESTS,
+  BACK_TO_GUEST_SESSION,
   BACK_TO_USERS,
+  GUEST_SESSION_GONE,
   USER_GONE,
   USER_LOADING,
 } from '../adminCopy';
+import { subjectLink } from '../contentView';
 
+import type { AdminSubject } from '@/api/admin';
 import type { UseQueryResult } from '@tanstack/react-query';
 
 export interface ContentPageProps<T> {
   readonly query: UseQueryResult<T>;
-  readonly userId: string;
+  readonly subject: AdminSubject;
   /** The item kind's own 404 code, and what the page says for it. */
   readonly goneCode: string;
   readonly goneText: string;
@@ -28,13 +33,14 @@ const LINK = 'font-medium text-slate-900 underline underline-offset-2';
 /**
  * The views every admin read page shares (AC-27), error first like `UserPage`: the firewall's
  * code-less 404 → the app's `NotFoundPage`; `user_not_found` → the account is gone, link to
- * `/admin`; the kind's 404 → the item is gone, link to the account. Those outrank cached data; any
+ * `/admin`; `guest_session_not_found` → the session is gone, link to `/admin/guests` (slice 4.4,
+ * AC-35); the kind's 404 → the item is gone, link to the account. Those outrank cached data; any
  * other error does not, so a failed background refetch never hides the page. Then the page, an
  * alert with Retry, or loading.
  */
 export function ContentPage<T>({
   query,
-  userId,
+  subject,
   goneCode,
   goneText,
   errorText,
@@ -52,11 +58,12 @@ export function ContentPage<T>({
         </section>
       );
     }
+    if (error.code === 'guest_session_not_found') return <GuestSessionGone />;
     if (error.code === goneCode) {
       return (
         <section className="mb-10 space-y-3">
           <p className="text-slate-700">{goneText}</p>
-          <BackToAccount userId={userId} />
+          <BackToAccount subject={subject} />
         </section>
       );
     }
@@ -100,11 +107,23 @@ export function ErrorWithRetry({
   );
 }
 
-/** A link back to the account a read page belongs to. */
-export function BackToAccount({ userId }: { readonly userId: string }): React.JSX.Element {
+/** A link back to the subject a read page belongs to: the account, or the guest session. */
+export function BackToAccount({ subject }: { readonly subject: AdminSubject }): React.JSX.Element {
   return (
-    <Link to={`/admin/users/${encodeURIComponent(userId)}`} className={LINK}>
-      {BACK_TO_ACCOUNT}
+    <Link to={subjectLink(subject)} className={LINK}>
+      {subject.kind === 'user' ? BACK_TO_ACCOUNT : BACK_TO_GUEST_SESSION}
     </Link>
+  );
+}
+
+/** 404 `guest_session_not_found` (AC-33, AC-35): expired, claimed or deleted — say so, link back. */
+export function GuestSessionGone(): React.JSX.Element {
+  return (
+    <section className="mb-10 space-y-3">
+      <p className="text-slate-700">{GUEST_SESSION_GONE}</p>
+      <Link to="/admin/guests" className={LINK}>
+        {BACK_TO_GUESTS}
+      </Link>
+    </section>
   );
 }
