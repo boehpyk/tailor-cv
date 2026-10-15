@@ -178,6 +178,12 @@ class _RecordingExpiredGuestDataPort:
         )
 
 
+class _UnlinkBug(Exception):
+    """An unlink failure the store did not translate — `LocalFileStore._resolve_contained`'s bare
+    `RuntimeError` on a shard symlinked out of the root is the real one. Its own class, so no
+    `pytest.raises` here can be satisfied by anything else."""
+
+
 @dataclass
 class _RecordingFileStorePort:
     """A recording `FileStorePort` fake. `fail_on`, given a set of keys, makes `delete` raise
@@ -186,6 +192,7 @@ class _RecordingFileStorePort:
 
     log: _SharedLog
     fail_on: frozenset[FileRef] = field(default_factory=frozenset)
+    bug_on: frozenset[FileRef] = field(default_factory=frozenset)
 
     async def put(self, ref: FileRef, data: bytes) -> None:
         raise NotImplementedError("put is not exercised by T9")
@@ -197,6 +204,9 @@ class _RecordingFileStorePort:
         if ref in self.fail_on:
             self.log.entries.append(("delete_failed", ref))
             raise FileStoreUnavailable("disk full")
+        if ref in self.bug_on:
+            self.log.entries.append(("delete_bug", ref))
+            raise _UnlinkBug("not a FileStoreUnavailable: the store's own layout is wrong")
         self.log.entries.append(("delete", ref))
 
     async def delete_partial(self, ref: FileRef) -> None:
@@ -474,6 +484,31 @@ async def test_an_unexpected_exception_while_listing_propagates_out_of_call(
     with pytest.raises(RuntimeError) as exc_info:
         await use_case()
     assert type(exc_info.value) is RuntimeError
+
+
+async def test_an_unexpected_exception_from_files_delete_escapes_the_batch_and_is_not_a_session_failure(
+    clock: FixedClock,
+) -> None:
+    """R-15, kept through slice 4.4's lift (/verify MINOR 1, owner's choice (a)). Only
+    `delete_session`'s raise is a per-session failure; an untranslated raise from `files.delete`
+    comes *after* the row is deleted and committed, so recording it as a `SessionPurgeFailure` would
+    report a deleted session as failed and skip its remaining files. It escapes the run instead, as
+    it did before `purge_one` was lifted: the task or the CLI fails loudly, and no later session is
+    touched."""
+    log = _SharedLog()
+    bad_file, later_file, other_file = _a_file_ref(), _a_file_ref(), _a_file_ref()
+    session = _expiring_session(expires_at=_an_instant(0), files=(bad_file, later_file))
+    other = _expiring_session(expires_at=_an_instant(1), files=(other_file,))
+    data = _RecordingExpiredGuestDataPort(candidates=[session, other], log=log)
+    files = _RecordingFileStorePort(log=log, bug_on=frozenset({bad_file}))
+    use_case = _use_case(data, files, clock)
+
+    with pytest.raises(_UnlinkBug):
+        await use_case()
+    assert log.entries == [
+        ("delete_session", session.session_id),
+        ("delete_bug", bad_file),
+    ]
 
 
 # --- 9. Slice 2.4 AC-4: the purge unlinks only what it deleted ------------------------------------
