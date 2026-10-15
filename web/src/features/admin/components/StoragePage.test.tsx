@@ -324,6 +324,89 @@ describe('the purge panel — AC-37', () => {
   });
 });
 
+describe('a run’s result does not wait on the refetches it triggers (T28)', () => {
+  /** Readiness and storage answer at once until `hold()`, then stay pending until `release()`. */
+  function gated() {
+    const w = guestWorld();
+    const routes = guestRoutes(w, {
+      'POST /api/admin/guest-purge': status(409, 'purge_in_progress'),
+    });
+    let holding = false;
+    const waiting: (() => void)[] = [];
+    const maybeHold = (handler: RouteHandler): RouteHandler => {
+      return (call, n) =>
+        holding
+          ? new Promise<Response>((resolve) => {
+              waiting.push(() => {
+                resolve(Promise.resolve(handler(call, n)));
+              });
+            })
+          : handler(call, n);
+    };
+    const ready = routes['GET /health/ready'];
+    const storage = routes['GET /api/admin/storage'];
+    if (ready === undefined || storage === undefined) throw new Error('fixture routes missing');
+    const held: Record<string, RouteHandler> = {
+      ...routes,
+      'GET /health/ready': maybeHold(ready),
+      'GET /api/admin/storage': maybeHold(storage),
+    };
+    const fetch = stubAccountFetch(held);
+    signInAs(ADMIN);
+    renderWithRouter('/admin/storage', { queryClient: createAppQueryClient() });
+    return {
+      fetch,
+      hold: () => {
+        holding = true;
+      },
+      release: () => {
+        holding = false;
+        waiting.splice(0).forEach((resolve) => {
+          resolve();
+        });
+      },
+      swap: (key: string, handler: RouteHandler) => {
+        held[key] = handler;
+      },
+    };
+  }
+
+  it('the report renders while the readiness and storage refetches are still pending', async () => {
+    const { fetch, hold, release, swap } = gated();
+    swap('POST /api/admin/guest-purge', () => Response.json(guestWorld().purgeRun));
+    await screen.findByRole('table');
+    const readyBefore = readyCalls(fetch);
+    hold();
+
+    await click('Run purge');
+    await confirmInDialog('Run purge');
+
+    expect(await screen.findByText(/Deleted 3 session\(s\), 7 file\(s\)/)).toBeVisible();
+    await waitFor(() => {
+      expect(readyCalls(fetch)).toBeGreaterThan(readyBefore);
+    });
+    release();
+  });
+
+  it('the 409 copy renders while the refetches are still pending', async () => {
+    const { fetch, hold, release } = gated();
+    await screen.findByRole('table');
+    const readyBefore = readyCalls(fetch);
+    hold();
+
+    await click('Run purge');
+    await confirmInDialog('Run purge');
+
+    expect(
+      await screen.findByText('A purge is already running. Nothing was deleted by this request.'),
+    ).toBeVisible();
+    await waitFor(() => {
+      expect(readyCalls(fetch)).toBeGreaterThan(readyBefore);
+    });
+    release();
+  });
+});
+
 describe('the sweep panel — AC-38', () => {
   it('Preview sweep says what it would reclaim and that nothing was deleted; no POST', async () => {
     const { fetch } = open();
