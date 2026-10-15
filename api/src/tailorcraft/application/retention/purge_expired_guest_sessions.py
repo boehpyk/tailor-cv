@@ -290,14 +290,14 @@ class PurgeExpiredGuestSessions:
         file_unlink_failures: list[FileUnlinkFailure] = []
 
         # Step 4. Per candidate, in the order the port handed them back; within each candidate,
-        # the row before its files — that inner order is `purge_one`'s, below. A raise from its
-        # `delete_session` reaches this loop, which records it and moves on. So would a raise from
-        # `files.delete` other than `FileStoreUnavailable` (before the lift it escaped the run) —
-        # unreachable in practice, since `LocalFileStore`'s floor translates every failure into
-        # that type (ADR-0012 obligation 10).
+        # the row before its files. The `try` wraps **only** `delete_session`: a raise from
+        # `files.delete` other than `FileStoreUnavailable` (`LocalFileStore._resolve_contained`'s
+        # `RuntimeError` on a shard symlinked out of the root) comes after the row is deleted and
+        # committed, so it escapes the run (R-15) rather than being recorded as a failure of a
+        # session that is in fact gone. `purge_one` is the same two steps for the one-session erase.
         for candidate in candidates:
             try:
-                step = await purge_one(self._data, self._files, candidate)
+                deleted = await self._data.delete_session(candidate.session_id)
             except Exception as exc:
                 # **This broad catch is not the `except Exception` floor R-15 forbids, and the two
                 # look identical enough that the difference has to be written down here rather than
@@ -337,10 +337,12 @@ class PurgeExpiredGuestSessions:
                 # prevent. The batch continues, because the next candidate is still overdue.
                 continue
 
-            if step.deleted:
-                sessions_deleted += 1
-            else:
+            if not deleted:
+                # A skip: see `purge_one` — this call removed no row, so none of the keys are ours.
                 sessions_skipped += 1
+                continue
+            sessions_deleted += 1
+            step = await _unlink_files(self._files, candidate)
             files_unlinked += step.files_unlinked
             file_unlink_failures.extend(step.file_unlink_failures)
 
@@ -386,11 +388,11 @@ async def purge_one(
     """Purge one expired guest session: its row first, then — only if that `DELETE` removed it —
     its files (ADR-0006 §2, ADR-0018 amendment (a)).
 
-    Lifted out of `PurgeExpiredGuestSessions.__call__` (slice 4.4, ADR-0035) so the batch and the
-    admin's single-session erase are one implementation of what purging a session *is*. **A raise
-    from `delete_session` propagates**: the batch records it as a `SessionPurgeFailure` and
-    continues, while a one-session erase has no next candidate and lets it escape. Either way this
-    session's files are not touched, because its rows still name them.
+    Lifted out of `PurgeExpiredGuestSessions.__call__` (slice 4.4, ADR-0035) for the admin's
+    single-session erase. **Every raise propagates**: from `delete_session` (the session's files
+    are not touched, because its rows still name them) and from `files.delete` other than
+    `FileStoreUnavailable`. The batch runs the same two steps itself, because it records only the
+    first kind as a `SessionPurgeFailure` and must not catch the second.
     """
     if not await data.delete_session(candidate.session_id):
         # **Unlink only what you deleted** (ADR-0018 amendment (a), AC-4). This call's
@@ -401,7 +403,12 @@ async def purge_one(
         # name a user's files, and unlinking them would destroy account data. Neither
         # deleted nor failed: nothing went wrong, there was simply nothing left to purge.
         return PurgeStepOutcome(deleted=False, files_unlinked=0, file_unlink_failures=())
+    return await _unlink_files(files, candidate)
 
+
+async def _unlink_files(files: FileStorePort, candidate: ExpiringGuestSession) -> PurgeStepOutcome:
+    """The second half of `purge_one`, called only after `candidate`'s row was deleted. A
+    `FileStoreUnavailable` is recorded and the next key tried; any other raise escapes."""
     files_unlinked = 0
     file_unlink_failures: list[FileUnlinkFailure] = []
     # Only now the files: this session's row is deleted and — by the committing adapter's
