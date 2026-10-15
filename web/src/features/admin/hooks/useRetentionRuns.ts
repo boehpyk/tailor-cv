@@ -35,14 +35,16 @@ function retryOnce(failureCount: number, error: Error): boolean {
   return !isClientError(error) && failureCount < 1;
 }
 
-/** After a run, what it changed: the job facts, the volume, the list — and its now-stale preview. */
-async function afterRun(queryClient: QueryClient, actorId: string, job: RetentionJob) {
+/**
+ * After a run, what it changed: the job facts, the volume, the list — and its now-stale preview.
+ * Fired, not awaited: a returned promise keeps the mutation pending until every refetch lands, and
+ * `/health/ready` takes ~2 s (`probe_celery`), so the report would show that much late (T28).
+ */
+function afterRun(queryClient: QueryClient, actorId: string, job: RetentionJob): void {
   queryClient.removeQueries({ queryKey: retentionPreviewKey(actorId, job) });
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: readinessQueryKey }),
-    queryClient.invalidateQueries({ queryKey: storageKey(actorId) }),
-    queryClient.invalidateQueries({ queryKey: guestListKey(actorId) }),
-  ]);
+  void queryClient.invalidateQueries({ queryKey: readinessQueryKey });
+  void queryClient.invalidateQueries({ queryKey: storageKey(actorId) });
+  void queryClient.invalidateQueries({ queryKey: guestListKey(actorId) });
 }
 
 /** The purge and the sweep from `/admin/storage`: previews and runs. Not optimistic. */
@@ -64,12 +66,16 @@ export function useRetentionRuns(actorId: string): RetentionRuns {
     mutationKey: retentionRunMutationKey('purge'),
     mutationFn: runPurge,
     // Settled, not success: a 503 may follow sessions already deleted (AC-37).
-    onSettled: () => afterRun(queryClient, actorId, 'purge'),
+    onSettled: () => {
+      afterRun(queryClient, actorId, 'purge');
+    },
   });
   const sweep = useMutation({
     mutationKey: retentionRunMutationKey('sweep'),
     mutationFn: runSweep,
-    onSettled: () => afterRun(queryClient, actorId, 'sweep'),
+    onSettled: () => {
+      afterRun(queryClient, actorId, 'sweep');
+    },
   });
   return { purgePreview, sweepPreview, purge, sweep };
 }
