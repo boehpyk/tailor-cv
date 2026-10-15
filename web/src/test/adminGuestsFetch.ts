@@ -85,9 +85,10 @@ export const STORAGE: AdminStorage = {
   unrecognized: { files: 1, bytes: 512 },
 };
 
+// A real dry run (AC-16): sessions_deleted is always 0; the would-delete count is `examined`.
 export const PURGE_PREVIEW: PurgeReport = {
   examined: 3,
-  sessions_deleted: 3,
+  sessions_deleted: 0,
   sessions_skipped: 0,
   sessions_failed: 0,
   files_unlinked: 7,

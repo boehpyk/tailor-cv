@@ -5,7 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __resetForTests } from '@/features/auth/authStore';
 import { createAppQueryClient } from '@/queryClient';
 import { callsTo, hang, signInAs, status, stubAccountFetch } from '@/test/accountFetch';
-import { ADMIN, guestRoutes, guestWorld, readinessReport } from '@/test/adminGuestsFetch';
+import {
+  ADMIN,
+  guestRoutes,
+  guestWorld,
+  PURGE_PREVIEW,
+  readinessReport,
+} from '@/test/adminGuestsFetch';
 import { renderWithRouter } from '@/test/render';
 
 import {
@@ -149,6 +155,12 @@ describe('storage — AC-36', () => {
 });
 
 describe('the purge panel — AC-37', () => {
+  it('the preview fake has a real dry-run shape (AC-16): nothing deleted, examined is the count', () => {
+    expect(PURGE_PREVIEW.dry_run).toBe(true);
+    expect(PURGE_PREVIEW.sessions_deleted).toBe(0);
+    expect(PURGE_PREVIEW.examined).toBeGreaterThan(0);
+  });
+
   it('shows the job facts: scheduled, last run and outcome, overdue', async () => {
     open();
 
