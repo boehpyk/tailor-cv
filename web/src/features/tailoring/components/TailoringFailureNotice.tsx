@@ -58,9 +58,9 @@ export function TailoringFailureNotice({
   return (
     <div
       role="alert"
-      className="space-y-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2"
+      className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3"
     >
-      <p className="text-xs font-medium tracking-wide text-amber-700 uppercase">
+      <p className="text-xs font-semibold tracking-wide text-amber-800 uppercase">
         This tailoring run did not finish
       </p>
       <p className="text-sm font-medium text-amber-900">{copy.headline}</p>
@@ -80,7 +80,7 @@ export function TailoringFailureNotice({
           onClick={onRetry}
           disabled={!canStart || isStarting || hold.held}
           aria-describedby={hold.held ? hintId : undefined}
-          className="rounded-md bg-amber-700 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-60"
+          className="min-h-11 rounded-lg bg-amber-700 px-4 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
         >
           {isStarting ? 'Starting…' : 'Try again'}
         </button>

@@ -19,7 +19,7 @@ export interface TailoringRejectionNoticeProps {
 }
 
 /**
- * **Error B — the API rejected the request** — presentational. Red, like the sibling panels' error
+ * **Error B — the API rejected the request** — presentational. Danger (red), like the sibling panels' error
  * B, and worded as "we could not start", never as "your run failed": no run exists to have failed.
  *
  * A button rather than a link for "View the run in progress": there is no route to link to until
@@ -31,10 +31,13 @@ export function TailoringRejectionNotice({
   activeRunHref = null,
 }: TailoringRejectionNoticeProps): React.JSX.Element {
   const controlClass =
-    'inline-block rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700';
+    'inline-flex min-h-11 items-center rounded-lg border border-danger-200 bg-white px-3 text-sm font-semibold text-danger-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9';
   return (
-    <div role="alert" className="space-y-2 rounded-md border border-red-200 bg-red-50 px-3 py-2">
-      <p className="text-sm font-medium text-red-700">{message}</p>
+    <div
+      role="alert"
+      className="space-y-2 rounded-lg border border-danger-200 bg-danger-50 px-4 py-3"
+    >
+      <p className="text-sm font-medium text-danger-600">{message}</p>
       {activeRunHref !== null ? (
         <Link to={activeRunHref} className={controlClass}>
           View the run in progress

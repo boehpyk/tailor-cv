@@ -39,7 +39,7 @@ export function HoldNote({
   return (
     <>
       {held && remainingSeconds <= COUNTDOWN_LIMIT_SECONDS && (
-        <p aria-hidden="true" className="text-sm text-slate-500 tabular-nums">
+        <p aria-hidden="true" className="text-sm text-slate-600 tabular-nums">
           {String(remainingSeconds)} s
         </p>
       )}

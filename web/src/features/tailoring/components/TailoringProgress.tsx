@@ -81,17 +81,17 @@ export function TailoringProgress({
   return (
     <div
       role="status"
-      className="space-y-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
+      className="space-y-1 rounded-lg border border-slate-200 bg-surface px-4 py-3"
     >
       {status === 'queued' ? (
-        <p className="text-sm font-medium text-slate-800">Waiting for a worker…</p>
+        <p className="text-sm font-semibold text-slate-900">Waiting for a worker…</p>
       ) : (
-        <p className="text-sm font-medium text-slate-800">
+        <p className="text-sm font-semibold text-slate-900">
           Tailoring with Gemini…
           {!paused && (
             <>
               {' '}
-              <span aria-hidden="true" className="text-slate-500 tabular-nums">
+              <span aria-hidden="true" className="font-mono text-slate-500 tabular-nums">
                 {elapsedSeconds}s
               </span>
             </>

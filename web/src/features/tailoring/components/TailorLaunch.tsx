@@ -115,10 +115,10 @@ function ChecklistItem({
     <li className="flex gap-2">
       {/* The glyph is decoration; the detail text already says whether the item is done, so a
           screen reader is not read "check mark" or "white circle" on top of it. */}
-      <span aria-hidden="true" className={done ? 'text-emerald-600' : 'text-slate-400'}>
+      <span aria-hidden="true" className={done ? 'text-success-700' : 'text-slate-500'}>
         {done ? '✓' : '○'}
       </span>
-      <span className="text-slate-800">
+      <span className="text-slate-900">
         {label} <span className="text-slate-500">— {detail}</span>
       </span>
     </li>
@@ -157,7 +157,7 @@ export function TailorLaunch({
 
   return (
     <div className="space-y-3">
-      <ul aria-label="What tailoring needs" className="space-y-1 text-sm">
+      <ul aria-label="What tailoring needs" className="space-y-1.5 text-sm">
         <ChecklistItem
           done={baseCv.state === 'ready'}
           label="Base CV"
@@ -184,7 +184,7 @@ export function TailorLaunch({
         onClick={onLaunch}
         disabled={reason !== null || isStarting}
         aria-describedby={reason !== null ? reasonId : disclosureId}
-        className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+        className="min-h-11 rounded-lg bg-brand-600 px-6 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 max-sm:w-full"
       >
         {isStarting ? 'Starting…' : hasPreviousRun ? 'Tailor again' : 'Tailor my CV'}
       </button>

@@ -208,7 +208,9 @@ export function GuestWorkspace(): React.JSX.Element {
       baseCvPanel={<BaseCvUploadPanel />}
       jobPostingPanel={<JobPostingPanel />}
       tailoring={
-        <div className="space-y-4">
+        // 2e's progress card: the stepper, the latest run, the launch and its refusal. No summary of
+        // the two inputs here — the tabs above already show them (technical-plan §3).
+        <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
           <ProgressStepper
             progress={progress}
             run={{ kind: 'none' }}
