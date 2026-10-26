@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { Link, useMatch } from 'react-router';
+import { NavLink, useMatch } from 'react-router';
 
 import { BOARD_NAV_LABEL } from '@/features/tracking/trackingCopy';
 
@@ -8,13 +8,16 @@ import {
   AUTH_BOOTING_NOTE,
   AUTH_RETRY_LABEL,
   AUTH_UNAVAILABLE_NOTE,
+  HOW_IT_WORKS_NAV_LABEL,
   LOGOUT_LABEL,
   LOGOUT_PENDING_LABEL,
+  WORKSPACE_NAV_LABEL,
 } from '../authCopy';
 import { useAuth } from '../hooks/useAuth';
 import { useLogout } from '../hooks/useLogout';
 
-const linkClass = 'font-medium text-slate-900 underline underline-offset-2';
+const linkClass =
+  'font-medium text-slate-900 underline underline-offset-2 aria-[current=page]:text-brand-700';
 
 /**
  * The header's auth block (AC-42): four states, each distinguishable by role and text.
@@ -22,8 +25,9 @@ const linkClass = 'font-medium text-slate-900 underline underline-offset-2';
  * - `booting` — a neutral, fixed-width placeholder, busy, with the words for assistive technology
  *   only. **No "Log in" flicker**: showing the anonymous links for the instant before the boot
  *   refresh answers tells a logged-in user they were logged out.
- * - `anonymous` — the empty state: **Log in** · **Create account**.
- * - `authenticated` — the email, **History** (slice 2.3, AC-44), **Board** (slice 3.1, AC-32),
+ * - `anonymous` — the empty state: **Log in** · **Create account** · **How it works**
+ *   (web-design-refresh C-2).
+ * - `authenticated` — the email, **Workspace** (web-design-refresh C-1), **History** (slice 2.3, AC-44), **Board** (slice 3.1, AC-32),
  *   **Admin** for an admin (slice 4.1, AC-30), **Account** and **Log out**. The
  *   email comes from `['auth', 'me']` and can be absent for the instant before the seed lands; the
  *   links cannot, so they render alone. Log out is here so it is one click from every page — a
@@ -34,6 +38,9 @@ const linkClass = 'font-medium text-slate-900 underline underline-offset-2';
  *   and two controls both announced as just "Retry" leave a screen-reader user guessing. Never the anonymous
  *   links, for the reason `RequireAuth` gives: a user who believes they were logged out logs in
  *   again and mints a second login.
+ *
+ * Every link is a `NavLink`, so the router — not a hand-written check — sets `aria-current="page"`
+ * on the current route's link (web-design-refresh AC-9), and the active style keys off that attribute.
  *
  * No props: everything comes from `useAuth()`.
  */
@@ -50,33 +57,40 @@ export function AuthStatus() {
     case 'anonymous':
       return (
         <nav aria-label="Account" className="flex gap-4 text-sm">
-          <Link to="/login" className={linkClass}>
+          <NavLink to="/login" className={linkClass}>
             Log in
-          </Link>
-          <Link to="/register" className={linkClass}>
+          </NavLink>
+          <NavLink to="/register" className={linkClass}>
             Create account
-          </Link>
+          </NavLink>
+          <NavLink to="/welcome" className={linkClass}>
+            {HOW_IT_WORKS_NAV_LABEL}
+          </NavLink>
         </nav>
       );
     case 'authenticated':
       return (
         <nav aria-label="Account" className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
           {auth.user !== undefined && <span className="text-slate-600">{auth.user.email}</span>}
-          <Link to="/history" className={linkClass}>
+          {/* `end`: without it `/` is a prefix of every path and Workspace is always current. */}
+          <NavLink to="/" end className={linkClass}>
+            {WORKSPACE_NAV_LABEL}
+          </NavLink>
+          <NavLink to="/history" className={linkClass}>
             History
-          </Link>
-          <Link to="/board" className={linkClass}>
+          </NavLink>
+          <NavLink to="/board" className={linkClass}>
             {BOARD_NAV_LABEL}
-          </Link>
+          </NavLink>
           {/* AC-30: a hint for showing the link, not authority — `/admin` asks the server (OQ-13). */}
           {auth.user?.role === 'admin' && (
-            <Link to="/admin" className={linkClass}>
+            <NavLink to="/admin" className={linkClass}>
               Admin
-            </Link>
+            </NavLink>
           )}
-          <Link to="/account" className={linkClass}>
+          <NavLink to="/account" className={linkClass}>
             Account
-          </Link>
+          </NavLink>
           <HeaderLogout />
         </nav>
       );

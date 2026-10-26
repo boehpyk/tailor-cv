@@ -70,6 +70,14 @@ export const REGISTER_STORAGE_NOTICE =
 export const REGISTER_GUEST_WORK_NOTICE =
   "Work you did as a guest stays with this browser for 24 hours. Once you're signed in, we'll offer to keep it in your account; what you keep, and what you tailor from then on, is saved to your history until you delete it.";
 
+/**
+ * web-design-refresh C-1 / C-2 / C-3: the header's link home when signed in, its link to the
+ * marketing page when signed out, and the footer's link to the same page on every shell route.
+ */
+export const WORKSPACE_NAV_LABEL = 'Workspace';
+export const HOW_IT_WORKS_NAV_LABEL = 'How it works';
+export const FOOTER_HOW_IT_WORKS_LABEL = 'How TailorCraft works';
+
 /** AC-42 / I-51 — the header and the guard both say this when the boot refresh could not answer. */
 export const AUTH_UNAVAILABLE_NOTE = "Couldn't check whether you're logged in";
 export const AUTH_RETRY_LABEL = 'Retry';
