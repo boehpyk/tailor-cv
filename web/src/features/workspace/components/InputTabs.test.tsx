@@ -181,4 +181,26 @@ describe('InputTabs', () => {
     expect(jobPostingTab).toHaveAttribute('aria-selected', 'true');
     expect(jobPostingTab).toHaveFocus();
   });
+
+  // web-design-refresh T13 RED (AC-13): the step rail is vertical, so ArrowDown/ArrowUp are the
+  // natural keys; they mirror ArrowRight/ArrowLeft, wrapping, moving selection and focus.
+  it.each([
+    ['ArrowDown', 'base-cv', 'Base CV', 'Job posting'],
+    ['ArrowDown', 'job-posting', 'Job posting', 'Base CV'],
+    ['ArrowUp', 'job-posting', 'Job posting', 'Base CV'],
+    ['ArrowUp', 'base-cv', 'Base CV', 'Job posting'],
+  ] as const)(
+    '%s from %s moves selection and focus to the other tab (wrapping)',
+    async (key, initial, from, to) => {
+      const user = userEvent.setup();
+      render(<StatefulInputTabs initial={initial} />);
+
+      screen.getByRole('tab', { name: from }).focus();
+      await user.keyboard(`{${key}}`);
+
+      const target = screen.getByRole('tab', { name: to });
+      expect(target).toHaveAttribute('aria-selected', 'true');
+      expect(target).toHaveFocus();
+    },
+  );
 });
