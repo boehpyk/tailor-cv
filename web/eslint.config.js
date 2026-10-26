@@ -36,6 +36,13 @@ export default tseslint.config(
       '@typescript-eslint/no-misused-promises': 'error',
     },
   },
+  // Build scripts are plain Node ESM, outside the TypeScript projects: the recommended JS rules,
+  // with Node's globals (`process`, `console`) instead of the browser's.
+  {
+    extends: [js.configs.recommended],
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { ecmaVersion: 2022, globals: globals.node },
+  },
   {
     files: ['**/*.test.{ts,tsx}', 'src/test/**'],
     rules: { '@typescript-eslint/no-unsafe-assignment': 'off' },
