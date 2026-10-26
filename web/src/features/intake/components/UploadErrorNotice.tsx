@@ -66,7 +66,7 @@ export function UploadErrorNotice(props: UploadErrorNoticeProps): React.JSX.Elem
     // Error A — rejected before any request was made. Inline text, not a boxed notice: nothing
     // was sent, so this reads closer to a form validation message than an incident.
     return (
-      <p role="alert" className="text-sm font-medium text-red-700">
+      <p role="alert" className="text-sm font-medium text-danger-600">
         {props.message}
       </p>
     );
@@ -78,13 +78,16 @@ export function UploadErrorNotice(props: UploadErrorNoticeProps): React.JSX.Elem
     // Released: `HoldNote` says *"You can try again now."*, so the hint would only contradict it.
     const hint = hold.released ? null : actionHintFor(props.status, props.code, hold.phrase);
     return (
-      <div role="alert" className="space-y-1 rounded-md border border-red-200 bg-red-50 px-3 py-2">
+      <div
+        role="alert"
+        className="space-y-1 rounded-lg border border-danger-200 bg-danger-50 px-4 py-3"
+      >
         {/* A 429's server prose names its own wait in seconds ("Try again in 120 seconds"); ours is
             the hint below, worded from `Retry-After` (AC-12, AC-16). */}
-        <p className="text-sm font-medium text-red-700">
+        <p className="text-sm font-medium text-danger-600">
           {rateLimited ? 'Too many uploads in a short time.' : props.message}
         </p>
-        {hint !== null && <p className="text-sm text-red-600">{hint}</p>}
+        {hint !== null && <p className="text-sm text-danger-600">{hint}</p>}
         <HoldNote
           held={hold.held}
           remainingSeconds={hold.remainingSeconds}
@@ -100,7 +103,7 @@ export function UploadErrorNotice(props: UploadErrorNoticeProps): React.JSX.Elem
   return (
     <div
       role="alert"
-      className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-3 py-2"
+      className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3"
     >
       <p className="text-sm font-medium text-amber-800">{props.message}</p>
     </div>

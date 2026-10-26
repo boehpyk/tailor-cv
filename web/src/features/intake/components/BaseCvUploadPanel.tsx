@@ -86,7 +86,7 @@ export function BaseCvUploadPanel(): React.JSX.Element {
   if (listIsPending) {
     return (
       <div>
-        <p role="status" className="text-sm text-slate-500">
+        <p role="status" className="text-sm text-slate-600">
           Loading your CV…
         </p>
       </div>
@@ -100,7 +100,7 @@ export function BaseCvUploadPanel(): React.JSX.Element {
     // of the upload-specific error kinds.
     return (
       <div>
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm font-medium text-danger-600">
           Could not load your CVs: {listError.message}
         </p>
       </div>
@@ -133,7 +133,7 @@ export function BaseCvUploadPanel(): React.JSX.Element {
       )}
 
       {isEmpty && !upload.isPending && (
-        <p className="text-sm text-slate-500">We delete guest CVs after 24 hours.</p>
+        <p className="text-sm text-slate-600">We delete guest CVs after 24 hours.</p>
       )}
 
       {preValidationError !== null && (
