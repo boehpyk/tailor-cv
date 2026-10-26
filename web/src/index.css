@@ -1,13 +1,112 @@
 @import 'tailwindcss';
 
+/* Fonts are self-hosted (ADR-0036): the files come from @fontsource and ship in our own bundle, so
+   no page load ever asks a third party for a font. Each face is declared here instead of importing
+   fontsource's `latin-<weight>.css`, because those also list a `.woff` fallback and Vite would ship
+   both files for every face; every browser we support reads `.woff2`. Latin subset, the seven
+   weights the design uses, and `font-display: swap` — text paints at once in the fallback stack and
+   swaps when the font arrives, so nothing ever waits on a font. */
+@font-face {
+  font-family: 'Figtree';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('@fontsource/figtree/files/figtree-latin-400-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Figtree';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('@fontsource/figtree/files/figtree-latin-500-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Figtree';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('@fontsource/figtree/files/figtree-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Figtree';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('@fontsource/figtree/files/figtree-latin-700-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('@fontsource/bricolage-grotesque/files/bricolage-grotesque-latin-500-normal.woff2')
+    format('woff2');
+}
+@font-face {
+  font-family: 'Bricolage Grotesque';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url('@fontsource/bricolage-grotesque/files/bricolage-grotesque-latin-700-normal.woff2')
+    format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2') format('woff2');
+}
+
 /* Tailwind v4 configures itself in CSS rather than in a JS config file. Design tokens live here,
    as custom properties, so a colour has one definition that both Tailwind utilities and hand-written
-   CSS can reach. */
+   CSS can reach (ADR-0037: components use the utilities, never a literal). Warning is Tailwind's
+   `amber` and neutrals are its `slate`, so neither is redefined. */
 @theme {
+  --color-surface: #fbfaf7;
+  --color-surface-sunk: #f4f3ef;
+  --color-page-grey: #e9e8e3;
+
   --color-brand-50: oklch(0.97 0.02 250);
+  --color-brand-400: oklch(0.4 0.16 250);
   --color-brand-500: oklch(0.62 0.16 250);
   --color-brand-600: oklch(0.55 0.17 250);
   --color-brand-700: oklch(0.47 0.16 250);
+
+  --color-highlight-100: oklch(0.93 0.12 95);
+  --color-highlight-200: oklch(0.9 0.13 95);
+
+  --color-success-50: oklch(0.95 0.05 160);
+  --color-success-500: oklch(0.6 0.14 160);
+  --color-success-700: oklch(0.42 0.1 160);
+
+  --color-danger-50: oklch(0.97 0.02 20);
+  --color-danger-200: oklch(0.9 0.06 20);
+  --color-danger-600: oklch(0.5 0.15 20);
+
+  /* Tailwind's own radius names, overridden on purpose: one definition restyles every `rounded-*`
+     in the app, admin pages included (ADR-0037, technical-plan R-4). */
+  --radius-sm: 10px;
+  --radius-md: 12px;
+  --radius-lg: 14px;
+  --radius-xl: 16px;
+  --radius-2xl: 20px;
+
+  /* Each stack ends in the system fonts, so a font that fails to load costs a look, not a page. */
+  --font-sans: 'Figtree', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Bricolage Grotesque', 'Figtree', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* The brand's dashed divider. Decorative only: it never carries state. */
+@utility stitch {
+  border-top: 1.5px dashed var(--color-slate-300);
+}
+
+@layer base {
+  body {
+    @apply bg-surface font-sans text-slate-900 antialiased;
+  }
 }
 
 /* The editor's document (features/editor). Tailwind's preflight flattens headings and strips list

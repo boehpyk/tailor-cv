@@ -145,13 +145,14 @@ describe('AC-35: no new dependency', () => {
 });
 
 describe('AC-38 (frontend half): previews are hashed assets, lazy, and size-reserved', () => {
-  it('vite.config.ts never inlines a .webp and leaves other assets on the default', () => {
+  it('vite.config.ts never inlines a .webp or a .woff2 and leaves other assets on the default', () => {
     // vite.config cannot be imported under jsdom (esbuild refuses) and eval is banned, so this is a
-    // SOURCE-shape pin on the policy: .webp -> false (never inline), anything else -> undefined
-    // (Vite's default). Not a build of dist/; the T31 manual pass checks the built output.
+    // SOURCE-shape pin on the policy: .webp and .woff2 (web-design-refresh, ADR-0036) -> false
+    // (never inline), anything else -> undefined (Vite's default). Not a build of dist/; the T31
+    // manual pass checks the built output.
     const source = readFileSync(resolve(HERE, '../../../../vite.config.ts'), 'utf8');
     expect(source).toMatch(
-      /assetsInlineLimit:\s*\(\w+\)\s*=>\s*\(\w+\.endsWith\('\.webp'\)\s*\?\s*false\s*:\s*undefined\)/,
+      /assetsInlineLimit:\s*\((\w+)\)\s*=>\s*\1\.endsWith\('\.webp'\)\s*\|\|\s*\1\.endsWith\('\.woff2'\)\s*\?\s*false\s*:\s*undefined,/,
     );
   });
 
