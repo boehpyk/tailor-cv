@@ -67,6 +67,7 @@ describe('JobPostingInput', () => {
       />,
     );
 
+    expect(screen.getByText('5 / 10')).not.toHaveAttribute('data-over-limit');
     expect(screen.getByText('5 / 10')).toHaveClass('text-slate-500');
 
     rerender(
@@ -75,7 +76,8 @@ describe('JobPostingInput', () => {
       />,
     );
 
-    expect(screen.getByText('11 / 10')).toHaveClass('text-red-700');
+    expect(screen.getByText('11 / 10')).toHaveAttribute('data-over-limit', 'true');
+    expect(screen.getByText('11 / 10')).toHaveClass('text-danger-600');
   });
 
   it('disables the whole fieldset, including the visible controls, when disabled', () => {
