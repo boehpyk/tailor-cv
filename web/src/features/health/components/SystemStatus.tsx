@@ -16,7 +16,7 @@ export function SystemStatus(): React.JSX.Element {
   const { data, isPending, isError, error } = useReadiness();
 
   if (isPending) {
-    return <p className="text-sm text-slate-500">Checking dependencies…</p>;
+    return <p className="text-slate-600">Checking dependencies…</p>;
   }
 
   if (isError) {
@@ -24,7 +24,7 @@ export function SystemStatus(): React.JSX.Element {
     // user or an operator needs to be able to tell them apart. Collapsing both into one red box is
     // the small dishonesty that makes a status page useless.
     return (
-      <p className="text-sm text-red-700">
+      <p className="text-danger-600">
         Could not reach the API: {error instanceof Error ? error.message : 'unknown error'}
       </p>
     );
@@ -32,21 +32,24 @@ export function SystemStatus(): React.JSX.Element {
 
   return (
     <div className="space-y-3">
-      <p className={data.ready ? 'font-medium text-green-700' : 'font-medium text-red-700'}>
+      <p className={data.ready ? 'font-medium text-success-700' : 'font-medium text-danger-600'}>
         {data.ready ? 'All dependencies healthy' : 'Not ready'}
       </p>
-      <ul className="divide-y divide-slate-200 rounded-lg border border-slate-200">
+      <ul className="max-w-md divide-y divide-slate-200 rounded-md border border-slate-200 bg-white text-xs">
         {Object.entries(data.dependencies).map(([name, status]) => (
-          <li key={name} className="flex items-center justify-between px-4 py-2 text-sm">
+          <li key={name} className="flex items-center justify-between px-3 py-1.5">
             <span className="font-mono text-slate-700">{name}</span>
-            <span className={status.healthy ? 'text-green-700' : 'text-red-700'}>
+            <span className={status.healthy ? 'text-success-700' : 'text-danger-600'}>
               {status.healthy ? 'up' : (status.detail ?? 'down')}
             </span>
           </li>
         ))}
       </ul>
       <section aria-labelledby="retention-heading" className="space-y-1">
-        <h3 id="retention-heading" className="text-xs font-medium uppercase text-slate-400">
+        <h3
+          id="retention-heading"
+          className="text-xs font-semibold tracking-wide text-slate-600 uppercase"
+        >
           Retention
         </h3>
         {/*
