@@ -96,12 +96,16 @@ describe('AC-34: the picker is operable and perceivable without a pointer or col
 });
 
 describe('AC-35: no new dependency', () => {
-  it('web/package.json lists exactly the dependencies of bfb98a9', () => {
+  // web-design-refresh adds exactly the three self-hosted font packages ADR-0036 names.
+  it('web/package.json lists exactly the dependencies of bfb98a9 plus the ADR-0036 fonts', () => {
     const pkg = JSON.parse(readFileSync(resolve(HERE, '../../../../package.json'), 'utf8')) as {
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
     };
     expect(Object.keys(pkg.dependencies).sort()).toEqual([
+      '@fontsource/bricolage-grotesque',
+      '@fontsource/figtree',
+      '@fontsource/jetbrains-mono',
       '@tanstack/react-query',
       '@tiptap/core',
       '@tiptap/extension-link',
