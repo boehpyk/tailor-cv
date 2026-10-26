@@ -29,15 +29,19 @@ const TAB_LABELS: Readonly<Record<WorkspaceTab, string>> = {
 /**
  * Where an arrow or Home/End key moves the selection from `current`, or `null` for any other key.
  * Wraps at both ends, which is what the ARIA tabs pattern asks for and what a user pressing → on
- * the last tab expects: to get somewhere, not to be ignored.
+ * the last tab expects: to get somewhere, not to be ignored. ↓/↑ act as →/← (AC-13): the strip is
+ * a vertical rail at `sm`+ and horizontal below, and `aria-orientation` cannot follow a CSS
+ * breakpoint, so both arrow pairs work at every width.
  */
 function tabAfterKey(current: WorkspaceTab, key: string): WorkspaceTab | null {
   const index = TAB_ORDER.indexOf(current);
   const last = TAB_ORDER.length - 1;
   switch (key) {
     case 'ArrowRight':
+    case 'ArrowDown':
       return TAB_ORDER[index === last ? 0 : index + 1] ?? null;
     case 'ArrowLeft':
+    case 'ArrowUp':
       return TAB_ORDER[index === 0 ? last : index - 1] ?? null;
     case 'Home':
       return TAB_ORDER[0] ?? null;
