@@ -1,4 +1,4 @@
-import { formatSize } from '@/features/intake/format';
+import { formatSize, formatUploadedDate } from '@/features/intake/format';
 
 import {
   DELETE_LABEL,
@@ -28,17 +28,6 @@ export interface SavedBaseCvRowProps {
 }
 
 /**
- * "20 Sep 2026", in UTC — the instant is the server's whole-second UTC, and formatting it in UTC
- * keeps a user near midnight from reading a different day than the one the list is ordered by.
- */
-const uploadedFormat = new Intl.DateTimeFormat('en-GB', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-  timeZone: 'UTC',
-});
-
-/**
  * One saved CV, presentational (AC-34): its display name (the label, else the filename), the
  * filename as well when it is labelled, its status — with the server's `failure_message` for
  * `extraction_failed` (AC-35) — its size, the date it was uploaded, and **Rename** and **Delete**.
@@ -58,12 +47,12 @@ export function SavedBaseCvRow({
   const busy = isDeleting || renameForm !== null;
 
   return (
-    <li className="rounded-lg border border-slate-200 p-4">
+    <li className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1 space-y-1">
           {renameForm ?? (
             <>
-              <p className="font-medium break-words text-slate-900">
+              <p className="font-semibold break-words text-slate-900">
                 {cv.label ?? cv.original_filename}
               </p>
               {cv.label !== null && (
@@ -76,11 +65,9 @@ export function SavedBaseCvRow({
             <p className="text-sm text-amber-800">{cv.failure_message}</p>
           )}
           <p className="text-sm text-slate-500">{formatSize(cv.size_bytes)}</p>
-          <p className="text-sm text-slate-500">
-            Uploaded {uploadedFormat.format(new Date(cv.uploaded_at))}
-          </p>
+          <p className="text-sm text-slate-500">Uploaded {formatUploadedDate(cv.uploaded_at)}</p>
           {notice !== null && (
-            <p role="alert" className="text-sm text-red-700">
+            <p role="alert" className="text-sm font-medium text-danger-600">
               {notice}
             </p>
           )}
@@ -96,7 +83,7 @@ export function SavedBaseCvRow({
                 type="button"
                 onClick={onRename}
                 disabled={busy}
-                className="text-sm font-medium text-slate-600 hover:text-slate-900 disabled:opacity-60"
+                className="min-h-11 rounded-sm px-1 text-sm font-semibold text-slate-700 hover:text-slate-900 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-0"
               >
                 {RENAME_LABEL}
               </button>
@@ -104,7 +91,7 @@ export function SavedBaseCvRow({
                 type="button"
                 onClick={onDelete}
                 disabled={busy || deleteDisabled}
-                className="text-sm font-medium text-red-700 hover:text-red-900 disabled:opacity-60"
+                className="min-h-11 rounded-sm px-1 text-sm font-semibold text-danger-600 hover:underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-0"
               >
                 {DELETE_LABEL}
               </button>

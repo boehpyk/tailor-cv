@@ -34,7 +34,7 @@ export interface AccountWorkspaceProps {
   readonly userId: string;
 }
 
-const HEADING_CLASS = 'mb-3 text-sm font-medium text-slate-500 uppercase';
+const HEADING_CLASS = 'mb-4 text-xs font-semibold tracking-wide text-slate-600 uppercase';
 
 function Section({
   id,
@@ -122,8 +122,9 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
   const activeRunId = rejection === null ? null : activeTailoringRunId(rejection);
 
   return (
-    <>
-      <p className="mb-6 text-sm text-slate-700">{ACCOUNT_PROMISE}</p>
+    // 2b, one column: nothing on this page is a step to move on to (no "Next" button).
+    <div className="mx-auto max-w-3xl">
+      <p className="mb-8 text-sm leading-relaxed text-slate-700">{ACCOUNT_PROMISE}</p>
 
       <GuestWorkOffer userId={userId} />
 
@@ -136,7 +137,7 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
       </Section>
 
       <Section id="account-tailoring-heading" title="Your tailored CV and cover letter">
-        <div className="space-y-4">
+        <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
           {latest.isError && latest.data === undefined ? (
             <div role="alert" className="space-y-2 text-sm">
               <p className="text-slate-700">{LATEST_RUN_ERROR_NOTE}</p>
@@ -145,7 +146,7 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
                 onClick={() => {
                   void latest.refetch();
                 }}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 font-medium text-slate-800"
+                className="min-h-11 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-surface-sunk hover:text-slate-900 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
               >
                 {RETRY_LABEL}
               </button>
@@ -173,6 +174,6 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
           )}
         </div>
       </Section>
-    </>
+    </div>
   );
 }
