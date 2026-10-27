@@ -3,9 +3,9 @@
 
 **The name carries a browser-enforced guarantee.** A browser accepts a cookie whose name starts
 `__Host-` only if it is `Secure`, has `Path=/` and has **no `Domain`**. That makes it host-only by
-rule rather than by our discipline: a sibling `*.samolit.com` app on the same box cannot plant a
-guest token here (session fixation), because any cookie it could set for `cv.samolit.com` would have
-to carry `Domain=samolit.com`, which the prefix forbids.
+rule rather than by our discipline: a sibling app on another host under the same registrable domain
+cannot plant a guest token here (session fixation), because any cookie it could set for this host
+would have to carry a parent `Domain` attribute, which the prefix forbids.
 
 - **`Secure` is unconditional now**, in every `APP_ENV`. It used to follow `settings.is_production`
   so plain-HTTP `localhost` could keep the cookie; the prefix requires it, and `localhost` is a
