@@ -37,14 +37,13 @@ const HOME_LINK_CLASS =
   'rounded-sm font-medium text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 
 /**
+ * Where "back" goes: the workspace for a guest's run, the history for an account's — the page a
+ * user came from to open it (slice 2.3, AC-46's 404 link).
+ *
  * An in-app navigation, which `beforeunload` never sees. On a `succeeded` run this link unmounts
  * `DocumentWorkspace` and destroys both editors, so while either holds unsaved text the router's
  * blocker in `DocumentWorkspace` asks first (E-32, AC-34) — that is the workspace's lock, not
  * this link's, and nothing here needs to know about it.
- */
-/**
- * Where "back" goes: the workspace for a guest's run, the history for an account's — the page a
- * user came from to open it (slice 2.3, AC-46's 404 link).
  */
 function BackLink({ scope }: { readonly scope: 'guest' | 'account' }): React.JSX.Element {
   return (

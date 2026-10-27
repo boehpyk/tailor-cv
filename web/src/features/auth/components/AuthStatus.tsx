@@ -19,8 +19,11 @@ import { useLogout } from '../hooks/useLogout';
 const focusRing =
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 
-/** A header link at every width: the current route's link is darker and underlined by a bar. */
-const headerLinkClass = `border-b-2 border-transparent py-1.5 font-medium text-slate-600 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 ${focusRing}`;
+/**
+ * A header link at every width: the current route's link is darker and underlined by a bar. Below
+ * `sm` it is at least 44 × 44 px, like the signed-in bar's cells (AC-38).
+ */
+const headerLinkClass = `border-b-2 border-transparent py-1.5 max-sm:inline-flex max-sm:min-h-11 max-sm:min-w-11 max-sm:items-center max-sm:justify-center font-medium text-slate-600 hover:text-slate-900 aria-[current=page]:border-slate-900 aria-[current=page]:text-slate-900 ${focusRing}`;
 
 /**
  * A signed-in nav item: a header link from `sm` up, an equal-width, 44 px-tall cell of the bottom

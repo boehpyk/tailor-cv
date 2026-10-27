@@ -70,7 +70,7 @@ export function App(): React.JSX.Element {
           <p>
             <Link
               to="/welcome"
-              className={`font-medium text-brand-700 underline underline-offset-2 ${focusRing}`}
+              className={`font-medium text-brand-700 underline underline-offset-2 max-sm:inline-flex max-sm:min-h-11 max-sm:items-center ${focusRing}`}
             >
               {FOOTER_HOW_IT_WORKS_LABEL}
             </Link>

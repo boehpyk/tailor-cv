@@ -31,6 +31,9 @@ const focusRing =
 const primaryButton = `inline-flex min-h-11 items-center justify-center rounded-md bg-brand-600 px-6 font-semibold text-white hover:bg-brand-700 motion-safe:transition-colors ${focusRing}`;
 const secondaryButton = `inline-flex min-h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-5 font-semibold text-slate-900 hover:border-slate-400 motion-safe:transition-colors ${focusRing}`;
 const navLink = `rounded-sm text-slate-700 hover:text-slate-900 ${focusRing}`;
+/** The one nav link still shown below `sm` gets a 44 × 44 px target there (AC-38). */
+const navLinkTouch =
+  'max-sm:inline-flex max-sm:min-h-11 max-sm:min-w-11 max-sm:items-center max-sm:justify-center';
 
 function Features({ items, tone }: { readonly items: readonly string[]; readonly tone: string }) {
   return (
@@ -84,7 +87,7 @@ export default function MarketingPage(): React.JSX.Element {
             <a href="#pricing" className={`max-sm:hidden ${navLink}`}>
               {NAV_PRICING}
             </a>
-            <Link to="/login" className={navLink}>
+            <Link to="/login" className={`${navLinkTouch} ${navLink}`}>
               {NAV_LOG_IN}
             </Link>
             <Link

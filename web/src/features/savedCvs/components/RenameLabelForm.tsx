@@ -64,7 +64,7 @@ export function RenameLabelForm({ cv, onDone }: RenameLabelFormProps): React.JSX
         className="w-full rounded-md border border-slate-300 px-3 py-1.5 text-sm"
       />
       {error !== null && (
-        <p id={errorId} role="alert" className="text-sm text-red-700">
+        <p id={errorId} role="alert" className="text-sm text-danger-600">
           {renameSavedCvErrorCopy(error)}
         </p>
       )}

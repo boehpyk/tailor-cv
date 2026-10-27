@@ -14,6 +14,7 @@ import {
   DELETE_ENTRY_LABEL,
   DELETE_ENTRY_PENDING_LABEL,
   EDITED_BADGE,
+  HISTORY_COLUMN_LABELS,
   OPEN_ENTRY_LABEL,
   POSTING_MISSING_NOTE,
   historyStatusCopy,
@@ -101,7 +102,7 @@ export function HistoryEntryRow({
       {/* The words before each value are hidden visually from md, where the header row names the
           column, and kept for assistive technology, which never sees that header. */}
       <p className="text-sm break-words text-slate-600">
-        <span className="md:sr-only">CV: </span>
+        <span className="md:sr-only">{`${HISTORY_COLUMN_LABELS[1]}: `}</span>
         <span>{cv}</span>
       </p>
       <p className="text-sm text-slate-600">
