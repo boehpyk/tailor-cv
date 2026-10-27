@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { RouterProvider, createMemoryRouter } from 'react-router';
@@ -9,6 +9,7 @@ import { WorkspaceScopeProvider } from '@/features/scope/WorkspaceScope';
 import { GUEST_SCOPE, scopeMap, type WorkspaceScope } from '@/features/scope/scopeMap';
 import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun';
 import { USER_A, makeAccountRun, signInAs, stubAccountFetch } from '@/test/accountFetch';
+import { createAppQueryClient } from '@/queryClient';
 
 import { DocumentWorkspace } from './DocumentWorkspace';
 
@@ -41,9 +42,7 @@ function setup(scope: WorkspaceScope, prefix: string, initial: Doc) {
     tailored_cv_character_count: 12,
     cover_letter_character_count: 16,
   });
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false, gcTime: Infinity }, mutations: { retry: false } },
-  });
+  const queryClient = createAppQueryClient();
   queryClient.setQueryData(tailoringRunQueryKey(RUN_ID, scopeMap(scope)), run);
   // Every request is unrouted, so it rejects: an autosave of an edit fails and the text stays unsaved.
   stubAccountFetch({});

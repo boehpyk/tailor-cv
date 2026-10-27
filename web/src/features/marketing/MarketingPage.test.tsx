@@ -20,6 +20,13 @@ const fetchSpy = vi.fn<typeof fetch>();
 
 beforeEach(() => {
   __resetForTests();
+  // Start every test from empty stores: an earlier test's render may already have written a key,
+  // and an idempotent re-write would then leave the before/after snapshots equal (hardened by mutation).
+  localStorage.clear();
+  sessionStorage.clear();
+  for (const pair of document.cookie.split('; ')) {
+    document.cookie = `${pair.split('=')[0] ?? ''}=; Max-Age=0`;
+  }
   fetchSpy.mockReset();
   fetchSpy.mockResolvedValue(new Response(null, { status: 401 }));
   vi.stubGlobal('fetch', fetchSpy);
@@ -152,6 +159,8 @@ describe('/welcome sends and stores nothing — AC-30', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  // The cookie half proves only that the page's own JS sets none (jsdom). A server Set-Cookie is
+  // invisible to this test; AC-42's manual check covers it.
   it('leaves document.cookie, localStorage and sessionStorage unchanged', async () => {
     const before = snapshot();
 
