@@ -2,6 +2,7 @@ import { Link, Outlet } from 'react-router';
 
 import { FOOTER_HOW_IT_WORKS_LABEL } from './features/auth/authCopy';
 import { AuthStatus } from './features/auth/components/AuthStatus';
+import { useAuth } from './features/auth/hooks/useAuth';
 import { SystemStatus } from './features/health/components/SystemStatus';
 
 const focusRing =
@@ -22,13 +23,18 @@ const focusRing =
  * of it.
  *
  * System status lives in the `<footer>` (web-design-refresh OQ-5): it is diagnostic rather than part
- * of the task, so it sits in the `contentinfo` landmark after `main`, not inside it.
+ * of the task, so it sits in the `contentinfo` landmark after `main`, not inside it. It is an
+ * operator's view, so only an admin's shell mounts it: anyone else gets no section and, because the
+ * component is not mounted, no `/health/ready` poll. The endpoint itself stays public for the deploy.
  *
  * **The layout passes no props.** Each page reads the server state it needs from TanStack Query, so
  * the shell is not a relay for data it never uses. Nothing here depends on the router except
  * `Outlet` and the two `Link`s; `Outlet` renders nothing outside a router rather than throwing.
  */
 export function App(): React.JSX.Element {
+  const auth = useAuth();
+  const isAdmin = auth.status === 'authenticated' && auth.user?.role === 'admin';
+
   return (
     <div className="flex min-h-dvh flex-col bg-surface">
       {/* Outside `<main>` so it is the page's `banner` landmark (slice 2.3): a `<header>` inside
@@ -58,15 +64,17 @@ export function App(): React.JSX.Element {
         {/* `pb-24` below `sm`: the footer is the last thing on the page, so it is what the fixed
             bottom bar would otherwise cover. */}
         <div className="mx-auto flex max-w-6xl flex-col gap-6 px-4 pt-8 pb-24 text-sm text-slate-600 sm:pb-8">
-          <section aria-labelledby="system-status-heading">
-            <h2
-              id="system-status-heading"
-              className="mb-3 text-xs font-semibold tracking-wide text-slate-600 uppercase"
-            >
-              System status
-            </h2>
-            <SystemStatus />
-          </section>
+          {isAdmin && (
+            <section aria-labelledby="system-status-heading">
+              <h2
+                id="system-status-heading"
+                className="mb-3 text-xs font-semibold tracking-wide text-slate-600 uppercase"
+              >
+                System status
+              </h2>
+              <SystemStatus />
+            </section>
+          )}
           <p>
             <Link
               to="/welcome"
