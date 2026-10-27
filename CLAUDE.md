@@ -21,7 +21,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 ## Status
 
 Nineteen slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, and `__Host-tc_guest`. The latest is
-**4.4 `admin-guests-and-storage`** (PR #34, `97a213e`), released 2026-10-15. **Phase 4's two-week
+**4.4 `admin-guests-and-storage`** (PR #34, `97a213e`), released 2026-10-15. **`web-design-refresh`**
+(a frontend-only reskin plus the static `/welcome` page, ADR-0036/0037) is implemented on its branch;
+it merges **no earlier than 2026-10-30**, after Phase 4's gate closes. **Phase 4's two-week
 gate clock runs to 2026-10-29.** Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still
 unrecorded** (OQ-7). Each slice's record (ADRs, migrations, measurements, `/verify` rounds, carried
 items) is in **[HISTORY.md](./HISTORY.md)**, and the stories are in [FORboehpyk.md](./FORboehpyk.md).
@@ -299,6 +301,14 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
   from `useScopeMap()`; build every link from `runLink(scope)`.
 - **Reads retry, writes hold** (ADR-0031). A held deadline is component state derived during render
   (`useErrorHold`/`useHold`). Word times in the browser's locale.
+- **A visual value is an `@theme` token** (ADR-0037): no `style=`, colour literal or arbitrary colour
+  class in `.tsx` (`design.grep.test.ts`); text colours come from ADR-0037's contrast table.
+- **Fonts are `@fontsource`, never a CDN** (ADR-0036). The latin `@font-face`s are declared in
+  `index.css` (fontsource's CSS would ship a `.woff` twin per face); a `.woff2` is never inlined.
+- **`npm run build` ends with `check-dist-hosts.mjs`**: a third-party host in `dist/` fails the
+  build. A new host is read first, then allow-listed with its reason.
+- **Responsive is one DOM**: the nav and the export bar exist once and `max-sm:` moves them. Two
+  copies duplicate every accessible name; a closed sheet is `invisible`, never `hidden`.
 - TanStack traps:
   - `gcTime: 0` collects unobserved `setQueryData`.
   - `isPending` lags a tick, so guard double submits with `isMutating`.

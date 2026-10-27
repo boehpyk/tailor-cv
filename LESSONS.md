@@ -336,6 +336,32 @@ numbers are here.
   docblock claiming coverage the assertion cannot deliver is the same defect one level up: if a test
   says it guards a regression, verify it fails when you reintroduce that regression.
 
+- **A pin outlives the slice that wrote it** (web-design-refresh, 2026-10-26). 3.2's
+  `LayoutPicker.guards` pinned `package.json`'s exact dependency list ("AC-35: no new dependency") and
+  the source shape of `assetsInlineLimit`. Both blocked the next slice's planned font packages and
+  `.woff2` rule at the commit hook, and neither was in the spec, because nobody grepped for pins
+  while planning. The fix kept each pin's intent (list the slice's planned additions; require the
+  new `.woff2 → false` as well) and landed **in the commit that needed it**, listed in its body.
+  **Before planning a dependency or config change, grep the tests for `package.json` and the config
+  file's name.**
+- **A package's CSS can double its files** (same slice). Fontsource's `latin-<weight>.css` lists a
+  `.woff2` and a `.woff` per face, and Vite bundles every `url()`, so seven faces would have shipped
+  fourteen files. Declaring the seven `@font-face`s in `index.css` against
+  `@fontsource/<pkg>/files/…woff2` kept it at seven (measured: 112 428 B; 78 576 B fetched on a cold
+  `/`). Read what a CSS import actually references before counting on it.
+- **jsdom's accessible name puts a space at an element boundary** (same slice): an `h1` of
+  `own <span>CV</span>.` is named "own CV ." in tests, so the highlighter span covers "CV." to keep
+  the exact name. Pin the name the browser computes, and check how jsdom computes it before styling
+  inside a heading.
+- **Two suites at once fail as noise** (same slice, observed on day one): an agent's full-gate commit
+  and a second commit's hook overlapping produced nine unrelated backend failures (export layout,
+  role CLI, migration up/down). Re-run alone, all green. With several agents on one working tree,
+  commits are serial by construction: one index, one test database, one Redis.
+- **A budget measured honestly can fail honestly** (same slice): AC-39 allowed +3 KB gzip on the
+  main bundle; a reskin of about sixty always-loaded components measured **+3.91 kB** (markup and
+  class strings, no dependency). The owner amended the budget to 4 KB rather than lazy-load the run
+  page, which is a behaviour change with its own fallback and failure path.
+
 ## Infrastructure footguns (baked-in guards)
 
 Documented failure modes we design against (see [docs/infrastructure.md](./docs/infrastructure.md)):

@@ -738,6 +738,53 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   raise escapes the run as it did before (`49e2aef` RED → `5cfd637`). **A broad catch justified by
 >   one `await` records the wrong fact once it covers two.** **Firefox not exercised.**
 >
+> - **`web-design-refresh`** (owner-initiated, outside the phases; **implemented 2026-10-26/27 on
+>   `feature/web-design-refresh`, `/verify` pending; merge no earlier than 2026-10-30**, OQ-17,
+>   because Phase 4's gate is measured on `/admin` until 2026-10-29) — a **frontend-only reskin** from
+>   the owner's Claude Design mockups plus one new static, lazy route, **`/welcome`**. No file outside
+>   `web/`, two ADRs and the docs changes (AC-1). **ADR-0036**: fonts self-hosted from `@fontsource`
+>   5.3.0 (Figtree 400–700, Bricolage Grotesque 500/700, JetBrains Mono 500), exact pins, latin only,
+>   seven `@font-face`s declared in `index.css` (fontsource's own CSS would ship a `.woff` twin of each),
+>   `.woff2` never inlined; `web/scripts/check-dist-hosts.mjs` ends `npm run build` and fails on any
+>   third-party host in `dist/` (allow-list: www.w3.org, react.dev, reactrouter.com, github.com,
+>   prosemirror.net, tailwindcss.com, localhost; Google Fonts refused by name; mutation recorded;
+>   devops review applied: empty dist fails, `fileURLToPath`, `<img>/<source>/<iframe>` covered).
+>   **ADR-0037**: colours, fonts and radii are `@theme` tokens (warm surfaces, brand-400, highlight,
+>   success, danger; Tailwind's own `--radius-*` overridden, 10–20 px); `design.grep.test.ts` forbids
+>   `style=`, colour literals and arbitrary colour classes in `.tsx` and keeps the fictional
+>   illustration names under `features/marketing/` (ten mutations). **Shell**: wordmark `Link` inside
+>   the one `h1`, *System status* moved to a `<footer>` with *How TailorCraft works*, the signed-in
+>   nav becomes a fixed bottom bar below `sm` — **the same `<nav>`**, `NavLink`s with `aria-current`
+>   (*Workspace* added; *How it works* for guests). **Intake**: numbered step rail (the third item is
+>   an `<li>` outside the tablist), *Step n of 3* on mobile, dashed dropzone (`data-drag-over`),
+>   native radios as a segmented control (`data-over-limit`), progress card, saved CVs as cards.
+>   **Editor**: top bar (relocated back link, segmented tabs, save status), white sheet on page grey,
+>   glyph toolbar with unchanged accessible names; **`ExportSheet`**, a disclosure that is inline at
+>   `sm`+ and a bottom sheet below it around **the one** `ExportBar` (`max-sm:invisible` while closed,
+>   never `hidden`); layout cards with the real WebPs; `TrackButton` card. **Board/history**: wells and
+>   cards, *Move* pill on the native select; history still a `<ul>` with an `aria-hidden` header row.
+>   **Auth**: one auth card; `/register` split with a **static** *Keep what you made* panel (no input,
+>   button or link, pinned with a mutation, AC-35); `CheckYourEmail` step list. **Token-only**:
+>   `/account`, `/admin/*`, 404 (class lines only, checked). **Two keyboard defects fixed red-first**:
+>   `DocumentTabs` had no key handler, so the unselected document was unreachable by keyboard
+>   (`5b90f21` → `95feb68`); `InputTabs` takes ArrowUp/Down (`f96e414` → `d1cac9f`). RED cycles:
+>   nav (`2eb13fe` → `11d5394`), `ExportSheet` (`adc4e35` skeleton, `fa95310` → `312906d`),
+>   `/welcome` (`57f3d1e` skeleton, `5bcfd3d` → `1a9a789`). **Edited pre-existing tests, each a pin or
+>   markup follow:** `LayoutPicker.guards` ×2 (3.2's dependency-list pin gains the three font
+>   packages; the `assetsInlineLimit` source pin now also requires `.woff2 → false`), `CvDropzone`
+>   (class → `data-drag-over`), `JobPostingInput` (class → `data-over-limit` + danger token),
+>   `BoardPage.a11y` (`lg:w-60` → `lg:w-64`), `AdminRoute.chunkFailure/chunkLoading` (import paths
+>   after `LazyBoundary` moved to `components/ui/`). **Measured (T41):** main `index-*.js` 145.79 →
+>   **149.70 kB gzip (+3.91)**, over AC-39's 3 KB, **budget amended to 4 KB by the owner on
+>   2026-10-27** (markup weight, no dependency); CSS 5.72 → 8.57 kB; `/welcome` chunk **3.39 kB**
+>   (15), none of its text in main; fonts 112 428 B in 7 files, **78 576 B** fetched on a cold `/`;
+>   contrast table computed from the tokens (slate-500 4.29 on `surface-sunk`, 3.89 on `page-grey`,
+>   so never used there; no `text-slate-400`/`text-brand-500` anywhere); the guest-run request list
+>   identical to `main`'s (AC-40, dev stack, one real-Gemini run each). **Still open:** T42's manual
+>   pass on the production bundle, Chrome **and Firefox**, 390 and 1280 px; `/verify`. **New copy
+>   outside the C-table, for the reviewer:** `HISTORY_COLUMN_LABELS` (*Role*, *Base CV*, *Requested*,
+>   an `aria-hidden` header row). Follow-up named, not built: a CSP in nginx (`default-src 'self'`).
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
