@@ -20,11 +20,12 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-Nineteen slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, and `__Host-tc_guest`. The latest is
-**4.4 `admin-guests-and-storage`** (PR #34, `97a213e`), released 2026-10-15. **`web-design-refresh`**
-(a frontend-only reskin plus the static `/welcome` page, ADR-0036/0037) is implemented on its branch;
-it merges **no earlier than 2026-10-30**, after Phase 4's gate closes. **Phase 4's two-week
-gate clock runs to 2026-10-29.** Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still
+Twenty slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, `__Host-tc_guest` and
+`web-design-refresh`. The latest is **`web-design-refresh`** (a frontend-only reskin plus the static
+`/welcome` page, ADR-0036/0037, PR #37), merged 2026-10-27, **before** OQ-17's 2026-10-30 floor, by
+the owner's decision. So **Phase 4's two-week gate clock (to 2026-10-29) closes on the reskinned
+`/admin`**, not on the code it started on. The stacked follow-up `feature/admin-only-system-status`
+(System status for admins only) merges next. Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still
 unrecorded** (OQ-7). Each slice's record (ADRs, migrations, measurements, `/verify` rounds, carried
 items) is in **[HISTORY.md](./HISTORY.md)**, and the stories are in [FORboehpyk.md](./FORboehpyk.md).
 Read the relevant entry before you touch that slice's code.
@@ -42,7 +43,7 @@ nobody has verified is a belief: check with `gh api repos/<owner>/<repo>/environ
 2.3's posting lock renders `FOR NO KEY UPDATE` where `FOR KEY SHARE` was meant
 (`tailoring_run.py`, left for the owner). `/health/ready` takes ~2.1 s because of
 `control.ping(timeout=2.0)` with no `limit`. Traefik's access log has not been checked for query
-strings. Firefox has never been exercised in a manual pass.
+strings. Firefox's first manual pass was web-design-refresh's T42 (2026-10-27).
 
 **The repository is public.** `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, specs,
 roadmap and infra notes stay local.

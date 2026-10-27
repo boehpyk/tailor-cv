@@ -739,8 +739,9 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   one `await` records the wrong fact once it covers two.** **Firefox not exercised.**
 >
 > - **`web-design-refresh`** (owner-initiated, outside the phases; **implemented 2026-10-26/27 on
->   `feature/web-design-refresh`, `/verify` pending; merge no earlier than 2026-10-30**, OQ-17,
->   because Phase 4's gate is measured on `/admin` until 2026-10-29) — a **frontend-only reskin** from
+>   `feature/web-design-refresh`; `/verify` PASS round 2; owner's T42 pass done; **merged 2026-10-27 as
+>   PR #37, before OQ-17's 2026-10-30 floor by the owner's decision**, so Phase 4's gate, measured on
+>   `/admin` until 2026-10-29, closes on the reskinned pages) — a **frontend-only reskin** from
 >   the owner's Claude Design mockups plus one new static, lazy route, **`/welcome`**. No file outside
 >   `web/`, two ADRs and the docs changes (AC-1). **ADR-0036**: fonts self-hosted from `@fontsource`
 >   5.3.0 (Figtree 400–700, Bricolage Grotesque 500/700, JetBrains Mono 500), exact pins, latin only,
@@ -781,8 +782,15 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   (15), none of its text in main; fonts 112 428 B in 7 files, **78 576 B** fetched on a cold `/`;
 >   contrast table computed from the tokens (slate-500 4.29 on `surface-sunk`, 3.89 on `page-grey`,
 >   so never used there; no `text-slate-400`/`text-brand-500` anywhere); the guest-run request list
->   identical to `main`'s (AC-40, dev stack, one real-Gemini run each). **Still open:** T42's manual
->   pass on the production bundle, Chrome **and Firefox**, 390 and 1280 px; `/verify`. **New copy
+>   identical to `main`'s (AC-40, dev stack, one real-Gemini run each). **T42**, the manual pass on
+>   the production bundle (Chrome **and Firefox**, 390 and 1280 px), was done by the owner on
+>   2026-10-27 and reported fine; the findings are not itemised here. **`/verify`** (2026-10-27):
+>   round 1 NEEDS CHANGES on one MAJOR, two soft REDs never hardened (the AC-30 `/welcome` privacy
+>   tests, `ExportSheet` focus return). The mutations found the storage assertion **vacuous**: an
+>   earlier render had already written the key, so both snapshots agreed. A `beforeEach` storage
+>   reset fixed it (`334f3b2`). ADR-0037's table gained the shipped pairs (`cceb3dc`); the carried
+>   MINORs were fixed (`5bab82c`): `danger-600` for the last three `red-700`s, 44 px signed-out and
+>   footer links, the *Base CV* screen-reader label. Round 2 PASS. **New copy
 >   outside the C-table, for the reviewer:** `HISTORY_COLUMN_LABELS` (*Role*, *Base CV*, *Requested*,
 >   an `aria-hidden` header row). Follow-up named, not built: a CSP in nginx (`default-src 'self'`).
 >

@@ -6768,7 +6768,9 @@ believe it guards something; you haven't shown it.
 
 ## What's next
 
-The owner's manual pass on the production bundle (Chrome *and* Firefox, phone and desktop widths,
-including the first recorded Firefox pass in this project's history). `/verify` has passed in its
-second round. Then comes a merge
-no earlier than 30 October, once Phase 4's gate has closed on the admin pages it was measured on.
+The owner's manual pass came back clean. It was the first Firefox pass in this project's history.
+`/verify` passed in its second round, and the slice merged on 27 October, three days before its own
+"not before the 30th" rule. That was the owner's call, made in the open: Phase 4's gate will now close
+on admin pages that changed paint halfway through the measurement. A rule you wrote yourself is
+still yours to override. What matters is that the override is written down with its reason, not
+slipped past. Next up is a small stacked change: *System status* in the footer for admins only.
