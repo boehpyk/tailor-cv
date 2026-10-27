@@ -790,7 +790,10 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   earlier render had already written the key, so both snapshots agreed. A `beforeEach` storage
 >   reset fixed it (`334f3b2`). ADR-0037's table gained the shipped pairs (`cceb3dc`); the carried
 >   MINORs were fixed (`5bab82c`): `danger-600` for the last three `red-700`s, 44 px signed-out and
->   footer links, the *Base CV* screen-reader label. Round 2 PASS. **New copy
+>   footer links, the *Base CV* screen-reader label. Round 2 PASS. **Follow-up, merged after it:**
+>   `feature/admin-only-system-status` (owner's request) mounts the footer's *System status* **for
+>   admins only** (RED 2 failed | 5 passed → GREEN). Everyone else gets no section and no
+>   `/health/ready` poll; the endpoint stays public for the deploy. This amends AC-10. **New copy
 >   outside the C-table, for the reviewer:** `HISTORY_COLUMN_LABELS` (*Role*, *Base CV*, *Requested*,
 >   an `aria-hidden` header row). Follow-up named, not built: a CSP in nginx (`default-src 'self'`).
 >
