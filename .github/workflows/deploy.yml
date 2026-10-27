@@ -190,5 +190,13 @@ jobs:
 
       # /health/ready probes Postgres, Redis AND Celery (ADR-0005). If it only probed the datastores,
       # this check would pass with every export silently queueing forever.
+      # --retry-all-errors: on the first release to a new host Traefik may still be fetching the
+      # certificate, and curl's exit 60 (bad cert) is not "transient" to plain --retry.
       - name: Smoke check
-        run: curl -fsS --retry 5 --retry-delay 3 https://cv.samolit.com/health/ready
+        run: |
+          curl -fsS --retry 12 --retry-delay 5 --retry-all-errors https://fixcv.app/health/ready
+          # www must redirect to the apex, path and query intact (ADR-0038). Captured, then compared.
+          got="$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' --retry 6 --retry-delay 5 \
+            --retry-all-errors 'https://www.fixcv.app/health/ready?x=1')"
+          [ "$got" = "301 https://fixcv.app/health/ready?x=1" ] \
+            || { echo "::error::www answered '$got'"; exit 1; }
