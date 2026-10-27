@@ -1,6 +1,9 @@
+import { Suspense, lazy } from 'react';
 import { Navigate, createBrowserRouter } from 'react-router';
 
 import { App } from './App';
+import { LazyBoundary } from './components/ui/LazyBoundary';
+import { LAZY_LOADING } from './components/ui/lazyCopy';
 import { AdminRoute } from './features/admin/components/AdminRoute';
 import { ConfirmEmailPage } from './features/accountMail/components/ConfirmEmailPage';
 import { PasswordResetConfirmPage } from './features/accountMail/components/PasswordResetConfirmPage';
@@ -17,6 +20,13 @@ import { BoardPage } from './features/tracking/components/BoardPage';
 import { WorkspacePage } from './features/workspace/components/WorkspacePage';
 
 import type { RouteObject } from 'react-router';
+
+/**
+ * The marketing page's chunk (web-design-refresh §6). This dynamic import is the only reference to
+ * `features/marketing/` from the main bundle: a static import of the page or of `marketingCopy.ts`
+ * would pull it back into the main chunk.
+ */
+const MarketingPage = lazy(() => import('./features/marketing/components/MarketingPage'));
 
 /**
  * The route table (technical plan §4). The URL owns "which run" and "which document", so nothing
@@ -40,9 +50,12 @@ import type { RouteObject } from 'react-router';
  * | `/board`                  | `RequireAuth` → `AccountScope` → `BoardPage` (3.1)    |
  * | `/admin/*`                | `AdminRoute`: `RequireAuth` → `AccountScope` → lazy `AdminPage` → `AdminRoutes` (4.1, 4.2) |
  * | `*`                       | `NotFoundPage` (E-28)         |
+ * | `/welcome`                | lazy `MarketingPage` — **outside** `App`: its own header, no shell |
  *
  * `App` is the layout route: every page renders through its `<Outlet />`, between the header and
- * the system status.
+ * the system status. `/welcome` is the one top-level sibling of it, so the marketing page carries
+ * its own static header and never mounts the shell's (whose auth status and system status make
+ * requests). The `'*'` catch-all stays inside the shell, so `/welcome/anything` is the shell's 404.
  *
  * `/runs/:runId` on its own means "the run", and the run page always shows one document, so the
  * bare URL lands on the CV. `to="cv"` is resolved against the **route** (`runs/:runId`), not the
@@ -66,6 +79,22 @@ import type { RouteObject } from 'react-router';
  * `createMemoryRouter` at any path.
  */
 export const routes: RouteObject[] = [
+  {
+    path: '/welcome',
+    element: (
+      <LazyBoundary>
+        <Suspense
+          fallback={
+            <p role="status" className="mb-10 text-slate-600">
+              {LAZY_LOADING}
+            </p>
+          }
+        >
+          <MarketingPage />
+        </Suspense>
+      </LazyBoundary>
+    ),
+  },
   {
     path: '/',
     element: <App />,
