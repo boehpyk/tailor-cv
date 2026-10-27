@@ -5,7 +5,7 @@ import { __resetForTests } from '@/features/auth/authStore';
 import { USER_A, signInAs, signedInRoutes, stubAccountFetch } from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 
-import { LAZY_LOADING } from '../lazyCopy';
+import { LAZY_LOADING } from '@/components/ui/lazyCopy';
 
 /** T22 — AC-33: while the chunk is in flight the fallback is a `role="status"` "Loading…". */
 vi.mock('./AdminPage', () => new Promise(() => undefined));

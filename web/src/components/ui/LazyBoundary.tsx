@@ -1,6 +1,6 @@
 import { Component } from 'react';
 
-import { LAZY_CHUNK_FAILED, LAZY_RELOAD_LABEL } from '../lazyCopy';
+import { LAZY_CHUNK_FAILED, LAZY_RELOAD_LABEL } from './lazyCopy';
 
 import type { ReactNode } from 'react';
 

@@ -6,7 +6,7 @@ import { __resetForTests } from '@/features/auth/authStore';
 import { USER_A, signInAs, signedInRoutes, stubAccountFetch } from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 
-import { LAZY_CHUNK_FAILED, LAZY_RELOAD_LABEL } from '../lazyCopy';
+import { LAZY_CHUNK_FAILED, LAZY_RELOAD_LABEL } from '@/components/ui/lazyCopy';
 
 /**
  * T22 — AC-33 / R-22: the admin chunk fails to load (a tab older than the last release). The

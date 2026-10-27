@@ -17,7 +17,7 @@ export const ADMIN_RETRY_LABEL = 'Retry';
  * `LazyBoundary`). Re-exported here so a test reads every admin sentence from one module; the main
  * bundle must never import *this* module, or Rollup puts the whole of it in the main chunk (AC-40).
  */
-export { LAZY_CHUNK_FAILED, LAZY_LOADING, LAZY_RELOAD_LABEL } from './lazyCopy';
+export { LAZY_CHUNK_FAILED, LAZY_LOADING, LAZY_RELOAD_LABEL } from '@/components/ui/lazyCopy';
 
 // --- Slice 4.2: the user list (AC-31, AC-32) ------------------------------------------------------
 
