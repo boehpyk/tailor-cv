@@ -6,6 +6,7 @@ import { GuestRunPrompt } from '@/features/claim/components/GuestRunPrompt';
 import { SessionEndedHistoryNote } from '@/features/claim/components/SessionEndedHistoryNote';
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
 import { ExportBar } from '@/features/export/components/ExportBar';
+import { ExportSheet } from '@/features/export/components/ExportSheet';
 import { runLink } from '@/features/scope/scopeMap';
 import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
 import { TrackButton } from '@/features/tracking/components/TrackButton';
@@ -247,7 +248,15 @@ export function RunPage(): React.JSX.Element {
       {/* Slice 3.1 (AC-38): a finished account run can go on the board. A guest's run cannot — the
           board is account data — and the scope, not "is someone signed in?", says which this is. */}
       {view.kind === 'succeeded' && scope.kind === 'account' && (
-        <TrackButton userId={scope.userId} runId={runId} />
+        <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+          <span
+            aria-hidden="true"
+            className="flex size-6 shrink-0 items-center justify-center rounded-full bg-highlight-100 text-xs text-slate-900"
+          >
+            ★
+          </span>
+          <TrackButton userId={scope.userId} runId={runId} />
+        </div>
       )}
 
       {/* `succeeded` implies the detail query answered (a list summary cannot show the documents,
@@ -257,13 +266,17 @@ export function RunPage(): React.JSX.Element {
         <DocumentWorkspace
           run={watched.data}
           renderAbove={(saveState) => (
-            <ExportBar
-              runId={runId}
-              document={documentSegment}
-              saveState={saveState}
-              layout={chosenLayout}
-              onLayoutChange={setChosenLayout}
-            />
+            // The one bar, inline at sm+ and a bottom sheet below (web-design-refresh AC-23); its
+            // *Download* toggle lands just above the tabs row, which is where the top bar is.
+            <ExportSheet>
+              <ExportBar
+                runId={runId}
+                document={documentSegment}
+                saveState={saveState}
+                layout={chosenLayout}
+                onLayoutChange={setChosenLayout}
+              />
+            </ExportSheet>
           )}
         />
       )}

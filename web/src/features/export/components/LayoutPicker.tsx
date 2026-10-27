@@ -41,8 +41,8 @@ export function LayoutPicker({
   const groupId = useId();
   return (
     <fieldset disabled={disabled} aria-busy={busy} className="min-w-0">
-      <legend className="text-sm font-medium text-slate-800">{PDF_LAYOUT_LEGEND}</legend>
-      <div className="mt-2 flex flex-wrap gap-3">
+      <legend className="text-sm font-semibold text-slate-900">{PDF_LAYOUT_LEGEND}</legend>
+      <div className="mt-3 flex flex-wrap gap-3">
         {LAYOUT_TEMPLATES.map((template) => (
           <LayoutCard
             key={template.id}
@@ -72,8 +72,25 @@ function LayoutCard({ template, idPrefix, checked, onSelect }: LayoutCardProps):
   const descriptionId = `${idPrefix}-description`;
 
   return (
-    <label className="flex min-w-24 flex-1 basis-24 cursor-pointer flex-col gap-1 rounded-md border border-slate-300 p-2 text-sm has-checked:border-2 has-checked:border-slate-900 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-sky-600 has-disabled:cursor-not-allowed has-disabled:opacity-60 sm:max-w-40">
-      <span className="flex items-center gap-2">
+    <label className="flex min-w-0 flex-1 basis-24 cursor-pointer flex-col gap-2 rounded-xl border border-slate-200 bg-white p-2 text-sm has-checked:border-brand-600 has-checked:ring-1 has-checked:ring-brand-600 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600 has-disabled:cursor-not-allowed has-disabled:opacity-60 sm:max-w-56 sm:basis-40 sm:p-3">
+      {!previewFailed && (
+        // The paper on its desk: the preview sits in a grey well, as the editor's sheet does.
+        <span className="flex justify-center rounded-lg bg-page-grey p-2 sm:p-3">
+          <img
+            src={template.previewUrl}
+            alt=""
+            width={PREVIEW_WIDTH}
+            height={PREVIEW_HEIGHT}
+            loading="lazy"
+            decoding="async"
+            onError={() => {
+              setPreviewFailed(true);
+            }}
+            className="h-auto w-full max-w-28 rounded-sm bg-white shadow-sm"
+          />
+        </span>
+      )}
+      <span className="flex flex-wrap items-center gap-2">
         <input
           type="radio"
           name="pdf-layout"
@@ -84,30 +101,20 @@ function LayoutCard({ template, idPrefix, checked, onSelect }: LayoutCardProps):
           }}
           aria-labelledby={nameId}
           aria-describedby={descriptionId}
-          className="focus-visible:outline-none"
+          className="accent-brand-600 focus-visible:outline-none"
         />
-        <span id={nameId} className="font-medium text-slate-900">
+        <span id={nameId} className="font-display font-bold text-slate-900">
           {template.name}
         </span>
+        {checked && (
+          <span className="ml-auto rounded-full bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
+            {SELECTED_NOTE}
+          </span>
+        )}
       </span>
-      {!previewFailed && (
-        <img
-          src={template.previewUrl}
-          alt=""
-          width={PREVIEW_WIDTH}
-          height={PREVIEW_HEIGHT}
-          loading="lazy"
-          decoding="async"
-          onError={() => {
-            setPreviewFailed(true);
-          }}
-          className="h-auto w-full rounded-sm border border-slate-200 bg-white"
-        />
-      )}
       <span id={descriptionId} className="text-xs text-slate-600">
         {template.description}
       </span>
-      {checked && <span className="text-xs font-medium text-slate-900">{SELECTED_NOTE}</span>}
     </label>
   );
 }

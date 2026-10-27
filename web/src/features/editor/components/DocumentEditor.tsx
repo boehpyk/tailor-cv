@@ -112,7 +112,7 @@ export function DocumentEditor({ handle, kind, hidden }: DocumentEditorProps): R
       <div
         role="toolbar"
         aria-label="Formatting"
-        className="sticky top-0 z-10 flex flex-wrap gap-1 rounded-t-sm border-b border-slate-200 bg-white px-3 py-2 sm:px-6"
+        className="sticky top-0 z-10 flex flex-wrap rounded-t-sm border-b border-slate-200 bg-white px-2 py-2 sm:gap-1 sm:px-6"
       >
         {TOOLBAR_CONTROLS.map((control, index) => {
           const pressed = toolbar?.active[index] ?? false;

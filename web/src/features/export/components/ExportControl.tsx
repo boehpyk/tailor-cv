@@ -180,7 +180,7 @@ function statusContentFor(
           <button
             type="button"
             onClick={onPrimary}
-            className="ml-2 rounded-md px-1.5 py-0.5 font-medium text-rose-800 underline underline-offset-2 hover:bg-rose-100"
+            className="ml-2 rounded-sm px-1.5 py-0.5 font-semibold text-danger-600 underline underline-offset-2 hover:bg-danger-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
           >
             {DOWNLOAD_AGAIN_ACTION}
           </button>
@@ -207,7 +207,7 @@ function statusContentFor(
               type="button"
               onClick={onPrimary}
               disabled={held}
-              className="ml-2 rounded-md px-1.5 py-0.5 font-medium text-rose-800 underline underline-offset-2 hover:bg-rose-100"
+              className="ml-2 rounded-sm px-1.5 py-0.5 font-semibold text-danger-600 underline underline-offset-2 hover:bg-danger-50 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
             >
               {EXPORT_AGAIN_ACTION}
             </button>
@@ -227,7 +227,7 @@ export function ExportControl({
   onPrimary,
 }: ExportControlProps): React.JSX.Element {
   return (
-    <div className="flex min-w-36 flex-col gap-1">
+    <div className="flex min-w-36 flex-1 basis-36 flex-col gap-1.5">
       <button
         type="button"
         disabled={disabled || hold.held}
@@ -237,7 +237,11 @@ export function ExportControl({
             ? downloadLabel(format, view.byteSize, layoutName)
             : undefined
         }
-        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        className={`min-h-11 rounded-lg border px-3.5 py-2 text-left font-mono text-sm font-medium disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
+          view.kind === 'ready'
+            ? 'border-success-500 bg-success-50 text-success-700 hover:bg-white'
+            : 'border-slate-200 bg-white text-slate-900 hover:bg-surface-sunk'
+        }`}
       >
         {primaryLabelFor(view, format)}
       </button>
@@ -246,7 +250,7 @@ export function ExportControl({
         `<button>` inside a `<p>` is legal but makes the spacing fight the paragraph's line box.
         `role="status"` is a polite live region — announced when it changes, never interrupting.
       */}
-      <div role="status" className="text-xs leading-5 text-slate-600">
+      <div role="status" className="px-1 text-xs leading-5 text-slate-600">
         {statusContentFor(view, format, secondsOnPage, onPrimary, hold.held)}
         <HoldNote {...hold} announce={false} />
       </div>
