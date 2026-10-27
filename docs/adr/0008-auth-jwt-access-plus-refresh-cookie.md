@@ -297,3 +297,16 @@ only.**
   `routers/admin_guests.py`, whose router carries `require_admin` at router level.
 - A gone or expired session is 404 `guest_session_not_found`, translated locally, never the global
   map's 401, which on a bearer route would send the client into refresh-on-401.
+
+## Amendment: 2026-10-27, from the plan of `domain-fixcv-app`
+
+Production moves from `cv.samolit.com` to the apex `fixcv.app` (ADR-0038).
+
+**(m) OQ-16, the planting of `tc_refresh` by a sibling host, is closed by condition, not by a fix.**
+
+- (a)'s host-only attribute still keeps a sibling from **receiving** the cookie. The open gap was a
+  sibling **setting** one with a parent `Domain`. That needs a sibling host that serves content.
+- Under ADR-0038 Decision 3, no host under `fixcv.app` other than the `www` redirect serves
+  content, so no such sibling exists.
+- **The `__Host-` rename of `tc_refresh` is unscheduled.** Its trigger becomes: before any other
+  `*.fixcv.app` host serves content, reopen OQ-16 and ship the rename first.
