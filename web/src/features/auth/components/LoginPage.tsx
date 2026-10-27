@@ -2,6 +2,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Link, Navigate, useSearchParams } from 'react-router';
 
 import { FORGOT_PASSWORD_LABEL } from '@/features/accountMail/accountMailCopy';
+import { headingClass, linkClass, sectionClass } from '@/features/accountMail/components/styles';
 
 import { LOGIN_PENDING_LABEL, LOGIN_SUBMIT_LABEL } from '../authCopy';
 import { useAuth } from '../hooks/useAuth';
@@ -50,8 +51,8 @@ export function LoginPage() {
   }
 
   return (
-    <section aria-labelledby="login-heading" className="mb-10 max-w-sm">
-      <h2 id="login-heading" className="mb-6 text-lg font-semibold text-slate-900">
+    <section aria-labelledby="login-heading" className={sectionClass}>
+      <h2 id="login-heading" className={headingClass}>
         Log in
       </h2>
       <CredentialsForm
@@ -65,10 +66,7 @@ export function LoginPage() {
       >
         <p className="text-sm text-slate-600">
           {/* Exactly `/reset-password`, whatever `next` is: a reset ends in "log in", not in `next`. */}
-          <Link
-            to="/reset-password"
-            className="font-medium text-slate-900 underline underline-offset-2"
-          >
+          <Link to="/reset-password" className={linkClass}>
             {FORGOT_PASSWORD_LABEL}
           </Link>
         </p>
@@ -76,7 +74,7 @@ export function LoginPage() {
           New here?{' '}
           <Link
             to={{ pathname: '/register', search: searchParams.toString() }}
-            className="font-medium text-slate-900 underline underline-offset-2"
+            className={linkClass}
           >
             Create an account
           </Link>

@@ -1,5 +1,10 @@
 import { useId, useState } from 'react';
 
+import {
+  inputClass,
+  labelClass,
+  primaryButtonClass,
+} from '@/features/accountMail/components/styles';
 import { HoldNote } from '@/features/retry/components/HoldNote';
 import { useErrorHold } from '@/features/retry/useHold';
 
@@ -83,14 +88,10 @@ export function CredentialsForm({
     onSubmit({ email, password });
   }
 
-  const inputClass =
-    'mt-1 block w-full rounded-md border border-slate-300 px-3 py-2 text-slate-900 ' +
-    'focus:border-slate-500 focus:outline-none disabled:bg-slate-100 disabled:text-slate-500';
-
   return (
     <form onSubmit={handleSubmit} aria-busy={isPending} noValidate className="space-y-4">
       <div>
-        <label htmlFor={emailId} className="block text-sm font-medium text-slate-700">
+        <label htmlFor={emailId} className={labelClass}>
           Email
         </label>
         <input
@@ -110,7 +111,7 @@ export function CredentialsForm({
       </div>
 
       <div>
-        <label htmlFor={passwordId} className="block text-sm font-medium text-slate-700">
+        <label htmlFor={passwordId} className={labelClass}>
           Password
         </label>
         <input
@@ -128,7 +129,7 @@ export function CredentialsForm({
           className={inputClass}
         />
         {passwordHint !== undefined && (
-          <p id={hintId} className="mt-1 text-sm text-slate-500">
+          <p id={hintId} className="mt-1.5 text-sm text-slate-600">
             {passwordHint}
           </p>
         )}
@@ -144,7 +145,7 @@ export function CredentialsForm({
       <button
         type="submit"
         disabled={isPending || hold.held}
-        className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+        className={`w-full ${primaryButtonClass}`}
       >
         {isPending ? pendingLabel : submitLabel}
       </button>

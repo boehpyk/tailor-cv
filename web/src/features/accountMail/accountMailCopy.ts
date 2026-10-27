@@ -34,6 +34,12 @@ export const RESET_PASSWORD_LINK_LABEL = 'Reset your password';
 
 export const CHECK_EMAIL_HEADING = 'Check your email';
 
+/**
+ * The three steps above *Check your email* (web-design-refresh C-9, 1h); the middle one is where
+ * the visitor is. A picture of the journey, not state: nothing reads or advances it.
+ */
+export const CHECK_EMAIL_STEPS = ['Account', 'Confirm email', 'First tailoring'] as const;
+
 /** *"Check your inbox at {email}. …"* — the same for every address, registered or not. */
 export function checkInboxSentence(email: string): string {
   return `Check your inbox at ${email}. We've sent a message to that address — open it to finish. It's valid for 24 hours.`;

@@ -11,6 +11,7 @@ import { useErrorHold } from '@/features/retry/useHold';
 import {
   ALREADY_CONFIRMED_PROMPT,
   CHECK_EMAIL_HEADING,
+  CHECK_EMAIL_STEPS,
   GUEST_WORK_DEADLINE_NOTE,
   LOG_IN_LABEL,
   MAIL_PROVIDER_SENTENCE,
@@ -100,6 +101,33 @@ export function CheckYourEmail({
 
   return (
     <section aria-labelledby={headingId} className={sectionClass}>
+      {/* 1h's journey: a picture of where the visitor is, never state (C-9). */}
+      <ol className="mb-6 flex flex-wrap items-center gap-x-3 gap-y-2 text-sm font-semibold">
+        {CHECK_EMAIL_STEPS.map((step, index) => (
+          <li
+            key={step}
+            aria-current={index === 1 ? 'step' : undefined}
+            className={`flex items-center gap-2 ${
+              index === 0 ? 'text-success-700' : index === 1 ? 'text-slate-900' : 'text-slate-600'
+            }`}
+          >
+            {index > 0 && <span aria-hidden="true" className="stitch w-6" />}
+            <span
+              aria-hidden="true"
+              className={`flex size-6 items-center justify-center rounded-full text-xs ${
+                index === 0
+                  ? 'bg-success-50'
+                  : index === 1
+                    ? 'bg-slate-900 text-white'
+                    : 'border-[1.5px] border-slate-300'
+              }`}
+            >
+              {index === 0 ? '✓' : index + 1}
+            </span>
+            {step}
+          </li>
+        ))}
+      </ol>
       <h2 id={headingId} tabIndex={-1} ref={focusOnMount} className={headingClass}>
         {CHECK_EMAIL_HEADING}
       </h2>
@@ -110,7 +138,7 @@ export function CheckYourEmail({
       </div>
 
       {hasGuestWork && (
-        <p className="mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+        <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-sm text-amber-900">
           {GUEST_WORK_DEADLINE_NOTE}
         </p>
       )}
@@ -130,7 +158,7 @@ export function CheckYourEmail({
       </div>
 
       {sendAgain.isSuccess && (
-        <p role="status" className="mt-3 text-sm text-emerald-800">
+        <p role="status" className="mt-3 text-sm text-success-700">
           {SENT_AGAIN_NOTE}
         </p>
       )}
