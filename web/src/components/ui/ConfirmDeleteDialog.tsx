@@ -73,7 +73,7 @@ export function ConfirmDeleteDialog({
       aria-labelledby={titleId}
       aria-describedby={messageId}
       onKeyDown={handleKeyDown}
-      className="rounded-lg border border-red-200 bg-red-50 p-4"
+      className="rounded-lg border border-danger-200 bg-danger-50 p-4"
     >
       <h3 id={titleId} className="mb-2 text-sm font-semibold text-slate-900">
         {title}
@@ -94,7 +94,7 @@ export function ConfirmDeleteDialog({
           ref={confirmRef}
           type="button"
           onClick={onConfirm}
-          className="rounded-md bg-red-700 px-3 py-1.5 text-sm font-medium text-white"
+          className="rounded-md bg-danger-600 px-3 py-1.5 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
           {confirmLabel}
         </button>

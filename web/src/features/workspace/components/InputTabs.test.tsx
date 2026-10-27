@@ -1,7 +1,13 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, it } from 'vitest';
+
+import {
+  STEP_RAIL_BASE_CV_CAPTION,
+  STEP_RAIL_TAILOR_CAPTION,
+  STEP_RAIL_TAILOR_LABEL,
+} from '../workspaceCopy';
 
 import { InputTabs } from './InputTabs';
 
@@ -180,5 +186,80 @@ describe('InputTabs', () => {
     const jobPostingTab = screen.getByRole('tab', { name: 'Job posting' });
     expect(jobPostingTab).toHaveAttribute('aria-selected', 'true');
     expect(jobPostingTab).toHaveFocus();
+  });
+
+  // web-design-refresh T13 RED (AC-13): the step rail is vertical, so ArrowDown/ArrowUp are the
+  // natural keys; they mirror ArrowRight/ArrowLeft, wrapping, moving selection and focus.
+  it.each([
+    ['ArrowDown', 'base-cv', 'Base CV', 'Job posting'],
+    ['ArrowDown', 'job-posting', 'Job posting', 'Base CV'],
+    ['ArrowUp', 'job-posting', 'Job posting', 'Base CV'],
+    ['ArrowUp', 'base-cv', 'Base CV', 'Job posting'],
+  ] as const)(
+    '%s from %s moves selection and focus to the other tab (wrapping)',
+    async (key, initial, from, to) => {
+      const user = userEvent.setup();
+      render(<StatefulInputTabs initial={initial} />);
+
+      screen.getByRole('tab', { name: from }).focus();
+      await user.keyboard(`{${key}}`);
+
+      const target = screen.getByRole('tab', { name: to });
+      expect(target).toHaveAttribute('aria-selected', 'true');
+      expect(target).toHaveFocus();
+    },
+  );
+});
+
+/**
+ * T20 (web-design-refresh AC-14, OQ-21): the step rail's structure. The third item is a list item
+ * outside the tablist, never a tab; *Step n of 3* is derived from the open tab; and the rail's
+ * captions never leak into the tabs' accessible names.
+ */
+describe('InputTabs step rail', () => {
+  it('owns exactly two tabs, and the Tailor item is outside the tablist and not a tab', () => {
+    render(<StatefulInputTabs />);
+
+    const tablist = screen.getByRole('tablist', { name: 'Your inputs' });
+    expect(within(tablist).getAllByRole('tab')).toHaveLength(2);
+    expect(screen.queryByRole('tab', { name: /tailor/i })).not.toBeInTheDocument();
+    const tailor = screen.getByText(STEP_RAIL_TAILOR_LABEL).closest('li');
+    expect(tailor).not.toBeNull();
+    expect(tablist).not.toContainElement(tailor);
+    expect(tailor).toHaveTextContent(STEP_RAIL_TAILOR_CAPTION);
+  });
+
+  it('keeps the tab names exactly Base CV and Job posting', () => {
+    render(<StatefulInputTabs />);
+
+    const names = screen.getAllByRole('tab').map((t) => t.textContent);
+    // Captions are aria-hidden, so the accessible names exclude them (RTL's name query).
+    expect(screen.getByRole('tab', { name: 'Base CV' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Job posting' })).toBeInTheDocument();
+    expect(names.join(' ')).toContain(STEP_RAIL_BASE_CV_CAPTION);
+  });
+
+  it('shows Step 1 of 3 on the Base CV tab and Step 2 of 3 on the Job posting tab', async () => {
+    render(<StatefulInputTabs initial="base-cv" />);
+    expect(screen.getByText('Step 1 of 3')).toBeInTheDocument();
+
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Job posting' }));
+
+    expect(screen.getByText('Step 2 of 3')).toBeInTheDocument();
+    expect(screen.queryByText('Step 1 of 3')).not.toBeInTheDocument();
+  });
+
+  it('shows no step text and no tabs while the tab is still pending', () => {
+    render(
+      <InputTabs
+        tab={null}
+        onTabChange={() => undefined}
+        baseCvPanel={<p>base</p>}
+        jobPostingPanel={<p>posting</p>}
+      />,
+    );
+
+    expect(screen.queryByText(/Step \d of 3/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   });
 });

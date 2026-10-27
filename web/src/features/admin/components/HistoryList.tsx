@@ -79,7 +79,7 @@ export function HistoryList({ actorId, userId }: HistoryListProps): React.JSX.El
             void history.fetchNextPage();
           }}
           disabled={history.isFetchingNextPage}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {history.isFetchingNextPage ? LOADING_MORE_LABEL : LOAD_MORE_LABEL}
         </button>

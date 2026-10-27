@@ -53,3 +53,19 @@ export function formatStoredUntil(expiresAt: string): string {
 
   return `${find('day')} ${find('month')} ${find('hour')}:${find('minute')}`;
 }
+
+/**
+ * "20 Sep 2026", in UTC — the instant is the server's whole-second UTC, and formatting it in UTC
+ * keeps a user near midnight from reading a different day than the one the list is ordered by.
+ * Moved here from `SavedBaseCvRow` (web-design-refresh) when the picker's cards began to show it.
+ */
+const uploadedFormat = new Intl.DateTimeFormat('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+  timeZone: 'UTC',
+});
+
+export function formatUploadedDate(uploadedAt: string): string {
+  return uploadedFormat.format(new Date(uploadedAt));
+}

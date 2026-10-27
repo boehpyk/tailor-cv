@@ -134,7 +134,7 @@ export function JobPostingPanel(): React.JSX.Element {
   // user as a flicker, not as loading.
   if (listIsPending) {
     return (
-      <p role="status" className="text-sm text-slate-500">
+      <p role="status" className="text-sm text-slate-600">
         Loading your job posting…
       </p>
     );
@@ -144,7 +144,7 @@ export function JobPostingPanel(): React.JSX.Element {
     // The list itself failing to load is a different fact from anything about a specific posting,
     // so it gets its own message rather than being folded into one of the three error kinds.
     return (
-      <p role="alert" className="text-sm text-red-700">
+      <p role="alert" className="text-sm font-medium text-danger-600">
         Could not load your job postings: {listError.message}
       </p>
     );
@@ -160,7 +160,7 @@ export function JobPostingPanel(): React.JSX.Element {
   const isFetchFailure = apiError !== null && isFetchFailureCode(apiError.code);
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-4">
       {showCard ? (
         <JobPostingCard
           posting={latest}
@@ -189,7 +189,7 @@ export function JobPostingPanel(): React.JSX.Element {
             type="button"
             onClick={handleSubmit}
             disabled={create.isPending || submitHeld}
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+            className="min-h-11 rounded-lg bg-brand-600 px-5 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-10"
           >
             {/* Two different verbs, because only one of them is waiting on someone else's server.
                 A user told "Saving…" for eight seconds concludes we are broken; "Reading the job
@@ -215,7 +215,7 @@ export function JobPostingPanel(): React.JSX.Element {
       {preCheckError !== null && (
         // Error A. Inline text, not a boxed notice: nothing was sent, so this reads closer to form
         // validation than to an incident.
-        <p role="alert" className="text-sm font-medium text-red-700">
+        <p role="alert" className="text-sm font-medium text-danger-600">
           {preCheckError}
         </p>
       )}
@@ -234,16 +234,16 @@ export function JobPostingPanel(): React.JSX.Element {
         // server's `message`. A fetch held by a 429 still offers FR-2's paste fallback (F-5b).
         <div
           role="alert"
-          className="space-y-2 rounded-md border border-red-200 bg-red-50 px-3 py-2"
+          className="space-y-2 rounded-lg border border-danger-200 bg-danger-50 px-4 py-3"
         >
-          <p className="text-sm font-medium text-red-700">
+          <p className="text-sm font-medium text-danger-600">
             {postingRejectionMessage(create.error, createHold.phrase)}
           </p>
           {createHold.deadlineMs !== null && refusedSource === 'fetched' && mode === 'fetched' && (
             <button
               type="button"
               onClick={handlePasteInstead}
-              className="rounded-md border border-red-300 bg-white px-3 py-1.5 text-sm font-medium text-red-700"
+              className="min-h-11 rounded-lg border border-danger-200 bg-white px-3 text-sm font-semibold text-danger-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
             >
               Paste the description instead
             </button>

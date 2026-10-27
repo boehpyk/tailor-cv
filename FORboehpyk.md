@@ -6610,3 +6610,167 @@ lines below already worked this way, which is probably why it never flaked.
 **Lesson:** under `pipefail`, never pipe into something that exits early (`grep -q`, `head`). And a
 guard that can fail on a healthy system teaches people to ignore it. That is worse than having no
 guard, because the next real failure gets waved through as "the flaky one again".
+
+# web-design-refresh — new paint, same plumbing
+
+Every slice so far added something the product could *do*. This one adds almost nothing it can do,
+and it touched more files than any of them. The owner came back from Claude Design with four canvases
+of mockups (Intake, Editor, Dashboard, Marketing) and one instruction: **make it look like this, and
+change nothing else.** Warm off-white surfaces instead of flat white, a display font with some
+character, a dashed "stitch" line like a seam on a jacket, the document shown as an actual page on a
+grey desk, a bottom tab bar on the phone, and a front page that says what the thing is and what it
+costs.
+
+A reskin sounds like the easy job, and in one sense it is: no migration, no endpoint, no new state
+machine. It's like repainting a house while the family still lives in it, though. The walls can
+change colour, but every light switch has to stay where people's hands expect it, and in this app
+the light switches are **accessible names, roles and test queries**. The suite has about 1 600
+frontend tests, and most of them find things the way a screen reader does: "the button named
+*Download PDF*", "the tab named *Job posting*". Repaint carelessly and the house looks lovely while
+half the switches stop working in the dark.
+
+## The mockups lie, politely
+
+Design mockups are written to sell a feeling, and some of their sentences were simply false for this
+product. Step one said "PDF or DOCX" (TXT works too). The guest pricing card said work is deleted
+"after a while" (it's 24 hours, enforced by a job that has been rehearsed in production). Step two
+promised "we pull out what the role is asking for", which is a feature that doesn't exist. The sign-up
+screen had a **pre-ticked** "move these into my account" box, which this project's privacy rules
+forbid outright: guest work moves into an account only by an explicit offer that names it, never by
+a default. On a shared library computer, a pre-ticked box files a stranger's CV in your account.
+
+So the spec carried a copy table, C-1 to C-10: every string that changes, and a list of rejected
+mockup lines with the reason for each. Anything not in the table keeps its current wording. This
+sounds bureaucratic until you notice what it prevents. A designer's placeholder sentence can't
+become a promise the product breaks without anyone deciding it should.
+
+The *Go Pro* card is the interesting compromise. The owner wanted the $9 tier shown as designed,
+though there is no billing. The button is there and **disabled**, and it points (through
+`aria-describedby`) at a visible note: *Coming soon — nothing is charged*. The page shows the plan
+without pretending to sell it.
+
+## One DOM, every screen size
+
+The tempting way to build "a header nav on desktop, a bottom tab bar on mobile" is to write two navs
+and show one with a media query, or worse, with `window.matchMedia` in JavaScript. It works on
+screen, and it quietly doubles every link: a screen reader user hears *History* twice, and every
+test that asks for "the link named History" now finds two and fails.
+
+This slice keeps **one** `<nav>` and lets CSS move it. Below the `sm` breakpoint, `max-sm:fixed
+max-sm:bottom-0` pins it to the bottom of the screen; above it, the same element sits in the header.
+The export bar on the run page works the same way: on a desktop it's an inline band, on a phone it's
+a bottom sheet behind a *Download* button. The sheet is still the same single `ExportBar`, with its
+four per-format state machines, holds and polls, mounted once. Two copies would have meant two sets
+of export state that could disagree.
+
+There's one subtle choice inside that. A closed sheet on a phone must leave the keyboard's tab order,
+or a keyboard user tabs into invisible buttons. The obvious tool, `hidden`, would also hide the bar
+on desktop. `max-sm:invisible` hides it from focus and from screen readers **only below `sm`**, so
+the desktop bar stays exactly as it was. It's a one-word difference that the tests can't see, since
+jsdom has no layout, which is why it's on the manual pass list.
+
+## A reskin exposed a real bug
+
+While planning, `/plan` read `DocumentTabs`, the *CV / Cover letter* switch on the run page, and
+found that it was a proper ARIA tablist with roving `tabIndex` and **no key handler at all**. The
+selected tab was focusable, the other one had `tabIndex=-1`, and nothing moved focus between them.
+A keyboard user could reach the CV and never the cover letter. It had been like that since slice
+1.4, and no test noticed, because every test clicked.
+
+The mockups restyle that control as a segmented pill. Restyling a control that a keyboard can't
+operate would have meant shipping the bug in nicer clothes, so the fix went in first, red-first:
+`qa` wrote the test (ArrowRight goes to the cover letter, focus follows, the guest run stays under
+`/runs/`, the history run under `/history/`), watched 14 of 16 cases fail on *expected
+`/runs/r1/cover_letter`, got `/runs/r1/cv`*, and only then did the fix land. It also checked that a
+key switch with unsaved text doesn't trigger the "leave this page?" prompt, because the existing
+leave-guard already exempts the run's own two document URLs.
+
+The lesson generalises: **a visual pass is a good time to test the controls you're restyling.** You're
+looking at every one of them anyway.
+
+## The fonts, and the leak nobody would have noticed
+
+The mockups load their fonts the standard way, a `<link>` to Google Fonts. That works, and it means
+every visitor's browser tells Google their IP address and which page they're on, on every load. For
+a site where unemployed people upload their CVs, that's a leak with no upside, and nobody would ever
+see it in a test, because jsdom fetches nothing.
+
+ADR-0036 makes fonts a dependency like any other: `@fontsource` packages, pinned exactly, served from
+our own origin. Then a small build script, `check-dist-hosts.mjs`, reads the finished bundle and fails
+the build if anything in it would make a browser talk to another host. Its mutation test is the fun
+part: add a Google Fonts `@import` to the stylesheet, run the build, and watch it go red naming
+`fonts.googleapis.com`. Think of it as a smoke detector in the shipping container rather than in the
+kitchen: it checks what actually leaves the building.
+
+Fontsource had one surprise. Its ready-made CSS files list a `.woff2` *and* a `.woff` for each face,
+and Vite dutifully bundles every `url()` it sees, so seven faces would have shipped fourteen files.
+The fix was to write the seven `@font-face` rules ourselves, pointing only at the `.woff2` files.
+The measured result is seven files and 112 KB in all, of which a cold load of `/` fetches five
+(78 KB).
+
+## Old fences in the new garden
+
+Two of the hook failures this slice hit weren't bugs at all. They were **fences put up by a previous
+slice**. Slice 3.2's tests pinned the exact list of dependencies in `package.json` ("no new
+dependency"), and the exact source shape of the inlining rule in `vite.config.ts`. Both were good
+fences when they were built, and both stood squarely in the path of this slice's planned font
+packages and `.woff2` rule, and the spec hadn't seen either.
+
+The wrong fix is to tear the fence down. The right one is to move it: the dependency pin now lists
+the three planned font packages, and the source pin now *requires* the `.woff2` rule, so it guards
+one more promise than it used to. Each edit landed in the commit that needed it and is listed in that
+commit's body. The planning lesson goes in LESSONS.md: before changing a dependency or a config file,
+grep the tests for that file's name.
+
+## Numbers, and an honest miss
+
+The main bundle grew **3.91 kB** gzipped against a budget of 3. Nothing heavy leaked in: the
+marketing page lives in its own 3.4 kB chunk and none of its text is in the main bundle. The growth is
+just more class names across sixty always-loaded components. The owner amended the budget to 4 KB,
+in the spec, with the reason, rather than lazy-load the run page, which would add a loading fallback
+and a chunk-failure path and so belongs in a slice of its own. A budget that gets amended in the open
+is still doing its job. One that gets quietly ignored isn't.
+
+Contrast was computed rather than eyeballed: every text colour on every surface, from the token
+values, against WCAG's 4.5:1. That's how the rule "slate-500 is fine on the off-white page, never on
+the sunk grey" came about. It's 4.57 on one and 4.29 on the other, a difference nobody would ever
+spot by eye.
+
+## The test that could not fail
+
+`/verify` found a test that could never fail. The `/welcome` page promises to write nothing to your
+browser: no cookie, no `localStorage`. The test took a snapshot of storage, rendered the page, took
+another snapshot and compared the two. It was green. The reviewer asked the awkward question: *had it
+ever been red for the right reason?* Back in the RED commit, every one of those tests had failed for
+one reason only: the empty skeleton had no heading. Not one of them had failed on its own assertion.
+
+So `qa` broke the page on purpose: a `localStorage.setItem` slipped into the marketing component.
+The test stayed **green**. An earlier test in the same file had already rendered the page, so the
+key was in storage before the "before" snapshot was taken. Both snapshots agreed because both were
+already contaminated. Picture a smoke detector tested by holding a match to it in a room already
+full of smoke. Clearing storage in a `beforeEach` fixed it, and the same mutation then failed with
+the stray key printed in the diff.
+
+The lesson is in the project's rules for a reason: **a RED that fails on the wrong line proves
+nothing about the right line.** Until you've watched an assertion go red on its own, you only
+believe it guards something; you haven't shown it.
+
+## What a good engineer takes from this one
+
+- **A reskin has a contract**, and it's the accessibility tree, not the pixels. Keep names, roles and
+  order, and the suite will tell you the moment you break one.
+- **Responsive design is CSS's job.** One element moved by breakpoints beats two elements toggled by
+  JavaScript, for screen readers, for tests and for state.
+- **Write down which sentences change.** Mockup copy is persuasive and sometimes false. A table turns
+  a hundred small judgement calls into one reviewable list.
+- **Privacy regressions are silent.** A font CDN breaks no test. The only defence is a check on what
+  actually ships.
+
+## What's next
+
+The owner's manual pass came back clean. It was the first Firefox pass in this project's history.
+`/verify` passed in its second round, and the slice merged on 27 October, three days before its own
+"not before the 30th" rule. That was the owner's call, made in the open: Phase 4's gate will now close
+on admin pages that changed paint halfway through the measurement. A rule you wrote yourself is
+still yours to override. What matters is that the override is written down with its reason, not
+slipped past. Next up is a small stacked change: *System status* in the footer for admins only.

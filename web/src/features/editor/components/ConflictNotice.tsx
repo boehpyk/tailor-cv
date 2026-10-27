@@ -28,14 +28,14 @@ export function ConflictNotice({
       <button
         type="button"
         onClick={onLoadLatest}
-        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+        className="min-h-11 rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 hover:bg-surface-sunk sm:min-h-8 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
       >
         Load the latest version
       </button>
       <button
         type="button"
         onClick={onKeepMine}
-        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+        className="min-h-11 rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 hover:bg-surface-sunk sm:min-h-8 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
       >
         Keep my version
       </button>

@@ -17,7 +17,8 @@ export interface LatestRunCardProps {
   readonly run: Pick<TailoringRunSummary, 'id' | 'status' | 'failure_reason'> | null;
 }
 
-const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
+const LINK_CLASS =
+  'rounded-sm font-semibold text-brand-700 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 
 /**
  * The latest run, as a way back to it — presentational (AC-25). One sentence per terminal-or-not
@@ -49,9 +50,9 @@ export function LatestRunCard({ run }: LatestRunCardProps): React.JSX.Element | 
       return (
         <section
           aria-label="Your latest run"
-          className="flex items-baseline justify-between gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2"
+          className="flex items-baseline justify-between gap-3 rounded-lg border border-slate-200 bg-surface px-4 py-3"
         >
-          <p className="text-sm text-slate-800">Your tailoring run is in progress.</p>
+          <p className="text-sm text-slate-900">Your tailoring run is in progress.</p>
           <Link to={runLink(map, run.id)} className={LINK_CLASS}>
             View
           </Link>
@@ -61,7 +62,7 @@ export function LatestRunCard({ run }: LatestRunCardProps): React.JSX.Element | 
       return (
         <section
           aria-label="Your latest run"
-          className="rounded-md border border-slate-200 bg-white px-3 py-2"
+          className="rounded-lg border border-slate-200 bg-white px-4 py-3"
         >
           <p className="text-sm">
             <Link to={runLink(map, run.id)} className={LINK_CLASS}>
@@ -75,9 +76,9 @@ export function LatestRunCard({ run }: LatestRunCardProps): React.JSX.Element | 
       return (
         <section
           aria-label="Your latest run"
-          className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-3 py-2"
+          className="space-y-1 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3"
         >
-          <p className="text-xs font-medium tracking-wide text-amber-700 uppercase">
+          <p className="text-xs font-semibold tracking-wide text-amber-800 uppercase">
             Your last tailoring run did not finish
           </p>
           <p className="text-sm font-medium text-amber-900">{copy.headline}</p>

@@ -25,6 +25,7 @@ import { LatestRunCard } from './LatestRunCard';
 import { ProgressStepper } from './ProgressStepper';
 import { useWorkspaceTab } from '../hooks/useWorkspaceTab';
 import { deriveProgress } from '../progress';
+import { BASE_CV_INTRO } from '../workspaceCopy';
 
 import type { WorkspaceTab } from '../hooks/useWorkspaceTab';
 import type { BaseCvCheck } from '@/features/tailoring/launchReadiness';
@@ -40,10 +41,14 @@ function hasUsableBaseCv(baseCv: BaseCvCheck): boolean {
   return baseCv.state === 'ready' || baseCv.state === 'reading';
 }
 
+/** The sections' small-caps headings: slate-600, which holds 4.5:1 on every surface (AC-37). */
+const EYEBROW_CLASS = 'text-xs font-semibold tracking-wide text-slate-600 uppercase';
+
 /**
  * The three landmarks, unchanged since 1.3's `App`: each `<section>` keeps its heading (they are
  * what `App.test.tsx` pairs up), and the two input sections are the tab panels' content. The shell
- * is drawn identically in every state so the page's structure never jumps as data lands.
+ * is drawn identically in every state so the page's structure never jumps as data lands. The
+ * tailoring section rides in `InputTabs`' panel column (web-design-refresh AC-14), beside the rail.
  */
 function Shell({
   tab,
@@ -59,38 +64,36 @@ function Shell({
   readonly tailoring: ReactNode;
 }): React.JSX.Element {
   return (
-    <>
-      <InputTabs
-        tab={tab}
-        onTabChange={onTabChange}
-        baseCvPanel={
-          <section aria-labelledby="base-cv-heading" className="mb-10">
-            <h2 id="base-cv-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
-              Your base CV
-            </h2>
-            {baseCvPanel}
-          </section>
-        }
-        jobPostingPanel={
-          <section aria-labelledby="job-posting-heading" className="mb-10">
-            <h2
-              id="job-posting-heading"
-              className="mb-3 text-sm font-medium text-slate-500 uppercase"
-            >
-              The job you are applying for
-            </h2>
-            {jobPostingPanel}
-          </section>
-        }
-      />
-
+    <InputTabs
+      tab={tab}
+      onTabChange={onTabChange}
+      baseCvPanel={
+        <section aria-labelledby="base-cv-heading" className="mb-10">
+          <h2 id="base-cv-heading" className={EYEBROW_CLASS}>
+            Your base CV
+          </h2>
+          <p className="mt-2 mb-6 font-display text-3xl font-bold tracking-tight text-slate-900 sm:text-4xl">
+            {BASE_CV_INTRO}
+          </p>
+          {baseCvPanel}
+        </section>
+      }
+      jobPostingPanel={
+        <section aria-labelledby="job-posting-heading" className="mb-10">
+          <h2 id="job-posting-heading" className={`mb-4 ${EYEBROW_CLASS}`}>
+            The job you are applying for
+          </h2>
+          {jobPostingPanel}
+        </section>
+      }
+    >
       <section aria-labelledby="tailoring-heading" className="mb-10">
-        <h2 id="tailoring-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
+        <h2 id="tailoring-heading" className={`mb-4 ${EYEBROW_CLASS}`}>
           Your tailored CV and cover letter
         </h2>
         {tailoring}
       </section>
-    </>
+    </InputTabs>
   );
 }
 
@@ -146,7 +149,7 @@ export function GuestWorkspace(): React.JSX.Element {
 
   if (baseCvs.isError || jobPostings.isError || runs.isError) {
     return (
-      <p role="alert" className="text-sm text-red-700">
+      <p role="alert" className="text-sm font-medium text-danger-600">
         We couldn&apos;t load your workspace. Reload the page to try again.
       </p>
     );
@@ -205,7 +208,9 @@ export function GuestWorkspace(): React.JSX.Element {
       baseCvPanel={<BaseCvUploadPanel />}
       jobPostingPanel={<JobPostingPanel />}
       tailoring={
-        <div className="space-y-4">
+        // 2e's progress card: the stepper, the latest run, the launch and its refusal. No summary of
+        // the two inputs here — the tabs above already show them (technical-plan §3).
+        <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
           <ProgressStepper
             progress={progress}
             run={{ kind: 'none' }}

@@ -48,12 +48,14 @@ export function ExportFailureNotice({
 }: ExportFailureNoticeProps): React.JSX.Element {
   return (
     <>
-      {exportFailureCopyFor(reason, format)}
+      {/* A plain span for the danger colour — not a live region, so the control's own stays the
+          only one. */}
+      <span className="text-danger-600">{exportFailureCopyFor(reason, format)}</span>
       {retryable && (
         <button
           type="button"
           onClick={onRetry}
-          className="ml-2 rounded-md px-1.5 py-0.5 font-medium text-amber-800 underline underline-offset-2 hover:bg-amber-100"
+          className="ml-2 rounded-sm px-1.5 py-0.5 font-semibold text-danger-600 underline underline-offset-2 hover:bg-danger-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
           {EXPORT_AGAIN_ACTION}
         </button>

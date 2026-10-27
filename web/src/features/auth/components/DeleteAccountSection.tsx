@@ -65,7 +65,7 @@ export function DeleteAccountSection(): React.JSX.Element {
 
   return (
     <section aria-labelledby={headingId} className="mt-10 border-t border-slate-200 pt-6">
-      <h2 id={headingId} className="mb-3 text-lg font-semibold text-slate-900">
+      <h2 id={headingId} className="mb-3 font-display text-xl font-bold text-slate-900">
         {DELETE_ACCOUNT_HEADING}
       </h2>
       <div className="mb-4 space-y-2 text-sm text-slate-600">
@@ -104,14 +104,14 @@ export function DeleteAccountSection(): React.JSX.Element {
           </label>
         </div>
         {error !== null && (
-          <p id={errorId} role="alert" className="text-sm text-red-700">
+          <p id={errorId} role="alert" className="text-sm text-danger-600">
             {deleteAccountErrorCopy(error, deletionHold.deadlineMs, deletionHold.receivedAtMs)}
           </p>
         )}
         <button
           type="submit"
           disabled={!understood || password === '' || deletion.isPending}
-          className="rounded-md bg-red-700 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+          className="rounded-md bg-danger-600 px-4 py-2 text-sm font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {deletion.isPending ? DELETE_ACCOUNT_PENDING_LABEL : DELETE_ACCOUNT_SUBMIT_LABEL}
         </button>

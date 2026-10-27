@@ -17,7 +17,7 @@ export interface StoragePageProps {
 export function StoragePage({ actorId }: StoragePageProps): React.JSX.Element {
   return (
     <section aria-labelledby="admin-storage-heading" className="mb-10 min-w-0 space-y-8">
-      <h1 id="admin-storage-heading" className="text-lg font-semibold text-slate-900">
+      <h1 id="admin-storage-heading" className="font-display text-xl font-bold text-slate-900">
         {STORAGE_HEADING}
       </h1>
       <StorageTable actorId={actorId} />

@@ -55,7 +55,7 @@ export function UserPage({ actorId }: UserPageProps): React.JSX.Element {
     return (
       <section className="mb-10 space-y-3">
         <p className="text-slate-700">{USER_GONE}</p>
-        <Link to="/admin" className="font-medium text-slate-900 underline underline-offset-2">
+        <Link to="/admin" className="font-medium text-brand-700 underline underline-offset-2">
           {BACK_TO_USERS}
         </Link>
       </section>
@@ -67,7 +67,7 @@ export function UserPage({ actorId }: UserPageProps): React.JSX.Element {
         {notice !== null && (
           <div
             role="status"
-            className="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800"
+            className="mb-6 rounded-lg border border-slate-200 bg-surface-sunk p-4 text-sm text-slate-800"
           >
             <p>{notice.text}</p>
             {notice.unlinkFailures > 0 && <p>{unlinkFailuresNote(notice.unlinkFailures)}</p>}
@@ -89,7 +89,7 @@ export function UserPage({ actorId }: UserPageProps): React.JSX.Element {
             void user.refetch();
           }}
           disabled={user.isFetching}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+          className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {ADMIN_RETRY_LABEL}
         </button>

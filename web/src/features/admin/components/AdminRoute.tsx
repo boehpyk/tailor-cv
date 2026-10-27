@@ -1,11 +1,9 @@
 import { Suspense, lazy } from 'react';
 
+import { LazyBoundary } from '@/components/ui/LazyBoundary';
+import { LAZY_LOADING } from '@/components/ui/lazyCopy';
 import { RequireAuth } from '@/features/auth/components/RequireAuth';
 import { AccountScope } from '@/features/scope/AccountScope';
-
-import { LAZY_LOADING } from '../lazyCopy';
-
-import { LazyBoundary } from './LazyBoundary';
 
 /**
  * The admin screen's chunk (AC-33, AC-35). The only reference to `AdminPage` anywhere in the main

@@ -37,7 +37,7 @@ export function JobHealth(): React.JSX.Element {
   const sweep = data?.jobs?.identity_token_sweep;
   return (
     <section aria-labelledby="admin-job-health-heading" className="space-y-3">
-      <h2 id="admin-job-health-heading" className="text-base font-semibold text-slate-900">
+      <h2 id="admin-job-health-heading" className="font-display text-base font-bold text-slate-900">
         {JOB_HEALTH_HEADING}
       </h2>
       {data === undefined ? (
@@ -53,7 +53,7 @@ export function JobHealth(): React.JSX.Element {
           {Object.entries(data.dependencies).map(([name, dependency]) => (
             <Fragment key={name}>
               <dt className={TERM}>{labelOf(name)}</dt>
-              <dd className={dependency.healthy ? VALUE : `${VALUE} text-red-700`}>
+              <dd className={dependency.healthy ? VALUE : `${VALUE} text-danger-600`}>
                 {dependency.healthy ? DEPENDENCY_HEALTHY : DEPENDENCY_UNHEALTHY}
               </dd>
             </Fragment>

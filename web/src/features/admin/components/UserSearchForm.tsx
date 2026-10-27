@@ -37,7 +37,7 @@ export function UserSearchForm({ q, onSearch }: UserSearchFormProps): React.JSX.
       />
       <button
         type="submit"
-        className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+        className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
       >
         {SEARCH_SUBMIT_LABEL}
       </button>

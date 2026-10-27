@@ -30,7 +30,7 @@ export interface GuestListPageProps {
 }
 
 const BUTTON =
-  'rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
+  'rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60';
 const COUNT_KEYS = Object.keys(GUEST_COUNT_LABELS) as (keyof typeof GUEST_COUNT_LABELS)[];
 
 /**
@@ -56,13 +56,13 @@ export function GuestListPage({ actorId }: GuestListPageProps): React.JSX.Elemen
 
   return (
     <section aria-labelledby="admin-guests-heading" className="mb-10 space-y-4">
-      <h1 id="admin-guests-heading" className="text-lg font-semibold text-slate-900">
+      <h1 id="admin-guests-heading" className="font-display text-xl font-bold text-slate-900">
         {GUESTS_HEADING}
       </h1>
       {notice !== null && (
         <div
           role="status"
-          className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800"
+          className="rounded-lg border border-slate-200 bg-surface-sunk p-4 text-sm text-slate-800"
         >
           <p>{notice.text}</p>
           {notice.unlinkFailures > 0 && <p>{guestUnlinkFailuresNote(notice.unlinkFailures)}</p>}
@@ -150,7 +150,7 @@ function GuestTable({
               <td className={`${TD} break-all`}>
                 <Link
                   to={subjectLink({ kind: 'guest', sessionId: session.id })}
-                  className="font-medium text-slate-900 underline underline-offset-2"
+                  className="font-medium text-brand-700 underline underline-offset-2"
                 >
                   {session.id}
                 </Link>

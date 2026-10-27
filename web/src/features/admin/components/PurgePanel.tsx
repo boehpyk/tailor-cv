@@ -50,7 +50,7 @@ export function PurgePanel({ actorId }: PurgePanelProps): React.JSX.Element {
   const preview = purgePreview.data;
   return (
     <section aria-labelledby="admin-purge-heading" className="space-y-3">
-      <h2 id="admin-purge-heading" className="text-base font-semibold text-slate-900">
+      <h2 id="admin-purge-heading" className="font-display text-base font-bold text-slate-900">
         {PURGE_HEADING}
       </h2>
       {job !== undefined && <PurgeFacts job={job} />}
@@ -87,7 +87,7 @@ function PurgeFacts({ job }: { readonly job: GuestPurgeStatus }): React.JSX.Elem
             )}
       </li>
       <li>{job.overdue === null ? OVERDUE_UNKNOWN : overdueLine(job.overdue)}</li>
-      {job.stale && <li className="font-medium text-red-700">{PURGE_STALE}</li>}
+      {job.stale && <li className="font-medium text-danger-600">{PURGE_STALE}</li>}
     </ul>
   );
 }

@@ -23,3 +23,20 @@ export const ACCOUNT_PROMISE = `You're signed in, so what you tailor here is sav
 /** The latest-run query failed (a 5xx or no answer); the rest of the workspace still works. */
 export const LATEST_RUN_ERROR_NOTE = "Couldn't load your latest run.";
 export const RETRY_LABEL = 'Retry';
+
+/**
+ * web-design-refresh C-4: the guest step rail's captions. Decoration beside the tab names — the
+ * tabs' accessible names stay *Base CV* / *Job posting*, so these are `aria-hidden` there.
+ */
+export const STEP_RAIL_BASE_CV_CAPTION = 'PDF, DOCX or TXT';
+export const STEP_RAIL_JOB_POSTING_CAPTION = 'Text or a link';
+/** OQ-21: the rail's third item — a list item, not a tab (tailoring is a section, not a panel). */
+export const STEP_RAIL_TAILOR_LABEL = 'Tailor';
+export const STEP_RAIL_TAILOR_CAPTION = 'Under two minutes';
+/** C-4, below `sm`: where the visitor is, derived from the open tab. */
+export function stepOfThree(step: 1 | 2): string {
+  return `Step ${String(step)} of 3`;
+}
+
+/** C-5: the guest base-CV tab's intro line. */
+export const BASE_CV_INTRO = "Let's start with your CV";

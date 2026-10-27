@@ -1,6 +1,7 @@
 import { useId } from 'react';
 
 import { useAuth } from '@/features/auth/hooks/useAuth';
+import { formatUploadedDate } from '@/features/intake/format';
 
 import { useSavedBaseCvs } from '../hooks/useSavedBaseCvs';
 import {
@@ -20,7 +21,7 @@ import { SavedCvUploadControl } from './SavedCvUploadControl';
 import type { SavedBaseCv } from '../types';
 
 const buttonClass =
-  'rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
+  'min-h-11 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9';
 
 /**
  * The picker's one mode (slice 2.3's AC-39; 2.4 removed 2.2's `'copy'` mode, AC-44): the selection
@@ -55,7 +56,7 @@ export function SavedBaseCvPicker({
       return null;
     case 'unavailable':
       return (
-        <div className="mb-6 space-y-2 rounded-lg border border-slate-200 p-4">
+        <div className="mb-6 space-y-2 rounded-xl border border-slate-200 bg-white p-4">
           <p className="text-sm text-slate-700">{PICKER_UNAVAILABLE_NOTE}</p>
           <button type="button" onClick={auth.retry} className={buttonClass}>
             {RETRY_LABEL}
@@ -88,7 +89,7 @@ function SelectPicker({
   function body(): React.JSX.Element {
     if (list.isPending) {
       return (
-        <p role="status" className="text-sm text-slate-500">
+        <p role="status" className="text-sm text-slate-600">
           {SAVED_CVS_LOADING_NOTE}
         </p>
       );
@@ -151,41 +152,73 @@ function SavedCvRadioGroup({
   const legendId = useId();
   const radioName = useId();
   return (
-    <fieldset role="radiogroup" aria-labelledby={legendId} className="space-y-2">
-      <legend id={legendId} className="mb-2 text-sm font-medium text-slate-900">
+    <fieldset role="radiogroup" aria-labelledby={legendId}>
+      <legend id={legendId} className="mb-3 text-sm font-medium text-slate-900">
         {legend}
       </legend>
-      {items.map((cv) => {
-        const usable = cv.status === 'extracted';
-        const reasonId = `${radioName}-${cv.id}-reason`;
-        return (
-          <div key={cv.id} className="flex items-start gap-2">
-            <input
-              id={`${radioName}-${cv.id}`}
-              type="radio"
-              name={radioName}
-              value={cv.id}
-              checked={selectedId === cv.id}
-              disabled={!usable}
-              aria-describedby={usable ? undefined : reasonId}
-              onChange={() => {
-                onChoose(cv.id);
-              }}
-              className="mt-1"
-            />
-            <label htmlFor={`${radioName}-${cv.id}`} className="text-sm">
-              <span className={usable ? 'text-slate-900' : 'text-slate-400'}>
-                {cv.label ?? cv.original_filename}
-              </span>
-              {!usable && (
-                <span id={reasonId} className="block text-slate-500">
-                  {cv.failure_message ?? SAVED_CV_STATUS_LABELS[cv.status]}
+      {/* 2b's cards. The radio is still the input — `sr-only`, so it keeps its keyboard group, its
+          focus and its name — and the card reads its state through `has-*` variants. */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        {items.map((cv) => {
+          const usable = cv.status === 'extracted';
+          const selected = selectedId === cv.id;
+          const reasonId = `${radioName}-${cv.id}-reason`;
+          return (
+            <div
+              key={cv.id}
+              className="flex rounded-xl border border-slate-200 bg-white has-checked:border-brand-600 has-checked:bg-brand-50 has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600"
+            >
+              <input
+                id={`${radioName}-${cv.id}`}
+                type="radio"
+                name={radioName}
+                value={cv.id}
+                checked={selected}
+                disabled={!usable}
+                aria-describedby={usable ? undefined : reasonId}
+                onChange={() => {
+                  onChoose(cv.id);
+                }}
+                className="sr-only"
+              />
+              <label
+                htmlFor={`${radioName}-${cv.id}`}
+                className={`flex min-w-0 flex-1 items-start justify-between gap-3 p-4 text-sm ${
+                  usable ? 'cursor-pointer' : 'cursor-not-allowed'
+                }`}
+              >
+                <span className="min-w-0 space-y-0.5">
+                  <span
+                    className={`block font-semibold break-words ${usable ? 'text-slate-900' : 'text-slate-600'}`}
+                  >
+                    {cv.label ?? cv.original_filename}
+                  </span>
+                  {cv.label !== null && (
+                    <span className="block break-words text-slate-600">{cv.original_filename}</span>
+                  )}
+                  <span className="block text-slate-600">
+                    Uploaded {formatUploadedDate(cv.uploaded_at)}
+                  </span>
+                  {!usable && (
+                    <span id={reasonId} className="block text-amber-800">
+                      {cv.failure_message ?? SAVED_CV_STATUS_LABELS[cv.status]}
+                    </span>
+                  )}
                 </span>
-              )}
-            </label>
-          </div>
-        );
-      })}
+                {/* The check badge: decoration — the radio's checked state is the fact. */}
+                <span
+                  aria-hidden="true"
+                  className={`flex size-6 flex-none items-center justify-center rounded-full text-xs ${
+                    selected ? 'bg-brand-600 text-white' : 'border border-slate-300'
+                  }`}
+                >
+                  {selected ? '✓' : ''}
+                </span>
+              </label>
+            </div>
+          );
+        })}
+      </div>
     </fieldset>
   );
 }

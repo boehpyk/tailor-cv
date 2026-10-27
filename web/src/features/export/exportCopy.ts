@@ -453,6 +453,13 @@ export function downloadFilenameFor(document: TailoredDocumentKind, format: Expo
   return DOWNLOAD_FILENAMES[document][format];
 }
 
+/**
+ * C-7: the mobile export sheet's toggle and its close button. The toggle's visible text is its
+ * whole accessible name — no `aria-label`, which would break label-in-name.
+ */
+export const EXPORT_SHEET_TOGGLE_LABEL = 'Download';
+export const EXPORT_SHEET_CLOSE_LABEL = 'Close';
+
 /** AC-30: the picker's legend — what the three radios choose between (slice 3.2). */
 export const PDF_LAYOUT_LEGEND = 'PDF layout';
 

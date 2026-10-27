@@ -41,7 +41,7 @@ export interface BoardPageProps {
 }
 
 const BUTTON_CLASS =
-  'rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
+  'min-h-11 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9';
 
 /**
  * `/board` — a **container** (AC-32), under `RequireAuth` and `AccountScope`.
@@ -62,10 +62,15 @@ export function BoardPage({ userId }: BoardPageProps): React.JSX.Element {
   const headingId = useId();
   return (
     <div className="mb-10 space-y-4">
-      <h2 id={headingId} className="text-lg font-semibold text-slate-900">
-        {BOARD_HEADING}
-      </h2>
-      <p className="text-sm text-slate-600">{BOARD_RETENTION_NOTE}</p>
+      <div className="space-y-1">
+        <h2
+          id={headingId}
+          className="font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl"
+        >
+          {BOARD_HEADING}
+        </h2>
+        <p className="text-sm text-slate-600">{BOARD_RETENTION_NOTE}</p>
+      </div>
       <BoardBody userId={userId} />
     </div>
   );
@@ -189,7 +194,7 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
   // A refused move's reason, near the board — also when a 404 took the last card and the board is
   // now empty, so the reason is never lost with the card (AC-34).
   const failureNotice = moveFailure !== null && (
-    <p role="alert" className="text-sm text-red-700">
+    <p role="alert" className="text-sm font-medium text-danger-600">
       {moveFailure}
     </p>
   );
@@ -197,7 +202,7 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
   if (view.status === 'loading') {
     return (
       <>
-        <p role="status" className="text-sm text-slate-500">
+        <p role="status" className="text-sm text-slate-600">
           {BOARD_LOADING_NOTE}
         </p>
         {liveRegion}
@@ -207,8 +212,11 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
   if (view.status === 'error') {
     return (
       <>
-        <div role="alert" className="space-y-2">
-          <p className="text-sm text-slate-700">{BOARD_LOAD_ERROR_NOTE}</p>
+        <div
+          role="alert"
+          className="space-y-3 rounded-xl border border-danger-200 bg-danger-50 p-4"
+        >
+          <p className="text-sm font-medium text-slate-900">{BOARD_LOAD_ERROR_NOTE}</p>
           <button type="button" onClick={view.retry} className={BUTTON_CLASS}>
             {RETRY_LABEL}
           </button>
@@ -222,9 +230,12 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
       <>
         {liveRegion}
         {failureNotice}
-        <p className="text-sm text-slate-600">
-          <span>{BOARD_EMPTY_NOTE}</span>{' '}
-          <Link to="/history" className="font-medium text-slate-900 underline underline-offset-2">
+        <p className="rounded-xl border-2 border-dashed border-slate-300 bg-white p-6 text-sm text-slate-700">
+          <span className="font-semibold text-slate-900">{BOARD_EMPTY_NOTE}</span>{' '}
+          <Link
+            to="/history"
+            className="rounded-sm font-semibold text-brand-700 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+          >
             {BOARD_EMPTY_ACTION}
           </Link>
         </p>
@@ -247,9 +258,10 @@ function BoardBody({ userId }: BoardPageProps): React.JSX.Element {
     <div className="space-y-3">
       {liveRegion}
       {failureNotice}
-      {/* Stacked below `sm`; a grid up to `lg`; one row of six from `lg`, scrolling inside its own
-          container so the page itself never scrolls sideways (AC-40). */}
-      <div className="grid gap-3 sm:grid-cols-2 lg:flex lg:overflow-x-auto lg:pb-2">
+      {/* Stacked below `sm` — one column, grouped by stage (4c); a grid up to `lg`; one row of six
+          from `lg`, scrolling inside its own container so the page itself never scrolls sideways
+          (AC-40). */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:flex lg:items-start lg:overflow-x-auto lg:pb-3">
         {STAGES.map((stage) => (
           <BoardColumn
             key={stage}

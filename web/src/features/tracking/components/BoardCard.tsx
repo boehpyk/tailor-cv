@@ -55,7 +55,8 @@ export interface BoardCardProps {
   readonly dragProps: CardDragProps;
 }
 
-const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
+const LINK_CLASS =
+  'inline-flex min-h-11 items-center rounded-sm font-semibold text-brand-700 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-0';
 
 /**
  * The posting's own page, only when it is `http://` or `https://` (AC-40). The server validated it
@@ -116,19 +117,19 @@ export const BoardCard = memo(function BoardCard({
       // Where focus-after-move looks for "still inside this card" (`useMoveAnnouncer`).
       data-board-card=""
       {...dragProps}
-      className="space-y-2 rounded-md border border-slate-200 bg-white p-3 shadow-sm"
+      className="space-y-1.5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
     >
-      <p id={titleId} className="font-medium break-words text-slate-900">
+      <p id={titleId} className="font-semibold break-words text-slate-900">
         {cardDisplayTitle(card)}
       </p>
-      <p className="text-sm text-slate-600">
-        <span className="text-slate-500">CV: </span>
+      <p className="text-sm break-words text-slate-600">
+        <span>CV: </span>
         <span>{cardCvLine(card)}</span>
       </p>
-      <p className="text-xs text-slate-500">
+      <p className="text-xs text-slate-600">
         <time dateTime={card.stage_changed_at}>{sinceCopy(card.stage_changed_at)}</time>
       </p>
-      <div className="flex flex-wrap gap-x-3 gap-y-1 text-sm">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
         {card.run !== null && (
           <Link to={runLink(scope, card.tailoring_run_id, 'cv')} className={LINK_CLASS}>
             {OPEN_DOCUMENTS_LABEL}
@@ -140,33 +141,35 @@ export const BoardCard = memo(function BoardCard({
           </a>
         )}
       </div>
-      <MoveToControl
-        stage={card.stage}
-        pending={movePending}
-        onMove={moveThis}
-        ref={moveControlRef}
-        describedBy={titleId}
-      />
-      <CardTitleEditor
-        userId={userId}
-        applicationId={card.id}
-        title={card.title}
-        version={card.version}
-        movePending={movePending}
-        describedBy={titleId}
-      />
+      <div className="stitch mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 pt-3">
+        <MoveToControl
+          stage={card.stage}
+          pending={movePending}
+          onMove={moveThis}
+          ref={moveControlRef}
+          describedBy={titleId}
+        />
+        <CardTitleEditor
+          userId={userId}
+          applicationId={card.id}
+          title={card.title}
+          version={card.version}
+          movePending={movePending}
+          describedBy={titleId}
+        />
+      </div>
       <div className="text-sm">
         <button
           type="button"
           onClick={removeThis}
           disabled={removal.kind === 'removing'}
           aria-describedby={removal.kind === 'failed' ? `${titleId} ${removeNoteId}` : titleId}
-          className="text-red-700 underline underline-offset-2 disabled:text-slate-400 disabled:no-underline"
+          className="min-h-11 rounded-sm px-1 font-semibold text-danger-600 hover:underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-0"
         >
           {removal.kind === 'removing' ? REMOVE_PENDING_LABEL : REMOVE_LABEL}
         </button>
         {removal.kind === 'failed' && (
-          <p id={removeNoteId} role="alert" className="mt-1 text-slate-700">
+          <p id={removeNoteId} role="alert" className="mt-1 font-medium text-danger-600">
             {REMOVE_FAILED_NOTE}
           </p>
         )}

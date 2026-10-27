@@ -48,7 +48,7 @@ export function GuestPurgeStatus({ job }: { job: GuestPurgeJob | undefined }): R
 
     case 'stale':
       return (
-        <p className="text-sm text-red-700">
+        <p className="text-sm text-danger-600">
           Guest purge has not run for over 3 hours · {backlogPhrase(view.overdue)}
         </p>
       );

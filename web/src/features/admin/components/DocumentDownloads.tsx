@@ -36,14 +36,14 @@ export function DocumentDownloads({
             onClick={() => {
               download.mutate({ source: 'document', runId, document, format });
             }}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-900 disabled:opacity-60"
+            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
           >
             {DOWNLOAD_INLINE_LABELS[format]}
           </button>
         ))}
       </div>
       {download.isError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {downloadFailureCopy(download.error)}
         </p>
       )}

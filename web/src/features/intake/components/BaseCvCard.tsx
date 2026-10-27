@@ -18,16 +18,16 @@ interface BaseCvCardProps {
  */
 export function BaseCvCard({ cv, onReplace }: BaseCvCardProps): React.JSX.Element {
   return (
-    <div className="rounded-lg border border-slate-200 p-4">
+    <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
       <div className="flex items-start justify-between gap-4">
-        <div className="space-y-1">
-          <p className="font-medium text-slate-900">{cv.original_filename}</p>
+        <div className="min-w-0 space-y-1">
+          <p className="font-semibold break-words text-slate-900">{cv.original_filename}</p>
           {cv.origin === 'copied_from_saved' && (
             // AC-41: a working copy is guest data like any upload, and says so — the saved CV it
             // came from stays in the account; this copy goes with the workspace.
             <>
               <p>
-                <span className="inline-block rounded bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-800">
+                <span className="inline-block rounded-full bg-brand-50 px-2.5 py-0.5 text-xs font-medium text-brand-700">
                   {WORKING_COPY_BADGE}
                 </span>
               </p>
@@ -41,7 +41,7 @@ export function BaseCvCard({ cv, onReplace }: BaseCvCardProps): React.JSX.Elemen
         <button
           type="button"
           onClick={onReplace}
-          className="shrink-0 text-sm font-medium text-slate-600 hover:text-slate-900"
+          className="min-h-11 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-surface-sunk hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
         >
           Replace CV
         </button>

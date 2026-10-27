@@ -30,13 +30,15 @@ export function JobPostingCard({ posting, onReplace }: JobPostingCardProps): Rea
   const host = posting.source_url !== null ? hostOf(posting.source_url) : null;
 
   return (
-    <div className="space-y-2 rounded-md border border-slate-200 bg-white px-4 py-3">
+    <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
       <div className="flex items-start justify-between gap-4">
-        <div>
+        <div className="min-w-0">
           {/* "Job posting" rather than an invented label when the page had no title (J-4: a pasted
               posting never has one). A guessed title — the first line of a clipboard paste, say —
               would be a confidently wrong label, which is worse than an honest generic one. */}
-          <h3 className="font-medium text-slate-900">{posting.title ?? 'Job posting'}</h3>
+          <h3 className="font-display text-lg font-bold text-slate-900">
+            {posting.title ?? 'Job posting'}
+          </h3>
           <p className="text-sm text-slate-500">
             {/* Unformatted, matching `BaseCvCard`'s "N characters extracted". The INPUT's live
                 counter is formatted (`3,184 / 30,000`) because it is a number being read against a
@@ -52,7 +54,7 @@ export function JobPostingCard({ posting, onReplace }: JobPostingCardProps): Rea
                   // without them the target page gets a `window.opener` handle back into this tab.
                   // `nofollow` because we are not vouching for it.
                   rel="noopener noreferrer nofollow"
-                  className="underline hover:text-slate-700"
+                  className="rounded-sm font-medium text-brand-700 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
                 >
                   {host}
                 </a>
@@ -63,13 +65,13 @@ export function JobPostingCard({ posting, onReplace }: JobPostingCardProps): Rea
         <button
           type="button"
           onClick={onReplace}
-          className="shrink-0 text-sm text-slate-600 underline hover:text-slate-900"
+          className="min-h-11 shrink-0 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-surface-sunk hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
         >
           Replace posting
         </button>
       </div>
 
-      <p className="text-sm text-slate-600">{posting.preview}</p>
+      <p className="stitch pt-3 text-sm text-slate-700">{posting.preview}</p>
 
       {/* `null` is an account's posting (slice 2.3, AC-40): kept with the history, no date to
           state. Read from the row, which is the server's statement of whose retention applies. */}

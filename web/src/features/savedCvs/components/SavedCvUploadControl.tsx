@@ -42,8 +42,8 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
   }
 
   return (
-    <div className="space-y-2 rounded-lg border border-dashed border-slate-300 p-4">
-      <label htmlFor={inputId} className="block text-sm font-medium text-slate-700">
+    <div className="space-y-2 rounded-xl border-2 border-dashed border-slate-300 bg-white p-4 sm:p-5">
+      <label htmlFor={inputId} className="block text-sm font-semibold text-slate-900">
         {UPLOAD_SAVED_CV_LABEL}
       </label>
       <p className="text-sm text-slate-500">{notice}</p>
@@ -54,7 +54,7 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
         disabled={upload.isPending || hold.held}
         onChange={handleChange}
         aria-describedby={error === null ? undefined : errorId}
-        className="block text-sm"
+        className="block w-full text-sm text-slate-700 file:mr-3 file:min-h-9 file:cursor-pointer file:rounded-lg file:border-0 file:bg-brand-600 file:px-3 file:text-sm file:font-semibold file:text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
       />
       {upload.isPending && (
         <p role="status" className="text-sm font-medium text-slate-500">
@@ -62,7 +62,7 @@ export function SavedCvUploadControl({ notice }: SavedCvUploadControlProps): Rea
         </p>
       )}
       {error !== null && (
-        <p id={errorId} role="alert" className="text-sm text-red-700">
+        <p id={errorId} role="alert" className="text-sm font-medium text-danger-600">
           {uploadSavedCvErrorCopy(error, hold.phrase)}
         </p>
       )}

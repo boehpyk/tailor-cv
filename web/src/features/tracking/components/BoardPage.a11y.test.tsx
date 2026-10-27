@@ -293,12 +293,12 @@ describe('AC-40 — at 360 px the columns stack (the classes that produce it)', 
     renderBoard();
     await screen.findByText(TITLE);
 
-    // MUT: BoardColumn.tsx — `lg:w-60 lg:shrink-0` → `w-60 shrink-0` → a 15 rem column at 360 px → red.
+    // MUT: BoardColumn.tsx — `lg:w-64 lg:shrink-0` → `w-64 shrink-0` → a 16 rem column at 360 px → red.
     for (const region of screen.getAllByRole('region')) {
       expect(
         unprefixed(region).filter((token) => /^(?:min-|max-)?w-|^shrink-/.test(token)),
       ).toEqual([]);
-      expect(region.className).toContain('lg:w-60');
+      expect(region.className).toContain('lg:w-64');
     }
   });
 });

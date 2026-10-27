@@ -14,6 +14,8 @@ export interface DocumentEditorProps {
 /** One toolbar control: its accessible name, what it does, and how to tell whether it is on. */
 interface ToolbarControl {
   readonly label: string;
+  /** What the button shows (web-design-refresh C-6). Decoration: the name is still `label`. */
+  readonly glyph: string;
   readonly run: (editor: Editor) => void;
   readonly isActive: (editor: Editor) => boolean;
 }
@@ -27,36 +29,43 @@ interface ToolbarControl {
 const TOOLBAR_CONTROLS: readonly ToolbarControl[] = [
   {
     label: 'Bold',
+    glyph: 'B',
     run: (editor) => editor.chain().focus().toggleBold().run(),
     isActive: (editor) => editor.isActive('bold'),
   },
   {
     label: 'Italic',
+    glyph: 'I',
     run: (editor) => editor.chain().focus().toggleItalic().run(),
     isActive: (editor) => editor.isActive('italic'),
   },
   {
     label: 'Heading 1',
+    glyph: 'H1',
     run: (editor) => editor.chain().focus().toggleHeading({ level: 1 }).run(),
     isActive: (editor) => editor.isActive('heading', { level: 1 }),
   },
   {
     label: 'Heading 2',
+    glyph: 'H2',
     run: (editor) => editor.chain().focus().toggleHeading({ level: 2 }).run(),
     isActive: (editor) => editor.isActive('heading', { level: 2 }),
   },
   {
     label: 'Heading 3',
+    glyph: 'H3',
     run: (editor) => editor.chain().focus().toggleHeading({ level: 3 }).run(),
     isActive: (editor) => editor.isActive('heading', { level: 3 }),
   },
   {
     label: 'Bullet list',
+    glyph: '•',
     run: (editor) => editor.chain().focus().toggleBulletList().run(),
     isActive: (editor) => editor.isActive('bulletList'),
   },
   {
     label: 'Numbered list',
+    glyph: '1.',
     run: (editor) => editor.chain().focus().toggleOrderedList().run(),
     isActive: (editor) => editor.isActive('orderedList'),
   },
@@ -97,8 +106,14 @@ export function DocumentEditor({ handle, kind, hidden }: DocumentEditorProps): R
       hidden={hidden}
       data-document={kind}
       aria-busy={editor === null}
+      className="mx-auto max-w-[794px] rounded-sm bg-white shadow-md"
     >
-      <div role="toolbar" aria-label="Formatting" className="mb-2 flex flex-wrap gap-1">
+      {/* Sticky at the top of the sheet: a long CV keeps its toolbar in reach while scrolling. */}
+      <div
+        role="toolbar"
+        aria-label="Formatting"
+        className="sticky top-0 z-10 flex flex-wrap rounded-t-sm border-b border-slate-200 bg-white px-2 py-2 sm:gap-1 sm:px-6"
+      >
         {TOOLBAR_CONTROLS.map((control, index) => {
           const pressed = toolbar?.active[index] ?? false;
           return (
@@ -112,18 +127,18 @@ export function DocumentEditor({ handle, kind, hidden }: DocumentEditorProps): R
                   control.run(editor);
                 }
               }}
-              className={
-                pressed
-                  ? 'rounded-md border border-slate-900 bg-slate-900 px-2 py-1 text-sm text-white'
-                  : 'rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800 hover:bg-slate-50 disabled:opacity-50'
-              }
+              className={`inline-flex size-11 items-center justify-center rounded-md text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 sm:size-8 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
+                pressed ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-surface-sunk'
+              }`}
             >
-              {control.label}
+              {/* The glyph is what a sighted reader sees; the name stays the label (AC-21). */}
+              <span aria-hidden="true">{control.glyph}</span>
+              <span className="sr-only">{control.label}</span>
             </button>
           );
         })}
       </div>
-      <div className="rounded-md border border-slate-300 bg-white px-3 py-2">
+      <div className="p-5 sm:p-12">
         <EditorContent editor={editor} />
       </div>
     </div>

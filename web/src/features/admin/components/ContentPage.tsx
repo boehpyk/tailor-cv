@@ -28,7 +28,7 @@ export interface ContentPageProps<T> {
   readonly children: (data: T) => React.ReactNode;
 }
 
-const LINK = 'font-medium text-slate-900 underline underline-offset-2';
+const LINK = 'font-medium text-brand-700 underline underline-offset-2';
 
 /**
  * The views every admin read page shares (AC-27), error first like `UserPage`: the firewall's
@@ -99,7 +99,7 @@ export function ErrorWithRetry({
           void query.refetch();
         }}
         disabled={query.isFetching}
-        className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+        className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
       >
         {ADMIN_RETRY_LABEL}
       </button>

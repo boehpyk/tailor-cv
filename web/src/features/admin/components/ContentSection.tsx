@@ -28,7 +28,7 @@ export function ContentSection({
 }: ContentSectionProps): React.JSX.Element {
   return (
     <section aria-labelledby={id} className="space-y-3">
-      <h2 id={id} className="text-base font-semibold text-slate-900">
+      <h2 id={id} className="font-display text-base font-bold text-slate-900">
         {heading}
       </h2>
       {query.data !== undefined ? (
@@ -44,5 +44,5 @@ export function ContentSection({
   );
 }
 
-export const ROW_LINK = 'font-medium text-slate-900 underline underline-offset-2 break-words';
+export const ROW_LINK = 'font-medium text-brand-700 underline underline-offset-2 break-words';
 export const EMPTY = 'text-sm text-slate-600';

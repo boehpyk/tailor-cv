@@ -6,6 +6,7 @@ import { GuestRunPrompt } from '@/features/claim/components/GuestRunPrompt';
 import { SessionEndedHistoryNote } from '@/features/claim/components/SessionEndedHistoryNote';
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
 import { ExportBar } from '@/features/export/components/ExportBar';
+import { ExportSheet } from '@/features/export/components/ExportSheet';
 import { runLink } from '@/features/scope/scopeMap';
 import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
 import { TrackButton } from '@/features/tracking/components/TrackButton';
@@ -32,21 +33,25 @@ function parseDocument(value: string | undefined): DocumentSegment | null {
   return value === 'cv' || value === 'cover_letter' ? value : null;
 }
 
-const HOME_LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
+const HOME_LINK_CLASS =
+  'rounded-sm font-medium text-slate-700 underline-offset-2 hover:text-slate-900 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 
 /**
+ * Where "back" goes: the workspace for a guest's run, the history for an account's — the page a
+ * user came from to open it (slice 2.3, AC-46's 404 link).
+ *
  * An in-app navigation, which `beforeunload` never sees. On a `succeeded` run this link unmounts
  * `DocumentWorkspace` and destroys both editors, so while either holds unsaved text the router's
  * blocker in `DocumentWorkspace` asks first (E-32, AC-34) — that is the workspace's lock, not
  * this link's, and nothing here needs to know about it.
  */
-/**
- * Where "back" goes: the workspace for a guest's run, the history for an account's — the page a
- * user came from to open it (slice 2.3, AC-46's 404 link).
- */
 function BackLink({ scope }: { readonly scope: 'guest' | 'account' }): React.JSX.Element {
   return (
-    <p className="text-sm">
+    <p className="flex items-center gap-1.5 text-sm">
+      {/* Outside the link, so its name and text stay exactly the sentence. */}
+      <span aria-hidden="true" className="text-slate-600">
+        ←
+      </span>
       {scope === 'account' ? (
         <Link to="/history" className={HOME_LINK_CLASS}>
           Back to your history
@@ -158,12 +163,20 @@ export function RunPage(): React.JSX.Element {
 
   return (
     <section aria-labelledby="run-heading" className="mb-10 space-y-4">
-      <h2 id="run-heading" className="mb-3 text-sm font-medium text-slate-500 uppercase">
-        Your tailored CV and cover letter
-      </h2>
+      {/* The top bar's page half (web-design-refresh AC-20, OQ-9): the one back link, moved up from
+          the bottom with the same conditions, then the heading as the page's visual title. */}
+      <div className="space-y-2">
+        {(view.kind === 'failed' || view.kind === 'succeeded') && <BackLink scope={map.kind} />}
+        <h2
+          id="run-heading"
+          className="font-display text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl"
+        >
+          Your tailored CV and cover letter
+        </h2>
+      </div>
 
       {view.kind === 'loading' && (
-        <p role="status" className="text-sm text-slate-500">
+        <p role="status" className="text-sm text-slate-600">
           Loading your tailoring run…
         </p>
       )}
@@ -171,9 +184,9 @@ export function RunPage(): React.JSX.Element {
       {view.kind === 'unreadable' && (
         <div
           role="alert"
-          className="space-y-2 rounded-md border border-slate-300 bg-slate-50 px-3 py-2"
+          className="space-y-3 rounded-xl border border-slate-200 bg-white p-4 sm:p-5"
         >
-          <p className="text-sm font-medium text-slate-800">{view.message}</p>
+          <p className="text-sm font-medium text-slate-900">{view.message}</p>
           {view.canCheckAgain ? (
             <button
               type="button"
@@ -181,7 +194,7 @@ export function RunPage(): React.JSX.Element {
                 void watched.refetch();
               }}
               disabled={watched.isFetching}
-              className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 disabled:opacity-60"
+              className="min-h-11 rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 hover:bg-surface-sunk disabled:opacity-60 sm:min-h-9 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
             >
               {watched.isFetching ? 'Checking…' : 'Check again'}
             </button>
@@ -234,7 +247,15 @@ export function RunPage(): React.JSX.Element {
       {/* Slice 3.1 (AC-38): a finished account run can go on the board. A guest's run cannot — the
           board is account data — and the scope, not "is someone signed in?", says which this is. */}
       {view.kind === 'succeeded' && scope.kind === 'account' && (
-        <TrackButton userId={scope.userId} runId={runId} />
+        <div className="flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3 sm:p-4">
+          <span
+            aria-hidden="true"
+            className="flex size-6 shrink-0 items-center justify-center rounded-full bg-highlight-100 text-xs text-slate-900"
+          >
+            ★
+          </span>
+          <TrackButton userId={scope.userId} runId={runId} />
+        </div>
       )}
 
       {/* `succeeded` implies the detail query answered (a list summary cannot show the documents,
@@ -244,13 +265,17 @@ export function RunPage(): React.JSX.Element {
         <DocumentWorkspace
           run={watched.data}
           renderAbove={(saveState) => (
-            <ExportBar
-              runId={runId}
-              document={documentSegment}
-              saveState={saveState}
-              layout={chosenLayout}
-              onLayoutChange={setChosenLayout}
-            />
+            // The one bar, inline at sm+ and a bottom sheet below (web-design-refresh AC-23); its
+            // *Download* toggle lands just above the tabs row, which is where the top bar is.
+            <ExportSheet>
+              <ExportBar
+                runId={runId}
+                document={documentSegment}
+                saveState={saveState}
+                layout={chosenLayout}
+                onLayoutChange={setChosenLayout}
+              />
+            </ExportSheet>
           )}
         />
       )}
@@ -267,8 +292,6 @@ export function RunPage(): React.JSX.Element {
           }
         />
       )}
-
-      {(view.kind === 'failed' || view.kind === 'succeeded') && <BackLink scope={map.kind} />}
     </section>
   );
 }

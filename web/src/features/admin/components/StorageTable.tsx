@@ -97,7 +97,7 @@ export function StorageTable({ actorId }: StorageTableProps): React.JSX.Element 
             void storage.refetch();
           }}
           disabled={storage.isFetching}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {MEASURE_AGAIN_LABEL}
         </button>

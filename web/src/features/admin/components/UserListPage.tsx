@@ -27,7 +27,7 @@ export interface UserListPageProps {
 }
 
 const BUTTON =
-  'rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-60';
+  'rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60';
 
 /**
  * `/admin`: the user directory (AC-31, AC-32). The search lives in the URL (`?q=`), so a submit is
@@ -60,13 +60,13 @@ export function UserListPage({ actorId }: UserListPageProps): React.JSX.Element 
 
   return (
     <section aria-labelledby="admin-users-heading" className="mb-10 space-y-4">
-      <h1 id="admin-users-heading" className="text-lg font-semibold text-slate-900">
+      <h1 id="admin-users-heading" className="font-display text-xl font-bold text-slate-900">
         {USERS_HEADING}
       </h1>
       {erased !== null && (
         <div
           role="status"
-          className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800"
+          className="rounded-lg border border-slate-200 bg-surface-sunk p-4 text-sm text-slate-800"
         >
           <p>{erasedNotice(erased.email)}</p>
           {erased.unlinkFailures > 0 && <p>{unlinkFailuresNote(erased.unlinkFailures)}</p>}

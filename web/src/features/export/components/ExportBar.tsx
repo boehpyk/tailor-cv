@@ -460,7 +460,7 @@ export function ExportBar({
   return (
     <section
       aria-label="Download this document"
-      className="space-y-3 rounded-md border border-slate-200 bg-white px-4 py-3"
+      className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 max-sm:border-0 max-sm:p-0 sm:p-5"
     >
       <LayoutPicker
         value={effectiveLayout}
@@ -469,7 +469,7 @@ export function ExportBar({
         busy={jobsQuery.isPending}
       />
 
-      <div className="flex flex-wrap gap-4">
+      <div className="stitch flex flex-wrap gap-3 pt-4">
         {EXPORT_CONTROLS.map((spec) => {
           const target: ExportTarget = {
             document,
@@ -539,7 +539,7 @@ export function ExportBar({
         // `role="alert"`, not `status`: this one is assertive because the user is about to click a
         // control that cannot work, and it carries the only thing that can fix it. It is also a
         // different role, so the four per-control live regions stay four.
-        <div role="alert" className="text-sm text-rose-800">
+        <div role="alert" className="text-sm text-danger-600">
           {EXPORT_LIST_ERROR_NOTE}{' '}
           <button
             type="button"
@@ -549,7 +549,7 @@ export function ExportBar({
               // the console for a failure the UI has fully accounted for.
               void jobsQuery.refetch();
             }}
-            className="rounded-md px-1.5 py-0.5 font-medium underline underline-offset-2 hover:bg-rose-100"
+            className="rounded-sm px-1.5 py-0.5 font-semibold underline underline-offset-2 hover:bg-danger-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
           >
             {EXPORT_LIST_ERROR_ACTION}
           </button>

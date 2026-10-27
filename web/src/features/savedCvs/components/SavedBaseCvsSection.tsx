@@ -44,7 +44,7 @@ export function SavedBaseCvsSection(): React.JSX.Element {
 
   return (
     <section aria-labelledby={headingId} className="mt-10 border-t border-slate-200 pt-6">
-      <h2 id={headingId} className="mb-4 text-lg font-semibold text-slate-900">
+      <h2 id={headingId} className="mb-4 font-display text-xl font-bold text-slate-900">
         {SAVED_CVS_HEADING}
       </h2>
       <SavedBaseCvsBody />
@@ -75,7 +75,7 @@ function SavedBaseCvsBody(): React.JSX.Element {
           onClick={() => {
             void list.refetch();
           }}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+          className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
           {RETRY_LABEL}
         </button>

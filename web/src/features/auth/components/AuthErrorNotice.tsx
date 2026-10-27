@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
 
 import { focusOnMount as focusOutcome } from '@/components/ui/focusOnMount';
+import { alertClass, linkClass } from '@/features/accountMail/components/styles';
 
 import { authErrorCopy } from '../authCopy';
 
@@ -50,7 +51,7 @@ export function AuthErrorNotice({
       role="alert"
       tabIndex={focusOnMount ? -1 : undefined}
       ref={focusOnMount ? focusOutcome : undefined}
-      className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-800"
+      className={alertClass}
     >
       <span>{copy.message}</span>
       {copy.note !== undefined && (
@@ -62,7 +63,7 @@ export function AuthErrorNotice({
       {copy.link !== undefined && (
         <>
           {' '}
-          <Link to={copy.link.to} className="font-medium underline underline-offset-2">
+          <Link to={copy.link.to} className={linkClass}>
             {copy.link.label}
           </Link>
         </>

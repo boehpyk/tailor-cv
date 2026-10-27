@@ -79,7 +79,7 @@ export function TrackButton({ userId, runId }: TrackButtonProps): React.JSX.Elem
         {track.isPending ? TRACK_PENDING_LABEL : TRACK_LABEL}
       </button>
       {track.isError && (
-        <span id={errorId} role="alert" className="text-sm text-red-700">
+        <span id={errorId} role="alert" className="text-sm text-danger-600">
           {trackFailureCopy(track.error, trackHold.deadlineMs, trackHold.receivedAtMs)}
         </span>
       )}

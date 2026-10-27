@@ -62,9 +62,12 @@ export function CvDropzone({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`rounded-lg border-2 border-dashed px-6 py-10 text-center transition-colors ${
-        isDragOver ? 'border-slate-400 bg-slate-50' : 'border-slate-200'
-      } ${disabled ? 'opacity-60' : ''}`}
+      // The drag-over state is an attribute, so the style and the test read the same fact
+      // (web-design-refresh AC-15); absent rather than "false" when not dragging.
+      data-drag-over={isDragOver ? 'true' : undefined}
+      className={`flex flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-slate-300 bg-white px-6 py-12 text-center transition-colors has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600 data-[drag-over=true]:border-brand-600 data-[drag-over=true]:bg-brand-50 max-sm:py-6 ${
+        disabled ? 'opacity-60' : ''
+      }`}
     >
       {/* Visually hidden, never `hidden`/`display:none` — it must stay in the tab order so a
           keyboard user reaches it. The label below is the visible surface; clicking anywhere on it
@@ -77,19 +80,38 @@ export function CvDropzone({
         onChange={handleInputChange}
         className="sr-only"
       />
+      <span
+        aria-hidden="true"
+        className="flex size-14 items-center justify-center rounded-xl border border-slate-200 bg-white text-brand-600 max-sm:hidden"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          className="size-6"
+        >
+          <path d="M12 16V4m0 0-5 5m5-5 5 5M5 20h14" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </span>
+      {/* OQ-18: a visual split only. The label's text — the input's accessible name — is still
+          exactly "Drop your CV here — PDF, DOCX or TXT, up to 10 MB": the dash is visually hidden,
+          not removed, so the two lines read as one sentence to a screen reader. */}
       <label
         htmlFor="base-cv-file-input"
-        className={`block text-sm font-medium ${
-          disabled ? 'text-slate-400' : 'cursor-pointer text-slate-700 hover:text-slate-900'
-        }`}
+        className={`block text-slate-700 ${disabled ? '' : 'cursor-pointer hover:text-slate-900'}`}
       >
-        Drop your CV here — PDF, DOCX or TXT, up to 10 MB
+        <span className="block font-display text-xl font-bold text-slate-900">
+          Drop your CV here
+        </span>
+        <span className="sr-only"> — </span>
+        <span className="mt-1 block text-sm">PDF, DOCX or TXT, up to 10 MB</span>
       </label>
 
       {uploadingFileName !== null && (
-        <div className="mt-3 space-y-1">
-          <p className="text-sm text-slate-600">{uploadingFileName}</p>
-          <p role="status" className="text-sm font-medium text-slate-500">
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-slate-900">{uploadingFileName}</p>
+          <p role="status" className="text-sm text-slate-600">
             Reading your CV…
           </p>
         </div>

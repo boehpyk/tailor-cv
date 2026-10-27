@@ -46,7 +46,8 @@ export function MoveToControl({
           onMove(chosen);
         }
       }}
-      className="rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-800 disabled:opacity-60"
+      // A pill (4c's *Move*), still the native select: keyboard, screen reader and touch for free.
+      className="min-h-11 cursor-pointer rounded-full border border-slate-300 bg-white px-3.5 text-sm font-semibold text-slate-700 hover:bg-surface-sunk disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-8"
     >
       <option value="" disabled>
         {pending ? MOVE_PENDING_LABEL : `${MOVE_TO_LABEL}…`}

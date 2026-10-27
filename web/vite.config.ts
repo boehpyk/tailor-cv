@@ -51,8 +51,11 @@ export default defineConfig({
     // The layout previews (slice 3.2) are ~2 KB each, under Vite's 4 KB default, so they would be
     // inlined as base64 into the main chunk — downloaded on every page, compressing badly, and
     // re-downloaded on every release. As hashed files they load lazily, only when the picker shows,
-    // and stay cached across releases (AC-38). Everything else keeps Vite's default.
-    assetsInlineLimit: (filePath) => (filePath.endsWith('.webp') ? false : undefined),
+    // and stay cached across releases (AC-38). Fonts (`.woff2`, ADR-0036) are never inlined either:
+    // a font as base64 in the CSS blocks first paint and defeats `font-display: swap`, and a small
+    // subset could slip under the limit unnoticed. Everything else keeps Vite's default.
+    assetsInlineLimit: (filePath) =>
+      filePath.endsWith('.webp') || filePath.endsWith('.woff2') ? false : undefined,
     rollupOptions: { output: { manualChunks: chunkOf } },
   },
   server: {

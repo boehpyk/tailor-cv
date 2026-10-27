@@ -23,6 +23,11 @@ export const LOAD_MORE_LABEL = 'Load more';
 export const LOAD_MORE_PENDING_LABEL = 'Loading more…';
 /** H-59: a later page failed; the loaded rows stay and Retry asks for that page again. */
 export const LOAD_MORE_ERROR_NOTE = "Couldn't load more.";
+/**
+ * The ≥ md list's header row (web-design-refresh AC-27). Visual only — the row is `aria-hidden`,
+ * because each list item already carries its own words (*"CV: …"*, *"Requested …"*).
+ */
+export const HISTORY_COLUMN_LABELS = ['Role', 'Base CV', 'Requested'] as const;
 export const OPEN_ENTRY_LABEL = 'Open';
 export const DELETE_ENTRY_LABEL = 'Delete';
 export const EDITED_BADGE = 'Edited';

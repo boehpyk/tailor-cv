@@ -35,13 +35,18 @@ export function FetchFailureNotice({
   return (
     <div
       role="alert"
-      className="space-y-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2"
+      className="space-y-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3"
     >
       <p className="text-sm font-medium text-amber-900">{message}</p>
 
       {url !== '' && (
         <p className="text-sm break-all text-amber-800">
-          <a href={url} target="_blank" rel="noopener noreferrer nofollow" className="underline">
+          <a
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer nofollow"
+            className="rounded-sm underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+          >
             {url}
           </a>
         </p>
@@ -50,7 +55,7 @@ export function FetchFailureNotice({
       <button
         type="button"
         onClick={onPasteInstead}
-        className="rounded-md bg-amber-800 px-3 py-1.5 text-sm font-medium text-white hover:bg-amber-900"
+        className="min-h-11 rounded-lg bg-amber-800 px-4 text-sm font-semibold text-white hover:bg-amber-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
       >
         Paste the description instead
       </button>

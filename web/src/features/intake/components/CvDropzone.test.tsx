@@ -44,13 +44,13 @@ describe('CvDropzone', () => {
     render(<CvDropzone disabled={false} uploadingFileName={null} onFileChosen={vi.fn()} />);
     const dropzone = dropzoneOf(screen.getByLabelText(DROPZONE_LABEL));
 
-    expect(dropzone).not.toHaveClass('bg-slate-50');
+    expect(dropzone).not.toHaveAttribute('data-drag-over');
 
     fireEvent.dragOver(dropzone);
-    expect(dropzone).toHaveClass('bg-slate-50');
+    expect(dropzone).toHaveAttribute('data-drag-over', 'true');
 
     fireEvent.dragLeave(dropzone);
-    expect(dropzone).not.toHaveClass('bg-slate-50');
+    expect(dropzone).not.toHaveAttribute('data-drag-over');
   });
 
   it('does not show the hover affordance while disabled', () => {
@@ -59,7 +59,7 @@ describe('CvDropzone', () => {
 
     fireEvent.dragOver(dropzone);
 
-    expect(dropzone).not.toHaveClass('bg-slate-50');
+    expect(dropzone).not.toHaveAttribute('data-drag-over');
   });
 
   it('hands the dropped file to onFileChosen', () => {

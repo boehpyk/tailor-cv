@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router';
 
 import { MAIL_PROVIDER_SENTENCE, SENDING_LABEL } from '@/features/accountMail/accountMailCopy';
+import { cardClass, headingClass, linkClass } from '@/features/accountMail/components/styles';
 import { CheckYourEmail } from '@/features/accountMail/components/CheckYourEmail';
 import {
   requestRegistrationMutationKey,
@@ -13,6 +14,7 @@ import { useGuestWorkSummary } from '@/features/claim/hooks/useGuestWorkSummary'
 import {
   PASSWORD_HINT,
   REGISTER_GUEST_WORK_NOTICE,
+  REGISTER_PANEL_HEADING,
   REGISTER_STORAGE_NOTICE,
   REGISTER_SUBMIT_LABEL,
 } from '../authCopy';
@@ -84,36 +86,54 @@ export function RegisterPage() {
   }
 
   return (
-    <section aria-labelledby="register-heading" className="mb-10 max-w-sm">
-      <h2 id="register-heading" className="mb-6 text-lg font-semibold text-slate-900">
-        Create an account
-      </h2>
-      <CredentialsForm
-        action="register"
-        initialEmail={formEmail}
-        passwordAutoComplete="new-password"
-        submitLabel={REGISTER_SUBMIT_LABEL}
-        pendingLabel={SENDING_LABEL}
-        passwordHint={PASSWORD_HINT}
-        isPending={register.isPending}
-        error={register.error}
-        onSubmit={submit}
-      >
-        <div className="space-y-2 text-sm text-slate-600">
-          <p>{REGISTER_STORAGE_NOTICE}</p>
-          <p>{REGISTER_GUEST_WORK_NOTICE}</p>
-          <p>{MAIL_PROVIDER_SENTENCE}</p>
-          <p>
-            Already have an account?{' '}
-            <Link
-              to={{ pathname: '/login', search: searchParams.toString() }}
-              className="font-medium text-slate-900 underline underline-offset-2"
-            >
-              Sign in
-            </Link>
-          </p>
-        </div>
-      </CredentialsForm>
+    <section
+      aria-labelledby="register-heading"
+      className="mb-10 flex flex-col gap-6 md:grid md:grid-cols-[minmax(0,26rem)_1fr] md:items-start md:gap-10"
+    >
+      <div className={`max-md:order-2 ${cardClass}`}>
+        <h2 id="register-heading" className={headingClass}>
+          Create an account
+        </h2>
+        <CredentialsForm
+          action="register"
+          initialEmail={formEmail}
+          passwordAutoComplete="new-password"
+          submitLabel={REGISTER_SUBMIT_LABEL}
+          pendingLabel={SENDING_LABEL}
+          passwordHint={PASSWORD_HINT}
+          isPending={register.isPending}
+          error={register.error}
+          onSubmit={submit}
+        >
+          <div className="space-y-2 text-sm text-slate-600">
+            <p>{REGISTER_STORAGE_NOTICE}</p>
+            <p>{MAIL_PROVIDER_SENTENCE}</p>
+            <p>
+              Already have an account?{' '}
+              <Link
+                to={{ pathname: '/login', search: searchParams.toString() }}
+                className={linkClass}
+              >
+                Sign in
+              </Link>
+            </p>
+          </div>
+        </CredentialsForm>
+      </div>
+
+      {/* The panel (C-8, OQ-12): static text and nothing else — no input, no button, no claim
+          link, nothing ticked, no request. What this browser's guest work is, and whether to keep
+          it, is asked by `GuestWorkOffer` after sign-in, by name (ADR-0025). Below `md` it sits
+          above the form (1i) by CSS order: one DOM, so the sentence is on the page once. */}
+      <div className="flex flex-col gap-4 rounded-2xl bg-surface-sunk p-6 max-md:order-1 sm:p-8 md:p-10">
+        <h3 className="font-display text-xl font-bold tracking-tight text-slate-900 md:text-2xl">
+          {REGISTER_PANEL_HEADING}
+        </h3>
+        <div aria-hidden="true" className="stitch" />
+        <p className="text-sm leading-relaxed text-slate-700 md:text-base">
+          {REGISTER_GUEST_WORK_NOTICE}
+        </p>
+      </div>
     </section>
   );
 }

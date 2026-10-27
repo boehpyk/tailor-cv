@@ -71,7 +71,7 @@ export function GuestWorkOffer({
     return (
       <p
         role="status"
-        className="mb-6 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900"
+        className="mb-6 rounded-lg bg-success-50 px-4 py-3 text-sm font-medium text-success-700"
       >
         {claimMovedNothing(claim.data) ? CLAIM_NOTHING_LEFT : claimSuccessNote(claim.data)}
       </p>
@@ -140,7 +140,7 @@ function OfferRegion({
   return (
     <section
       aria-label={OFFER_REGION_LABEL}
-      className="mb-6 space-y-2 rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm"
+      className="mb-6 space-y-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm sm:px-5"
     >
       <p className="font-medium text-amber-950">{guestWorkOfferSentence(summary)}</p>
       <p className="text-amber-900">{OFFER_RETENTION_LINE}</p>
@@ -149,20 +149,20 @@ function OfferRegion({
           type="button"
           onClick={onKeep}
           disabled={keepDisabled}
-          className="rounded-md bg-slate-900 px-3 py-1.5 font-medium text-white disabled:opacity-60"
+          className="min-h-11 rounded-lg bg-brand-600 px-4 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
         >
           {isPending ? KEEP_PENDING_LABEL : KEEP_LABEL}
         </button>
         <button
           type="button"
           onClick={onNotNow}
-          className="text-slate-600 underline underline-offset-2"
+          className="min-h-11 rounded-sm px-1 font-medium text-slate-700 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-0"
         >
           {NOT_NOW_LABEL}
         </button>
       </div>
       {alert !== null && (
-        <p role="alert" className="text-red-800">
+        <p role="alert" className="font-medium text-danger-600">
           {alert}
         </p>
       )}

@@ -8,7 +8,9 @@ import type { PostingSource } from '../types';
  * is the fashionable shape and it is unreachable by keyboard unless you re-implement arrow-key
  * navigation, focus management and `aria-checked` by hand — which is re-implementing a radio group
  * badly. A native radio group gets all of that, plus screen-reader announcement of "2 of 2", for
- * free.
+ * free. So the segmented *look* (web-design-refresh AC-16) is CSS over the same radios: each input
+ * is `sr-only` — still focusable, still the browser's arrow-key group — and its `<label>` draws the
+ * segment, reading the input's state through `has-checked:` and `has-focus-visible:`.
  *
  * Paste is the default mode because **paste always works**. The link is the optimistic path: it
  * saves typing when the site lets us read it, and roughly half of the job boards people actually
@@ -26,6 +28,13 @@ export interface JobPostingInputProps {
   readonly onTextChange: (text: string) => void;
   readonly onUrlChange: (url: string) => void;
 }
+
+/** One segment of the toggle: the label is the visible control, the radio inside it the real one. */
+const SEGMENT_CLASS =
+  'flex min-h-11 cursor-pointer items-center justify-center rounded-full px-4 text-sm font-semibold text-slate-600 hover:text-slate-900 has-checked:bg-white has-checked:text-slate-900 has-checked:shadow-sm has-focus-visible:outline-2 has-focus-visible:outline-offset-2 has-focus-visible:outline-brand-600 sm:min-h-10';
+
+const FIELD_CLASS =
+  'w-full rounded-xl border border-slate-300 bg-white p-3 text-sm text-slate-900 focus-visible:border-brand-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600';
 
 export function JobPostingInput({
   mode,
@@ -46,11 +55,11 @@ export function JobPostingInput({
   const overLimit = characterCount > maxCharacters;
 
   return (
-    <fieldset className="space-y-3 border-0 p-0" disabled={disabled}>
+    <fieldset className="space-y-4 border-0 p-0" disabled={disabled}>
       <legend className="sr-only">How would you like to add the job posting?</legend>
 
-      <div className="flex gap-4 text-sm">
-        <label className="flex items-center gap-2">
+      <div className="inline-grid grid-cols-2 gap-1 rounded-full bg-surface-sunk p-1 max-sm:grid max-sm:w-full">
+        <label className={SEGMENT_CLASS}>
           <input
             type="radio"
             name="posting-source"
@@ -59,10 +68,11 @@ export function JobPostingInput({
             onChange={() => {
               onModeChange('pasted');
             }}
+            className="sr-only"
           />
           Paste the text
         </label>
-        <label className="flex items-center gap-2">
+        <label className={SEGMENT_CLASS}>
           <input
             type="radio"
             name="posting-source"
@@ -71,6 +81,7 @@ export function JobPostingInput({
             onChange={() => {
               onModeChange('fetched');
             }}
+            className="sr-only"
           />
           Link to the posting
         </label>
@@ -78,7 +89,7 @@ export function JobPostingInput({
 
       {mode === 'pasted' ? (
         <div className="space-y-1">
-          <label htmlFor="posting-text" className="block text-sm font-medium text-slate-700">
+          <label htmlFor="posting-text" className="block text-sm font-medium text-slate-900">
             Job posting text
           </label>
           <textarea
@@ -89,16 +100,19 @@ export function JobPostingInput({
             onChange={(event) => {
               onTextChange(event.target.value);
             }}
-            className="w-full rounded-md border border-slate-300 p-2 text-sm"
+            className={FIELD_CLASS}
             placeholder="Paste the job description here…"
           />
-          <p className={`text-xs ${overLimit ? 'text-red-700' : 'text-slate-500'}`}>
+          <p
+            data-over-limit={overLimit ? 'true' : undefined}
+            className={`text-xs ${overLimit ? 'font-medium text-danger-600' : 'text-slate-500'}`}
+          >
             {characterCount.toLocaleString('en-GB')} / {maxCharacters.toLocaleString('en-GB')}
           </p>
         </div>
       ) : (
         <div className="space-y-1">
-          <label htmlFor="posting-url" className="block text-sm font-medium text-slate-700">
+          <label htmlFor="posting-url" className="block text-sm font-medium text-slate-900">
             Job posting URL
           </label>
           <input
@@ -108,7 +122,7 @@ export function JobPostingInput({
             onChange={(event) => {
               onUrlChange(event.target.value);
             }}
-            className="w-full rounded-md border border-slate-300 p-2 text-sm"
+            className={FIELD_CLASS}
             placeholder="https://…"
           />
         </div>
