@@ -128,8 +128,8 @@ def _attributes(settings: Settings) -> _CookieAttributes:
     - `Path=/api/auth` — sent to the auth endpoints and nothing else.
     - `Secure` whenever `APP_ENV=production`; plain HTTP on `localhost` in dev must still work.
     - **No `Domain`**, deliberately: a host-only cookie, so a sibling host under the same
-      registrable domain never receives it (ADR-0008 (a); ADR-0038 keeps no such sibling). Passing
-      any `domain=` here would widen it to every subdomain.
+      registrable domain never receives it (ADR-0008 (a); ADR-0038 keeps no sibling that
+      serves content). Passing any `domain=` here would widen it to every subdomain.
     """
     return _CookieAttributes(
         path=COOKIE_PATH,

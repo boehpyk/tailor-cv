@@ -34,9 +34,13 @@ the move is configuration, not code.
    a router's `Host()`s, so a name failing validation would take the others' certificate with it.
    `cv.samolit.com` gets no router (it does not resolve).
 3. **No host under `fixcv.app` other than the redirect ever serves content.** This is a standing
-   rule, not a preference. It is what makes the host-only `tc_refresh` safe without a `__Host-`
+   rule, not a preference. It covers **DNS, not just our routers**: any record that points a
+   `*.fixcv.app` name at an HTTP server (a hosted status or docs page, a mail provider's
+   click-tracking CNAME, a CNAME left dangling) creates a sibling that can set a
+   `Domain=fixcv.app` cookie. It is what makes the host-only `tc_refresh` safe without a `__Host-`
    prefix, because every name that could plant a `Domain=fixcv.app` cookie belongs to this app and
-   serves nothing. **Reopen trigger:** before any other `*.fixcv.app` host serves content, OQ-16
+   serves nothing. **Reopen trigger:** before any other `*.fixcv.app` name is pointed at
+   an HTTP server, ours or anyone's, OQ-16
    reopens and the `__Host-` rename of `tc_refresh` is scheduled first.
 4. **The mail sender stays `notifications.samolit.com`** for now. A From domain that differs from
    the link domain is legitimate and already passes SPF/DKIM/DMARC. Moving it is its own step
@@ -62,7 +66,7 @@ the move is configuration, not code.
   property that made them safe. Guests lose access to their ≤ 24 h work. Its rows expire and go at
   the next purge, and stranded refresh families go by the hourly identity token sweep.
 - **OQ-16 is closed by condition** (ADR-0008 (m)). The condition must be re-read before anyone adds
-  a subdomain, a status page or a docs site under `fixcv.app`.
+  any DNS record under `fixcv.app`.
 - **Changing host again is a runbook, not a slice** (`docs/infrastructure.md`, *Changing the
   production host*): DNS, then merge, then edit the box `.env` while the deploy waits, then
   `check-settings` in a one-off container, then approve. A running container keeps the environment

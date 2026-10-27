@@ -42,11 +42,12 @@ real release waiting for approval**. A run uses the workflow file **from its own
 nobody has verified is a belief: check with `gh api repos/<owner>/<repo>/environments/production`.
 
 **Open items worth knowing:** OQ-16 (`tc_refresh` planted by a sibling host) is closed **by
-condition**: no host under `fixcv.app` but the `www` redirect ever serves content; before one does,
-ship the `__Host-` rename first (ADR-0008 (m)). 2.3's posting lock renders `FOR NO KEY UPDATE` where `FOR KEY SHARE` was meant
-(`tailoring_run.py`, left for the owner). `/health/ready` takes ~2.1 s because of
-`control.ping(timeout=2.0)` with no `limit`. Traefik's access log has not been checked for query
-strings. Firefox's first manual pass was web-design-refresh's T42 (2026-10-27).
+condition**: no `*.fixcv.app` name but the `www` redirect ever points at an HTTP server; before
+one does, ship the `__Host-` rename first (ADR-0008 (m)). 2.3's posting lock renders
+`FOR NO KEY UPDATE` where `FOR KEY SHARE` was meant (`tailoring_run.py`, left for the owner).
+`/health/ready` takes ~2.1 s because of `control.ping(timeout=2.0)` with no `limit`. Traefik's
+access log has not been checked for query strings. Firefox's first manual pass was
+web-design-refresh's T42 (2026-10-27).
 
 **The repository is public.** `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, specs,
 roadmap and infra notes stay local.

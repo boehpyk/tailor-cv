@@ -309,4 +309,5 @@ Production moves from `cv.samolit.com` to the apex `fixcv.app` (ADR-0038).
 - Under ADR-0038 Decision 3, no host under `fixcv.app` other than the `www` redirect serves
   content, so no such sibling exists.
 - **The `__Host-` rename of `tc_refresh` is unscheduled.** Its trigger becomes: before any other
-  `*.fixcv.app` host serves content, reopen OQ-16 and ship the rename first.
+  `*.fixcv.app` name is pointed at an HTTP server (ours or a vendor's CNAME), reopen OQ-16 and
+  ship the rename first.
