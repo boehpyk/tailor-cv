@@ -45,13 +45,13 @@ function sentenceFor(state: SaveState): string {
 export function SaveIndicator({ state }: SaveIndicatorProps): React.JSX.Element {
   const tone =
     state.kind === 'failed' || state.kind === 'conflict' || state.kind === 'expired'
-      ? 'text-red-700'
+      ? 'text-danger-600'
       : state.kind === 'invalid' || state.kind === 'paused'
         ? 'text-amber-700'
         : 'text-slate-500';
 
   return (
-    <div className="mb-3 flex flex-wrap items-center gap-3">
+    <div className="flex flex-wrap items-center gap-3">
       <p role="status" className={`text-sm ${tone}`}>
         {sentenceFor(state)}
       </p>
@@ -59,7 +59,7 @@ export function SaveIndicator({ state }: SaveIndicatorProps): React.JSX.Element 
         <button
           type="button"
           onClick={state.retry}
-          className="rounded-md border border-slate-300 bg-white px-3 py-1 text-sm font-medium text-slate-800 hover:bg-slate-50"
+          className="min-h-11 rounded-full border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-900 hover:bg-surface-sunk sm:min-h-8 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
           Retry
         </button>

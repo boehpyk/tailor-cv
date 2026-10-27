@@ -315,20 +315,31 @@ function DocumentEditors({
           read. It is passed, never lifted: this component still owns nothing it did not own
           before, and the caller holds no copy of it. */}
       {renderAbove?.(states[visible])}
-      <DocumentTabs runId={run.id} selected={visible} states={states} />
-      <SaveIndicator state={states[visible]} />
-      <DocumentEditor handle={cv} kind="cv" hidden={visible !== 'cv'} />
-      <DocumentEditor
-        handle={coverLetter}
-        kind="cover_letter"
-        hidden={visible !== 'cover_letter'}
-      />
-      <footer className="mt-4 text-sm text-slate-500">
+      {/* The top bar's document half (web-design-refresh AC-20): the tabs and the visible
+          document's sentence on one row. A row of two siblings, not a slot — the state stays read
+          here, where it lives. */}
+      <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <DocumentTabs runId={run.id} selected={visible} states={states} />
+        <SaveIndicator state={states[visible]} />
+      </div>
+      {/* The desk the page lies on (AC-22): both sheets stay mounted, one hidden. */}
+      <div className="mt-4 rounded-2xl bg-page-grey px-2 py-4 sm:px-8 sm:py-10">
+        <DocumentEditor handle={cv} kind="cv" hidden={visible !== 'cv'} />
+        <DocumentEditor
+          handle={coverLetter}
+          kind="cover_letter"
+          hidden={visible !== 'cover_letter'}
+        />
+      </div>
+      <footer className="mt-4 text-sm text-slate-600">
         {expired ? (
-          <p className="text-red-700">
+          <p className="text-danger-600">
             Your session has ended, and these documents were deleted after 24 hours. Nothing you
             type here can be saved now — the text stays on screen so you can copy it.{' '}
-            <Link to="/" className="font-medium underline underline-offset-2">
+            <Link
+              to="/"
+              className="rounded-sm font-medium underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
+            >
               Back to the workspace
             </Link>
           </p>

@@ -87,7 +87,7 @@ export function DocumentTabs({ runId, selected, states }: DocumentTabsProps): Re
     <div
       role="tablist"
       aria-label="Your documents"
-      className="mb-4 flex gap-1 border-b border-slate-200"
+      className="inline-flex gap-1 rounded-full bg-surface-sunk p-1"
     >
       {TAB_ORDER.map((kind) => {
         const isSelected = kind === selected;
@@ -106,16 +106,18 @@ export function DocumentTabs({ runId, selected, states }: DocumentTabsProps): Re
             onKeyDown={(event) => {
               handleKeyDown(event, kind);
             }}
-            className={
+            className={`inline-flex min-h-11 items-center gap-1.5 rounded-full px-4 text-sm font-semibold sm:min-h-9 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
               isSelected
-                ? '-mb-px border-b-2 border-slate-900 px-3 py-2 text-sm font-medium text-slate-900'
-                : '-mb-px border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-800'
-            }
+                ? 'bg-white text-slate-900 shadow-sm'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
           >
             {TAB_LABELS[kind]}
+            {/* An amber dot for the eye, the words for a screen reader; still in the tab's name. */}
             {unsaved && (
-              <span className="ml-1.5 text-xs font-normal text-amber-700" title="Unsaved changes">
-                (unsaved)
+              <span className="inline-flex items-center" title="Unsaved changes">
+                <span aria-hidden="true" className="size-2 rounded-full bg-amber-500" />
+                <span className="sr-only">(unsaved)</span>
               </span>
             )}
           </Link>
