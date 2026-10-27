@@ -39,7 +39,15 @@ export interface HistoryEntryRowProps {
   readonly onDelete: () => void;
 }
 
-const LINK_CLASS = 'font-medium text-slate-900 underline underline-offset-2';
+/**
+ * The ≥ md columns, shared by the header row and every `HistoryEntryRow` so they line up:
+ * role/title · CV · requested · actions (plan §5).
+ */
+export const HISTORY_GRID_CLASS =
+  'md:grid md:grid-cols-[minmax(0,1fr)_12rem_8rem_auto] md:items-start md:gap-4';
+
+const LINK_CLASS =
+  'inline-flex min-h-11 items-center rounded-sm px-1 font-semibold text-brand-700 underline underline-offset-2 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 md:min-h-0';
 
 /**
  * One history entry (AC-44) — **presentational**: the posting's title, else its preview; the CV's
@@ -78,24 +86,29 @@ export function HistoryEntryRow({
       : (entry.base_cv.label ?? entry.base_cv.original_filename);
 
   return (
-    <li className="space-y-2 rounded-lg border border-slate-200 p-4">
-      <div className="flex items-baseline justify-between gap-3">
-        <p className="font-medium text-slate-900">{posting}</p>
-        {entry.edited && (
-          <span className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-            {EDITED_BADGE}
-          </span>
-        )}
+    <li className={`space-y-1.5 px-4 py-4 md:space-y-0 md:px-5 ${HISTORY_GRID_CLASS}`}>
+      <div className="min-w-0 space-y-1">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          <p className="font-semibold break-words text-slate-900">{posting}</p>
+          {entry.edited && (
+            <span className="rounded-full bg-highlight-100 px-2 py-0.5 text-xs font-semibold text-slate-900">
+              {EDITED_BADGE}
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-slate-700">{historyStatusCopy(entry)}</p>
       </div>
-      <p className="text-sm text-slate-600">
-        <span className="text-slate-500">CV: </span>
+      {/* The words before each value are hidden visually from md, where the header row names the
+          column, and kept for assistive technology, which never sees that header. */}
+      <p className="text-sm break-words text-slate-600">
+        <span className="md:sr-only">CV: </span>
         <span>{cv}</span>
       </p>
-      <p className="text-sm text-slate-700">{historyStatusCopy(entry)}</p>
-      <p className="text-xs text-slate-500">
-        Requested <time dateTime={entry.requested_at}>{formatStoredUntil(entry.requested_at)}</time>
+      <p className="text-sm text-slate-600">
+        <span className="md:sr-only">Requested </span>
+        <time dateTime={entry.requested_at}>{formatStoredUntil(entry.requested_at)}</time>
       </p>
-      <div className="flex items-center gap-4 text-sm">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm md:justify-end">
         <Link to={runLink(scope, entry.id)} className={LINK_CLASS}>
           {OPEN_ENTRY_LABEL}
         </Link>
@@ -108,7 +121,7 @@ export function HistoryEntryRow({
           onClick={onDelete}
           disabled={stillRunning || deletion.kind === 'deleting'}
           aria-describedby={note === null ? undefined : reasonId}
-          className="text-red-700 underline underline-offset-2 disabled:text-slate-400 disabled:no-underline"
+          className="min-h-11 rounded-sm px-1 font-semibold text-danger-600 hover:underline disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 md:min-h-0"
         >
           {deletion.kind === 'deleting' ? DELETE_ENTRY_PENDING_LABEL : DELETE_ENTRY_LABEL}
         </button>
@@ -117,7 +130,7 @@ export function HistoryEntryRow({
         <p
           id={reasonId}
           role={deletion.kind === 'failed' ? 'alert' : undefined}
-          className="text-sm text-slate-600"
+          className="text-sm text-slate-600 md:col-span-4 md:mt-2 md:text-right"
         >
           {note}
         </p>
