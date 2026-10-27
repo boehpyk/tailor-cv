@@ -37,7 +37,7 @@ export interface CardTitleEditorProps {
 }
 
 const BUTTON_CLASS =
-  'rounded-md border border-slate-300 bg-white px-2 py-1 text-sm font-medium text-slate-800 disabled:opacity-60';
+  'min-h-11 rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700 hover:bg-surface-sunk disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-8';
 
 /**
  * **Edit title** → an inline, labelled text input (AC-36) — a **container** over
@@ -117,7 +117,7 @@ export function CardTitleEditor({
         onClick={() => {
           setDraft(title ?? '');
         }}
-        className="text-sm text-slate-700 underline underline-offset-2 disabled:text-slate-400 disabled:no-underline"
+        className="min-h-11 rounded-sm px-1 text-sm font-semibold text-slate-700 underline underline-offset-2 hover:text-slate-900 disabled:opacity-60 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-0"
       >
         {EDIT_TITLE_LABEL}
       </button>
@@ -130,13 +130,13 @@ export function CardTitleEditor({
 
   return (
     <form
-      className="space-y-1"
+      className="w-full space-y-1.5"
       onSubmit={(event) => {
         event.preventDefault();
         save(draft);
       }}
     >
-      <label htmlFor={inputId} className="block text-xs font-medium text-slate-600">
+      <label htmlFor={inputId} className="block text-xs font-semibold text-slate-700">
         {TITLE_INPUT_LABEL}
       </label>
       <input
@@ -156,13 +156,13 @@ export function CardTitleEditor({
             close();
           }
         }}
-        className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm"
+        className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 aria-invalid:border-danger-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 sm:min-h-9"
       />
-      <p id={counterId} className="text-xs text-slate-500">
+      <p id={counterId} className="text-xs text-slate-600">
         {titleCounter(draft.length)}
       </p>
       {failure !== null && (
-        <p id={errorId} role="alert" className="text-sm text-red-700">
+        <p id={errorId} role="alert" className="text-sm font-medium text-danger-600">
           {failure}
         </p>
       )}

@@ -1,6 +1,6 @@
 import { useId } from 'react';
 
-import { columnHeading } from '../trackingCopy';
+import { STAGE_LABELS, columnHeading } from '../trackingCopy';
 
 import type { ColumnDropProps } from '../hooks/useCardDrag';
 import type { Stage } from '../types';
@@ -39,14 +39,28 @@ export function BoardColumn({
       // The drop indication as a fact, not only a colour: a test (and a stylesheet) can read it.
       data-drop-target={isDropTarget ? 'true' : 'false'}
       {...dropProps}
-      className={`min-h-24 rounded-lg border p-3 lg:w-60 lg:shrink-0 ${
-        isDropTarget ? 'border-slate-900 bg-slate-100' : 'border-slate-200 bg-slate-50'
+      className={`min-h-24 rounded-2xl p-3 max-sm:px-0 lg:w-64 lg:shrink-0 ${
+        isDropTarget
+          ? 'bg-brand-50 ring-2 ring-brand-600'
+          : 'max-sm:bg-transparent sm:bg-surface-sunk'
       }`}
     >
-      <h3 id={headingId} className="mb-2 text-sm font-semibold text-slate-700">
-        {columnHeading(stage, count)}
+      {/* The name is the copy's own sentence, *"{Stage} ({count})"*; what shows is the label and
+          the count as a pill — the same words, so the visible label is inside the name. */}
+      <h3
+        id={headingId}
+        aria-label={columnHeading(stage, count)}
+        className="mb-3 flex items-center justify-between gap-2 px-1 text-xs font-semibold tracking-wide text-slate-700 uppercase"
+      >
+        <span aria-hidden="true">{STAGE_LABELS[stage]}</span>
+        <span
+          aria-hidden="true"
+          className="min-w-6 rounded-full border border-slate-200 bg-white px-2 py-0.5 text-center text-xs font-semibold text-slate-700"
+        >
+          {count}
+        </span>
       </h3>
-      <ul className="space-y-2">{children}</ul>
+      <ul className="space-y-2.5">{children}</ul>
     </section>
   );
 }
