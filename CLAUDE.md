@@ -31,8 +31,9 @@ itself stays public. Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate i
 items) is in **[HISTORY.md](./HISTORY.md)**, and the stories are in [FORboehpyk.md](./FORboehpyk.md).
 Read the relevant entry before you touch that slice's code.
 
-**Production:** `cv.samolit.com`, served by a single VDS through the Traefik already on the box
-(external `traefik` network, entrypoint `websecure`, resolver `le`). Stack in
+**Production:** `fixcv.app` (ADR-0038; `www` is a Traefik redirect, `cv.samolit.com` is retired),
+served by a single VDS through the Traefik already on the box (external `traefik` network,
+entrypoint `websecure`, resolver `le`). Stack in
 `/home/boehpyk/www/tailor-cv`, deployed as `boehpyk`. The root `.env` on the box is hand-made, mode
 600, `APP_ENV=production`, `TRUSTED_PROXY_HOPS=2`, and **`GUEST_PURGE_ENABLED=false`** (the purge is
 run from `/admin/storage`). Mail is Resend over SMTP. The deploy secrets are **`production`
@@ -40,8 +41,9 @@ environment secrets** behind `required_reviewers` + `branch_policy`, so **every 
 real release waiting for approval**. A run uses the workflow file **from its own commit**. A control
 nobody has verified is a belief: check with `gh api repos/<owner>/<repo>/environments/production`.
 
-**Open items worth knowing:** `tc_refresh` can be planted by a sibling host (OQ-16, its own slice).
-2.3's posting lock renders `FOR NO KEY UPDATE` where `FOR KEY SHARE` was meant
+**Open items worth knowing:** OQ-16 (`tc_refresh` planted by a sibling host) is closed **by
+condition**: no host under `fixcv.app` but the `www` redirect ever serves content; before one does,
+ship the `__Host-` rename first (ADR-0008 (m)). 2.3's posting lock renders `FOR NO KEY UPDATE` where `FOR KEY SHARE` was meant
 (`tailoring_run.py`, left for the owner). `/health/ready` takes ~2.1 s because of
 `control.ping(timeout=2.0)` with no `limit`. Traefik's access log has not been checked for query
 strings. Firefox's first manual pass was web-design-refresh's T42 (2026-10-27).

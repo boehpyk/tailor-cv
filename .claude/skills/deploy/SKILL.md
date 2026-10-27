@@ -38,8 +38,9 @@ for svc in api worker beat; do
 done
 ```
 
-5. **Smoke check:** `curl -fsS https://cv.samolit.com/health/ready` must return 200 — and it must
-   report Postgres, Redis **and Celery**, or it is telling you less than you think.
+5. **Smoke check:** `curl -fsS https://fixcv.app/health/ready` must return 200 — and it must
+   report Postgres, Redis **and Celery**, or it is telling you less than you think. The same step
+   asserts `www.fixcv.app` answers a 301 to the apex with path and query intact (ADR-0038).
 
 ## The two rules that step 3 and 4 exist for
 
