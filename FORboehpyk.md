@@ -6736,6 +6736,25 @@ values, against WCAG's 4.5:1. That's how the rule "slate-500 is fine on the off-
 the sunk grey" came about. It's 4.57 on one and 4.29 on the other, a difference nobody would ever
 spot by eye.
 
+## The test that could not fail
+
+`/verify` found a test that could never fail. The `/welcome` page promises to write nothing to your
+browser: no cookie, no `localStorage`. The test took a snapshot of storage, rendered the page, took
+another snapshot and compared the two. It was green. The reviewer asked the awkward question: *had it
+ever been red for the right reason?* Back in the RED commit, every one of those tests had failed for
+one reason only: the empty skeleton had no heading. Not one of them had failed on its own assertion.
+
+So `qa` broke the page on purpose: a `localStorage.setItem` slipped into the marketing component.
+The test stayed **green**. An earlier test in the same file had already rendered the page, so the
+key was in storage before the "before" snapshot was taken. Both snapshots agreed because both were
+already contaminated. Picture a smoke detector tested by holding a match to it in a room already
+full of smoke. Clearing storage in a `beforeEach` fixed it, and the same mutation then failed with
+the stray key printed in the diff.
+
+The lesson is in the project's rules for a reason: **a RED that fails on the wrong line proves
+nothing about the right line.** Until you've watched an assertion go red on its own, you only
+believe it guards something; you haven't shown it.
+
 ## What a good engineer takes from this one
 
 - **A reskin has a contract**, and it's the accessibility tree, not the pixels. Keep names, roles and
@@ -6750,5 +6769,6 @@ spot by eye.
 ## What's next
 
 The owner's manual pass on the production bundle (Chrome *and* Firefox, phone and desktop widths,
-including the first recorded Firefox pass in this project's history), then `/verify`, then a merge
+including the first recorded Firefox pass in this project's history). `/verify` has passed in its
+second round. Then comes a merge
 no earlier than 30 October, once Phase 4's gate has closed on the admin pages it was measured on.
