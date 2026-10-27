@@ -18,966 +18,32 @@ pattern honestly.
 mapping · Alembic · Celery 5 + Redis 7 · PostgreSQL 16 · Google Gemini · React 19 + TypeScript ·
 Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · nginx.
 
-> **Status: nineteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, and the `__Host-tc_guest`
-> security slice); slice 4.4 `admin-guests-and-storage` was released 2026-10-15, and Phase 4's
-> two-week gate clock runs to 2026-10-29; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
-> merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
-> `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
-> 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23
-> (`a092053`) and released 2026-10-09 (deploy run 37855115482). Slice 3.3
-> `workspace-rate-limit-retry-feedback` was merged as PR #25 (`279a0b7`) and released 2026-10-09
-> (deploy run 37951163281).** **Slice 4.1 `identity-user-roles` (Phase 4's first) was verified
-> 2026-10-10 (reviewer PASS round 1), merged as PR #28 (`26472b1`) and released the same day**
-> (deploy run 38074030810; the owner was bootstrapped as the first admin by `grant-role`). **Slice
-> 4.2 `admin-users` was verified on 2026-10-11 (reviewer PASS round 2), merged as PR #30
-> (`16fbe47`) and released the same day** (deploy run 38161380305). **Slice 4.3 `admin-content`
-> was verified 2026-10-12 (reviewer PASS round 1; MINORs 1/3/4 fixed, PASS round 2), merged as PR
-> #32 (`5e9bce2`) and released the same day** (deploy run 38297123697). **Slice 4.4
-> `admin-guests-and-storage` was verified 2026-10-15 (reviewer PASS round 1; MINOR 1 fixed red-first, `49e2aef` → `5cfd637`), merged as PR #34 (`97a213e`) and released the same day** (deploy run 38704657392; the production purge was rehearsed from `/admin/storage`, backlog 2 → 0). Slice 2.1 was verified (two rounds, 2026-09-25), merged as PR #13
-> and released to `cv.samolit.com` the same day** (deploy run 36124532227). The box's `.env` read
-> `TRUSTED_PROXY_HOPS=1` on 2026-09-25 and **reads `2`** over SSH on 2026-09-26 (T31) — the fact is
-> fixed; the footgun below stays. **Slice 2.2 `intake-saved-base-cvs` was verified (two review
-> rounds plus a manual `:8080` pass, 2026-09-26), merged as PR #14 (`4c18557`) and released**
-> (deploy run 36265111930; the box's api/worker/beat all read `4c18557` on 2026-09-30). **Slice 2.3
-> `tailoring-application-history` was verified (three review rounds plus a real-browser pass and
-> one real-Gemini run, 2026-09-30), merged as PR #15 (`0b01537`) and released the same day**
-> (deploy run 36782086963). **Slice 2.4 `workspace-registration-cta` was verified on 2026-10-01
-> (reviewer PASS in round 1, plus a real-Gemini manual pass), merged as PR #16 (`2427b67`) and
-> released the same day** (deploy run 36920406580). **Slice 2.5 `identity-email-verification` was
-> verified on 2026-10-03 (reviewer PASS in round 2, plus a manual `:8080` pass with Mailpit), merged
-> as PR #17 (`eeec430`) and released the same day** (deploy run 37136396246). `check-settings` on
-> the 2.5 image gates **deploy approval, not the merge** (the image exists only after the merge).
-> Mail is delivered by Resend with `spf/dkim/dmarc=pass`, tracking off (ADR-0026's T44 amendment;
-> retention not yet read). **PR #18 (`dbeb328`)** fixed the deploy so nginx is recreated every
-> release and its *loaded* config verified: no nginx change had reached production since the first
-> release (footgun below). **Phase 2's gate is met** (clause 1 closed by a canary account that
-> crossed `03494836ce30` → `b1b518fe84b1`). Slice 1.6 was verified, rehearsed on real data, switched on and merged as
-> PR #8, 2026-09-22: `GUEST_PURGE_ENABLED=true` in dev; `/health/ready` reads `scheduled: true`,
-> `stale: false`, `overdue: 0`. **Phase 2 started with Phase 1's gate unrecorded** (OQ-7 — the
-> roadmap says so; the owner records it met with evidence, or open with why). The architecture now carries a paid external call, a worker, three scheduled
-> jobs, an unauthenticated *write* to a PII row on a timer, a stranger's CV rendered into HTML and
-> written to disk as a file, and — new in 1.6 — **the first `DELETE` in the codebase, irreversible
-> in two systems at once.**
->
-> - **1.1 `intake-base-cv-upload`** (PR #1) — upload a base CV, sniffed by its bytes, extracted in a
->   worker thread, owned by a guest session.
-> - **1.2 `posting-job-description-intake`** (PR #2) — paste a job description or hand over a link,
->   fetched behind a guarded egress (ADR-0012) with FR-2's paste fallback as an action.
-> - **1.3 `tailoring-generate-documents`** (PR #4) — one button returns a tailored CV and a cover
->   letter: queued, executed by a Celery worker behind `LlmPort` (Gemini), polled by the client;
->   every outcome that spent money is a row (ADR-0014); a stale-run sweep on beat.
-> - **1.4 `workspace-progress-and-editor`** (PR #5) — the tabbed workspace, the progress stepper,
->   React Router, and a TipTap editor over both documents with debounced autosave. The edit is a
->   revision on the run (ADR-0015); one version column refuses a stale edit **and** closes 1.3's
->   concurrent duplicate delivery. `/verify` took four rounds and ended by re-modelling the autosave
->   hook as one pure state machine.
-> - **1.5 `export-multi-format-download`** (PR #7, merged) — four formats. `md` and `txt` are a
->   `GET` on a representation of the document and leave **no row**; `pdf` and `docx` are an
->   `ExportJob`, a Celery task on a third queue, a file on the uploads volume and a polled client
->   (**ADR-0016**). The pipeline is Markdown → tokens (`html=False`) → grammar normalization →
->   {plain text | DOCX | HTML → `nh3` → WeasyPrint}, with a `url_fetcher` that refuses every URL
->   (**ADR-0017**). **1314 backend and 504 frontend tests**, green twice. Measured: inline p95
->   **11 ms** (budget 500 ms), `POST` → `ready` p95 **0.17 s** over 40 real renders (budget 10 s),
->   corpus **28/28** across four formats. `/verify` took **four rounds** and found **three MAJORs**,
->   all of them in code a green suite of 1293 tests was happy with — see below.
->
-> - **1.6 `retention-guest-purge`** (PR #8, merged; rehearsed and switched on) — the
->   purge, the orphan sweep, the CLI, the beat entry and a Retention block in the status panel.
->   **1456 backend and 532 frontend tests**, green twice. `retention` is the first context with **no aggregate** — a policy,
->   two use cases, two ports (**ADR-0018**) — and `/health/ready` gained `jobs.guest_purge`, the
->   first thing it reports as a *fact* rather than as readiness (**ADR-0019**). **No migration**, and
->   that is proven by reading `pg_constraint`/`pg_index` rather than trusting the comments that
->   promised it. Measured: a 100-session purge (300 files) in **0.35 s** against a 10 s budget; the
->   `overdue` probe **2.1 ms p95** against 20 ms.
->
-> - **2.1 `identity-register-and-login`** (PR #13, **verified, merged, released**) — the first
->   registered principal and the first password. `User` and `Login` aggregates beside an untouched
->   `GuestSession` (its file is pinned by digest; no route depends on both resolvers). A `Login`
->   **is** a refresh-token family: generations, a **10 s race grace** answered 409
->   `refresh_in_progress`, retired hashes in an append-only lookup table, and **revocation is
->   `DELETE`** (**ADR-0020**). Passwords are argon2id (`m=65536,t=3,p=4` — constants, no setting)
->   on a **dedicated two-worker executor whose size is the memory cap**, verified against a decoy
->   for an unknown email (**ADR-0021**). Access tokens: HS256, 15 min, exactly five claims, judged
->   by the `Clock`. Refresh cookie `tc_refresh`: opaque, stored as SHA-256, `HttpOnly;
->   SameSite=Strict; Path=/api/auth`, host-only, rotated on every use, 30-day absolute lifetime.
->   The four cookie-touching endpoints check a trusted `Origin` **before** the limiter, the
->   database and the hasher; the login/register limiters **fail closed** and refresh has none, so
->   Redis down stops new logins and never logs anyone out. Registration **enumerates** (409) until
->   an email channel exists (ADR-0008 amendment (b), roadmap 2.5). React: `/login`, `/register`,
->   `/account`, a header block, one auth store read through `useSyncExternalStore`, a boot refresh
->   at module scope, a bearer interceptor that refreshes once. One expand-only migration, three
->   tables. **1818 backend and 647 frontend tests.** **AC-52 holds**: `git diff main --stat` over
->   `domain/tailoring`, `application/tailoring` and `infrastructure/llm` is empty — the prompt
->   cannot have gained an email or an account id.
->   Measured on the **production image** (T48): argon2 hash **51 ms** (budget 40–250 ms); `login`
->   p95 **69.9 ms** (300); `refresh` p95 **7.8 ms** (50); `me` p95 **4.2 ms** (30); unknown-email
->   vs wrong-password median Δ **0.64 %** (≤ 10 %, AC-28); RSS growth under 8 concurrent logins
->   **128.5 / 128.0 MiB** per worker against **160 MiB** — the budget closest to its limit. If the
->   box is tight, the executor drops to 1 before the parameters drop.
->   **Rotating `JWT_SIGNING_KEY` logs nobody out** — refresh tokens are rows, not signatures, so a
->   new key only retires 15-minute access tokens and the next silent refresh mints new ones. The
->   break-glass is `revoke-logins --all` (Commands). 2.1's account deletion (an operator deleting
->   the `identity_user` row, OQ-8) is **wrong from 2.2 on** — it orphans every saved file; use
->   `erase-account`. The footguns it hit are
->   filed under Conventions and Infrastructure footguns below, not here.
->   **2.1's `/verify` took two rounds.** Round 1's CRITICAL was not in 2.1's code at all: the box's
->   `TRUSTED_PROXY_HOPS=1` had keyed every IP limiter on Traefik since Phase 1, and 2.1's fail-closed
->   limiters would have turned that into a site-wide login lockout. Found by reading the proxy chain,
->   never by a test — every test hard-codes its `X-Forwarded-For`. Round 1 also fixed a refresh that
->   re-authenticated a tab after logout (a sign-out counter in the store, not the reducer) and a
->   deleted user's endless Retry. **Carried, filed in the PR:** `SignOutReason` is never rendered;
->   logout lands on `/login?next=/account`; a stale in-flight refresh can capture one made after a
->   quick re-login; AC-25's Redis assertion is unobserved red under the limiter-first mutation.
->
-> - **2.2 `intake-saved-base-cvs`** (PR #14, `4c18557`, **verified, merged, released**) — the first data
->   the product keeps **on purpose**: a registered user saves up to five base CVs
->   (`MAX_SAVED_BASE_CVS_PER_USER`), labels, reuses and deletes them, and can delete the account.
->   A row's owner is a **sum type**, `GuestOwner | UserOwner` in `domain/identity/ownership.py`,
->   with no methods — authorization is `cv.owner == UserOwner(requester)`, an equality — stored as
->   two nullable FKs plus `ck_intake_base_cv_exactly_one_owner`, translated in the mapping alone
->   (**ADR-0022**). **Reuse is a working copy** (`BaseCv.copy_from`: new id, new file, the source's
->   extraction, no re-extract), so no ownership graph crosses owners and the purge can never unlink
->   a saved CV's bytes; `copied_from_base_cv_id` is provenance with **no FK** (2.4's claim will read
->   it). The copy route is the first **transfer route** (ADR-0008 (f), Architecture; **retired in
->   2.4**). Deleting a CV
->   and erasing an account both go **rows committed, then files** (ADR-0006 amendment); erasure
->   holds `FOR UPDATE` on the user row so a racing upload cannot be cascaded away with its file
->   uncollected — AC-32 proves it with two real connections, the loser blocked and then refused
->   `UserNotFound`. Erasure lives in `retention` (`EraseAccount`, `AccountDataPort`, a report that
->   *returns* unlink failures); identity's `DeleteOwnAccount` verifies the password before any read;
->   the operator path is `erase-account` (Commands). The saved list is a **read model**
->   (`SavedBaseCvSummary`, `char_length(extracted_text)` in SQL — the column is never selected).
->   React: `/account` gains the list and account deletion, the workspace a picker above the
->   dropzone, and sign-out now crosses tabs by `BroadcastChannel`. One expand-only migration
->   (`1a2676aa3759`) whose **downgrade refuses** while any user-owned row exists.
->   **2094 backend and 749 frontend tests** (2085 at implement; nine added at `/verify`). Measured (T30): list at the cap p95 **6.8 ms** (budget
->   100); delete p95 **9.0 ms** (150); delete-account p95 **66 ms** (400); on the production image, a
->   purge of 100 sessions beside 500 saved CVs **0.59 s** (10 s), then the sweep reclaiming **0 of
->   500** saved files. **Copying a 10 MB CV first measured p95 1.57 s against 1.0 s — and the
->   cause was not the disk** (10 MB write+fsync+read ≈ 20 ms): the fixture held 10 M characters, and
->   `ExtractedText.__post_init__` re-counted them in a Python generator (~0.4 s) on **every load, on
->   the event loop**, three loads per copy because `select()` runs the `TypeDecorator` even on an
->   identity-map hit. Nothing capped extracted text (a 171 KB DOCX expanded to 39.5 M chars). Fixed
->   (T30b, owner decision): the count in C (`len - count(" ")`, exact over all 1,114,112 code
->   points; 406 → 3.7 ms), `get` via the identity map with an id-only existence check (a bare
->   `session.get` hit broke S-33) and the repository pinning what it hands out (the map is weakly
->   referenced), and **`TEXT_TOO_LONG` at `MAX_EXTRACTED_CHARACTERS=250000`**, enforced per page /
->   paragraph while extracting. Re-measured: a realistic 10 MB PDF copy p95 **47 ms**; the worst the
->   cap allows (250 k chars) **21 ms**; a guest list of 5 × 250 k **28 ms**. **A slow file operation
->   is not evidence about the disk until the disk is measured alone.** **AC-58 holds**: `git diff main --stat` over `domain/tailoring`,
->   `application/tailoring` and `infrastructure/llm` is empty. T31: the release script needs no
->   change; production's `identity_retired_refresh_token` holds **0** rows (OQ-7 re-armed: 100 k or
->   2.3).
->   **2.2's `/verify` took two rounds, and both MAJORs were tests that could pass without their
->   claim — no production code changed.** (1) AC-49/50's privacy test was still in its RED-era
->   "soft" shape: every step ran only `if _ok(previous)` and the prompt assertion sat under
->   `if fake_llm_request is not None`, so a copy that started answering 409 would have skipped the
->   whole flow **green**. A test written soft so it can go red before GREEN must be **hardened in
->   the commit after GREEN** — every step a hard status assertion, the fake's call count asserted
->   before its arguments. (2) S-4/S-41/S-43/S-45, AC-29's data column and AC-30 had no assertion;
->   S-45's log lines are the operator's only signal that an erasure left orphans. Also found:
->   AC-27's "committed before unlink" read the row on the request's **own** session, where an
->   uncommitted `DELETE` is already invisible — it now reads from `engine.connect()` and goes red
->   without the commit. Spec rows S-5, S-12 (owner: keep `identity.user_missing`), S-23 and S-44
->   were amended to what the code does on purpose. The manual pass found nothing; one observation
->   for 2.3: typing into `/register` while the boot refresh is in flight can be wiped by a remount.
->
-> - **2.3 `tailoring-application-history`** (PR #15, `0b01537`, **verified, merged, released 2026-09-30**)
->   — a signed-in user's tailoring becomes **account data** (**ADR-0023**): the workspace follows the
->   credential, so signed in, the posting, the run and its exports are **born user-owned** and the
->   run references the saved CV directly. Every row has its final owner from its first `INSERT`, no
->   ownership graph crosses owners, and **no transfer route is added** (the AST scan's set is still
->   `{POST /api/base-cvs/copies}`, which now has no first-party caller until 2.4 decides its fate).
->   2.2's owner shape (`GuestOwner | UserOwner`, two nullable FKs, `ck_<table>_exactly_one_owner`)
->   is extended to `posting_job_posting`, `tailoring_run` and `export_job`; a job's owner is always
->   its run's. Twelve **`/api/me/`** routes (postings, runs, history, re-open, edit, delete, inline
->   download, exports, poll, file) answer to the bearer alone and **share one handler body with
->   their guest twin** (`routers/_{posting,tailoring,export}_handlers.py`, taking a resolved
->   `requester: Owner`, the rate-limit principal and a path prefix), so the two cannot drift.
->   `Cache-Control: no-store` on every one; `expires_at: null` means "kept until you delete it".
->   User caps: 500 runs, 500 postings, 20 exports **per run** (settings, in-code defaults).
->   History is a **read model behind a query port** (**ADR-0024**): `TailoringHistoryQuery` in the
->   domain, one Core statement under `infrastructure/persistence/queries/`, two LEFT JOINs with the
->   **owner in the join condition** (a deleted or foreign CV is never lent a label),
->   `left(text, 140)` in SQL, no document column selected, and **keyset pages on
->   `(requested_at, id)`, never `OFFSET`**. The cursor is an unsigned domain value
->   (`HistoryCursor`), base64url at the boundary. **Deleting a saved CV leaves history intact**:
->   `tailoring_run.base_cv_id` becomes a dangling reference with no FK, and "CV deleted" is **derived
->   at read time**, never stored. A run whose CV vanished between request and worker fails with the
->   tenth reason, **`base_cv_deleted`**, from `running`, **before the paid call**, not retryable
->   (ADR-0014 amendment). **Deleting a history entry lives in `retention`** (`EraseHistoryEntry`,
->   `HistoryEntryDataPort`): 409 while `queued`/`running`, then three `DELETE … RETURNING`s, so
->   **the rows that went and the files to unlink are one set**. Rows are committed, then files.
->   Unlink failures are returned, and the orphan sweep reclaims the survivor. Account erasure now
->   takes runs, postings and exports and their derived export keys, and its `FOR UPDATE` on the
->   user row also serializes run and export inserts (AC-37, two real connections). React: the
->   client's own port, **`features/scope/`**: `WorkspaceScope = guest | account(userId)` and a pure
->   `scopeMap()` giving paths, credential and query-key root together. **One hook set serves two
->   workspaces**: T28 threaded it through every hook with **749/749 guest tests unedited**. Account
->   keys live under `['auth','account',userId]`, so 2.1's sign-out drops them. `/` is a gate
->   (booting / unavailable + Retry / guest workspace / account workspace), plus `/history` (Load
->   more, confirm dialog, no optimistic removal) and `/history/:runId/:document`, and no "24 hours"
->   copy in account scope. One expand-only migration (`03494836ce30`) whose **downgrade refuses**
->   while a user-owned row or a `base_cv_deleted` run exists. **2689 backend and 839 frontend
->   tests.** Measured (T36): history first page p95 **6.3 ms** and page 20 **6.0 ms** over 500
->   runs (budget 100; Index Scan on `ix_tailoring_run_user_id_requested_at`); re-open **11.4 ms**
->   (100); delete an entry with 20 files **13.4 ms** (250); delete-account with 500 runs and 1 005
->   files **280 ms** (2 000; the disk alone 13.6 ms); launch **51.7 ms** (300); queued → running
->   **83.4 ms** (2 s). On the production image, a purge beside 4 100 user files takes **1.52 s**
->   (10 s) and deletes 0 user rows; the sweep takes **1.16 s** and reclaims **0 of 4 100**. The one
->   observation: at page 20 the posting join reads all 500 of the user's postings. That is cheap at
->   the cap, so look again if the cap rises. T38 (production, read-only): the three tables hold
->   **0** rows, so the migration runs as written. `identity_retired_refresh_token` also holds **0**
->   (OQ-11 re-armed: 100 k rows or 2.5), and the uploads volume is empty (OQ-15's baseline).
->   **AC-54 holds**: `git diff main --stat -- api/src/tailorcraft/infrastructure/llm` is empty and
->   `LlmPort` is byte-identical. Unlike 2.1/2.2, `domain/tailoring` *does* change (the owner, the
->   tenth reason, `history.py`), which is why the proof narrowed to the adapter and the port.
->   **`/verify` took three rounds** (2689 → **2691 backend, 840 frontend** tests, green twice).
->   AC-51 was proven in a real browser: a 25 s delayed boot refresh, text typed into `/register` and
->   `/login` mid-flight, and it survived. AC-59: one real-Gemini account run, `llm_duration_ms`
->   **6268 ms**, end-to-end **6.62 s** (budget 15 s). Round 1's review found a race that the plan had
->   called impossible. A history deletion's `DELETE … WHERE NOT EXISTS (run)` could not see a new
->   run's **uncommitted** `INSERT` on the same posting (there is no FK on
->   `tailoring_run.job_posting_id`), so either order left a run pointing at a deleted posting. It is
->   closed by two locks (below). Round 2 found the first fix disabled by default: a
->   `refuse_missing_posting=False` constructor flag that existed because 78 test seeds inserted runs
->   over postings that did not exist. The seeds were fixed first (`3c7e80d`), then the flag was
->   removed (`3b57daf`), and the check always runs. **A safety check whose default is off protects
->   only the callers that remember it.** Also fixed: a history delete now removes the run's cached
->   detail and exports and re-reads postings; the history row's link comes from `runLink`; AC-33's
->   concurrent-delete test now really stages the overlap. Carried to the PR: the cleanup `gather`
->   in `test_me_history_delete.py` has no timeout, and eleven seed comments still say the refusal
->   is "through the request route's composition root".
->
-> - **2.4 `workspace-registration-cta`** (PR #16, `2427b67`, **verified, merged, released 2026-10-01**) —
->   a guest who tailored and then registers or signs in **keeps the work** (**ADR-0025**), by an
->   explicit offer that names it (*Keep them in my account* / *Not now*) and never automatically: a
->   guest cookie identifies a browser, not a person. `POST /api/me/guest-work/claim`, no body: the
->   bearer is a dependency, `tc_guest` is read **in the handler body**, nothing is ever minted
->   (ADR-0008 (g)). **One transaction**: the session row `FOR UPDATE`; four `UPDATE`s, each setting
->   both owner columns in one statement (`intake_base_cv` minus working copies, `posting_job_posting`,
->   `tailoring_run`, `export_job`); the working copies `DELETE … RETURNING file_key`; the session's
->   `DELETE`; one commit; then the dropped copies' files. No row is copied, no id changes, no file
->   moves (keys derive from ids), so a claimed run is in history at its original `requested_at` and
->   `/runs/{id}` becomes `/history/{id}`. 200 with five counts, **200 with zeros** when there is
->   nothing to claim (the session row is the idempotency key, and the claim consumes it); the cookie
->   is cleared iff one was presented; 10/h per user (`GUEST_WORK_CLAIM_RATE_LIMIT_PER_HOUR`, in-code
->   default, fails open). Caps bound creation, not transfer. In-flight work moves as it is, because
->   **the claim never bumps `version`**. That is mutation-proven (T23): with `version + 1` added, a run
->   claimed during its LLM call loses its paid result (`TailoringRunConcurrentlyModified`). **The
->   purge changed for the first time since 1.6** (ADR-0018 (a)): `delete_session -> bool`, and a
->   session whose `DELETE` removed nothing is counted `sessions_skipped` with **none of its files
->   unlinked**, since they may be a user's now. A guest write landing after a claim is 401
->   `guest_session_expired` (four `add`s translate the guest FK). Every race in ADR-0025's lock table
->   is staged on real connections, with the overlap proven from `pg_stat_activity`. **The copy route
->   is retired** (it now answers 405, because the path still matches `/api/base-cvs/{id}`); its
->   readers (`copied_from_base_cv_id`, `origin`, the badge) stay until the contraction trigger in the
->   roadmap (T37 read **0** such rows in production). React: `features/claim/`, a registration CTA on
->   a succeeded guest run, and the offer on `/` and on the guest run page (Keep →
->   `/history/:id/:document`, same id). No migration, container, queue or volume.
->   **2816 backend and 929 frontend tests.** Measured (T35): a claim at every guest cap (5 CVs, 10
->   postings, 20 runs, 40 exports) p95 **11.1 ms** (budget 300); an empty one p95 **9.3 ms** (50); on
->   the production image, a purge of 100 sessions beside 100 claimed users' 4 100 files **1.59 s**
->   (10 s), deleting 0 user rows or files, and the sweep reclaiming **0 of 4 100**. **AC-49 holds**:
->   `git diff main --stat` over `infrastructure/llm` and `execute_tailoring_run.py` is empty.
->   **T36 found the release order wrong** (R-7; Infrastructure footguns).
->   **`/verify` passed in one round** (0 CRITICAL, 0 MAJOR; `make check` green three times). The
->   owner amended four spec rows to the shipped behaviour: AC-24's `no-store` covers the responses
->   the **handler** builds (the dependency's 401 and the app's 503 carry no account data; a
->   `/api/me/*` middleware is the fix if ever wanted); AC-33 is **405** with an `Allow` header
->   without `POST`; AC-18's outcome is `TailoringRunConcurrentlyModified`; AC-34's wire value is
->   `llm_timed_out`. The manual pass on `:8080` with real Gemini walked CTA → register → offer →
->   Keep → `/history/{id}/cv` (the edit kept, run `version` unchanged, the PDF re-downloaded
->   byte-identical by sha256 and inode) → *Not now* → second claim → the other tab's history link →
->   account deletion (every row and file gone); 1 797 log lines, zero PII markers, both
->   `identity.guest_work_claimed` lines captured and neither carrying a session id. **Carried:** the
->   purge CLI stopped on `sessions_deleted == 0`, so a batch that only skipped ended a run early
->   (**fixed in 2.5**, T6 `8714389`: it stops on `deleted + skipped == 0`); OQ-12
->   (`__Host-tc_guest`) was recorded, not fixed (closed by the `__Host-tc_guest` slice,
->   2026-10-08); a guest refetch after claiming a run still *in flight* is untested (none on
->   a succeeded run). **From 2.5, a value object's skeleton gets a no-op `__post_init__`**, so a
->   "refused" test goes red on `DID NOT RAISE` rather than on the skeleton's `NotImplementedError`
->   (T5's red was the latter, accepted on 2.3's precedent).
->
-> - **2.5 `identity-email-verification`** (PR #17, `eeec430`, **verified, merged, released
->   2026-10-03**) — the first **outbound channel**: account mail.
->   Registration stops enumerating and a forgotten password can be reset. Three ADRs: **ADR-0026**
->   (account mail is a port, `AccountMailPort`, sent by the worker over SMTP submission on the
->   standard library, STARTTLS required, not a guarded egress), **ADR-0027** (a pending
->   registration, confirmed by a one-time link) and **ADR-0028** (a reset proves the address and
->   revokes every login). Amended: ADR-0005 (four queues), 0008 (h) (register 202 for every
->   address; 409 moves to confirmation), 0018 (b) (a second timer job, on by default), 0019 (a)
->   (`jobs.identity_token_sweep`), 0020 (sweep + reset revocation), 0021 (the `Origin` set is
->   **eight**; the new limiters fail closed). **An unconfirmed sign-up is not an unverified
->   `User`**: it is a `PendingRegistration` in its own table (one per address, newest wins by
->   `ON CONFLICT (email) DO UPDATE`, ≤ 24 h), so "every `User` proved its address" is true by
->   construction and "what may an unverified account do?" has the answer *nothing*. **Register has
->   no branch**: Origin → per-IP → parse → per-address (3/h) → policy → one argon2 hash → one upsert
->   → enqueue the **id** → 202, empty, no cookie — the same statements for every address, with zero
->   `UserRepository` calls (structural test, mutation-proven). The **worker** looks the address up
->   and sends either *Confirm your email* or *You already have an account* (no token). Reset-request
->   is the same shape with no hash at all. **The worker mints the token** (256 bits, 43 chars,
->   SHA-256 at rest, in the URL **fragment**, masked `OneTimeToken(***)`), so no credential rides
->   the broker, and **commits the hash, then sends**: a crash between the two leaves no mail rather
->   than a dead link, and the issued-once guard (`token_hash IS NULL`) makes a redelivery `SKIPPED`.
->   Confirmation needs an explicit click (mail scanners fetch links) and **does not sign in** (the
->   pre-hijack). Reset-confirm replaces the hash and **deletes every `Login` and reset** in one
->   transaction, signing nobody in; React signs the tab out as `password_changed` and broadcasts.
->   **The login/reset race**: `LogIn` re-checks `SELECT 1 … WHERE password_hash = :seen FOR SHARE`
->   after its verify, so a reset committed mid-verify is `InvalidCredentials` and a login first
->   makes the reset wait and then delete it; `DeleteOwnAccount` re-checks under **`FOR UPDATE`**
->   (`get_for_update`; see the lock-upgrade footgun). Lock order: the **user before any reset**,
->   everywhere. **The identity token sweep** (`retention.sweep_expired_identity_tokens`, hourly,
->   unconditional, batches of 1 000, inclusive expiry) deletes expired pending rows, resets and
->   logins — **on by default**, unlike the purge, because every code path already refuses those
->   rows; `/health/ready` reports `jobs.identity_token_sweep.overdue` (rows expired > two intervals
->   ago) as a fact. **A fourth queue, `mail`**: four kombu members, the release check lists four.
->   **Mailpit** in dev (UI `127.0.0.1:8025`) and CI; the dev override pins `MAIL_SMTP_*` in
->   `environment:` so a real `.env` cannot mail strangers. React: `features/accountMail/`
->   (`/confirm-email`, `/reset-password`, `/reset-password/confirm`, *Check your email* with *Send
->   it again*), the fragment read once and stripped, `Referrer-Policy: no-referrer` on the SPA.
->   Migration **`b1b518fe84b1`** (expand-only, two tables plus `ix_identity_login_expires_at`; the
->   downgrade refuses nothing — the rows are one-time and ≤ 24 h). `check-settings` has **eleven**
->   refusals. **3612 backend and 1021 frontend tests.** Measured: T42 on the production image with
->   production argon2, n = 200 interleaved: register new vs. existing Δ **0.56 %**, reset-request
->   known vs. unknown Δ **1.63 %**, login wrong-password vs. unknown-email Δ **0.42 %** (≤ 10 %);
->   T41's burst after the `ignore_result` fix: 2 × 3 600 resets, 0 probe timeouts, `/health/live`
->   p50 **3.9 ms**. AC-56 p95s (n=50, api direct, not via `:8080` — the dev limiters forbid n=50 there): register **60.1**, confirm **6.1**, login **59.1**, reset-request **7.8**, reset-confirm **58.9 ms**; 202 → Mailpit **122.5 ms**. AC-57: a 10 000 × 3 sweep **0.167 s** (2 s); the `overdue` probe p95 **5.86 ms** (20). **AC-62 holds**:
->   `git diff main --stat` over `infrastructure/llm`, `domain/tailoring` and
->   `application/tailoring` is empty (`infrastructure/tailoring/queue.py` changed — the enqueue
->   fix, outside the LLM boundary). Spec rows amended during `/implement`: AC-5 (`MailNotDelivered`
->   carries `smtp_code`), V-23 (`SENT` has no reply code), AC-14 (`FOR UPDATE`, not `FOR SHARE`),
->   AC-32 (eight `Origin` routes — the spec's "seven" missed `delete-account`), AC-41 (the
->   mutation is `<=` → `<`; the spec had it backwards).
->
-> - **3.1 `tracking-application-board`** (PR #21, `bfb98a9`, **verified (reviewer PASS round 2,
->   2026-10-06; manual pass T33), merged, released 2026-10-06**, deploy run 37529074626)
->   — a signed-in
->   user's job search on a board. A **seventh bounded context, `tracking`** (**ADR-0029**), chosen
->   by whose fact it is: a run's status is a fact about a paid call, a card's stage is a fact about
->   the user's life. One `TrackedApplication` aggregate per **succeeded, user-owned run**, referenced
->   through tracking's own **`TrackedRunRef`**: `domain/tracking` imports **no sibling context**
->   (owner's T0 amendment; an AST allow-list pins it to the standard library, `domain/shared` and
->   `domain/identity`), "only a succeeded run" is the use case's rule, and the one seam is
->   `TrackedRunRef(run.id.value)` in `application/tracking/`. (ADR-0029 said `NewType`; the ids are
->   frozen dataclasses like every other id — a dated correction is in the ADR.) The owner is a
->   **`UserId`, not ADR-0022's `Owner`**: `user_id NOT NULL → identity_user ON DELETE CASCADE` and
->   **no guest column**, so the purge and the claim cannot reach a card by schema (a test asserts
->   the column is absent). A card holds a stage, an optional `ApplicationTitle` (trimmed, 1–120,
->   no `Cc`), `tracked_at`, `stage_changed_at` and `version` — no notes, salary or dates. **Six
->   stages, any → any** (a permissive machine, unlike `TailoringRun`'s strict one; the aggregate
->   says why at the point of contradiction); the invariants are time and **optimistic concurrency by
->   `version`**, checked before the no-op rule, plus the mapper's `version_id_col`. The board is a
->   **read model behind an unpaginated query port** bounded by the 500-card cap (**ADR-0024
->   amendment (a)**): one Core statement, three LEFT JOINs with the owner in every join condition,
->   `left(text, 140)`, no document column. **Deleting a history entry takes its card** by its own
->   `DELETE … RETURNING` in `retention` (ADR-0023, ADR-0006 (f) amended); **account erasure** takes
->   cards by the FK cascade. **No FK on the run**: the race is closed by 2.3's pattern — `add`
->   INSERTs, **then** takes the run `FOR KEY SHARE` and refuses if it is gone; the history delete's
->   card `DELETE` is a separate statement with a fresh snapshot (both orders staged on real
->   connections). Migration **`7e43a47327ec`** (expand-only, one table; the **downgrade refuses**
->   while any row exists). Settings, in-code defaults: `MAX_TRACKED_APPLICATIONS_PER_USER=500`,
->   `TRACKING_WRITE_RATE_LIMIT_PER_HOUR=600` (user scope, fails open); no new `check-settings`
->   refusal. Five bearer-only routes under `/api/me/` (`GET /board`, `POST /tracked-applications`,
->   `PUT …/{id}/stage`, `PUT …/{id}/title`, `DELETE …/{id}`), `no-store`, no transfer route. React:
->   `features/tracking/`, **`/board`** (six labelled columns), an *Add to board* button on succeeded
->   account runs and history rows, and a **Move to** native `<select>` with **native HTML5 drag as an
->   enhancement** sending the identical request. **The codebase's first optimistic update**: a move
->   snapshots, writes the stage, rolls back **only its own card** on refusal, moves focus to the
->   card's control in its new column, and invalidates the board only when the **last** move in
->   flight settles. Retitle, untrack and track are not optimistic. **4095 backend and 1137 frontend
->   tests** after `/verify` (4094/1124 at implement), green twice in a row. Measured (T30): board at the 500 cap p95 **48.0 ms** (budget 150), body **330 KiB**
->   (400 KB); track **17.8 ms**, move **8.4**, retitle **7.6**, untrack **7.5**; deleting a history
->   entry with a card and 20 files **22.3 ms** (250); main bundle **+4.96 kB gzip** (15). T31: no
->   container, queue, volume, beat entry or `.env` change; `deploy.yml` stops worker and beat at
->   line 126, before the migration at line 140. **AC-41 holds**: `git diff main --stat` over
->   `infrastructure/llm`, `domain/tailoring` and `application/tailoring` is empty; the board makes
->   no LLM call and queues no task. Found on the way: the `FOR KEY SHARE` lock-mode bug (below),
->   fixed for tracking in `e93f4fd` and **still present in 2.3's posting lock, left for the owner**.
->   **`/verify` took two rounds.** Round 1 NEEDS CHANGES (0 CRITICAL, 1 MAJOR, 9 MINOR). The MAJOR:
->   **overlapping moves were untested** — the mutations "restore the whole snapshot on a refusal" and
->   "refetch on every settle" both left the suite green; `471ad69` stages two cards, A refused
->   (409/503) while B is held, and records M1/M2/M3 red. MINORs fixed: `no-store` on handler-raised
->   refusals (`1721ea2` RED → `d2cce6d`); the cap copy from the server's message, not a hard-coded
->   500; a board-retention note on `/account`; focus never stolen and returned to the Move control on
->   refusal; untrack/retitle skip the board refetch while a move is in flight
->   (`invalidateBoardUnlessMoving`); *Edit title* disabled during the card's own move;
->   `data-drop-target` (`ae139b2` RED → `ead86c4`, a stale-row correction in its own commit →
->   `93b8f79`). Round 2 **PASS** (0 CRITICAL, 0 MAJOR). Every RED carries a recorded assertion
->   failure, no GREEN edited a test, and the two RED corrections (`a437aca`, `ead86c4`) are each
->   their own commit.
->   **T33's manual pass (2026-10-06, `:8080`, Chromium via Playwright):** register + confirm through
->   Mailpit; two **real-Gemini** runs (the second ~5.1 s end to end); *Add to board* from the run page
->   and from history (badge *On your board · To apply*); `/board`'s six regions; a drag To apply →
->   Applied sends `{"stage":"applied","version":1}`; a keyboard *Move to* (focus follows into the new
->   column; live region *Moved … to Offer.*); a second tab's move, then the stale tab's → 409
->   `tracked_application_version_conflict` with `no-store`, the alert *This application changed in
->   another tab — your board is up to date.*, refetched; retitle and clear; **with the worker
->   stopped** a move is 200 in 51 ms (T-6); a deleted saved CV → *CV deleted* on the cards; a
->   tracked history entry's deletion (the dialog names "its card on your board") → card gone; a
->   removed card → its history entry stays, *Add to board* back; `erase-account --dry-run` prints
->   `…; tracking: 500 tracked application(s)`; account deletion → 204 and every row gone (user,
->   cards, runs, postings, CVs, logins = 0). 16 997 log lines (api/worker/beat/nginx) grepped for the
->   email, the marker tag, posting text, card titles, CV filename and CV body: **0 hits**; positive
->   controls: the user id 100 hits, 90 tracking event lines. **Firefox drag not exercised** (only
->   Chromium was available to the harness).
->   **Found in T33, by no test:** (1) **AC-44 failed, then was fixed** (`54fae03`): at 500 cards on
->   the production bundle an optimistic move committed in p50 162 / p95 179 ms (budget 50), still
->   ~135 ms with the PUT held 2 s — pure render cost: **1000 `BoardCard` renders per move** and 500
->   more on settle. Two causes: inline per-card props on an unmemoized `BoardCard`, and mainly
->   **TanStack's structural sharing matching array items by index**, so a re-sort handed every
->   shifted card back as a new object (Conventions, React). Fix: `memo(BoardCard)`, stable id-taking
->   callbacks, cached drag props, constant removal states, `structuralSharing: shareCardsById`.
->   After: 2 renders per move, 1 on settle; optimistic move p50 **23 ms**, p95 **51.9 ms**, max 53.3
->   (n=20) — p50 well inside, **p95 ~2 ms over the 50 ms budget, recorded as measured**. First paint
->   at 500 cards: commit p50 135 ms; commit + forced style/layout p50 **245 ms**, p95 **270 ms**
->   (budget 300). The dev build measured 640–730 ms, which says nothing about the budget. (2) The
->   Board link made the signed-in header **16 px too wide at 360 px** (scrollWidth 361 > clientWidth
->   345 beside the scrollbar); the nav now wraps (`c1ac844`). (3) A drag that moved the **wrong card**
->   3/3 was Playwright's `dragTo`, not the app (Conventions). (4) A 500 on account deletion was the
->   **seed script's** `file_key = 't33/<uuid>'`, which `FileRef` refuses on load; repaired by id, the
->   deletion answered 204 (Conventions).
->
-> - **`identity-host-prefixed-guest-cookie`** (**implemented 2026-10-08, verified, merged as PR #22
->   `998c4b4`, released 2026-10-09**; it satisfies 3.2's AC-44) — the guest cookie is
->   **`__Host-tc_guest`**: `Secure` in every environment, `Path=/`, no `Domain` (**ADR-0010 (c)**,
->   discharging (b)'s session-fixation finding). A **hard cut**: `tc_guest` is never read again,
->   because a dual-read window keeps honouring a planted cookie and migrate-on-read would promote
->   one into the protected name. A guest mid-session at release loses that ≤ 24 h workspace. One
->   constant and one attribute dict in `guest_session.py`; `clear_guest_cookie(response)` lost its
->   `settings`. Dev on plain-HTTP `:8080` works because browsers treat `localhost` as a secure
->   context (Chromium 145, probed and walked end to end; Firefox not exercised). **Every test client
->   is `https://testserver`**: httpx stores a `Secure` cookie over `http://` and never sends it
->   back, so reverting that switch turns **186** tests red. The RED tests spell the literal
->   `"__Host-tc_guest"`, since a test that imports `COOKIE_NAME` cannot fail on a rename.
->   `secure=False` mutated → 7 red. No migration, setting or `.env` change. **Carried (roadmap
->   OQ-16): `tc_refresh` has the same exposure** — a sibling host can plant a refresh cookie that
->   signs the victim into the attacker's account; its `Path=/api/auth` cannot take `__Host-`, so it
->   is its own slice, on OQ-12's trigger.
->
-> - **3.2 `export-pdf-layout-templates`** (PR #23, `a092053`, **verified 2026-10-08, released
->   2026-10-09**, deploy run 37855115482; AC-44 met — the `__Host-tc_guest` slice merged first, PR
->   #22) — a PDF export can be **Classic** (1.5's stylesheet, moved verbatim under a digest pin),
->   **Modern** or **Formal** (**ADR-0030**; ADR-0016 and ADR-0017 amended). `LayoutTemplate` is a
->   **closed `StrEnum`** in `domain/export`, recorded on `ExportJob`, **PDF only**: `request` refuses
->   a PDF without one (`LayoutTemplateRequired`) and a DOCX with one (`LayoutTemplateNotApplicable`,
->   422 `layout_template_not_applicable`), before `cls()`. The default is the use case's
->   (`DEFAULT_LAYOUT_TEMPLATE`), never a setting. The invariant is held **twice**: by the aggregate
->   and by **`ck_export_job_layout_template_only_for_pdf`**, a paired CHECK on the new nullable
->   `export_job.layout_template`. **"Is this the same request?" widened; "is this file out of date?"
->   did not**: `find_latest_for_key` keys on (run, document, format, **layout**, run version),
->   compared `IS NOT DISTINCT FROM` so DOCX is unchanged, while staleness stays `run_version` alone — a
->   layout switch stales nothing, an edit stales every layout. Caps count every layout. **The port
->   changed**: `DocumentRendererPort.render(…, layout_template)` and `find_latest_for_key(…,
->   layout_template)` take a required keyword; the port speaks `LayoutTemplate` and never CSS.
->   `infrastructure/export/layouts.py` holds three checked-in stylesheet constants and
->   `stylesheet_for` (no `@import`, `url()`, `@font-face` or interpolation — an AST test; system fonts
->   only — Formal embeds Liberation Serif); `render_pdf` takes the stylesheet as a keyword, and
->   `layout_template` joins the three render log lines. Migration **`b10d1c777b0a`** (down
->   `7e43a47327ec`; back-fills PDFs to `classic`; the **downgrade refuses** while a non-classic row
->   exists). React: a native radio-group `LayoutPicker` with committed WebP previews
->   (`make layout.previews`, a stylesheet-digest drift test), the choice lifted to `RunPage` and shared
->   by both tabs, **stored nowhere**: pre-selection is **derived** from the run's newest PDF job, else
->   Classic. Jobs are matched per layout; only a PDF body carries `layout_template`. **4385 backend
->   and 1196 frontend tests.** Measured (T27, production image): render p95 per layout × document
->   80–105 ms (budget 1 000 and ≤ 2 × Classic; worst ratio 1.07); a 20 000-character CV p95 759 / 771
->   / 807 ms (5 s); fixture PDFs 10–14 KB (200 KB); `POST` → `ready` p95 **178 ms** (10 s, dev
->   worker); main bundle **+0.88 kB gzip** (3). T28: production `export_job` held **3 rows, 2 PDF**,
->   so the back-fill and `ADD CONSTRAINT` take milliseconds; no package, container, queue, volume,
->   beat entry or setting. Found on the way: WeasyPrint's `::marker` crash, a CHECK that forced T11
->   and T12 into one commit (`37c7424`), two T8 cap tests that contradicted the step order
->   (`cc1bd0e`), five T24 tests that raced the loading state (`6cf4628`), Vite inlining the previews
->   (Conventions; Infrastructure footguns).
->
-> - **3.3 `workspace-rate-limit-retry-feedback`** (PR #25, `279a0b7`, **verified and released 2026-10-09**, deploy run 37951163281;
->   reviewer PASS round 1; its six MINORs fixed in a follow-up PR, below) — a refusal says **when** it ends, and "still working" says **how** (**ADR-0031**;
->   ADR-0014 amended). *Reads retry, writes hold*: after a 429 every re-clickable control (tailor,
->   *Try again*, export per document × format, both uploads, posting — *Paste instead* stays usable
->   on a fetch 429 — claim, login, register, reset, *Send it again*) is disabled until `Retry-After`
->   passes, says so (*"at 16:01"* beyond 90 s in the **browser's locale**, *"in N seconds"* at or
->   under), and re-enables with a `role="status"` and no focus move; **nothing that writes retries by
->   itself** except autosave (version-guarded). Tracking, autosave and account deletion get the
->   wording only. The run and export pollers show *"trying again (attempt n of 4)"* and *offline*,
->   read from TanStack's own `failureCount` / `fetchStatus` — no new retry code, no jitter. After a
->   run fails `llm_rate_limited`, *Try again* holds **60 s**: `retry_not_before` on the three run
->   shapes, computed at the boundary (`completed_at + PROVIDER_BUSY_COOLDOWN`, a `match` closed by
->   `assert_never`), advisory, never stored — **no migration, no setting**. An AST test pins that
->   every router 429 (nine) carries `Retry-After` + `rate_limited`. `client.ts` reads every refused
->   body through one tolerant `errorFrom()`, so nginx's HTML 502 is an `ApiError`, not "check your
->   connection". React: `features/retry/` (`hold.ts`, `useHold`/`useErrorHold`, `HoldNote`,
->   `ConnectionNote`). **4454 backend and 1325 frontend tests.** Measured (T24): AC-24's `git diff
->   main --stat` over `infrastructure/llm`, `domain`, `application`, `rate_limit.py`, `settings.py`
->   and `alembic` is **empty**; run-detail `GET` p95 within **0.08 ms** of `main` (n = 200 × 3,
->   interleaved); main bundle **+2.18 kB gzip** — over the planned 2 kB, **AC-26 amended to 2.5 kB by
->   the owner** and recorded as measured. T25 (`:8080`, Chromium; Firefox not exercised): every
->   scenario passed. **Found, carried to `/verify`:** after a 429 hold ends, the alert still reads
->   *"…at 16:01"* beside *"You can try again now."*; `up -d api` alone leaves dev nginx on the old IP
->   (502 until `restart nginx`, pre-existing). **The follow-up (`fix/retry-feedback-followups`)
->   fixed /verify's six MINORs:** `useHold`'s `phrase` is `null` whenever nothing is held, and every
->   429 copy's `null` branch names no wait (*"Too many attempts."*, never *"a few minutes"*);
->   `SaveIndicator` words the pause as of receipt (`untilMs − retryAfterSeconds`); `HoldNote` mounts
->   its `role="status"` empty with the hold and fills it at release (`announce={false}` joins
->   `ExportControl`'s region), `ConnectionNote`'s is always mounted; AC-3's scan sees a literal
->   `429` and `rate_limited` only under `code`; the claim test spells its sentence. **A live region
->   mounted together with its text may never be announced** — mount it empty, then change it. Four RED corrections landed in their own commits
->   (`148f4e1`, `a8b626f`, `ae4c970`, `60fba47`), all **timing or spec-superseded copy** — see
->   Conventions.
->
-> - **4.1 `identity-user-roles`** (PR #28, `26472b1`, **verified and released 2026-10-10**, deploy run 38074030810) — one role per
->   user, `user | admin`, and an `/api/admin` surface only an admin can see (**ADR-0032**; ADR-0008
->   amendment (i)). `Role` is a closed `StrEnum` on `User` (`register_with_password` sets `USER`, no
->   parameter; `change_role` records `UserRoleChanged`; `is_admin` is the **only** role check in the
->   codebase). Migration **`3d26e05edffe`**: `identity_user.role VARCHAR(16) NOT NULL DEFAULT 'user'`
->   (kept for good, for the deploy window) + `ck_identity_user_role_known`; the **downgrade refuses**
->   while an admin exists. **The role is never a claim**: `AuthorizeAdministrator` reads the row
->   (`users.get`, no lock) on every admin request, so a grant or revoke applies to the next request
->   and signs nobody out; the token still has five claims. `/api/admin` has a **router-level**
->   `require_admin` (bearer → 401, user gone → 401 `not_signed_in`, not admin → 404), pinned by a
->   structural walk with a positive control. **A non-admin's 404 is Starlette's**
->   (`starlette.exceptions.HTTPException(404)`, `{"detail":"Not Found"}`), byte-identical to an
->   unmatched path and compared against a live one — the **one** raise in the codebase that skips the
->   app envelope, on purpose. 4.1's only route: `GET /api/admin/access` → 204 `no-store`. Roles change
->   **only** by CLI (`grant-role` / `revoke-role`, `ChangeUserRole` under `FOR UPDATE`; Commands), no
->   HTTP writer, the last admin may be revoked. The foreign-database guard moved to
->   `infrastructure/persistence/database_guard.py`. React: `role` on `User`, an **Admin** link
->   between Board and Account iff `role === 'admin'` (a hint; the server's 204 is the authority),
->   and the codebase's **first code split**: `/admin` → `RequireAuth` → `AccountScope` →
->   `LazyBoundary` (a class; *Reload* on a failed chunk) → `Suspense` → `lazy(AdminPage)`; the
->   view is one union, **error first**, so a 404 beats a cached 204. The operator-access sentence
->   (`OPERATOR_ACCESS_NOTE`, Constitution §8) is on the guest workspace, the account promise and
->   `/account`. **4566 backend and 1360 frontend tests**, `make check` green twice. Measured: main
->   bundle **+1.24 kB gzip** (AC-35 **amended by the owner** 1.0 → 1.5 kB), admin chunk 0.81 kB;
->   `/api/admin/access` p95 **2.76–2.95 ms** on the production image (budget 30), `/me` within 1 ms
->   of `main`. AC-39 holds (`infrastructure/llm`, `domain/tailoring`, `application/tailoring`
->   unchanged). Five mutations recorded (Starlette → FastAPI 404: 1 red; router deps removed: 17;
->   `get_for_update` → `get`: 4; `is_admin` → `True`: 10; view order swapped: 1). **Found on the
->   way:** two harness defects in RED tests, each corrected in its own commit (`4c61a28`, `e58df70`;
->   Conventions); TanStack v5 refusing `undefined` data (the probe returns `true`); and **F-1, found
->   only by T26's manual pass**: the app's client turns `refetchOnWindowFocus` off, so a demoted
->   admin's open tab never asked again while a test on a bespoke client passed — fixed red-first
->   (`58b280a` → `bb6a4f1` → `21333e8`, the probe refetches `'always'` on focus). Firefox not
->   exercised. **`/verify` passed in one round** (0 CRITICAL, 0 MAJOR). T26's demotion was walked
->   again in Chromium: a focus 12 s after load, inside the 30 s `staleTime`, sent the probe again,
->   which answered 404, and the not-found view replaced the shell. The Admin link stays until the
->   next `/me` fetch, which R-26 allows. Three MINORs were tests that could not fail, hardened in
->   `1538047`, each proven by mutation: AC-13 had decoded one hand-minted token twice and now
->   decodes the tokens `/login` and `/refresh` issue to an admin; AC-23's scan now catches a Core
->   `.values(role=…)`; T3's refusal test, red only on `NotImplementedError`, was proven by moving
->   the guard. **Carried to 4.2:** the view puts every error ahead of a cached 204, so a transient
->   503 on focus replaces the admin page. Decide whether only a 404 outranks cached data.
->
-> - **4.2 `admin-users`** (PR #30, `16fbe47`, **verified 2026-10-11, reviewer PASS round 2, released the
->   same day**, deploy run 38161380305; round 1's MAJOR, the search term reaching Sentry, fixed in `9984003`) — a user directory at `/admin` and three actions on an account: disable,
->   enable, erase (**ADR-0033**; ADR-0008 amendment (j), ADR-0024 amendment (b); notes on ADR-0020,
->   0028, 0032). **Disabled is a timestamp**: `User.disabled_at` (`None` is active), `disable(at,
->   logins_revoked)` / `enable(at)` record `UserDisabled` / `UserEnabled`, and a repeat records
->   nothing. Migration **`669b75917559`** adds `identity_user.disabled_at TIMESTAMPTZ NULL`; its
->   **downgrade refuses** while any account is disabled, because dropping the column would silently
->   re-enable them. **`DisableAccount` takes the user row `FOR UPDATE`, then deletes every `Login`**,
->   in one transaction (the user lock first, ADR-0028's order). After that, **two refusals**:
->   `LogIn` answers 403 `account_disabled` only after a **correct** password (a fresh read while
->   its `FOR SHARE` re-check holds the row; a wrong password stays the byte-identical 401), and
->   **every bearer request** reads the bit after the signature check (`UserRepository.is_disabled`,
->   one Core primary-key read, `False` for a missing row) and answers 403 `account_disabled`. The
->   second exists because an access token is stateless for 15 minutes: deleting logins alone would
->   leave the open tab working, paid runs included (OQ-1 = B). Enable restores the right to log in
->   and no session; a password reset still works and does **not** re-enable. Admin actions lock only
->   the target and never re-check the actor's role (ADR-0032's window, OQ-6). The **directory** is a
->   read model behind `UserDirectoryQuery`: one Core statement, no `password_hash`, newest first,
->   **keyset on `(created_at, id)`**, and search as **`strpos(email, :term) > 0`**, never `LIKE`, so
->   `%`, `_` and `\` are literal and there is nothing to escape (`EmailSearch`: stripped,
->   lower-cased, 1–254 characters, no `Cc`). The base64url cursor codec is **shared** with history
->   (`routers/_keyset_cursor.py`; `_history_cursor.py` is two wrappers). Five routes under
->   `/api/admin/users`, behind 4.1's router-level `require_admin`, `no-store`: `GET` (list, `q`,
->   `cursor`, `limit` 1–50 = 20), `GET /{id}` (the account and `GetAccountOverview`'s counts: CVs,
->   runs, postings, exports, cards, active logins), `POST /{id}/disable`, `POST /{id}/enable`,
->   `DELETE /{id}` (`EraseAccount`, unchanged, 200 with its report). A missing target is 404
->   `user_not_found` by a local translation, never the global map's 401. Self-disable and
->   self-erase are allowed; if the last admin disables itself, recovery is `grant-role` on another
->   account. React: `/admin` (list, search, *Load more*) and `/admin/users/:userId` (overview,
->   actions, confirm dialogs, not optimistic). The **descendant routes live in the lazy chunk** via
->   **`useRoutes`**, because `<Routes>` JSX pulled `createRoutesFromChildren` into the main chunk
->   (+0.69 kB gzip, over the 0.5 kB budget). A 403 `account_disabled` signs the tab out **without a
->   refresh** (reason `account_disabled`, broadcast) and lands on `/` with *Your account has been
->   disabled, so you were signed out.*; `/login` says *This account has been disabled.* 4.1's carry
->   is settled (OQ-5): **only a 404 outranks a cached 204**, so a transient 503 keeps the admin page.
->   **4777 backend and 1409 frontend tests** after the access-log fix (`make check` twice at
->   `5443e52`: 4773 / 1409). Measured: main bundle **+0.20 kB gzip** (budget 0.5), admin chunk
->   **4.04 kB** (8). On the production image, 10 000 seeded users, n = 200, p95: list page 1
->   **10.3 ms**, page 20 **10.6**, search `e` (every row) **11.7**, `z` **7.5**, overview of a
->   full user **8.7** (budgets 100); disable with 50 logins **9.8** (150); erase of a full user
->   (1 005 files) **415 ms** (2 000, n = 20). The bearer check costs `/me` **+0.51 ms p95** and
->   `/board` **+0.69** (budget +2). The list seq-scans (no index, as OQ-9 planned): ~3 ms at 10 000
->   rows. **Eight mutations recorded:** the bearer check off (4 red); `is_disabled` before the
->   re-check (1); the login `DELETE` before the user lock (4, and 2 races deadlock); `strpos` →
->   `LIKE` (2); the target's 404 through the global map (4); login's `AccountDisabled` branch
->   removed (3); the client refreshing on `account_disabled` (1); `AdminPage` error-first (1). AC-44
->   holds: `git diff main --stat` over `infrastructure/llm`, `domain/tailoring` and
->   `application/tailoring` is empty. **Owner amendments:** AC-24, a disabled login's refusal ends
->   its unit of work with an **empty commit**, as the route's other refusals do; AC-29, "existing
->   tests pass unedited" now allows **listed harness-only fixes**, and the one listed is `b1cc08f`
->   (Conventions). Two RED corrections landed in their own commits (`ab88358`, `618af74`;
->   Conventions). **T26's manual pass (Chromium 145, `:8080`, two contexts, Mailpit, 360 px)**
->   walked every step as AC-43 states, and **its log grep found what no test did**: the search term
->   rode `GET /api/admin/users?q=…` into the **nginx and uvicorn access logs** (2 hits). The owner
->   chose to strip query strings from access logs on **every** route: a `logging.Filter` on
->   `uvicorn.access` (`abef0a2`, mutation-proven) and a `noquery` `log_format` in both nginx configs
->   (`f77b1d6`); a marker re-check read 0 hits in either. **Not checked: Traefik's access log** (the
->   other stack on the box). **Firefox not exercised.**
->
-> - **4.3 `admin-content`** (PR #32, `5e9bce2`, **verified and released 2026-10-12**, deploy run
->   38297123697; `/verify` PASS round 1, then MINORs 1/3/4 fixed red-first: `1e92e97`/`44c76ca` RED,
->   `6332bce`/`f6f47f4` GREEN, PASS round 2. `_Access` is a context manager writing one line per
->   request, `refused` on a `SQLAlchemyError` — **not** on any other exception, an accepted gap;
->   global 422/503 on `/api/admin` carry no `no-store`, also accepted) — an admin
->   lists, reads, downloads and deletes a user's saved CVs, postings, runs/history and exports
->   (**ADR-0034**; ADR-0008 amendment (k)). **No new use case**: the admin passes
->   `UserOwner(<path user_id>)` to the **unchanged** `/api/me/` use cases, so "may this admin see
->   it?" is `require_admin` and "is it this user's?" is the use case's own equality. There is no
->   `AdminOwner`. **AC-1 holds**: `git diff main --stat` over `domain/`, `application/`, `alembic/`
->   and the LLM paths is empty — no migration, setting, queue or container. Eleven routes under
->   `/api/admin/users/{user_id}/…` (`routers/admin_content.py`), a **router-level** `require_admin`,
->   `no-store` on every answer and refusal (`_admin_responses.refusal`, lifted from 4.2), and a
->   **local** 404 `user_not_found` for a missing target, never the global map's 401 (which would
->   sign the admin out). The shared `_tailoring_handlers` / `_export_handlers` bodies gained a
->   `translate=` keyword so the admin twin words a refusal its own way; history and saved-CV wire
->   mappers were lifted out of the `/api/me/` routers (behaviour-neutral, every test unedited).
->   `AdminSavedBaseCvResponse` is the saved shape **plus `extracted_text`**; the user's schemas are
->   pinned unchanged (AC-24). **One `admin.content_access` line per request** (`actor_id`,
->   `target_user_id`, `kind`, `action`, `item_id`, `outcome`): ids and closed words only. The two
->   deletes (`DeleteSavedBaseCv`, `EraseHistoryEntry`) answer **200 with their report**, where the
->   user's twins answer 204. React: three sections on `/admin/users/:id` (saved CVs, history with
->   *Load more*, the 20 most recent postings) plus CV, run and posting pages, all in the **lazy
->   admin chunk**; every body is a **text node** in a `pre-wrap` block, never
->   `dangerouslySetInnerHTML`, and a posting's source URL is text, never a link. **4892 backend
->   and 1484 frontend tests** at T17 (`make check` twice). Measured: main bundle **+0.06 kB gzip**
->   (budget 0.3), admin chunk **7.91 kB** (10). T16 on production images, one user at every cap,
->   n = 200 interleaved, admin p95: CV list **13.9 ms**, one CV (250 KB body) **12.1**, postings
->   list **44.0**, one posting **9.3**, history p1 **9.2** / p20 **9.3**, one run **10.9**, inline
->   md **11.3**, export list **12.3**, a 200 KB export **12.6**; deletes (n = 20) CV **15.2**, an
->   entry with 20 files **23.9** — every budget holds, admin-vs-user Δ at most **+2.3 ms** (limit
->   +5). **Mutations:** (2) `UserOwner(actor.id)` 48 red; (3) `UserNotFound` through the global map
->   12; (4) `no-store` off `refusal()` 27; (5) one access line removed 1; (6) `BodyText` via
->   `dangerouslySetInnerHTML` +4; (7) content keys outside `adminUserKey` 7; (8) a fresh,
->   non-committing `DeleteSavedBaseCv` 2. **(1), dropping the router-level `require_admin`, is an
->   equivalent mutant**: every handler also takes `actor: AdminDep`, so the graph walk stays green.
->   AC-30(a) now also pins `router.dependencies` (1 red). **4.2's `admin_users.py` has the same
->   shape** and the same blind spot. **Found by T14, a 4.2 defect:** the erase removed the
->   account's detail key with `exact: true`, so every content body under it (CV text, posting
->   text, documents) stayed cached for `gcTime`. Held as `it.fails`, fixed in `301c75a` (removal
->   by prefix). **T18's manual pass** (`:8080`, Chromium, two contexts, one real-Gemini run, markers
->   in every body and name field): every read and download agreed with the user's own; both deletes
->   agreed with the user's tab; 360 px held; a plain user saw the not-found view; 6 272 log lines,
->   **0 marker or email hits**. Limits: the 409 was staged on a **queued** run (worker stopped), not
->   a running one; a fetched posting's title carries no marker; **Firefox not exercised**. **Owner
->   amendments, 2026-10-12:** AC-26, each section has its own loading sentence (*Loading saved
->   CVs…*, …), because *Loading…* collided with the page's own; AC-29, the one listed harness edit
->   to an existing test is `ce358e4` (4.2's `UserPage` fake serves the three lists).
->
-> - **4.4 `admin-guests-and-storage`** (**verified 2026-10-15, reviewer PASS round 1;
->   merged as PR #34 `97a213e` and released the same day**, deploy run 38704657392; T31's purge
->   rehearsal ran from the browser, `overdue` 2 → 0, `last_outcome: ok`; `GUEST_PURGE_ENABLED`
->   still `false` in production) — an admin sees **live guest sessions** and their data, erases one
->   before its 24 hours are up, and runs the purge and the orphan sweep **from `/admin/storage`**
->   instead of over SSH (**ADR-0035**; ADR-0008 amendment (l), ADR-0018 amendment (c); notes on
->   ADR-0006, 0019, 0024, 0034). **Fourteen routes** behind a router-level `require_admin`,
->   `no-store` on every answer and refusal: nine under `/api/admin/guest-sessions` (list, overview
->   with the guest's three lists, erase, and the guest twins of 4.3's six reads) in
->   `routers/admin_guests.py`; five in `routers/admin_retention.py` (`GET /api/admin/storage`,
->   `GET`/`POST /api/admin/guest-purge`, `GET`/`POST /api/admin/orphan-sweep` — a `GET` is the
->   preview and writes nothing anywhere: no lock, no heartbeat, no row, no file). **A guest is
->   reached by path, like a user in 4.3**: the admin passes `GuestOwner(<path session_id>)` to the
->   guest's **unchanged** use cases; the admin browser's own `__Host-tc_guest` is never read and no
->   session is ever minted (the transfer-route set is unchanged). A gone or expired session is a
->   **local** 404 `guest_session_not_found` on every guest route, never the global map's 401 (which
->   would trip the admin's refresh-on-401). **Erasing one session is the purge's own step**:
->   `PurgeExpiredGuestSessions`' per-candidate body was lifted into `purge_one(data, files,
->   candidate)` (T2, behaviour-neutral, every retention test unedited), and `EraseGuestSession`
->   calls it on one named session — rows committed, then files; a `DELETE` that removed nothing (a
->   claim got there first) is 404 with **nothing unlinked**; 200 `{files_unlinked,
->   unlink_failures}`. **An entry point owns its refusal codes**: a held `RedisPurgeLock` is the
->   CLI's exit 3, beat's quiet skip, and here **409 `purge_in_progress`**, nothing deleted, the
->   other holder's lock untouched; Redis unreachable still **fails open** (the run proceeds, 200
->   with `lock: "unavailable"`); a mid-batch raise is 503 `purge_failed` with no heartbeat. The sweep
->   still **fails closed** (cross-check down → 503 `orphan_check_unavailable`, not one file
->   unlinked) and takes no lock. Runs write the CLI's `retention.*` lines byte-identical (the purge's
->   failure loops lifted to `log_events.log_purge_failures`). **Storage is measured without reading a
->   file**: the sweep's existing walk (now with `ScannedFile.size_bytes` from its `lstat`) plus
->   **one** `owners_of` statement over the keys (`UNION ALL` over stored `file_key`s, chunks of
->   1 000), five buckets — guest, user, unreferenced, partial, unrecognized — counts and bytes only,
->   no name or key in the body. The **directory** is a read model behind
->   `GuestSessionDirectoryQuery`: one Core statement, never `token_hash` (statement-captured, AC-28),
->   live only, correlated counts, keyset on `(expires_at, id)` over the existing index. Two log
->   lines: guest reads write 4.3's `admin.content_access` with `target_guest_session_id` (`_Access`
->   lifted to `routers/_admin_access.py`); storage, purge, sweep and erase write
->   `admin.retention_action`. **No migration, setting, queue, container or beat change**; **AC-1
->   holds** (`git diff main --stat` over the listed domain/application/alembic/LLM paths: empty).
->   React, all in the lazy admin chunk: an admin nav (*Users* · *Guests* · *Storage*),
->   `/admin/guests` (*Load more*), `/admin/guests/:sessionId` (overview, three lists, *Delete guest
->   session*, not optimistic), 4.3's three read pages reused through a **subject** seam
->   (`AdminSubject = user | guest`, `subjectPath`, user keys byte-identical; no delete buttons for a
->   guest), and `/admin/storage` (storage table, purge and sweep panels with preview → confirm →
->   report, job health from `/health/ready`). **5100 backend and 1564 frontend tests** (`make
->   check` twice at T27, 5100 / 1561, plus T28's three). Measured: main bundle **+0.01 kB gzip**
->   (budget 0.3), admin chunk **12.33 kB** (14). T25 on production images, n = 200 interleaved, p95:
->   directory p1 over 10 001 live sessions **7.6 ms**, page 50 **7.9** (100); a capped session's
->   overview **28.9**, with heavy bodies **56.5** (150); guest reads vs. the guest's own routes at
->   most **+2.9 ms** (limit +5); erase of a capped session, 45 files **23.6** (300, n = 20); over
->   10 000 files storage **486.7** (1 500), sweep preview **427.5** (3 000); purge preview **141.5**
->   (300); a purge run of 100 capped sessions / 4 500 files **1 766 ms** (10 000); a sweep run
->   reclaiming 1 000 orphans **968 ms** (5 000). T26: `/health/live` turnaround p95 **1.82 ms**
->   during storage and a sweep preview over 10 000 files; walk inlined **379.87 ms**. **Fifteen
->   mutations recorded:** (1) `require_admin` off the router **and** `AdminDep` → any user 2 red;
->   (2) `GuestOwner` from a fixed id 15; (3) gone session through the global map 5; (4) unlink after
->   a skipped `DELETE` 1 at T9, 3 with T17's races; (5) unlink before `DELETE` 6; (6) held lock
->   ignored 1; (7) preview takes the lock and writes the heartbeat 1; (8) `OrphanScanAborted`
->   swallowed 1; (9) `owners_of` → "referenced ⇒ user" 1; (10) `token_hash` selected 1; (11) walk
->   inline (above); (12) `no-store` off `refusal()` 36; (13) one access line removed 2; (14) guest
->   key removed `exact: true` 0 at T22, 1 at T23; (15) guest `canDelete` 1 (CV page) at T22, the run
->   page's 1 at `055857f`, whose assertion had run before the posting query settled. **T28's
->   manual pass** (`:8080`, Chromium, two contexts, one real-Gemini run, a PDF, markers everywhere):
->   every guest read and download sha256-identical to the guest's own; erase → the guest tab's
->   *Your session has expired*; storage before/after; an orphan swept; a lock held by hand → 409
->   copy, never success; 360 px held; 7 367 log lines, **0 marker hits**. **It found two defects no
->   test did:** (a) the purge preview said *Would delete 0 session(s)*: `PurgePanel` read
->   `sessions_deleted`, which a dry run always reports 0 (AC-16; the count is `examined`), and the
->   test fake had `sessions_deleted: 3`, contradicting AC-16, so the suite was green — fake fixed
->   red-first (`cf65a91`), then the panel (`d3ea89b`); (b) every run's result appeared **~2.2 s after
->   a 32 ms response**, because `onSettled` returned its invalidations, so the mutation stayed
->   pending until `/health/ready` (2 s, 1.6's `probe_celery`) refetched — now fired, not awaited
->   (`4c7df0b`), guarded by `885fa1c` (reverting: 2 red). **`/verify`'s MINOR 1:** T2's lift had put an
->   untranslated `files.delete` raise inside the batch's per-session catch. That raise is reachable:
->   `_resolve_contained`'s `RuntimeError` fires on a symlinked shard. The catch recorded a deleted
->   session as failed and skipped its remaining files. The `try` now wraps only `delete_session`, so the
->   raise escapes the run as it did before (`49e2aef` RED → `5cfd637`). **A broad catch justified by
->   one `await` records the wrong fact once it covers two.** **Firefox not exercised.**
->
-> **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
-> four were the same *kind* of gap: something the spec promised that no test asserted.**
-> - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,
->   including `GUEST_PURGE_ENABLED` — the single control keeping the first `DELETE` off a schedule
->   before the rehearsal. Nothing proved the flag worked.
-> - **AC-38's privacy test did not exist**, and had never been given a task. The spec's own Privacy
->   section said the "never logged" list was *"asserted by AC-38's planted-marker test, not by
->   intention"*. That sentence was false for the whole slice. It is true now: markers planted in
->   every PII field, plus the real storage keys and joined paths, over a real purge **and** a real
->   orphan sweep on a real filesystem.
-> - **R-3 and R-4 named two log events that existed nowhere in `api/src/`**, and the handler was a
->   bare `except Exception:` that never bound the exception — so `error_type` was unrecoverable *in
->   principle*. The consequence is this slice's own thesis one level down: `_purge_batches` breaks on
->   `sessions_deleted == 0`, so a permanently-refused `DELETE` is retried hourly **for ever**, the run
->   still **exits 0**, `overdue` sits above zero, and nothing names the session or the reason.
->   Fixed by **returning** the failures (`PurgeReport` grew two tuples, **AC-4 amended**) rather than
->   logging from `application/` — which keeps the layer silent *and* keeps every emitted record inside
->   AC-38's field of view.
-> - **The symlink seam**, below.
->
-> **The `.part`/symlink pattern appeared three times in one slice, all in the file store, all
-> invisible to a recording fake** — *the thing named is not always the thing acted on*: (1) a
-> partial that survived while the live file beside it died (below); (2) a symlink whose **target**
-> the orphan sweep destroyed — the scanner never follows links, `_resolve_contained` called
-> `.resolve()`, which does, and the sweep is the first caller that deletes by a name it *discovered on
-> disk*; (3) `_put_sync` opening `<key>.part` with a plain `open()`, writing through a link that
-> `os.replace` then installed at the real key. **The uniform fix is stated once in the file store's
-> module docstring**: `O_NOFOLLOW` through one `_nofollow_opener` on `put`/`get`, work on the
-> descriptor (`fchmod`, not `chmod`); `unlink` for deletes; `_resolve_contained` resolves the parent
-> and never the basename — a check-then-use, so the outer lock and never the only one.
->
-> **What 1.6 found that no passing test could:**
-> - **A test that samples an in-process route cannot see a blocked event loop** — found at T47, by
->   mutation-testing AC-42's brand-new loop-liveness test against the regression it was written for.
->   It passed. `/health/live` does no I/O and the test client is an `httpx.ASGITransport`, so the
->   request resolves through nested `await`s that **never reach a real suspension point**: the loop
->   cannot switch to a blocking worker in the middle of one, and a request that starts while the loop
->   is free finishes while the loop is free, at full speed. **Timing the request measures the one
->   window in which the loop is by construction not blocked.** Time the *turnaround* instead —
->   `sleep(pace) + GET`, minus the pace — and the same mutation goes from a sub-millisecond p50 to
->   **1264 ms**. The mutated run had been taking 27 s instead of 3 s the whole time; wall-clock knew,
->   the assertion did not. **AC-10's test had the identical defect and had never been able to fail
->   either**; AC-11's copy is unproven in both directions. A second corollary, because it decides the
->   sample floor: **blocking suppresses sampling**, so a blocked loop under-represents itself in the
->   set being summarised and a p50 is only sensitive when the blocked fraction is over half.
-> - **A `.part` file was never deleted, and a live file beside it was.** `FileRef`'s grammar ends
->   `\.(pdf|docx|txt)$`, so a partial *cannot be a `FileRef`* and travels as base-ref-plus-flag —
->   and the sweep called plain `delete(ref)` for both, which unlinks the **final** key with
->   `missing_ok=True`. So the `.part` survived and was reported `reclaimed`; and where a live file
->   sat at that key it was **deleted**, with the reference cross-check structurally unable to save it
->   because partials are excluded from it by design. Reachable: `put` #1 succeeds, the task is
->   redelivered, `put` #2 dies before `os.replace`. **`FileStorePort.delete_partial` is the fix — a
->   second method, not a boolean**, because a flag threaded from a variable is the shape that caused
->   it. Found only because a test was rewritten to drive a **real filesystem** instead of a recording
->   fake: R-36's existing test passed throughout, because a fake has no filesystem and cannot model
->   the difference between `K` and `K.part`.
-> - **`NotImplementedError` subclasses `RuntimeError`**, so a red-first test asserting "an unexpected
->   exception propagates" with `pytest.raises(RuntimeError)` passes **vacuously** against a skeleton.
-> - **A `SET` on a pooled connection does not survive a commit** — and it hung CI for twenty minutes.
->   `SET lock_timeout` was issued once, then a purge that **commits per session** ran; `QueuePool`
->   hands back a different physical connection after each transaction, so the timeout was never in
->   force and a deliberately-locked row waited unbounded. Pin one connection and bind the
->   sessionmaker to *it*, and **commit the `SET`** — a bare `SET` is itself transactional.
->   **A test that hangs is worse than one that fails**: CI sits on it until timeout and the failure
->   names nothing.
-> - **`/health/ready` costs ~2.1 s against its own 300 ms budget, and has since Phase 0.**
->   `probe_celery` is **2128 ms** of it; the new retention probe is **1.8 ms**.
->   `control.ping(timeout=2.0)` is a broadcast with **no reply limit**, so it waits the whole window
->   however fast the worker answers — `ping(timeout=2.0, limit=1)` returns the same reply in
->   **4.0 ms**. Not changed in this slice: it would stop `detail` reporting the worker count, which
->   is a trade for the owner to make. Owner: `devops`; trigger: before anything relies on this
->   endpoint's timing.
-> > - **The dev uploads volume held 753 orphaned files out of 827** — residue from 1.1–1.5. The
->   arithmetic reconciled exactly in both directions, which is what made it residue rather than a
->   cross-check that was failing to match. **Cleared in the 2026-09-22 rehearsal**: the purge took
->   the 74 referenced keys, the sweep reclaimed the remaining 753 with 0 failures, and the volume is
->   now empty. `overdue` is 0 and the dev database holds no guest data.
-> - **`tailorcraft_test` carried a committed, already-expired session**, so `count_expired` returned
->   1 on an "empty" database. Scope assertions to ids the test created; an absolute count is one
->   stray row from lying.
->
-> **Carried out of 1.6, each with an owner and a trigger:**
-> - **The schedule is ON as of 2026-09-22 16:04 UTC.** The rehearsal ran in order first — both
->   backup halves, dry run (11 sessions / 74 keys), `limit=5` verified at exactly −5 with a
->   row-and-file spot-check, full purge to `overdue` 0, orphan sweep 753/0, volume empty. **Beat's own tick fired
->   at 17:04:53**, exactly 3600 s after beat started, and the worker ran it in 35 ms (`examined=0`,
->   `last_outcome: ok`, `stale: false`): **a run that deletes nothing is still visible**, which is the
->   heartbeat's whole job and the reason the backlog — not the log line — is the signal to trust.
->   **`docker compose restart` does not pick up an `.env` change** — `env_file:` is read at container
->   *create*. Use `up -d api worker beat`, and note `api` belongs in that list: it serves `scheduled`
->   on `/health/ready`, so a beat-only change leaves the UI saying "off" while the job runs.
->   **`limit=50` in the runbook was wrong for a backlog of 11** and now reads "smaller than the
->   backlog you just read": a bite bigger than the backlog silently skips the safeguard.
-> - **AC-17's uploads/exports split was dropped**, amended on purpose: a `FileRef` is an opaque key
->   with **one grammar shared by both kinds**, the extension lies (`.pdf` is both), and widening
->   `ExpiringGuestSession` would contradict AC-4, whose third field's *type is the privacy control*.
-> - **R-38's "counted `failed`" is unreachable** through the port as designed, and the port was
->   deliberately not widened: `failed` means "we tried to reclaim this and could not", and folding
->   "we could not even look here" into it would make one number mean two things.
->
-> **Every gate was verified by running it**: Ruff, mypy `--strict`, import-linter (3 contracts, now
-> with `weasyprint`, `nh3`, `markdown_it` and `docx` on both forbidden lists), pytest, `tsc -b`,
-> ESLint, Prettier, Vitest, `vite build`. `make eval` measures prompt quality against the real API.
-> It is not a test, and it costs money.
->
-> **What 1.5 found that no unit test could:**
-> - **A plain-function `url_fetcher` aborts the whole render in WeasyPrint 70.** The library reads
->   `url_fetcher._fail_on_errors` *inside its own `except`* to choose between a per-resource failure
->   and a fatal one; a function has no such attribute, so our refusal came back out as an
->   `AttributeError` and the `except Exception` floor would have recorded `render_error` saying
->   nothing. Every fetcher now passes through a wrapper carrying that attribute.
-> - **`weasyprint.urls.FatalURLFetchingError` subclasses `BaseException`, not `Exception`** — a hole
->   in every floor, found by walking the installed package rather than reading a changelog. Caught by
->   name; the floor stays `Exception`, so `CancelledError` still cancels.
-> - **`sanitize_html(render_html(...))` deletes the document shell and keeps the title's text**,
->   putting a stray "Tailored CV" line above the name in every PDF. `html`/`head`/`title`/`body` are
->   not on the allow-list, correctly. Sanitize the fragment, **then** wrap.
-> - **`beat` crash-loops on the production image.** `/var/lib/tailorcraft/state` did not exist in the
->   image, so Docker created the volume's mount point **root-owned**, and `beat` runs unprivileged in
->   production but not in dev. Invisible in development by construction.
-> - **markdown-it does not hand back a link without an `href`** — a refused scheme fails the whole
->   rule and leaves the literal `[text](javascript:…)` as one text token.
->
-> **What 1.5's `/verify` found on top of that, in code 1293 green tests were happy with** (the full
-> stories are in `FORboehpyk.md`):
-> - **The refused-link helper deleted the author's own characters** (`range [100k](150k)` → `range
->   100k`): one predicate asked two questions. `_is_refused_url` is the second one ("was this ever a
->   URL?"), and a one-character scheme is a drive letter (`len(scheme) > 1`). **Put a heuristic's
->   error on the side that shows too much** — under-stripping shows inert text at zero security cost.
-> - **An error state whose only affordance reproduced the error** — the click's meaning now comes
->   from the view, not a second derivation from the row.
-> - **Five failure-contract rows reached nobody** (`requestExport.isError` read nowhere); three
->   commit no row, so silence invited the very retry the 429 exists to stop.
-> - **A test that could no longer fail** — an emitter's promise is "for any stream", so its fixture
->   needs a stream the pipeline would never produce (a raw `h4`).
->
-> **Carried out of 1.5, each with an owner and a trigger:**
-> - **Startup refusals never exiting under `uvicorn --workers N`** — **closed in 2.1** (T46): the
->   production `CMD` pre-flights `check-settings`; see the footgun below.
-> - **AC-37 forces an a11y regression** (the ticking count cannot hide in an `aria-hidden` span), and
->   **AC-42's 401 copy ships without its link home** — the latter still blocked, because the view's
->   union was **re-pinned** by `toEqual` in the same commit that widened it. Both recorded in the spec.
-> - **X-46's stale-download log line is unbuilt** — deliberately. The reviewer's recommendation is to
->   strike the row's "Logged" cell instead: `current` is already reported on every one-second poll, so
->   a log line would be a *derived copy* that can disagree with the resource. If the operational
->   question is ever genuinely wanted, a domain event is the vehicle, not a widened use-case return.
-> - **`test_document_renderer.py` writes a float into an `int` settings field** via `model_copy`,
->   which does not validate. The timeout branch is proved against a value the type forbids. A settings
->   field a test must lie about is a hint the field wants to be a float.
-> - **A timing test's precondition can scale inversely with machine speed — AC-11's did, and it went
->   red in CI.** The loop-liveness test asserts a **p50** of `/health/live` latency while 20 CPU-bound
->   renders run, behind a floor of "at least 20 samples". The flake was **bidirectional**: a loaded
->   host drifts p50 past its bound, and a *fast* host finishes the fixed 240-render batch inside 16
->   sampler ticks and trips the floor instead. GitHub's runner hit the second — with sampled latencies
->   of **0.5 ms**, i.e. the property under test holding comfortably while its scaffolding failed.
->   The floor was right; **coupling it to how long the work happened to take was not**. The renders now
->   run until the sampler signals it has its 20 samples, so the batch duration is an *output* rather
->   than an assumption, and the count is a self-check on an invariant instead of a race.
->   **`tests/integration/adapters/test_posting_fetcher_event_loop.py` has the identical latent shape**
->   — the same `len(latencies) >= 20` floor, coupled to a four-fetch batch. It has not flaked, probably
->   because network I/O plus `trafilatura` is slow enough; fix it the same way if it ever does.
-> - **Dropping `asyncio.to_thread` from the renderer does not slow the loop — it hangs the process,
->   uninterruptibly.** Measured while mutation-testing the above. A coroutine wrapping a synchronous
->   call has **no internal suspension point**, so there is no `await` boundary for a `CancelledError`
->   to land on: `asyncio.wait_for` cannot preempt it, the timeout never fires, and one core sits at
->   99.9% until the process is killed from outside the container. This is worth knowing twice over.
->   It is a *stronger* proof that the loop was blocked than an elevated p50 would be — and it means a
->   `wait_for` hang-guard around such a batch protects only against a **partial** regression (one that
->   still yields occasionally), never against the total case. Closing that properly needs an OS-thread
->   watchdog with a hard `os._exit`; judged disproportionate, and recorded rather than assumed away.
-> - **`markdown_it` is an unsilenced vendor logger sitting on the raw CV.** Measured: it does not leak
->   today (counts, not text). Same "clean today" argument as the `httpcore` note.
-> - **The production image has no `pytest`**, so AC-50's in-image render check needs a per-invocation
->   install. A `test` build target on `production` is the call; nobody has made it.
-> - **Still open from 1.4:** very long CVs can exceed the per-attempt LLM timeout; beat is invisible
->   to `/health/ready`; the editor is not lazy-loaded (530 kB of TipTap on a page where nobody edits).
->
-> **CI on GitHub is verified** — `api` and `web` both pass on `main`, and the deploy's **build** job
-> pushes images to GHCR.
->
-> **The first release ran on 2026-09-22 (PR #10, `b3acdc1`, deploy run 35788932871) and
-> `cv.samolit.com` is live.** Every migration ran from empty to head, the pre-deploy dump and the
-> three-queue check passed under `set -euo pipefail`, and the smoke check read `ready: true` with one
-> worker. The purge is deployed but **off** in production (`scheduled: false`) until it has been
-> rehearsed on the box. **PR #9's deploy failed at the config sync, harmlessly**: it was branched
-> before the deploy wiring, so it ran the *old* workflow against the old target path and never
-> reached the release step. That is the "a run uses the workflow file from its own commit" rule
-> below, met in practice. The VDS serves
-> **`cv.samolit.com`** through the Traefik already running there (the
-> external `traefik` network, entrypoint `websecure`, resolver `le`). The stack lives in
-> **`/home/boehpyk/www/tailor-cv`** and deploys as **`boehpyk`** (bash, `docker` group), with a
-> dedicated key used for nothing else. The root `.env` was made by hand on the box: mode 600,
-> generated hex passwords, `APP_ENV=production`, **`GUEST_PURGE_ENABLED=false`** until the purge has
-> been rehearsed *there*. Checked over SSH rather than taken on trust.
-> The four deploy secrets — `SSH_HOST`, `SSH_USER`, `SSH_DEPLOY_KEY`, `GHCR_TOKEN` (a classic PAT,
-> `read:packages` only) — are **`production` environment secrets, not repository secrets**, so
-> GitHub releases them only to a job that has already passed the required reviewer. The environment
-> carries **two protection rules**, `required_reviewers` (the owner) and `branch_policy` (protected
-> branches only), verified by reading the API. **From here on, every merge to `main` is a real
-> release waiting for an approval** — and a run uses the workflow file *from its own commit*, so an
-> older branch merged later deploys with the older script.
-> An earlier revision of this paragraph said the environment had zero protection rules; that was
-> true when written and **was repeated for a whole slice after it stopped being true.**
->
-> **The release script gained two steps the docs had promised and it never ran:** a `pg_dump` into
-> `backups/` (700/600, newest ten) *before* anything changes, with the datastores brought up first so
-> it works on an empty box; and a check that the worker consumes `celery`, `tailoring` **and**
-> `export`. That check is anchored on `* {'name': '<queue>'` because **the exchange is also named
-> `celery`** — an unanchored match reports the default queue present when it is gone, proved by
-> deleting its line from real `inspect active_queues` output. nginx also carries
-> `traefik.docker.network=traefik` itself, since the provider flag belongs to another stack's Traefik.
+## Status
 
-> The standing rule that produced the original warning still holds and is worth keeping: **a control
-> nobody has verified is a belief, not a control.** Check it with
-> `gh api repos/<owner>/<repo>/environments/production` before trusting either this file or the
-> deploy docs — including this sentence.
->
-> `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, the specs and the infra notes stay
-> local. **The repository is public**, so anything added to `docs/adr/` is published the moment it
-> lands.
->
-> The harness was ported from the muzbar.com project's SDLC and adapted to this stack. Four things
-> were changed deliberately rather than copied, each because of a documented failure there: the
-> Claude Code hooks are **wired now** instead of listed as a to-do; **Sentry is in Phase 0** instead
-> of deferred; `/health/ready` **probes Celery** and not only the datastores; and the deploy
-> **verifies the running image of every container**, not just the web one.
+Nineteen slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, and `__Host-tc_guest`. The latest is
+**4.4 `admin-guests-and-storage`** (PR #34, `97a213e`), released 2026-10-15. **Phase 4's two-week
+gate clock runs to 2026-10-29.** Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still
+unrecorded** (OQ-7). Each slice's record (ADRs, migrations, measurements, `/verify` rounds, carried
+items) is in **[HISTORY.md](./HISTORY.md)**, and the stories are in [FORboehpyk.md](./FORboehpyk.md).
+Read the relevant entry before you touch that slice's code.
+
+**Production:** `cv.samolit.com`, served by a single VDS through the Traefik already on the box
+(external `traefik` network, entrypoint `websecure`, resolver `le`). Stack in
+`/home/boehpyk/www/tailor-cv`, deployed as `boehpyk`. The root `.env` on the box is hand-made, mode
+600, `APP_ENV=production`, `TRUSTED_PROXY_HOPS=2`, and **`GUEST_PURGE_ENABLED=false`** (the purge is
+run from `/admin/storage`). Mail is Resend over SMTP. The deploy secrets are **`production`
+environment secrets** behind `required_reviewers` + `branch_policy`, so **every merge to `main` is a
+real release waiting for approval**. A run uses the workflow file **from its own commit**. A control
+nobody has verified is a belief: check with `gh api repos/<owner>/<repo>/environments/production`.
+
+**Open items worth knowing:** `tc_refresh` can be planted by a sibling host (OQ-16, its own slice).
+2.3's posting lock renders `FOR NO KEY UPDATE` where `FOR KEY SHARE` was meant
+(`tailoring_run.py`, left for the owner). `/health/ready` takes ~2.1 s because of
+`control.ping(timeout=2.0)` with no `limit`. Traefik's access log has not been checked for query
+strings. Firefox has never been exercised in a manual pass.
+
+**The repository is public.** `docs/adr/**` and `docs/constitution.md` are tracked; the PRD, specs,
+roadmap and infra notes stay local.
 
 ## Architecture — non-negotiable
 
@@ -1209,335 +275,107 @@ make hooks.install       # git config core.hooksPath scripts/git-hooks
 
 ## Conventions
 
-- **Python:** `from __future__ import annotations`; full type hints; `mypy --strict` clean; frozen
-  dataclasses with `slots=True` for value objects; `typing.Protocol` for ports; no `Any` without a
-  comment justifying it; no mutable default arguments; no dead code; no secrets in source.
-- **Domain purity:** zero third-party imports in `domain/`. Persistence and validation are
-  infrastructure concerns. Model the business, not the table and not the wire format.
-- **No base class for two aggregates that merely share a shape.** Shared shape is not shared
-  behaviour, and a base class guesses at rules that differ. Where a new type deliberately contradicts
-  an existing one, **comment why at the point of contradiction** — a reader who spots the
-  inconsistency should find the reason, not "fix" it.
-- **Config:** `os.environ` is read in exactly **one** place (the settings object). A config value that
-  can be read from anywhere will eventually be read from the domain layer.
-- **Validation:** untrusted input is validated at the infrastructure boundary before reaching the
-  domain. Three inputs are security-critical: the **uploaded file** (sniff the content, do not trust
-  the filename or the client's content-type; cap the size; store under a generated name), the **job
-  URL** (SSRF — scheme allow-list, no private ranges, re-check redirects), and the **LLM's own
-  output** (it is rendered into HTML and a PDF; sanitize it).
-- **React:** server state lives in TanStack Query and is never copied into `useState`. `useEffect` is
-  for synchronizing with something outside React — not fetching, not deriving. Every networked screen
-  renders loading, error and empty deliberately, and the error state distinguishes "still working"
-  from "this failed" (a user who cannot tell will refresh and pay for a second LLM call). No `any`,
-  no `!` to silence the compiler, no access token in `localStorage`, no business rule re-implemented
-  in TypeScript.
-  **Two TanStack timing traps from 2.1.** `gcTime: 0` garbage-collects an *unobserved*
-  `setQueryData` entry on the next macrotask, so an absence/presence assertion on one tests GC, not
-  your code — AC-44's logout-scoping test was measuring the collector, not logout. Its client now
-  uses `gcTime: Infinity` and asserts both halves (`['auth','me']` gone, the guest query kept). And `isPending` updates on the next notify, so a
-  same-tick double click reads `false` twice: guard a submit with
-  `queryClient.isMutating({ mutationKey }) > 0`, which `mutate()` updates synchronously.
-  **TanStack's default structural sharing matches array items by index (3.1, `54fae03`).** Data
-  that re-sorts (a moved card) gets every shifted item back as a new object, so `memo` on the item
-  component re-renders them all: 1000 `BoardCard` renders per move at 500 cards. Keep identity by
-  id with a `structuralSharing` function (`shareCardsById`), and give the memoized item stable,
-  id-taking callbacks and no inline object props.
-  **Reads retry, writes hold (3.3, ADR-0031).** A refused write is held until `Retry-After` and
-  never re-sent by itself; a read may retry, and the UI says so. A deadline from one response is
-  **component state derived during render** (`useErrorHold`: `(error, receivedAt)` adjusted when
-  the error changes, then `useHold` with one effect for the tick and an exact-deadline timeout) —
-  not a store, not the query cache, not a `useEffect` copying the error. A copy-only surface takes
-  `useErrorHold(error).phrase`, never `holdDeadline(error, Date.now())` at render, which moves the
-  deadline every render. Word clock times in the **browser's locale** (no forced `hourCycle`); tests
-  pin `'en-GB'`/`'UTC'` on the pure function and match `\d{1,2}:\d{2}(\s?[AP]M)?` in components.
-  **Fake timers vs TanStack (3.3).** Retry delays and notifies are `setTimeout`s: use
-  `vi.advanceTimersByTimeAsync` (the sync form hangs, it does not fail). TanStack notifies observers
-  through `setTimeout(0)`, which Vitest schedules **+1 ms** when created inside a tick, so flush
-  with `advance(1)`, not `advance(0)` (`60fba47`). A helper that advances the clock (80 ms per
-  `settle()`) makes "deadline − 1 ms" land after the deadline: advance to `deadline − Date.now() −
-  1` (`148f4e1`). `onlineManager` is a module global — `afterEach(() =>
-  onlineManager.setOnline(true))`. `userEvent.type` can hang under fake timers; use `fireEvent`.
-  **The app's client turns `refetchOnWindowFocus` off (4.1, F-1).** A test on a hand-built
-  `QueryClient` keeps TanStack's defaults and can pass where the app fails: AC-31's demotion test
-  did, and only the manual pass found it. Build test clients with `createAppQueryClient()`
-  (`web/src/queryClient.ts`) when the behaviour depends on a default. A query that must refetch on
-  focus says so itself, and `'always'` if the cache is within the 30 s `staleTime`. TanStack v5's
-  `focusManager` listens for `visibilitychange` on **`window`** — the event does not bubble, so a
-  dispatch on `document` refetches nothing (`e58df70`). And v5 refuses a query function resolving
-  `undefined`: a 204 probe returns a sentinel (`true`), or every success is an error.
-  **A lazy route's main-bundle half imports nothing from its chunk's modules (4.1).** One import of
-  `adminCopy.ts` from `AdminRoute` would have pulled the whole module into the main chunk; the
-  fallback strings live in `lazyCopy.ts`. Check with a grep of `dist/assets/index-*.js`.
-  **Descendant routes inside a lazy chunk use `useRoutes`, not `<Routes>` JSX (4.2).** react-router
-  lives in the main chunk, and `<Routes>` pulls `createRoutesFromChildren` in with it: +0.69 kB gzip
-  on the main chunk for three admin routes. Route objects through `useRoutes` cost +0.20 in all.
-  **`removeQueries({ queryKey, exact: true })` keeps the key's children (4.3, `301c75a`).** 4.2's
-  erase dropped the account's detail key exactly, and every content body nested under it stayed
-  cached for `gcTime`. To drop a subtree, drop by prefix.
-  **A test fake's 403 `account_disabled` signs the tab out (4.3, `e7f68c2`)**, by 4.2's design, and
-  unmounts the page. To fail one section, answer 503.
-  **Count a page's `<h1>` inside `main`:** App's shell renders `<h1>TailorCraft</h1>` too.
-  **A page-level `findByText(/^Loading/)` matches the lazy route's Suspense fallback first** (also a
-  `role="status"`), so it cannot fail. Wait until the item route has been called, then assert the
-  page's own loading line inside `main` (`e7f68c2`).
-  **A mutation's `onSettled` that returns invalidation promises keeps the mutation pending until
-  they refetch (4.4, `4c7df0b`).** The purge panel's result waited ~2.2 s behind a 32 ms response,
-  because one invalidation was `/health/ready` (2 s). Fire invalidations without returning them
-  unless the UI must wait for fresh data; `885fa1c` holds the refetch open and asserts the result
-  renders meanwhile.
-  **A credential is not server state:** the access token lives in one module store read through
-  `useSyncExternalStore` — never `useState`, the query cache, or browser storage (AC-35 greps for it).
-  **Navigate-then-sign-out races `RequireAuth` (2.2).** A data router commits navigation in a
-  transition, and `RouterProvider` from `react-router` **ignores `navigate(…, { flushSync: true })`**
-  (only `react-router/dom`'s honours it), so the synchronous sign-out re-rendered the still-mounted
-  guard and account deletion landed on `/login`. Fixed in the guard: anonymous with reason
-  `account_deleted` goes to `/` with the notice. And TanStack skips a mutate-level `onSuccess` on
-  an unmounted observer — so work that must survive the unmount runs **before** the sign-out.
-  **Whose workspace this is comes from the route's scope, never from "is someone signed in?"
-  (2.3).** Hooks take paths, credential and key root from `useScopeMap()` (`features/scope/`).
-  The default, with no provider, is the guest map, and a guest key is byte-for-byte what it was.
-  **A hand-built path bypasses the scope.** `DocumentTabs` and the editor's leave-guard hard-coded
-  `/runs/${id}/…`, so on a history run the Cover letter tab jumped to the guest route and a tab
-  switch counted as leaving. Build every link from `runLink(scope)` (fixed T32, mutation-pinned
-  T35).
-- **Tests are tiered red-first** (docs/sdlc.md §2). Domain, application, **every row of the failure
-  contract**, the HTTP contract and the React loading/error/empty/success states are written
-  **before** their implementation, against a skeleton of real signatures with `NotImplementedError`
-  bodies, and must be observed failing **on their assertion** — an `ImportError` red proves a file is
-  absent, not that the assertion discriminates, so it does not count. The failure is pasted into the
-  RED commit body (`Recorded red: …`), which commits with `TDD_RED=1` / `make check.static`; never
-  `--no-verify`, which would also drop the secret, PII and port guards. Mappings, repositories,
-  migrations, adapters, DI wiring and component markup stay **test-after** on purpose: their shape is
-  discovered against the library, so test-first there buys rewrite churn, not confidence. The
-  implementer writes the skeleton; `qa` never touches production code. **A test edited in the commit
-  that made it pass is the failure this whole cycle exists to prevent** — the reviewer looks for it in
-  the history, not the diff.
-- **Tests:** `domain` gets pure unit tests with no I/O at all — they should be the fastest and most
-  numerous in the suite, and if they are hard to write without a database, logic has leaked outward.
-  Application and API tests run against a **real** Postgres with transactional rollback, against
-  `tailorcraft_test` — **never** the dev DB. **No test calls the real Gemini API**; CI has no key.
-  Time comes from a fake `Clock`, never `datetime.now()`.
-  **The database transaction does not roll back Redis.** Rate limiters, the purge heartbeat and the
-  purge lock survive between tests and must be cleared in the fixture.
-  **`clear_redis` flushed the *dev* Redis until 2026-09-22 — the suite broke the running system's
-  purge status on every run, and nothing said so.** The `settings` fixture swapped `database_url` and
-  `upload_dir` and **not** `redis_url`, so `flushdb()` landed on the box's real Redis while the
-  fixture's docstring called it "the test Redis". Through the pre-commit hook that meant **every
-  commit wiped the purge heartbeat**, which with the schedule on reads as `stale: true` on a perfectly
-  healthy system — AC-33's rule working correctly on a premise the suite invented. It also dropped the
-  kombu bindings and the rate-limiter counters.
-  **Fixed: `Settings.test_redis_url`**, derived from `redis_url` with the database swapped to 3 so the
-  password is written down once, and — this is the actual fix — **a boot guard that refuses a test
-  Redis resolving to the same `(host, port, db)` as the cache, the broker or the result backend**.
-  Compared on identity rather than on the URL string, because `redis://redis:6379/0` and
-  `redis://:secret@redis:6379/0` are one database and a string comparison waves the dangerous case
-  through. A correct URL fixes today; the guard is what makes tomorrow's `/0`-instead-of-`/3` loud.
-  Not a narrower flush — that would reintroduce the leftover-lock hazard `clear_redis` exists for.
-  **The general lesson is the transferable part: test isolation is a property you check per
-  datastore.** Postgres was isolated, the filesystem was isolated, and Redis looked isolated because a
-  docstring said so. Proof it holds is a sentinel key and a live heartbeat surviving a full run, not a
-  green suite. The cheap proof you got it
-  right is to **run the suite twice in a row** — a second run that fails is the classic symptom. A
-  leftover *lock* is the dangerous one: the job then does nothing, logs "skipped", and exits 0, so a
-  test asserting a successful run passes against a run that never happened.
-  **Run exactly one suite at a time — the suite is not safe to run concurrently, and nothing in it
-  will tell you so.** `clear_redis` calls `flushdb()`, which is **global**: a second pytest process
-  (another terminal, an agent running gates, `pytest -n`) sharing this Redis will delete the first
-  run's rate-limiter counters *mid-test*. The limiters then **fail open**, so a third request that
-  should be `429` returns `201`/`202`, and the knock-on assertions fail with unrelated `409`s.
-  The signature is unmistakable once you know it and baffling until then: **a different set of
-  unrelated tests fails on each run, and every one of them passes in isolation.** That is shared-state
-  contention, never a defect in the code under test — it cost two separate sessions real time during
-  1.6's `/verify`. The same applies to `tailorcraft_test`. Judging suite health from a *subset* run is
-  the milder version of the same error: a subset leaves rate-limiter keys uncleared, and an
-  interrupted run can leave the schema downgraded.
-- **A performance or liveness assertion is a claim about a mechanism, and the only proof is a
-  mutation.** Both of this codebase's event-loop tests were green against the exact defect they
-  named (T47) — not because the code was fine, but because the *measurement* could not observe it.
-  Re-introduce the regression, watch the assertion go red, restore the source byte-exact, and write
-  both numbers into the test. An assertion that has never been observed failing is a docblock.
-  **Pick the statistic for the workload, too.** 2.1's AC-20 p50 stayed green across five runs with
-  argon2 inlined on the loop: login is mostly I/O, so the blocked fraction stays under ½ and a
-  median cannot see it. The owner amended AC-20 to the loop's **unavailable fraction**. Its first
-  formula, `Σt / wall`, is ≈ `t̄ / (pace + t̄)` — it measured *latency*, not blocking, and climbs on
-  any slower box. The shipped one is `Σ max(0, t − baseline) / Σ t` with a same-run no-load
-  baseline: invariant to a uniform slow-down (not to the pace, which is a module constant). Healthy
-  0.775–0.799, mutated 0.971–0.974, bound **0.88** — a thin margin; **watch its first CI runs**.
-- **Inject a fault *below* the floor you are testing.** Monkeypatching an adapter's public method
-  replaces the adapter — including its own `except Exception` floor, which is the thing an
-  "unexpected failure → 503" row exists to prove. Patch the library call the adapter wraps, so the
-  floor still stands between the fault and the route (I-45's correction, `1ef5afb`).
-- **A skeleton that changes a signature breaks existing tests** — the mechanical rename it forces
-  (2.2: `guest_session_id=` → `owner=GuestOwner(…)` across 15 files) lands in the **skeleton's**
-  commit, by `qa`, with no assertion changed in meaning — never in a RED or GREEN commit.
-- **A pinned field that needs data an AC forbids loading is a design contradiction, not a test
-  bug** — take it to the owner. 2.2's `character_count` vs AC-52 became a read model.
-- **Tests that tested the harness (2.2, three more):** `gcTime: 0` collecting an unobserved seed
-  (again); two concurrent requests through the shared-`AsyncSession` `app` fixture give
-  `IllegalStateChangeError` → 503 — races use `concurrent_app`, a real session per request; a
-  helper returning `BaseCv.upload(…)` without `release_events()` leaked a pending event into the
-  publisher — a stand-in for a loaded aggregate must hold none. A sweep that walks its whole root
-  needs a per-test `tmp_path`, not the shared `upload_dir`, or aged files leak between tests.
-- **When the implementer finds a RED test wrong, the correction is its own commit** (`8880439`,
-  `15e1f5b`), verified against the spec, so the GREEN commit still edits no test.
-- **Commit order is part of the plan, and every commit must be green (2.3).** Two orders in 2.3's
-  plan could not be green. First, 2.2's tripwire ("`guest_session_id` is `NOT NULL`") **fires by
-  design** in the commit that lands the migration, yet the plan retired it later. It was retired in
-  the migration's own commit (`7da2c4a`), with AC-2's test generalized to "nullable **and**
-  `ck_<table>_exactly_one_owner`" on all four tables, and the survives-a-purge proof it asked for
-  (`57f7087`) landed right after the adapters with nothing in between. Second, **a mapping must not
-  land before its column**: a mapped column the table lacks breaks every load, so the migration
-  (T13) was committed before its mapping (T12). When a task list's order cannot be green, reorder
-  on purpose and say so in the commit body.
-- **The pre-commit hook tests the working tree, not the staged commit.** Committing several commits
-  from one dirty tree gives each commit a gate that checked more than the commit contains. Stash
-  the rest per commit (`git stash push --keep-index --include-untracked`), so each hook sees exactly
-  its commit. A `set -e` script must pop the stash even when the commit fails.
-  **`TDD_RED=1` refuses a commit with no staged test file**, so a frontend GREEN cannot commit
-  while a backend RED on the same branch is still red (2.3's `/verify`: `react-dev`'s fix waited
-  for `api-dev`'s GREEN). Order a round so each RED's GREEN lands before the next RED, or commit
-  the hardening before the RED in the same file. `--no-verify` is still never the answer.
-- **A test seed that only flushes dies with a refused request** (2.3, `fa40793`). The `app` fixture
-  joins with `create_savepoint` and rolls back when a request errors, so an uncommitted seed goes
-  too. 25 tests then read 0 rows where the seed should have been. Seeds on the test's session
-  **commit**: that releases a savepoint, and the outer rollback still isolates the test. Guest
-  tests never met this because their inputs arrive through routes that commit.
-- **A race test must stage the race at the moment the spec names, not before the request** (H-33).
-  A delete that commits before the edit is sent is a clean 404. The spec's 409 with
-  `current_version: null` needs the delete to commit **between the edit's read and its write**.
-  That is injected by wrapping the repository's `save` on `concurrent_app` to commit a `DELETE` on
-  another connection first. The test also asserts that the delete really landed mid-request.
-- **A domain module may not import a sibling context, even where the layers allow it.**
-  `retention`'s allowlist test caught `HistoryEntryInProgress(status: TailoringRunStatus)`. The
-  status now travels as a plain `str`, and `delete_history_entry` takes a bare `UUID`. Retention
-  reaches other contexts' rows through its own ports, never their types.
-- **A skeleton's scaffolding is dead code once the real methods land.** Remove it in its own
-  commit (2.3: `RequestTailoringRun.users`, the superseded `_for_session` pair). Moving the tests
-  that call the old methods comes first and is mechanical.
-- **Every domain `Protocol` is bound by a composition root or exempted by name**
-  (`tests/integration/test_port_bindings.py`, 2.3's T23b). The Protocols are discovered, not
-  listed. The plan had assumed this test already existed, and it did not. **Check that a gate
-  exists before the plan leans on it.**
-- **A rule over "every table that has X" is a test that discovers the tables from the catalogue**
-  (2.4). The claim must re-key every table with a `guest_session_id`; a forgotten fifth table would
-  be cascade-deleted with the session, silently. The test reads `information_schema.columns`, so a
-  new guest-owned table the claim misses fails by name instead of losing data.
-- **Widening a port's return from `None` silently breaks every monkeypatched stub of it** (2.4).
-  `delete_session` began returning `bool`; four 1.6 stubs still delegated and dropped the answer, so a
-  really-deleted session read as `sessions_skipped` and the CLI's loop stopped early. mypy cannot see
-  through `monkeypatch`. When a return type gains meaning, grep for every stub and fake of that method
-  and correct them in their own commit, before the GREEN that reads the value.
-- **A fake needs the isolation of the thing it fakes** (2.4, `ed66fbe`). A fake server that scoped
-  two `/api/me/` lists by bearer and answered the third to anyone made "B never sees A's claimed
-  data" fail against a correct client. Check the fake before the code.
-- **A Core `UPDATE` does not touch the identity map** (2.4, `d37481f`). Through the shared-session
-  `app` fixture, a test still holding a seeded aggregate read its pre-claim `GuestOwner` after the
-  claim re-keyed the row with Core, because `select()` on a map hit keeps loaded attributes: a 404
-  against a correct handler. `session.expire_all()` after the write, with a comment naming the
-  harness. Production has a session per request.
-- **Re-seed before you remove.** Tests that use the thing being retired only as a seed
-  (`BaseCv.copy_from`) are re-seeded first, in their own commit (`b197d18`), so the removal commit
-  deletes only that thing's own tests.
-- **A cast that is unnecessary before a type narrows and necessary after** gets a one-line,
-  commented `eslint-disable` in the commit before the narrowing, removed in the commit after it
-  (`5a546fb`, `a763ffb`). Each commit stays honest and green.
-- **A RED that cannot be reproduced is recorded as such, never forced.** 2.2's "`/register` typing
-  wiped during the boot refresh" had no `booting` branch to remount in the current code. AC-51 was
-  committed as a regression guard **with no recorded red** (`2c01310`), and the real-browser
-  attempt moved to `/verify`.
-- **A test that pins the Alembic head as a revision id breaks on the next migration** (2.5,
-  `0cc192c`) — red on the revision alone while every schema fact still holds. "At head" means
-  `ScriptDirectory.from_config(…).get_current_head()`; pin a revision id only where the test is
-  about *that* revision.
-- **A race test's staging seam must survive the fix** (2.5, `672c5a5`). The lock-upgrade test first
-  hooked `confirm_credential_unchanged` — the very method the fix stopped calling — so its "was the
-  race staged?" guard failed against the correct code. Stage at the *moment* the spec names (after
-  the verify, before the first lock), wrapping every entry point that can occupy it.
-- **A race test's seed uses the same `Clock` as the action under test** (4.2, `ab88358`). AC-9's
-  seed registered its user with a private clock at 2026-10-11 while the disable ran on the
-  `clock` fixture (2026-09-04), so `User.disable` refused, correctly, to disable a user before it
-  existed, and the race was never staged. A domain time invariant turns a mismatched seed clock
-  into a test that measures nothing.
-- **An idle-in-transaction backend reports `wait_event_type = 'Client'`, not NULL** (4.2,
-  `618af74`). It is waiting for its client's next statement. An overlap proof from
-  `pg_stat_activity` asserts `state = 'idle in transaction'`, not an empty wait event.
-- **A new database read in `require_user` reaches the shared-session harness** (4.2, `b1cc08f`).
-  Every bearer route now reads Postgres before the rate limiter, so the `app` fixture's savepoint
-  is open when a 429 is raised, and the refused request's rollback **expires every instance the
-  test has loaded**: the next `run.version` read is a lazy load, `MissingGreenlet`. Read loaded
-  values into locals before the requests (and `refresh` what a later request needs). Harness only;
-  production has a session per request. AC-29 lists it as the one allowed edit to an existing test.
-- **`AsyncSession.get` reaches the sync `Session.execute`, not `AsyncSession.execute`** (4.3,
-  `f5b461f`). A fault injected at the async `execute` misses every repository `get`. Install it on
-  the sync `Session.execute`, which both paths reach.
-- **A router-level dependency duplicated by a handler parameter is an equivalent mutant** (4.3,
-  `c2b83bb`). Every admin handler takes `actor: AdminDep`, so dropping the router's
-  `require_admin` changes no dependency graph and no request. Pin `router.dependencies` itself.
-- **AC-33's `tiptap`/`markdown` grep of the admin chunk hits chunk-filename imports** (4.3): React's
-  runtime lives in the `tiptap` manual chunk, so every chunk names it. Grep for library
-  identifiers (ProseMirror, markdown-it), not the word.
-- **`commit-msg` rejects a subject over 72 characters only after `pre-commit` has run the full
-  suite** (4.2). Count the subject before you commit, or pay four minutes to learn it is 74.
-- **A test fake that disagrees with the API's real shape hides a UI bug** (4.4, T28). The purge
-  preview's fake answered `sessions_deleted: 3`, though a dry run always reports 0 (AC-16) and the
-  count is `examined`; the panel read the wrong field and the suite stayed green until the manual
-  pass read *Would delete 0 session(s)*. Build a fake from a real response (or the schema), and pin
-  its shape with a guard test (`cf65a91`).
-- **Known flakes seen in 4.4, each passing on re-run:** AC-20's login event-loop fraction (0.908
-  against 0.88, once); `test_me_tracked_applications…[control_character]` answering 401 once; the
-  first admin Vitest test in a file timing out under load. Re-run before chasing; if one recurs,
-  it is a finding.
-- **A spy installed before the test's setup records the setup** (2.5, `feec266`). A
-  `replaceState` spy saw the harness's own `openLink()` put the token in the URL. Clear the spy
-  after setup, and give the absence assertion a positive control (the app made ≥ 2 calls).
-- **pytest in the api container cannot see repo-root files** (2.5). Compose and nginx config checks
-  live in `scripts/git-hooks/` as Python checks run by pre-commit on the **staged** content, plus a
-  make target (`compose.mail.check` `252baa8`, `nginx.referrer.check` `6471056`). CI does not run
-  hook checks — a known gap, chosen by the owner.
-- **A RED test that disagrees with the spec is corrected, not satisfied** (3.1, `a437aca`). Two
-  T21 tests sent `marker + "\n"` as a title and expected 422, but AC-2 trims *first* and then
-  refuses `Cc`, so that title trims to a valid one. The implementer reported it at T23 instead of
-  bending `ApplicationTitle` to pass; the correction (an **interior** LF, `marker + "\nx"`) landed
-  in its own commit, assertions unchanged, still red, before GREEN — so GREEN edited no test.
-- **A strict xfail is the holding pen for a production defect `qa` finds** (3.1, `d380d4b` →
-  `e93f4fd`). `qa` never edits production code, so the lock-mode test went in as
-  `xfail(strict=True)` with the finding in the commit body; the fix's commit removed only the
-  marker. Strict matters: a fix that lands without removing it turns the suite red (XPASS).
-- **`make test file=<one integration file>` can fail at collection** with `ExportJob has no
-  attribute '_id'`: the mappings are loaded by a fixture the lone file never reaches. Select with
-  `k=` instead. And **`make web.test file=` ignores `file=`** — it runs the whole Vitest suite.
-- **An `EXPLAIN` over a table holding only one user's rows correctly seq-scans** (3.1, AC-31).
-  The planner is right that a scan is cheaper than the index when every row matches. To assert
-  index use, seed other users' rows first, so the predicate is selective.
-- **A performance budget on a list is measured on the production bundle in a real browser** (3.1,
-  T33). AC-44 passed every unit render test and failed in Chromium at 500 cards (p50 162 ms vs.
-  50); the dev build's 640–730 ms first paint said nothing either way. Serve the production
-  bundle on `:8080` through Playwright route interception (origin and cookies unchanged).
-  **`requestAnimationFrame` is throttled to ~1 Hz on an occluded desktop window even while
-  `document.visibilityState` reads `visible`**, so a rAF-based paint timer read ~1.8 s; time a
-  commit with a `MutationObserver`, then force style/layout (`offsetHeight`) and time that too.
-- **Verify a harness's gesture before blaming the app** (3.1, T33). Playwright's `dragTo`
-  presses the mouse on the source, **then scrolls the target into view**; Chromium starts an HTML5
-  drag from wherever the pointer is *then*. With a tall target column (~191 px of scroll) the drag
-  picked up the card below the intended one, 3/3. Stepwise `mouse.move` drags always moved the
-  right card.
-- **Seed data goes through the domain's grammars** (3.1, T33). A seed wrote
-  `intake_base_cv.file_key = 't33/<uuid>'`; `FileRef` refuses that on load, so account erasure
-  500'd on a row real data can never produce. Build seeded values with the value objects (or copy
-  their grammar), or the erasure path tests the seed.
-- **A loading control that exists but is disabled satisfies `findByRole`** (3.2, `6cf4628`). The
-  export buttons render disabled while the list loads, so `findByRole` resolved at once and the
-  click sent nothing; five T24 tests were corrected before GREEN. Wait for enabled
-  (`waitFor(() => expect(btn).toBeEnabled())`) before clicking.
-- **A RED test can contradict the spec's step order** (3.2, `cc1bd0e`). Two cap tests seeded the cap
-  with jobs on the very key they then requested, so the idempotent lookup (step 3) correctly
-  answered before the cap could. Seed the cap with keys the request cannot match.
-- **A test encodes what the code *should* do — never what it was observed doing.** A test written by
-  running the code and recording the answer has no source of truth independent of the code, so it can
-  never disagree with it. When an acceptance criterion and the implementation disagree, **fix one of
-  them on purpose and say which won** — do not write the test that ratifies the accident. And a
-  docblock claiming coverage the assertion cannot deliver is the same defect one level up: if a test
-  says it guards a regression, verify it fails when you reintroduce that regression.
+The evidence, commit ids and measurements behind each line are in **[LESSONS.md](./LESSONS.md)**.
+
+- **Python:** `from __future__ import annotations`; full hints; `mypy --strict` clean; value objects
+  are frozen `slots=True` dataclasses; ports are `typing.Protocol`; no `Any` without a comment; no
+  mutable defaults, dead code or secrets in source.
+- **Domain purity:** no third-party imports in `domain/`. A domain module may not import a **sibling
+  context** either. Retention reaches other rows through its own ports and plain values.
+- **No base class for aggregates that merely share a shape.** Where a type deliberately contradicts
+  another, comment why at that point.
+- **Config:** `os.environ` is read only in the settings object.
+- **Validation:** untrusted input is validated at the boundary. Three inputs are critical: the
+  uploaded file (sniff bytes, cap size, generated name), the job URL (SSRF), and the LLM's output
+  (sanitize before HTML/PDF).
+
+**React**
+- Server state lives in TanStack Query, never copied into `useState`. `useEffect` only syncs with
+  the outside world. Every networked screen renders loading, error and empty, and "still working"
+  is distinct from "failed". No `any`, no `!`, no business rule duplicated in TS.
+- **The credential is not server state:** one module store read via `useSyncExternalStore`. Never
+  put it in `useState`, the query cache or browser storage.
+- **Scope decides whose workspace, not "is someone signed in?"** Paths, credential and keys come
+  from `useScopeMap()`; build every link from `runLink(scope)`.
+- **Reads retry, writes hold** (ADR-0031). A held deadline is component state derived during render
+  (`useErrorHold`/`useHold`). Word times in the browser's locale.
+- TanStack traps:
+  - `gcTime: 0` collects unobserved `setQueryData`.
+  - `isPending` lags a tick, so guard double submits with `isMutating`.
+  - Default structural sharing matches array items by index, so use `shareCardsById` for
+    re-sorting lists.
+  - v5 refuses `undefined` data; a 204 probe returns `true`.
+  - `removeQueries({exact: true})` keeps children, so drop a subtree by prefix.
+  - An `onSettled` that *returns* invalidations keeps the mutation pending.
+- The app's client turns off `refetchOnWindowFocus`, so **build test clients with
+  `createAppQueryClient()`**. `focusManager` listens on `window`, not `document`.
+- Lazy routes: the main-bundle half imports nothing from the chunk's modules. Descendant routes in a
+  lazy chunk use `useRoutes`, not `<Routes>`. Check with a grep of `dist/assets/index-*.js`.
+- Navigate-then-sign-out races `RequireAuth`, because `RouterProvider` ignores `flushSync`.
+  Work that must survive an unmount runs before the sign-out.
+- A live region mounted together with its text may never be announced: mount it empty, then fill it.
+- Fake timers: `advanceTimersByTimeAsync`, flush TanStack notifies with `advance(1)`, reset
+  `onlineManager` in `afterEach`, and use `fireEvent` instead of `userEvent.type`.
+- Test gotchas: a disabled control satisfies `findByRole`, so wait for enabled. Count `<h1>` inside
+  `main`. A page-level `findByText(/^Loading/)` matches the Suspense fallback. A fake's 403
+  `account_disabled` signs the tab out (use 503 to fail a section).
+
+**Tests — the red-first discipline** (docs/sdlc.md §2)
+- Domain, application, every failure-contract row, the HTTP contract and React states are written
+  **before** the code, against a `NotImplementedError` skeleton. They must fail **on their
+  assertion** (an `ImportError` doesn't count). Paste the failure into the RED commit
+  (`Recorded red: …`, `TDD_RED=1` / `make check.static`). **Never `--no-verify`.** Mappings,
+  repositories, migrations, adapters, wiring and markup are test-after.
+- A value object's skeleton gets a no-op `__post_init__`, so a "refused" test goes red on
+  `DID NOT RAISE`. `NotImplementedError` subclasses `RuntimeError`, so a skeleton passes
+  `pytest.raises(RuntimeError)`.
+- **A test edited in its GREEN commit is the failure this cycle prevents.** A RED found wrong (or
+  contradicting the spec or its step order) is corrected in **its own commit**. A soft RED is
+  **hardened right after GREEN**. A RED that can't be reproduced is recorded as such, never forced.
+- A skeleton's signature change lands its mechanical test renames in the skeleton's commit.
+  Re-seed before you remove. Remove skeleton scaffolding in its own commit.
+- A production defect `qa` finds is held as `xfail(strict=True)`; the fix's commit removes the marker.
+- **Every commit is green, and commit order is part of the plan.** A mapping never lands before its
+  column. A constraint the mapping must satisfy, or any CHECK, lands with the mapping. The pre-commit
+  hook tests the **working tree**, so stash the rest per commit. `TDD_RED=1` refuses a commit with
+  no staged test. `commit-msg` rejects subjects over 72 characters only after the full suite.
+- Domain tests have no I/O. Application/API tests use a **real Postgres** (`tailorcraft_test`,
+  transactional rollback), never the dev DB. **No test calls Gemini.** Time comes from a fake
+  `Clock`, whole-second, and race seeds use the same clock.
+- **Isolation is checked per datastore.** The DB rollback does not reset Redis: `clear_redis`
+  flushes the test Redis (db 3, boot-guarded against the live roles). **Run exactly one suite at a
+  time.** Unrelated tests failing differently each run is contention. Run the suite twice to prove
+  isolation.
+- **A performance or liveness assertion is proven only by a mutation:** reintroduce the regression,
+  watch it go red, and record both numbers. Time event-loop *turnaround*, not an in-process request.
+  Pick the statistic for the workload.
+- Inject a fault **below** the floor you test (patch the library call, not the adapter).
+  `AsyncSession.get` reaches the sync `Session.execute`.
+- Harness traps:
+  - Races use `concurrent_app` (a real session per request), staged at the moment the spec names,
+    with the staging seam surviving the fix.
+  - Seeds on the test session **commit**.
+  - A Core `UPDATE` needs `expire_all()`. A refused request expires loaded instances, so read
+    values into locals first.
+  - An idle-in-transaction backend reports `wait_event_type = 'Client'`.
+  - Seed data goes through the domain grammars.
+- Fakes: a fake needs the isolation of the thing it fakes and the **real response shape** (build
+  it from a real response, pin it). Widening a port's return breaks monkeypatched stubs, so grep and
+  fix them first.
+- Structural rules: every domain `Protocol` is bound or exempted (`test_port_bindings.py`). "Every
+  table with X" is discovered from the catalogue. "At head" is `get_current_head()`, never a pinned
+  revision. A router-level dependency duplicated by a handler param is an equivalent mutant, so pin
+  `router.dependencies`. **Check that a gate exists before a plan leans on it.**
+- `make test file=<one integration file>` can fail at collection, so use `k=`. `make web.test`
+  ignores `file=`. pytest in the container can't see repo-root files, so compose/nginx checks live
+  in `scripts/git-hooks/`.
+- `EXPLAIN` over one user's rows correctly seq-scans, so seed other users first. List performance
+  budgets are measured on the **production bundle in a real browser**. Verify a harness gesture
+  (Playwright `dragTo`) before blaming the app.
+- **A test encodes what the code *should* do, never what it was observed doing.** When an AC and
+  the code disagree, fix one on purpose and say which won.
+- Known flakes (pass on re-run): AC-20's login event-loop fraction, a 401 on
+  `…[control_character]`, the first admin Vitest test under load. If one recurs, it's a finding.
 
 ## Privacy — this product's specific hazard
 
@@ -1570,380 +408,106 @@ a hurry. Constitution §8 applies to every slice:
 
 ## Infrastructure footguns (baked-in guards)
 
-Documented failure modes we design against (see [docs/infrastructure.md](./docs/infrastructure.md)):
+Full stories in [LESSONS.md](./LESSONS.md) and [docs/infrastructure.md](./docs/infrastructure.md).
 
-- **Traefik must be pinned to its network:** `--providers.docker.network=traefik`. Otherwise: silent
-  30-second 504, no logs anywhere.
-- **Docker bypasses UFW** — it writes iptables directly, so a `ports:` mapping is a hole in a firewall
-  you believe is closed. Datastores publish no ports in prod; dev binds `127.0.0.1` only. A
-  pre-commit hook flags violations in both directions.
-- **Named volumes only** — an anonymous Postgres volume remembers a stale password and you will spend
-  an hour proving a correct password wrong.
-- **Redis always has a password.** It is the broker, the result backend, the cache and the
-  rate-limiter store: four load-bearing jobs in one process that is unauthenticated by default. Redis
-  down is not "slower", it is "no exports and no purges".
-- **`/health/ready` probes Postgres, Redis AND Celery.** A stopped worker otherwise looks *exactly*
-  like a healthy system — the API answers, the database answers, and every export queues forever.
-  This is a lesson imported from the previous project, where a crash-looping worker sat behind a
-  green dashboard for an entire session.
-- **`task_acks_late=True` does not mean "a lost task comes back".** Celery redelivers only when the
-  worker's *main* process dies holding the message, and on Redis only after `visibility_timeout`. A
-  task that raises or hits the hard time limit is acked (`task_acks_on_failure_or_timeout=True`), and
-  so is one whose pool child is OOM-killed. `task_reject_on_worker_lost` is left unset on purpose,
-  because a prompt redelivery would find the run `running` and skip it. Slice 1.3's `/verify` found
-  runs stuck `running` for ever this way. The stale-run sweep on beat recovers them now, and **beat is
-  not a worker**, so `/health/ready` cannot see it stop.
-- **Fixing a Celery queue declaration does not undo the old one.** kombu *adds* a binding each time
-  a queue is declared and never removes one, and Redis keeps them. Slice 1.3 first declared both queues
-  without a routing key, so both bound key `celery`. One publish on that key would have reached both
-  queues: two deliveries of one run, and two paid calls. Correcting the keys and restarting left the
-  stale binding in place until someone ran `SREM _kombu.binding.celery` (the exact member is in
-  `infrastructure/tasks/app.py`'s comment). **A local mutation test of a queue declaration re-poisons
-  the dev broker too**, because `watchmedo` restarts the worker on the edited file. At `/verify` that
-  happened to an agent that already knew about this trap. After any change to `task_queues`, compare
-  the broker's binding sets against the new declarations — but read them correctly: kombu names a
-  binding set after the **exchange**, not the queue, so with all queues on the one default `celery`
-  exchange (`task_default_exchange`, unchanged through slice 2.5's fourth queue), the healthy state is
-  **four members in the single set `_kombu.binding.celery`** (`celery`, `tailoring`, `export`,
-  `mail` since 2.5) — `_kombu.binding.tailoring` and friends do not exist at all, and finding "one
-  member each in four sets" describes a broker with four exchanges, not this one. A stale binding is
-  a **fifth** member of `_kombu.binding.celery`, which is exactly the shape the `SREM` example above
-  deletes. Also:
-  `CELERY_BROKER_URL` is db `/1` — `redis-cli` without `-n 1` reads db `0`, where every set is empty,
-  which reads as a clean broker for the wrong reason.
-- **Every container running application code appears in the deploy's `pull` list and in the
-  image-verification loop** — here `api`, `worker`, `beat`. In the previous project the worker was in
-  neither and ran a stale image for four releases; the only symptom was behaviour not matching the
-  source. The worker and beat are also **stopped before the new API starts and through the
-  migration window**, not merely restarted after it. Until 2.4 the script started the new `api`
-  first and stopped them second, so for a few seconds an old worker and beat ran beside a new API.
-  For 2.4 that meant a 2.3 purge (which unlinks without asking whether its `DELETE` removed the row)
-  could run beside a claim. T36 found it by reading `deploy.yml` against the plan's claim, and
-  `a9c9ea9` moved the stop first. Every doc had said "stopped for the migration window", which was
-  true and hid the order. **Confirm a release-order claim by reading the script, every slice that
-  relies on it.** A run uses the workflow from its own commit, so the fix takes effect with 2.4's
-  own release.
-- **A single-file bind mount is pinned to the inode at container create, and `scp`/`rsync` replace
-  the file under a new inode.** The deploy synced `docker/nginx/default.conf` and ran
-  `docker compose up -d api nginx`; the nginx service spec had not changed, so nginx was not
-  recreated and kept serving the first release's file. Measured 2026-10-03: host inode 258354,
-  container inode 274226, `Referrer-Policy` count 0 in the container — **no nginx change reached
-  production between 2026-09-22 and 2.5's release**, and nothing errored. The release now runs
-  `up -d --force-recreate --no-deps nginx` and then compares the running container's config to the
-  shipped file and greps `nginx -T` for `Referrer-Policy`, under `set -euo pipefail`. Confirm what
-  the running process serves, not what was shipped. (Rejected: mounting a directory — `dev.conf`
-  shares `docker/nginx/`, and it would also need a reload.)
-- **Under `pipefail`, never pipe into a reader that exits early** (`grep -q`, `head`). It closes the
-  pipe on its first match, the writer dies of `SIGPIPE`, and the pipeline fails because it *found*
-  the text. That happened to the release after 4.4 (run 38710525932): *no Referrer-Policy* on a
-  config that had one. Capture first (`out="$(cmd 2>&1)"`), then `grep -q … <<<"$out"`, and print
-  `$out` when `cmd` fails. Don't send its stderr to `/dev/null`.
+**Proxy, network, compose**
+- Pin Traefik to its network (`--providers.docker.network=traefik`), or you get a silent 504.
+- **Docker bypasses UFW.** Datastores publish no ports in prod; dev binds `127.0.0.1`
+  (pre-commit hook).
+- Use named volumes only. Redis always has a password.
+- **`TRUSTED_PROXY_HOPS` = proxies we run:** 2 on the box (Traefik + nginx), 1 in dev. nginx never
+  runs `realip`.
+- nginx `proxy_set_header` inheritance is all-or-nothing, so repeat the headers in any block that
+  sets one.
+- **A single-file bind mount is pinned to the inode.** The deploy force-recreates nginx and checks
+  the *loaded* config.
+- Under `pipefail`, never pipe into `grep -q`/`head`. Capture first, then grep a here-string.
+- `env_file:` outranks the image `ENV`. The dev override pins `APP_ENV`, `PUBLIC_BASE_URL` and
+  `MAIL_*` in `environment:`. `docker compose restart` ignores `.env` changes, so use
+  `up -d api worker beat`.
+- After a dependency lands, run `up -d --build api worker beat`. `make deps` must sync **api, worker
+  and beat**.
+- Every app container (`api`, `worker`, `beat`) is in the deploy's pull list and image check.
+  Worker and beat are **stopped before the new API starts** and through the migration. Confirm a
+  release-order claim by reading `deploy.yml`.
+- A daemon writing to a relative path writes into the source tree (beat's schedule lives on a
+  volume). The venv is at `/opt/venv`.
+- `make db.dump` is not a backup: back up the uploads volume too. The uploads volume is shared by
+  api and worker.
+- `NODE_ENV=development` leaks into `vite build` (`make web.build` forces production). Use
+  `tsc -b`, never a bare `tsc --noEmit`. Vite inlines assets under 4 KB (`.webp` is excluded).
+- `tailorcraft-api:local` is the dev image. Measure on `docker build --target production`.
 
-- **`env_file:` outranks the image's `ENV`, so the root `.env` decides `APP_ENV` on a real box.**
-  `.env.example` therefore defaults to `APP_ENV=production` (the safe value) and
-  `docker-compose.dev.yml` pins `APP_ENV: dev` in `environment:` (which outranks `env_file:`), so
-  dev-ness follows the override file you load rather than a value someone remembered to change.
-  **The same holds for `PUBLIC_BASE_URL`**, the origin 2.1's `Origin` check trusts: the root `.env`
-  carried a production-shaped value, so every auth `POST` from `:8080` was 403
-  `origin_not_allowed`. `docker-compose.dev.yml` pins `PUBLIC_BASE_URL: http://localhost:8080`. Since 2.5 the **worker and beat** pin it too: the worker builds every emailed link from it, and `check-mail-compose.py` requires the pin (and empty `MAIL_SMTP_USERNAME`/`PASSWORD`) on all three.
-  Recreating `api` to pick that up then died on `ModuleNotFoundError: jwt`: `make deps` syncs a
-  *running* container, and a recreate goes back to the image, which predated the dependency. After
-  a dependency lands, it is `up -d --build api worker beat`.
-- **WeasyPrint needs system libraries at runtime** (Pango, Cairo, HarfBuzz, fontconfig, and actual
-  fonts). Without them the import succeeds and the *first render* fails — in the worker, where nobody
-  is watching. They are installed in `docker/api/Dockerfile` **and** in CI; keep the two in step, and
-  remember that a PDF rendered on a box with no fonts is a page of boxes.
-- **The uploads volume is mounted by both `api` and `worker`.** The api stores the upload, the worker
-  reads it to render. Lose it on either and exports break in a way no health check sees. It is also
-  the one assumption that must die first if this ever runs on two boxes — which is why every access
-  goes through `FileStorePort`.
-- **`make deps` must sync every container running application code, not just `api`.** `api`,
-  `worker` and `beat` all mount the same source and run the same package, so a sync that reaches
-  only one of them leaves the others on a venv from whenever they were last built — with no error
-  and nothing in a log. Slice 1.3 found `worker` and `beat` still holding a venv from **slice 1.2**;
-  it had gone unnoticed because the only new dependency since then (`trafilatura`) is used by the
-  posting fetch, which runs in the API. The Gemini call does not — it runs in the worker, which is
-  where it would have surfaced as a `ModuleNotFoundError` in a process nobody is watching. This is
-  the image-verification lesson one level down: same failure, a venv instead of an image.
-- **A startup refusal under `uvicorn --workers N` used to not exit the container — fixed in slice 2.1
-  (T46, OQ-2).** The production `CMD` in `docker/api/Dockerfile` is now
-  `sh -c "python -m tailorcraft.cli check-settings && exec uvicorn … --workers 2"`.
-  `check-settings` (`infrastructure/check_settings_command.py`) builds `Settings` and runs the Celery
-  stale-window check **once, in a single pre-flight process**, before uvicorn is `exec`'d — so a
-  refusal exits the shell non-zero and uvicorn never starts, and success replaces the shell with
-  uvicorn (still PID 1, still receives signals directly). It covers **all eleven** refusals the API
-  process has (five since 2.1, six added in 2.5), the same code paths a request would hit, not a
-  copy:
-  1. `GEMINI_API_KEY` empty under `APP_ENV=production` (`Settings` validator).
-  2. `JWT_SIGNING_KEY` missing, whitespace, the `.env.example` placeholder, or shorter than 32 bytes,
-     under `APP_ENV=production` (`Settings` validator, AC-22/I-46).
-  3. `TEST_REDIS_URL` resolving to the same `(host, port, db)` as a live Redis role — broker, result
-     backend or cache (`Settings` validator).
-  4. `TAILORING_STALE_AFTER_SECONDS` at or below the Celery hard time limit
-     (`tasks/limits.refuse_stale_windows_within_time_limit`).
-  5. `EXPORT_STALE_AFTER_SECONDS` at or below the same hard time limit (same function).
-  6–10. (slice 2.5, `APP_ENV=production` only, `Settings` validator) `MAIL_SMTP_HOST` empty;
-     `MAIL_SMTP_SECURITY=none`; `MAIL_SMTP_USERNAME`/`MAIL_SMTP_PASSWORD` empty; `MAIL_FROM_ADDRESS`
-     not an `EmailAddress`; `PUBLIC_BASE_URL` not `https://`. **The box's `.env` must carry the
-     `MAIL_*` values before 2.5's image starts there**, or the API never starts.
-  11. `MAIL_TOTAL_DEADLINE_SECONDS` at or above Celery's soft limit (120), every environment
-     (`tasks/limits.refuse_mail_deadline_within_soft_limit`).
-  It prints `settings ok` and exits 0, or `check-settings: <sentence>` on stderr and exits 1 — never
-  a secret: a `MisconfiguredSettings` sentence names the variable, not the value; a pydantic
-  `ValidationError` is reduced to field names and error types.
-  **Measured (T46, the same method as 1.3's T36):** production image, `APP_ENV=production`, a dummy
-  `GEMINI_API_KEY` (so refusal 2 is the one that fires) and the `.env.example` placeholder
-  `JWT_SIGNING_KEY` → the container exits **1 in 0.78 s**, stderr carries the `check-settings:`
-  sentence and never uvicorn's banner. With a valid 32-byte-plus key and the other defaults → stdout
-  prints `settings ok`, uvicorn starts both `--workers 2` processes, and `/health/live` returns 200.
-  **The in-process guards described below still exist and still matter** — `check-settings` only
-  changes what happens in the container built from this Dockerfile with this `CMD`. Anyone who runs
-  `uvicorn` directly (a hand-rolled `docker run` overriding `CMD`, a different image, a future
-  entry point that forgets the `&&`) is back to the old behaviour: the guard fires at import in every
-  worker process and the supervisor respawns the crashing import forever, never exiting.
-  When a release's readiness check never goes green, read the logs for a settings refusal before
-  suspecting the network — `check-settings` makes that refusal loud, but only if it ran.
-- **A dev box with a real `GEMINI_API_KEY` spends money from the UI.** There is no dev-mode fake: the
-  worker reads the key and makes a paid call for every tailoring run started at localhost. The test
-  suite never reaches it — it replaces the LLM on the worker's own composition-root path and asserts
-  the fake was called, because `dependency_overrides` cannot reach the worker — but a manual click does,
-  and so does `make eval`. Keep the key out of `.env` unless you mean to spend.
-- **`make db.dump` is not a backup of this product.** Restoring rows that point at uploaded files you
-  did not restore gives you a broken application with a green restore. Back up the uploads volume
-  alongside the database.
-- **Any container process that persists state to a relative path writes it into your source tree.**
-  Celery Beat's last-run database defaults to `celerybeat-schedule` in the working directory, which
-  under the dev bind mount is `./api` — three files landed in a commit before anyone noticed.
-  `--schedule` now points at a named volume, which is also where it belongs operationally: lose that
-  file on restart and a schedule can double-fire. Check this for every new daemon.
-- **The venv lives at `/opt/venv`, not `/app/.venv`.** The dev override bind-mounts `./api` over
-  `/app`, so a virtualenv at uv's default location is shadowed by whatever the host has there — and
-  a host venv points at a host interpreter path that does not exist in the container. `UV_PROJECT_ENVIRONMENT`
-  moves it out of the mount's way. The symptom otherwise is a missing-interpreter error that reads
-  like a corrupt image rather than a mount collision.
-- **pytest-asyncio's two loop scopes must agree.** An asyncpg connection is bound to the event loop
-  it was created on. A session-scoped engine plus pytest-asyncio's default per-test loop produces
-  `RuntimeError: got Future attached to a different loop` on teardown — **from tests that pass
-  individually and fail only when run together**, which is the worst way to meet a bug. Both
-  `asyncio_default_fixture_loop_scope` and `asyncio_default_test_loop_scope` are `session`.
-- **`TC001`/`TC002`/`TC003` are disabled and must stay disabled.** They move imports "only used in
-  annotations" into `if TYPE_CHECKING:`. FastAPI, Pydantic and SQLAlchemy all resolve annotations at
-  **runtime** — FastAPI calls `get_type_hints()` to decide what to inject — so obeying those rules
-  breaks dependency injection with a `NameError` at startup.
-- **`proxy_set_header` inheritance in nginx is all-or-nothing.** A block inherits the outer block's
-  `proxy_set_header` directives only if it declares **none** of its own. Adding one header inside a
-  `location` silently drops every server-level header. It cost a debugging round already: the dev
-  config's `location /` set only `Upgrade`/`Connection`, so `Host` fell back to nginx's default of
-  `$proxy_host` — the literal upstream name — and Vite refused the request. The tempting fix (add
-  the upstream name to Vite's `allowedHosts`) would have hidden a proxy misconfiguration and left
-  `X-Forwarded-*` missing too. **Repeat the headers in any block that sets one.**
-- **`NODE_ENV=development` in the dev container leaks into `npm run build`.** Vite honours it during
-  `build`, so `make web.build` produced a React *development* bundle — 442 kB where production ships
-  236 kB. The gate passed while checking an artifact neither CI nor the box ever builds. `make
-  web.build` now forces `NODE_ENV=production`. A gate that checks a different thing is worse than no
-  gate, because it also supplies confidence.
-- **`send_default_pii=False` does not cover traceback frame locals.** `sentry_sdk` defaults
-  `include_local_variables=True`, which is a separate setting that neither `send_default_pii` nor
-  `max_request_body_size="never"` affects. Any exception escaping a function that holds a CV in a
-  local ships that CV to Sentry. Two settings that sound like they cover PII, one that decides it.
-- **A failed database write carries its data out through three layers, and `hide_parameters=True`
-  covers only one.**
-  1. SQLAlchemy's `[parameters: …]` line.
-  2. The driver's own message. asyncpg quotes values, and PostgreSQL's
-     `DETAIL: Failing row contains (…)` is the whole row.
-  3. The `raise … from` chain, which Celery and Sentry render.
+**Celery / Redis**
+- **`/health/ready` probes Postgres, Redis and Celery**; beat is invisible to it.
+- `task_acks_late` does not bring a lost task back. The stale-run sweep on beat recovers stuck runs.
+- **kombu never removes a queue binding.** The healthy state is four members in
+  `_kombu.binding.celery` (broker db `/1`). A fifth is stale, so `SREM` it. A local mutation of
+  `task_queues` re-poisons the dev broker.
+- **Every API `send_task` passes `ignore_result=True`.** Otherwise `AsyncResult.__del__` wedges the
+  loop.
 
-  `include_local_variables=False` reaches none of them, and the worker lets a failed save escape on
-  purpose (G-28). `persistence/database.py` keeps the flag and adds a per-engine `handle_error`
-  listener that withholds the driver's message and the bound parameters and cuts the chain. There is no
-  off switch. Postgres's **server log** holds a fourth copy, so `docker-compose.yml` pins
-  `log_error_verbosity=terse` and `log_parameter_max_length_on_error=0`. A test that checks only
-  `str(exc)` will pass a one-flag fix, so assert on `traceback.format_exception(exc)`.
-  **Consequence met in 2.1: cutting the chain also cut asyncpg's `constraint_name`**, the only object
-  that knew *which* constraint refused a write. The listener now copies the allow-listed identifiers
-  onto the error it keeps; a repository recognises a violation with
-  `database.violated_constraint(exc) == "uq_…"` and **never by parsing the message**, which is
-  withheld on purpose and is prose for a person, not a format for a program.
-- **Alembic's generated `fileConfig(...)` disables every pre-existing logger.** The default is
-  `disable_existing_loggers=True`, and it silenced 24 of them here — `pypdf`, `docx`, `celery`,
-  `redis`, `sqlalchemy`, `sentry_sdk`, `httpx` — none named in `alembic.ini`. `.disabled`
-  short-circuits `isEnabledFor` before the level is read, so it beats anything `observability.py`
-  sets. The migration fixture is **session-scoped**, so in the suite this silences those loggers for
-  every later test: a privacy test asserting "X never appears in the logs" passes vacuously, and a
-  future test asserting something *is* logged fails for a reason nobody finds quickly. `env.py` now
-  passes `disable_existing_loggers=False`.
-- **Any CPU-bound call in an async route is on the loop, including the ones that "aren't real work".**
-  Sniffing a DOCX opens the upload as a zip and reads its whole central directory — a 100,000-entry,
-  8.6 MB archive (under the 10 MB cap) stalled the loop **374 ms** for every concurrent user, with no
-  error and nothing logged. A rate limit bounds how *often* the loop stalls, never whether it stalls.
-- **A bare `tsc --noEmit` on a solution-style `tsconfig.json` type-checks zero files.** `web/tsconfig.json`
-  is `files: []` plus two references; without `-b` (or `-p tsconfig.app.json`) tsc compiles nothing
-  and exits 0. The Makefile, the `build` script and CI all ran that form for four slices, so the
-  "types" gate was `vite build`'s transpile and nothing more. `tsc -b --noEmit` is the gate now, and
-  the six errors it surfaced were fixed in the same commit. A gate that checks nothing also supplies
-  confidence.
-- **A failed flush expires the whole identity map, and it does so *inside* the flush.** SQLAlchemy
-  rolls a failed flush back to the nearest transaction boundary; at the root that is
-  `_restore_snapshot(dirty_only=False)` — every loaded instance is expired before your `except`
-  runs, and the next attribute read on any of them is a lazy load, which on an `AsyncSession` is
-  `MissingGreenlet`. Two consequences met in 1.4: read `run.id` into a local **before** the flush
-  (after it, the read raised `PendingRollbackError` and a 409 became a 503), and a batch that keeps
-  iterating loaded aggregates after one refused write must contain each write in a SAVEPOINT
-  (`expunge` → `begin_nested()` → flush → commit; `begin_nested()` itself flushes on entry, so a
-  dirty aggregate handed to it flushes *outside* the SAVEPOINT). A `rollback()` is a statement about
-  the session, not about the one object that failed.
-  **That entry flush also walks straight past a version check** (2.1, `save_rotation`). The
-  repository writes a Core `UPDATE … WHERE version = :v`; with the rotated `Login` still attached,
-  `begin_nested()` first flushed the ORM's own `UPDATE` with **no** version predicate, so a race
-  loser overwrote the winner's token and both answered 200. `expunge` the aggregate before the
-  SAVEPOINT; on success re-attach it clean with `set_committed_value`.
-- **`NOT EXISTS` in a `DELETE` cannot see another transaction's uncommitted `INSERT`, and waiting
-  for a lock does not refresh it** (2.3's `/verify`). A history delete of the form `DELETE FROM
-  posting … WHERE NOT EXISTS (SELECT … FROM tailoring_run …)` deleted a posting that a concurrent
-  request had just used for a new run. Under READ COMMITTED, a `DELETE` that waits on a row that
-  was only *locked*, not updated, proceeds on its **original** snapshot and does not re-check the
-  subquery. The fix is two statements and two locks. The deleting side runs `SELECT … FOR UPDATE`
-  on the posting, then the `DELETE` as a **separate** statement, which gets a fresh snapshot. The
-  inserting side (`SqlAlchemyTailoringRunRepository.add`) takes `FOR KEY SHARE` on the posting
-  **after** its `INSERT`: the INSERT's FK check takes the owner row first, so account erasure
-  (user row `FOR UPDATE`, then cascades) meets it there. Taking the posting lock first makes a
-  lock cycle. The refusal is **unconditional**. The first fix hid it behind an off-by-default
-  constructor flag because test seeds inserted runs over postings that never existed. Fix the
-  seeds, never the default.
-- **`get_settings()` under `APP_ENV=test` still returns the *dev* `database_url`.** Only
-  `tests/conftest.py` swaps in `test_database_url`, by overriding Alembic's option and the engine
-  fixture. A probe or cleanup script that builds its own engine from `settings.database_url` — even
-  with `APP_ENV=test` — is pointed at the dev database, and one such script's `DELETE FROM
-  tailoring_run; DELETE FROM identity_guest_session` emptied dev through the cascades during 1.4's
-  verify. Anything that deletes must name `test_database_url` explicitly and assert the URL contains
-  `_test` before the first statement.
-- **The local `tailorcraft_test` runs out of columns — PostgreSQL never gives back a dropped
-  column's slot.** `DROP COLUMN` only marks the attribute dropped; it still counts toward the
-  1600-column limit until the table is rewritten, and `VACUUM FULL` does not renumber it. The
-  migration up/down/up tests drop and re-add `tailoring_run`'s columns on every run, and the test
-  database persists between runs, so each suite run burns ~10 slots. On 2026-09-23 the table held
-  **16 live columns and 1580 dropped ones**, `upgrade head` died on `TooManyColumnsError`, the fixture
-  left the schema three revisions short, and **428 unrelated tests errored**, blocking a docs-only
-  commit. CI never sees it: its database is new every time. Signature: the migration tests fail
-  first, then everything touching `export_job` reports `UndefinedTableError`. **Fixed (PR #12):**
-  `_migrated` drops and recreates `public` at the start of every session, behind a guard refusing
-  any database not named `*_test`, so a local run now starts where CI does. The count of dead
-  columns stays flat at one run's worth instead of growing.
-- **Alembic runs a revision in one transaction, so `NOT VALID` → `VALIDATE` staging inside one
-  revision releases no lock.** The `ACCESS EXCLUSIVE` taken by `ADD CONSTRAINT … NOT VALID`, and
-  the write lock of a plain `CREATE INDEX`, are held **until the revision commits**. The later
-  `VALIDATE` running under `SHARE UPDATE EXCLUSIVE` buys nothing. 2.3's `03494836ce30` is staged
-  that way, and its docstring's "blocks neither reads nor writes" is true only per statement. It is
-  harmless at production's 0 rows (T38). If one of those tables ever grows, split the revision
-  (constraint `NOT VALID`, commit, then `VALIDATE`; `CONCURRENTLY` indexes in a non-transactional
-  revision) and set a `lock_timeout`, so a busy table fails the deploy fast rather than queueing
-  every writer behind it.
-- **A `FOR SHARE` re-check followed by `FOR UPDATE` on the same row in one transaction is a lock
-  upgrade, and two concurrent callers deadlock on it** (2.5, T14 → `643f701`). `DeleteOwnAccount`
-  re-checked the credential `FOR SHARE`, then erasure took the user row `FOR UPDATE`: two correct
-  deletions both held SHARE and both waited for UPDATE — one 503 (`deadlock_detected`), and a loser
-  arriving after the winner's commit read 403 instead of 401. **Take the strongest lock you will
-  need first.** The re-check is now `get_for_update` plus a hash comparison; `LogIn`, which never
-  upgrades, keeps `FOR SHARE`.
-- **`AsyncResult.__del__` unsubscribes synchronously on whichever thread drops it** (2.5,
-  `74e793e`). With a Redis result backend, `send_task` subscribes the process's one shared PubSub
-  connection to the task's result channel (from the `to_thread` worker) and returns an
-  `AsyncResult` the adapter discards; its `__del__` then unsubscribes **on the event loop**, two
-  threads drive one non-thread-safe connection, and the loop blocks on the socket — a burst of
-  reset requests wedged the production API for > 60 s, `/health/live` included. **Every
-  `send_task` from the API passes `ignore_result=True`**: `send_task` reads only its own kwarg and
-  never the app's `task_ignore_result`, so the config key would not have fixed it. Visible only
-  under concurrent enqueue bursts on the production image (faulthandler found the frame). Nothing
-  reads a task result any more, so the result backend is unused — dropping it is the owner's call.
-- **`.with_for_update(key_share=True)` alone renders `FOR NO KEY UPDATE` on PostgreSQL**, a
-  *stronger* lock; `FOR KEY SHARE` needs `read=True` as well (`.with_for_update(read=True,
-  key_share=True)`). 2.5's `/verify` noticed it; 3.1 fell into it again in the tracking repository
-  and a **statement-capture** test found it (T19, held as a strict xfail; fixed in `e93f4fd`). Under
-  the stronger lock the deletion race still held, but a concurrent edit of the run would have waited
-  on a track. **The same defect remains in 2.3's
-  `infrastructure/persistence/repositories/tailoring/tailoring_run.py:186`** (the posting lock) —
-  still correct, only stronger than intended, and **left for the owner**. Compile the query and read
-  the SQL; a keyword argument's name is not documentation.
-- **WeasyPrint 70 crashes on `li::marker { content: … }`** with `TypeError: min-content width for
-  TextBox not handled yet`, on any `<ul>` — found by rendering the whole corpus per layout, not by a
-  unit test. Use `list-style-type: "\2013  "` (a string value) instead. Also: `text-transform` and
-  `small-caps` change the **case of text extracted** from the PDF, and WeasyPrint's embedded
-  `BaseFont` names are hyphenated (`Liberation-Serif-Bold`), so a read-back check compares
-  case-insensitively and hyphen-tolerantly.
-- **A migration adding a CHECK on a column the mapping does not write yet cannot land green alone**
-  (3.2, `37c7424`). Every ORM PDF insert left the column `NULL` and hit
-  `ck_export_job_layout_template_only_for_pdf`: 198 failures. The migration (T11) and the mapping
-  (T12) are one commit. "Migration before mapping" (2.3) holds for a nullable column with no
-  constraint; a constraint the mapping must satisfy ties the two together. **So does any constraint
-  at all (4.1, `5d75124`):** the `test_autogenerate_against_head_produces_an_empty_diff` tests read a
-  CHECK the metadata lacks as drift, even when every insert satisfies it via a `DEFAULT`.
-- **Vite inlines any asset under 4 KB as a `data:` URI** (`assetsInlineLimit`). The 2 KB layout
-  previews went into the JS chunk until `web/vite.config.ts` excluded `.webp`; AC-38 now asserts they
-  are hashed files.
-- **`base64.urlsafe_b64decode` silently discards characters outside its alphabet**, so
-  `"not-base64!!"` decodes. Anything decoded from a client (the history cursor) uses
-  `b64decode(s, altchars=b"-_", validate=True)`. Parse integers from it as digits only, because
-  `int()` accepts a sign, spaces and underscores. Every failure is one domain error, raised
-  `from None` and never echoed.
-- **nginx must not run `ngx_http_realip_module`.** One layer reconstructs the client IP, not two.
-  nginx forwards the headers; the application decides. Two trust layers that each look right in
-  isolation is the trap, and the symptom is a rate limiter keyed on the proxy's address — one global
-  bucket instead of one per visitor. **`TRUSTED_PROXY_HOPS` is the same trap wearing a number
-  instead of a module name**: it must equal the count of proxies *we* run in front of the api, which
-  on the box is **two** — Traefik, then nginx — not one. It read `1` from Phase 1 through 2.1's
-  `/verify`, which would have keyed every visitor, on every IP-scoped rate limiter, on Traefik's own
-  address; with 2.1's login/register limiters failing closed that is a site-wide lockout, not a
-  slow-degrade. The box reads `2` as of 2026-09-26 (read over SSH, T31). The dev override pins it
-  to `1`, since dev has only nginx in front.
-- **On FastAPI 0.141, a dependency's teardown runs *after* the response is sent.** `get_session`'s
-  commit therefore cannot change the answer: a failed commit ships a 200, or a 401 claiming a
-  deletion that never landed. Any response that must reflect a committed write **commits inside the
-  handler** — the reuse/expiry deletion behind a 401 (caught and *returned* as a response, so the
-  dependency never takes its rollback branch), logout's cookie clear (only after the commit), even
-  `/me`. Measured, not read in a changelog.
-- **FastAPI 0.141 no longer flattens `app.routes` on `include_router`.** The real `APIRoute`s sit
-  behind `_IncludedRouter.original_router.routes`, so a walker over `app.routes` finds nothing and
-  passes vacuously. Descend, duck-typed (the class is private). **It also serves a copy:**
-  `_IncludedRouter` builds `_EffectiveRouteContext`s from `route.endpoint`, so patching
-  `route.dependant.call` on the original `APIRoute` is never invoked (4.1, `4c61a28`). A spy wraps
-  `route.endpoint` and resets the effective-route cache; a test that counts calls asserts its
-  positive control first.
-- **A removed route answers 405, not 404, when its path still matches another route.**
-  `POST /api/base-cvs/copies` matches `/api/base-cvs/{base_cv_id}` (GET, PATCH, DELETE), so Starlette
-  refuses the method before any handler runs. Assert what the removal protects (405, and an `Allow`
-  header without the method), not a 404 that only extra code could produce.
-- **Two access tokens minted in the same second for one user are byte-identical** — no `jti`, and
-  `iat`/`exp` are whole seconds. Never key anything (a cache, a denylist, a test's "it changed") on
-  token identity.
-- **`JWT_SIGNING_KEY`'s `.env.example` placeholder is 33 bytes**, so a ≥ 32-byte check alone accepts
-  it. The production validator refuses it **by name**, and never with a `Field(min_length=…)`, whose
-  `ValidationError` renders `input_value` — the key.
-- **The WHATWG URL parser strips tab, CR and LF**, so a `next=/\t/evil.example` navigates as
-  `//evil.example` — an open redirect straight past a prefix check for `//` and `/\`.
-  `safeNext` refuses any control character rather than listing the three.
-- **`tailorcraft-api:local` is whatever the dev override last built** — the `development` target,
-  `--reload` and all. A "production image" measurement must `docker build --target production` under
-  its own tag, or it measures the wrong thing and supplies confidence anyway.
-- **httpx's cookie jar will not send a `Secure` cookie over plain HTTP**, so a production-mode app
-  measured without TLS never gets `tc_refresh` back and every refresh reads as "not signed in".
-  Parse `Set-Cookie` and re-attach it by hand in such a script. The same jar *stores* a `Secure`
-  cookie set over `http://` and silently never sends it back, so since the `__Host-tc_guest` slice
-  every test client's base URL is `https://testserver` (reverting it: 186 tests red).
-- **Access logs record query strings by default** (4.2, T26). nginx's `combined` format logs
-  `$request` and uvicorn's `uvicorn.access` logs the path with its query, so anything an operator
-  types into a `GET` query (the admin search, `?q=<part of an email>`) becomes a log line. Found
-  only by T26's manual log grep. Both now strip it on **every** route: a `logging.Filter`
-  (`observability.StripAccessLogQuery`) installed by `configure_logging` in every process that
-  imports the app, after uvicorn's own `dictConfig` (which replaces handlers, not a logger's
-  filters) (`abef0a2`), and a `noquery` `log_format` (`$request_method $uri $server_protocol`) in
-  both nginx configs (`f77b1d6`). **Traefik's access log, on the box, is unchecked.**
-  **Accepted gap (owner, 2026-10-11): nginx's `error_log` still writes the full request line,
-  query included** (`log_format` governs `access_log` only), e.g. every admin search during a 502
-  window after an api restart. **Sentry was the third copy and is closed** (`9984003`):
-  `strip_query_strings` runs as `before_send` **and** `before_send_transaction` (a transaction
-  skips `before_send`), dropping the incoming `request.query_string` and the outgoing httpx /
-  `http.client` `http.query`/`url` query on spans and breadcrumbs. The outgoing URL **path** still
-  reaches Sentry.
+**Startup and secrets**
+- The production `CMD` pre-flights `check-settings` (eleven refusals) before `exec uvicorn`. Run
+  directly, uvicorn respawns a refusing import forever. The box's `.env` must carry `MAIL_*`.
+- `JWT_SIGNING_KEY`'s placeholder is 33 bytes and is refused by name. Never use
+  `Field(min_length)`: it echoes the value.
+- A dev box with a real `GEMINI_API_KEY` spends money from the UI and from `make eval`.
+
+**Async and CPU**
+- **Any synchronous CPU-bound call on the loop blocks every user**, including "not real work" like
+  sniffing a DOCX. Dropping `to_thread` from a sync call makes `wait_for` unable to cancel it, and
+  the process hangs.
+- pytest-asyncio's fixture and test loop scopes are both `session`.
+- Keep `TC001`–`TC003` disabled: FastAPI/Pydantic/SQLAlchemy resolve annotations at runtime.
+
+**SQLAlchemy / Postgres**
+- A mapped class needs an explicit (empty) `__init__`.
+- **A failed flush expires the whole identity map.** Read ids into locals first, use a SAVEPOINT per
+  write in a batch, and `expunge` before `begin_nested()` (its entry flush skips version checks).
+- **`NOT EXISTS` in a `DELETE` can't see an uncommitted `INSERT`.** Use `FOR UPDATE`, then a
+  separate `DELETE`. The inserter takes `FOR KEY SHARE` **after** its `INSERT`.
+- `with_for_update(key_share=True)` alone is `FOR NO KEY UPDATE`; `FOR KEY SHARE` also needs
+  `read=True`. Compile and read the SQL.
+- Take the strongest lock first: `FOR SHARE` then `FOR UPDATE` on one row deadlocks two callers.
+  The user row is locked before any reset.
+- A `SET` on a pooled connection does not survive a commit. Pin the connection and commit the
+  `SET`. A hanging test is worse than a failing one.
+- Alembic runs a revision in one transaction, so `NOT VALID` → `VALIDATE` staging releases no lock.
+  Split the revision if a table grows.
+- Alembic's `fileConfig` must pass `disable_existing_loggers=False`.
+- PostgreSQL never frees dropped-column slots. `_migrated` recreates `public` per session (guarded
+  to `*_test`).
+- `get_settings()` under `APP_ENV=test` still returns the **dev** `database_url`. Anything that
+  deletes names `test_database_url` and asserts `_test`.
+- **A failed write leaks data three ways** (SQLAlchemy params, the driver message, the `from`
+  chain). The `handle_error` listener withholds all three and copies `constraint_name`, which you
+  read with `database.violated_constraint(exc)`, never by parsing. Postgres logs `terse`.
+
+**FastAPI / HTTP**
+- **A dependency's teardown runs after the response is sent** (0.141). A response that must reflect
+  a write commits inside the handler.
+- `app.routes` is not flattened on `include_router`, and `_IncludedRouter` serves copies. Walkers
+  descend; spies wrap `route.endpoint`.
+- A removed route whose path still matches another answers **405**, not 404.
+- Two tokens minted in the same second are identical, so never key on token identity.
+- httpx stores a `Secure` cookie over `http://` and never sends it back. Test clients use
+  `https://testserver`.
+- `urlsafe_b64decode` drops bad characters, so use `b64decode(…, altchars=b"-_", validate=True)`
+  and parse digits only.
+- The WHATWG parser strips tab/CR/LF in URLs: `safeNext` refuses any control character.
+
+**Privacy plumbing**
+- Sentry: `include_local_variables=False` (separate from `send_default_pii`). `strip_query_strings`
+  runs as `before_send` **and** `before_send_transaction`.
+- **Access logs drop query strings** (`StripAccessLogQuery` on uvicorn, a `noquery` nginx format).
+  nginx `error_log` still logs them (accepted). Traefik is unchecked.
+
+**Libraries**
+- WeasyPrint: it needs Pango/Cairo/HarfBuzz/fonts in the Dockerfile **and** CI. A plain-function
+  `url_fetcher` needs `_fail_on_errors`. `FatalURLFetchingError` is a `BaseException`.
+  `li::marker { content }` crashes, so use `list-style-type: "…"`. Sanitize the fragment, then wrap.
+- markdown-it drops a link without an `href`, leaving literal text.
 
 ## SDLC
 
@@ -1962,6 +526,8 @@ protected `main` → build images → **manual-gated** deploy. Never `git pull` 
 
 ## Documentation duties
 
-When behaviour changes, update: this file (if a convention or command changed), the relevant ADR (if
-a decision changed), and [FORboehpyk.md](./FORboehpyk.md) — the running plain-language project story,
-capturing bugs hit and lessons learned, per the owner's standing rule.
+When behaviour changes, update: this file (if a convention or command changed; keep it to one line
+per rule, with the long form in [LESSONS.md](./LESSONS.md)), the slice's entry in
+[HISTORY.md](./HISTORY.md), the relevant ADR (if a decision changed), and
+[FORboehpyk.md](./FORboehpyk.md), the running plain-language project story, per the owner's
+standing rule.
