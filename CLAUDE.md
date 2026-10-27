@@ -24,8 +24,8 @@ Twenty slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, `__Host-
 `web-design-refresh`. The latest is **`web-design-refresh`** (a frontend-only reskin plus the static
 `/welcome` page, ADR-0036/0037, PR #37), merged 2026-10-27, **before** OQ-17's 2026-10-30 floor, by
 the owner's decision. So **Phase 4's two-week gate clock (to 2026-10-29) closes on the reskinned
-`/admin`**, not on the code it started on. The stacked follow-up `feature/admin-only-system-status`
-(System status for admins only) merges next. Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still
+`/admin`**, not on the code it started on. Its follow-up `feature/admin-only-system-status` mounts the
+footer's System status for admins only; `/health/ready` itself stays public. Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still
 unrecorded** (OQ-7). Each slice's record (ADRs, migrations, measurements, `/verify` rounds, carried
 items) is in **[HISTORY.md](./HISTORY.md)**, and the stories are in [FORboehpyk.md](./FORboehpyk.md).
 Read the relevant entry before you touch that slice's code.

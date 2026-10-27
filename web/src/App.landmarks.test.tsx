@@ -8,8 +8,8 @@ import { renderWithRouter } from '@/test/render';
 /**
  * web-design-refresh T12 (AC-10), through the real route table: the shell's landmarks and heading
  * are the same on every page — one `banner`, one `main`, one `contentinfo`, one `<h1>` named exactly
- * "TailorCraft" holding a link to `/`, and a footer that holds *System status* and the link to
- * `/welcome`. Admin pages add a second `<h1>` inside `main` (known) and are not asserted here.
+ * "TailorCraft" holding a link to `/`, and a footer that holds the link to `/welcome`. *System
+ * status* is in the footer for admins only (`App.systemStatus.test.tsx`). Admin pages add a second `<h1>` inside `main` (known) and are not asserted here.
  */
 
 function expectShell(): void {
@@ -24,7 +24,6 @@ function expectShell(): void {
   expect(within(h1s[0] as HTMLElement).getByRole('link')).toHaveAttribute('href', '/');
 
   const footer = footers[0] as HTMLElement;
-  expect(within(footer).getByRole('heading', { name: 'System status' })).toBeInTheDocument();
   expect(within(footer).getByRole('link', { name: 'How TailorCraft works' })).toHaveAttribute(
     'href',
     '/welcome',
