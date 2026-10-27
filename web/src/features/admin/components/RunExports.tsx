@@ -79,7 +79,7 @@ export function RunExports({ actorId, subject, runId }: RunExportsProps): React.
                 )}
               </div>
               {failedJobId === job.id && download.isError && (
-                <p role="alert" className="text-red-700">
+                <p role="alert" className="text-danger-600">
                   {downloadFailureCopy(download.error)}
                 </p>
               )}

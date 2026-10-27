@@ -52,7 +52,7 @@ export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
         return (
           <>
             <BackToAccount subject={subject} />
-            <h1 className="text-lg font-semibold break-words text-slate-900">{name}</h1>
+            <h1 className="font-display text-xl font-bold break-words text-slate-900">{name}</h1>
             <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
               <dt className={TERM}>{CV_FIELD_FILENAME}</dt>
               <dd className={VALUE}>{data.original_filename}</dd>
@@ -66,7 +66,7 @@ export function AdminCvPage({ actorId }: AdminCvPageProps): React.JSX.Element {
               <dd className={VALUE}>{data.character_count?.toLocaleString() ?? '—'}</dd>
             </dl>
             <section aria-labelledby="admin-cv-text" className="space-y-2">
-              <h2 id="admin-cv-text" className="text-base font-semibold text-slate-900">
+              <h2 id="admin-cv-text" className="font-display text-base font-bold text-slate-900">
                 {CV_TEXT_HEADING}
               </h2>
               <CvText cv={data} />

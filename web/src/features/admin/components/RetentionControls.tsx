@@ -57,7 +57,7 @@ export function RetentionControls<T>({
             void preview.refetch();
           }}
           disabled={preview.isFetching}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {preview.isFetching ? PREVIEWING_LABEL : previewLabel}
         </button>
@@ -67,7 +67,7 @@ export function RetentionControls<T>({
             setConfirming(true);
           }}
           disabled={run.isPending}
-          className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 disabled:opacity-60"
+          className="rounded-md border border-danger-200 bg-white px-4 py-2 text-sm font-semibold text-danger-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {run.isPending ? RUNNING_LABEL : runLabel}
         </button>
@@ -78,7 +78,7 @@ export function RetentionControls<T>({
         </p>
       ) : (
         preview.error !== null && (
-          <p role="alert" className="text-sm text-red-700">
+          <p role="alert" className="text-sm text-danger-600">
             {PREVIEW_FAILED}
           </p>
         )
@@ -101,7 +101,7 @@ export function RetentionControls<T>({
         </p>
       )}
       {run.error !== null && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {failureCopy(run.error)}
         </p>
       )}

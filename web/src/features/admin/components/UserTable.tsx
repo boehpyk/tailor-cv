@@ -53,7 +53,7 @@ export function UserTable({ users, actorId }: UserTableProps): React.JSX.Element
               <td className="py-2 pr-4 break-all">
                 <Link
                   to={`/admin/users/${encodeURIComponent(user.id)}`}
-                  className="font-medium text-slate-900 underline underline-offset-2"
+                  className="font-medium text-brand-700 underline underline-offset-2"
                 >
                   {user.email}
                 </Link>

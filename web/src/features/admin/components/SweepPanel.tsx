@@ -31,7 +31,7 @@ export function SweepPanel({ actorId }: SweepPanelProps): React.JSX.Element {
   const { sweepPreview, sweep } = useRetentionRuns(actorId);
   return (
     <section aria-labelledby="admin-sweep-heading" className="space-y-3">
-      <h2 id="admin-sweep-heading" className="text-base font-semibold text-slate-900">
+      <h2 id="admin-sweep-heading" className="font-display text-base font-bold text-slate-900">
         {SWEEP_HEADING}
       </h2>
       <RetentionControls

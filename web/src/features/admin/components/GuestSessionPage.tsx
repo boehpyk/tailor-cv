@@ -70,7 +70,7 @@ function SessionView({
   const subject: AdminSubject = { kind: 'guest', sessionId: session.id };
   return (
     <section className="mb-10 min-w-0 space-y-6">
-      <h1 className="text-lg font-semibold text-slate-900">{GUEST_SESSION_HEADING}</h1>
+      <h1 className="font-display text-xl font-bold text-slate-900">{GUEST_SESSION_HEADING}</h1>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
         <dt className={TERM}>{FIELD_ID}</dt>
         <dd className={VALUE}>{session.id}</dd>
@@ -153,7 +153,7 @@ function GuestSection({
 }): React.JSX.Element {
   return (
     <section aria-labelledby={id} className="space-y-3">
-      <h2 id={id} className="text-base font-semibold text-slate-900">
+      <h2 id={id} className="font-display text-base font-bold text-slate-900">
         {heading}
       </h2>
       {children}

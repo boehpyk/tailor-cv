@@ -28,7 +28,7 @@ const VALUE = 'font-medium text-slate-900 break-all';
 export function AccountOverview({ user }: AccountOverviewProps): React.JSX.Element {
   return (
     <div className="space-y-6">
-      <h1 className="text-lg font-semibold break-all text-slate-900">{user.email}</h1>
+      <h1 className="font-display text-xl font-bold break-all text-slate-900">{user.email}</h1>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
         <dt className={TERM}>{FIELD_ID}</dt>
         <dd className={VALUE}>{user.id}</dd>

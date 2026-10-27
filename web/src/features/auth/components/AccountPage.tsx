@@ -44,7 +44,7 @@ export function AccountPage() {
 
   return (
     <section aria-labelledby="account-heading" className="mb-10">
-      <h2 id="account-heading" className="mb-4 text-lg font-semibold text-slate-900">
+      <h2 id="account-heading" className="mb-4 font-display text-xl font-bold text-slate-900">
         Your account
       </h2>
       <AccountBody query={currentUser} />
@@ -58,7 +58,7 @@ export function AccountPage() {
           }}
           disabled={logout.isPending}
           aria-describedby={logout.error === null ? undefined : 'logout-error'}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {logout.isPending ? LOGOUT_PENDING_LABEL : LOGOUT_LABEL}
         </button>
@@ -87,7 +87,7 @@ function AccountBody({ query }: { readonly query: ReturnType<typeof useCurrentUs
           onClick={() => {
             void query.refetch();
           }}
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white"
+          className="rounded-md bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600"
         >
           {AUTH_RETRY_LABEL}
         </button>

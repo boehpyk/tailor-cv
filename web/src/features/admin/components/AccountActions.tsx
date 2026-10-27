@@ -84,7 +84,7 @@ export function AccountActions({ actorId, user }: AccountActionsProps): React.JS
             if (toggle === 'enable') run('enable');
             else setConfirming('disable');
           }}
-          className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+          className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {toggleLabel}
         </button>
@@ -94,13 +94,13 @@ export function AccountActions({ actorId, user }: AccountActionsProps): React.JS
           onClick={() => {
             setConfirming('erase');
           }}
-          className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 disabled:opacity-60"
+          className="rounded-md border border-danger-200 bg-white px-4 py-2 text-sm font-semibold text-danger-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
         >
           {pending === 'erase' ? ERASE_PENDING_LABEL : ERASE_LABEL}
         </button>
       </div>
       {action.isError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {failureCopy(action.variables, action.error)}
         </p>
       )}

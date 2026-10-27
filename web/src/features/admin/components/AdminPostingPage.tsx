@@ -45,7 +45,7 @@ export function AdminPostingPage({ actorId }: AdminPostingPageProps): React.JSX.
       {(data) => (
         <>
           <BackToAccount subject={subject} />
-          <h1 className="text-lg font-semibold break-words text-slate-900">
+          <h1 className="font-display text-xl font-bold break-words text-slate-900">
             {data.title ?? UNTITLED_POSTING}
           </h1>
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
@@ -61,7 +61,7 @@ export function AdminPostingPage({ actorId }: AdminPostingPageProps): React.JSX.
             <dd className={VALUE}>{new Date(data.created_at).toLocaleString()}</dd>
           </dl>
           <section aria-labelledby="admin-posting-text" className="space-y-2">
-            <h2 id="admin-posting-text" className="text-base font-semibold text-slate-900">
+            <h2 id="admin-posting-text" className="font-display text-base font-bold text-slate-900">
               {POSTING_TEXT_HEADING}
             </h2>
             <BodyText text={data.text} />

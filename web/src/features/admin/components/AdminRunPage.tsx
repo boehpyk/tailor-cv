@@ -98,7 +98,7 @@ function RunView({
   return (
     <>
       <BackToAccount subject={subject} />
-      <h1 className="text-lg font-semibold text-slate-900">{RUN_HEADING}</h1>
+      <h1 className="font-display text-xl font-bold text-slate-900">{RUN_HEADING}</h1>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
         <dt className={TERM}>{RUN_FIELD_STATUS}</dt>
         <dd className={VALUE}>{historyStatusCopy(run)}</dd>
@@ -133,7 +133,7 @@ function RunView({
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-900 disabled:opacity-60"
+            className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
           >
             {RUN_REFRESH_LABEL}
           </button>
@@ -216,7 +216,7 @@ function DocumentSection({
   const id = `admin-run-${document}`;
   return (
     <section aria-labelledby={id} className="space-y-2">
-      <h2 id={id} className="text-base font-semibold text-slate-900">
+      <h2 id={id} className="font-display text-base font-bold text-slate-900">
         {DOCUMENT_HEADINGS[document]}
       </h2>
       {text !== null && <BodyText text={text} />}

@@ -11,11 +11,11 @@ import { Link } from 'react-router';
 export function NotFoundPage(): React.JSX.Element {
   return (
     <section aria-labelledby="not-found-heading" className="mb-10">
-      <h2 id="not-found-heading" className="text-lg font-semibold text-slate-900">
+      <h2 id="not-found-heading" className="font-display text-xl font-bold text-slate-900">
         We couldn&apos;t find that page.
       </h2>
       <p className="mt-2 text-slate-600">
-        <Link to="/" className="font-medium text-slate-900 underline underline-offset-2">
+        <Link to="/" className="font-medium text-brand-700 underline underline-offset-2">
           Back to the workspace
         </Link>
       </p>

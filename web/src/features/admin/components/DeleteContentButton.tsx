@@ -110,12 +110,12 @@ export function DeleteContentButton({
         onClick={() => {
           setConfirming(true);
         }}
-        className="rounded-md border border-red-300 px-4 py-2 text-sm font-medium text-red-700 disabled:opacity-60"
+        className="rounded-md border border-danger-200 bg-white px-4 py-2 text-sm font-semibold text-danger-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 disabled:opacity-60"
       >
         {remove.isPending ? DELETE_PENDING_LABEL : label}
       </button>
       {remove.isError && (
-        <p role="alert" className="text-sm text-red-700">
+        <p role="alert" className="text-sm text-danger-600">
           {failureCopy(remove.error)}
         </p>
       )}
