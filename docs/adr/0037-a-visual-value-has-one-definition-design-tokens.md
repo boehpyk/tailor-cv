@@ -37,9 +37,14 @@ deliberate new colour from a typo.
    | Links | brand-700 | `surface`, white |
    | Primary button label | white | brand-600 |
    | Text on highlighter | slate-900 | `highlight-100/200` |
+   | Destructive / warning button label | white | danger-600 (6.5), amber-700 (5.1), amber-800 (7.1) |
+   | Status text on its tint | success-700 / danger-600 / brand-700 | success-50 (7.0) / danger-50 (5.9) / brand-50 (6.2) |
+   | Text on a dark panel | slate-200 / slate-300 | slate-900 (14.5 / 12.0) |
    | **Never text** | slate-400, brand-500; slate-500 on `surface-sunk`/`page-grey` | — |
 
-   The dashed `stitch` divider is decorative and carries no meaning.
+   The dashed `stitch` divider is decorative and carries no meaning. `brand-400` (L 0.40) is
+   *darker* than `brand-700` (L 0.47) despite its number: the spec fixed it as a hover shade, and
+   no component uses it yet. Read the lightness, not the number, before picking it.
 4. **Enforced by `web/src/design.grep.test.ts`**, beside `security.grep.test.ts` and using its
    walker: the forbidden needles above, plus the marketing page's fictional illustration names
    (which may appear only under `features/marketing/`).

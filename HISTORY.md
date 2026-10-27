@@ -774,7 +774,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   packages; the `assetsInlineLimit` source pin now also requires `.woff2 → false`), `CvDropzone`
 >   (class → `data-drag-over`), `JobPostingInput` (class → `data-over-limit` + danger token),
 >   `BoardPage.a11y` (`lg:w-60` → `lg:w-64`), `AdminRoute.chunkFailure/chunkLoading` (import paths
->   after `LazyBoundary` moved to `components/ui/`). **Measured (T41):** main `index-*.js` 145.79 →
+>   after `LazyBoundary` moved to `components/ui/`), `InputTabs` (additions only: T13's RED cases,
+>   T20's rail pins). **Measured (T41):** main `index-*.js` 145.79 →
 >   **149.70 kB gzip (+3.91)**, over AC-39's 3 KB, **budget amended to 4 KB by the owner on
 >   2026-10-27** (markup weight, no dependency); CSS 5.72 → 8.57 kB; `/welcome` chunk **3.39 kB**
 >   (15), none of its text in main; fonts 112 428 B in 7 files, **78 576 B** fetched on a cold `/`;
