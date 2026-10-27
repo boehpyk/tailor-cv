@@ -798,6 +798,38 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   outside the C-table, for the reviewer:** `HISTORY_COLUMN_LABELS` (*Role*, *Base CV*, *Requested*,
 >   an `aria-hidden` header row). Follow-up named, not built: a CSP in nginx (`default-src 'self'`).
 >
+> - **`domain-fixcv-app`** (owner-initiated, outside the phases; **approved, implemented, verified and
+>   released 2026-10-27**; PR #40, `8468b5f`, deploy run 40591221234) — production moves from
+>   `cv.samolit.com` to the apex **`fixcv.app`**, which the owner registered the same day. **Config
+>   only**: the app learns its origin from `PUBLIC_BASE_URL` alone (mail links, the `Origin` check,
+>   the fetcher's `User-Agent`), so no domain, application, API, migration or frontend line changed.
+>   **Traefik**: the main router answers ``Host(`fixcv.app`)``; a separate `tailorcraft-www` router
+>   sends `www.fixcv.app` through the permanent `tailorcraft-to-apex` `redirectregex`, path and query
+>   kept. One router per host, because Traefik requests one certificate per router. The compose `$$`
+>   escape was read off a throwaway container (`^https?://[^/]+/(.*)$`, `https://fixcv.app/${1}`),
+>   because `compose config` re-escapes its own output. **Smoke step**: `fixcv.app/health/ready` with
+>   `--retry-all-errors` (a not-yet-issued certificate is curl exit 60, which plain `--retry` skips),
+>   plus an exact `301 https://fixcv.app/health/ready?x=1` assertion on `www`. **OQ-1, owner:
+>   `cv.samolit.com` is retired, not redirected.** It had already been NXDOMAIN at the authoritative
+>   server when planning began (production unreachable by name), and the owner chose not to restore
+>   it, since no customers were there. **ADR-0038**: the apex is the host; no `*.fixcv.app` name other
+>   than the `www` redirect ever points at an HTTP server. The reviewer widened this from "our routers"
+>   to **any DNS record**, including vendor CNAMEs and dangling ones. **ADR-0008 (m)**: **OQ-16 is
+>   closed by that condition**, and the `__Host-` rename of `tc_refresh` is unscheduled until the
+>   trigger fires. Two cookie docstrings no longer name a host. The mail sender stays
+>   `notifications.samolit.com` (OQ-7). **`/verify`** round 1 PASS; its MINORs were fixed in `2e64751`
+>   and the local runbook. The new *Changing the production host* runbook first said "roll back by
+>   re-running the previous deploy", which here would have re-served a name that no longer resolves.
+>   It now says to fix forward. **Released 2026-10-27, before OQ-8's 2026-10-30 floor, by the owner's
+>   decision**: the box `.env` was edited and `check-settings` passed while the deploy waited, then the
+>   owner approved. **Measured after release (2026-10-27):** `/health/ready` ready (Postgres, Redis,
+>   Celery 1 worker); certificate `CN=fixcv.app`, SAN `fixcv.app`, issuer Let's Encrypt YR2; `www` →
+>   `301 https://fixcv.app/health/ready?x=1`; a login `POST` with `Origin: https://cv.samolit.com` →
+>   403. The owner reports "everything works fine" for the rest of the production checks (AC-8,
+>   AC-10, AC-11). They are not itemised here, and AC-12's stranded counts, the Traefik version and
+>   the `POST` redirect status were not recorded. Every user was signed out once. Phase 4's gate (to
+>   2026-10-29) now spans a host change as well as the reskin.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,

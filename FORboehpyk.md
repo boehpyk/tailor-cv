@@ -6774,3 +6774,118 @@ The owner's manual pass came back clean. It was the first Firefox pass in this p
 on admin pages that changed paint halfway through the measurement. A rule you wrote yourself is
 still yours to override. What matters is that the override is written down with its reason, not
 slipped past. Next up is a small stacked change: *System status* in the footer for admins only.
+
+# domain-fixcv-app — moving house without moving the furniture
+
+On 27 October the product got an address of its own: **`fixcv.app`**. Until then it lived at
+`cv.samolit.com`, a flat in someone else's building. This chapter is about the move, which took one
+afternoon, and about why it took an afternoon rather than a week.
+
+## The name hunt
+
+The first try was the obvious one: `tailorcraft.com`, `tailorcv.*`, `cvtailor.*`, `fitmycv.*`. Every
+`.com` and every short generic CV name was taken. The useful lesson is the checking discipline: no
+domain was called "available" from memory. Each one went through a live registry lookup (RDAP), the
+way a test asserts rather than assumes. `fix-cv.com` was free, but a hyphen is a trap. People type
+`fixcv.com`, which belongs to someone else, so a hyphenated name sends some of your visitors to a
+stranger. `fixcv.app` won: no hyphen, and `.app` is on the browsers' HSTS preload list, so it can
+only ever be served over HTTPS. That's a security property you get from the registry, for free.
+
+## The surprise in the cellar
+
+While planning, the planner ran `dig` on the old address and got **NXDOMAIN**: the name didn't
+exist. That was confirmed on the authoritative nameserver too, not just a cache. Production had been
+unreachable by name, quietly, before anyone touched anything. The box was fine: forcing the address
+with `curl --resolve` returned 200. Someone had deleted the `cv` record.
+
+The plan recommended restoring it and redirecting it, so old bookmarks and emails would keep
+working. The owner said no: *there are no customers there.* That's a good example of a
+recommendation being right in general and wrong in context. A redirect is for people who would
+otherwise be stranded. With nobody to strand, it is just a router and a certificate to maintain
+forever. The spec recorded the answer, struck out the two acceptance criteria that depended on it,
+and moved on.
+
+## Why it was an afternoon: configuration is the seam
+
+Here's the payoff of the hexagonal design, months after it was chosen. The app knows its own
+address from **exactly one setting**, `PUBLIC_BASE_URL`. Three adapters read it: the mail renderer
+(links in emails), the `Origin` check on the login endpoints, and the job-posting fetcher's
+`User-Agent`. The domain layer has no idea where it is served from, and it shouldn't. A CV is
+tailored the same way whatever is in the address bar.
+
+So the move changed zero lines of Python behaviour. What did change:
+
+- **Traefik's labels** (the building's front-desk directory): `fixcv.app` goes to our nginx, and
+  `www.fixcv.app` gets a sign that says "301, go round the front".
+- **Two lines in `.env.example`**, and the same two by hand in the box's `.env`.
+- **The deploy's smoke check**, which now knocks on the new door.
+- **Two docstrings** that used to say "samolit".
+
+Moving house is easy when nothing is screwed to the walls.
+
+## Three small things that bite
+
+**Compose eats dollar signs.** The redirect's replacement string is `https://fixcv.app/${1}`, and
+Docker Compose treats `$` as the start of a variable. You write `$$` to get a literal `$`. The
+trap: `docker compose config`, the tool you'd use to check, prints `$$` back to you, because it
+re-escapes its output so it stays valid compose. The real check was to create a throwaway container
+and read the label off it with `docker inspect`. It said `${1}`. **Check the artifact, not the
+tool's description of it.**
+
+**One certificate per router.** You could write `Host(a) || Host(b)` on one Traefik router, but
+Traefik then asks Let's Encrypt for one certificate covering both names. If either name fails
+validation, *both* go without a certificate. Separate routers mean separate failures.
+
+**curl's `--retry` is pickier than it sounds.** On a first release to a new name, the certificate
+may still be in flight, and curl then fails with exit 60 (bad certificate). Plain `--retry` only
+retries "transient" errors, and a bad certificate isn't one of them. `--retry-all-errors` is the
+flag that makes the smoke check patient for about a minute instead of failing the release on a
+timing accident.
+
+## The order of operations is the whole trick
+
+A container keeps the environment it was **created** with. Editing `.env` on the box changes
+nothing until a container is recreated. That sounds like a footgun, and earlier slices hit it
+(`restart` ignores `.env` changes). Here it is a gift: the owner edited `.env` *while the deploy
+waited for approval*, ran `check-settings` in a throwaway container, and only then approved. The new
+containers came up with the new environment in one step. Skip the edit, and the app would have
+served on `fixcv.app` while its `Origin` check still trusted `cv.samolit.com`: every login refused
+with a 403, at the front door of a brand-new house.
+
+## The review that made a rule honest
+
+There was a security bonus in the move. A known gap (OQ-16) said that a sibling site under
+`samolit.com` could plant a login cookie on us. A sibling is a different app on the same registrable
+domain, and browsers let it set cookies for the whole family. On an apex the app owns alone, there
+are no siblings. ADR-0038 recorded that as a **condition** rather than a fix: no other host under
+`fixcv.app` ever serves content.
+
+The reviewer sharpened it. "No other host" sounds like a rule about *our* routers. But a sibling
+appears whenever **any DNS record** points a `*.fixcv.app` name at *any* web server, such as a
+hosted status page, a mail provider's click-tracking CNAME, or a CNAME left dangling after a
+vendor is dropped. Any of those could set a `Domain=fixcv.app` cookie. The rule now says so. A
+security property "closed by condition" is only as good as people's ability to notice when the
+condition stops being true, so the condition has to name everything that can break it.
+
+The same review caught the runbook's rollback, which said: re-run the previous deploy. That deploy
+serves `cv.samolit.com`, which no longer exists. Followed literally at 2 a.m., it would have taken
+the site offline while claiming to restore it. It now says to fix forward. **A runbook step that
+leads to an outage is worse than having no step.**
+
+## What a good engineer takes from this one
+
+- **Keep the environment out of the domain.** The payoff comes later, in a move that changes no
+  code.
+- **Measure before you plan.** One `dig` found a production outage that nobody had reported.
+- **Recommendations depend on context.** "Always keep a redirect" is good advice right up until
+  there's nobody to redirect.
+- **Order the steps so each is safe on its own.** Edit, pre-flight, then approve. Each step can be
+  undone until the last one.
+
+## What's next
+
+The move is done and the owner reports everything works: the certificate, the `www` redirect, the
+refused old origin and a healthy `/health/ready` were all checked from outside. Everyone was signed
+out once, which is the price of host-only cookies, and the same property is what made them safe.
+The mail still comes from `notifications.samolit.com`. Moving that is a separate step, with its own
+DNS records and deliverability check, whenever it's wanted.

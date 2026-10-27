@@ -20,10 +20,12 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-Twenty slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, `__Host-tc_guest` and
-`web-design-refresh`. The latest is **`web-design-refresh`** (a frontend-only reskin plus the static
-`/welcome` page, ADR-0036/0037, PR #37, `a539040`), released 2026-10-27 (run 40539367985),
-**before** OQ-17's 2026-10-30 floor, by the owner's decision. So **Phase 4's two-week gate clock (to
+Twenty-one slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, `__Host-tc_guest`,
+`web-design-refresh` and `domain-fixcv-app`. The latest is **`domain-fixcv-app`** (production moves
+to `fixcv.app`, config only, ADR-0038, PR #40, `8468b5f`), released 2026-10-27 (run 40591221234).
+Before it, **`web-design-refresh`** (a frontend-only reskin plus the static `/welcome` page,
+ADR-0036/0037, PR #37, `a539040`) was released 2026-10-27 (run 40539367985), **before** OQ-17's
+2026-10-30 floor, by the owner's decision. So **Phase 4's two-week gate clock (to
 2026-10-29) closes on the reskinned `/admin`**, not on the code it started on. Its follow-up, PR #38
 (`56fabc4`, run 40548606371), mounts the footer's System status for admins only; `/health/ready`
 itself stays public. Phase 2 is closed (gate met 2026-10-03). **Phase 1's gate is still unrecorded**
