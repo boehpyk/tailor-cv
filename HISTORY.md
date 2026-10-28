@@ -830,8 +830,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   the `POST` redirect status were not recorded. Every user was signed out once. Phase 4's gate (to
 >   2026-10-29) now spans a host change as well as the reskin.
 >
-> - **`brand-fixcv`** (owner-initiated, outside the phases; 2026-10-27; branch
->   `feature/brand-fixcv`, not yet merged) — the product is renamed **FixCV**. **Brand only, by the
+> - **`brand-fixcv`** (owner-initiated, outside the phases; **released 2026-10-28**; PR #42,
+>   `cf54c71`, deploy run 40608951576) — the product is renamed **FixCV**. **Brand only, by the
 >   owner's choice**: every reader-facing `TailorCraft` became `FixCV` (header, `<title>`, mail
 >   subjects and bodies, `MAIL_FROM_NAME`'s default, error copy, the fetcher's `User-Agent`, the
 >   OpenAPI title, the constitution, ADRs, agents and skills). The code name **`tailorcraft`** stays
@@ -843,7 +843,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   logo is not shipped, because the app has no dark theme. **Six admin XSS tests (four files)** asserted "no
 >   `img` in the container", which the logo broke. They now assert no `img` inside `main`, where the
 >   payload would land. **Box follow-up:** if the box `.env` sets `MAIL_FROM_NAME=TailorCraft`, edit
->   it. The setting outranks the new default.
+>   it. The setting outranks the new default. **Measured after release (2026-10-28):**
+>   `fixcv.app/health/ready` 200, the live `<title>` reads FixCV; the owner reports everything fine.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
