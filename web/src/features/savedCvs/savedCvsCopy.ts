@@ -27,7 +27,7 @@ export const RETRY_LABEL = 'Retry';
 export const CANCEL_LABEL = 'Cancel';
 
 /** A thrown value that is not an `ApiError` never reached a response: offline, DNS, a dead proxy. */
-export const NETWORK_FAILURE_NOTE = "Couldn't reach TailorCraft.";
+export const NETWORK_FAILURE_NOTE = "Couldn't reach FixCV.";
 
 /** A code this client does not know — the wire's `code` is an open set, so there is a fallback. */
 export const UNKNOWN_FAILURE_NOTE = 'Something went wrong. Try again.';
@@ -231,7 +231,7 @@ export function deleteAccountErrorCopy(
   nowMs: number,
 ): string {
   if (!(error instanceof ApiError)) {
-    return "Couldn't reach TailorCraft. Your account was not deleted.";
+    return "Couldn't reach FixCV. Your account was not deleted.";
   }
   if (isSignedOut(error)) {
     return "You've been signed out, so your account was not deleted. Sign in to try again.";
@@ -251,7 +251,7 @@ export function deleteAccountErrorCopy(
     case 'validation_error':
       return 'Enter your password, then try again.';
     case 'origin_not_allowed':
-      return 'This page is out of date. Reload TailorCraft and try again.';
+      return 'This page is out of date. Reload FixCV and try again.';
     default:
       return 'Something went wrong. Your account was not deleted — try again.';
   }

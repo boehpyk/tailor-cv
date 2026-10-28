@@ -601,7 +601,7 @@ class Settings(BaseSettings):
     # A `SecretStr`, `jwt_signing_key`'s reason: neither `repr(settings)` nor a traceback prints it.
     mail_smtp_password: SecretStr = SecretStr("")
     mail_from_address: str = ""
-    mail_from_name: str = "TailorCraft"
+    mail_from_name: str = "FixCV"
     # The socket timeout of every SMTP operation. `wait_for` cannot cancel a thread, so this is the
     # bound that actually holds; Celery's hard limit is the one behind it.
     mail_send_timeout_seconds: int = Field(default=10, ge=1, le=30)

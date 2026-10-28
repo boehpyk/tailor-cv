@@ -196,7 +196,7 @@ def _fetcher() -> HttpxTrafilaturaFetcher:
     Bounds are generous rather than tight: this test is measuring the event loop, not the fetcher's
     failure contract, so nothing here should come close to timing out or hitting the byte cap."""
     return HttpxTrafilaturaFetcher(
-        user_agent="TailorCraftTest/1.0 (+http://example.invalid)",
+        user_agent="FixCVTest/1.0 (+http://example.invalid)",
         timeout_seconds=20,
         connect_timeout_seconds=5.0,
         read_timeout_seconds=10.0,

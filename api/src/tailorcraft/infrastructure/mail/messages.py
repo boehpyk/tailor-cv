@@ -34,9 +34,9 @@ from tailorcraft.domain.identity.account_mail import (
 )
 from tailorcraft.infrastructure.settings import Settings
 
-SUBJECT_CONFIRM: Final = "Confirm your email address for TailorCraft"
-SUBJECT_ACCOUNT_EXISTS: Final = "You already have a TailorCraft account"
-SUBJECT_RESET: Final = "Reset your TailorCraft password"
+SUBJECT_CONFIRM: Final = "Confirm your email address for FixCV"
+SUBJECT_ACCOUNT_EXISTS: Final = "You already have a FixCV account"
+SUBJECT_RESET: Final = "Reset your FixCV password"
 
 # The paths the React app serves for each link (plan §7). The token rides in the fragment.
 CONFIRM_PATH: Final = "/confirm-email#token="
@@ -117,7 +117,7 @@ def _confirm_body(link: str, expires_in: timedelta) -> str:
     return (
         "Hello,\n"
         "\n"
-        "Someone, hopefully you, asked to create a TailorCraft account with this email address.\n"
+        "Someone, hopefully you, asked to create a FixCV account with this email address.\n"
         "To confirm it, open this link:\n"
         "\n"
         f"{link}\n"
@@ -128,7 +128,7 @@ def _confirm_body(link: str, expires_in: timedelta) -> str:
         "If this was not you, ignore this message. No account is created unless the link is "
         "opened.\n"
         "\n"
-        "TailorCraft\n"
+        "FixCV\n"
     )
 
 
@@ -138,7 +138,7 @@ def _account_exists_body(login_link: str, reset_link: str) -> str:
     return (
         "Hello,\n"
         "\n"
-        "Someone, hopefully you, tried to create a TailorCraft account with this email address. "
+        "Someone, hopefully you, tried to create a FixCV account with this email address. "
         "An account with this address already exists, so nothing was changed.\n"
         "\n"
         "To log in:\n"
@@ -149,7 +149,7 @@ def _account_exists_body(login_link: str, reset_link: str) -> str:
         "\n"
         "If this was not you, ignore this message.\n"
         "\n"
-        "TailorCraft\n"
+        "FixCV\n"
     )
 
 
@@ -157,7 +157,7 @@ def _reset_body(link: str, expires_in: timedelta) -> str:
     return (
         "Hello,\n"
         "\n"
-        "Someone, hopefully you, asked to reset the password of the TailorCraft account with this "
+        "Someone, hopefully you, asked to reset the password of the FixCV account with this "
         "email address. To choose a new password, open this link:\n"
         "\n"
         f"{link}\n"
@@ -167,7 +167,7 @@ def _reset_body(link: str, expires_in: timedelta) -> str:
         "\n"
         "If this was not you, ignore this message. Your password stays as it is.\n"
         "\n"
-        "TailorCraft\n"
+        "FixCV\n"
     )
 
 

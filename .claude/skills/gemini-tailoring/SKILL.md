@@ -1,6 +1,6 @@
 ---
 name: gemini-tailoring
-description: How to change anything that touches the LLM in TailorCraft — the prompt structure, structured output and its re-validation, the timeout/retry/failure contract, token budgeting against the 15-second target, the fake adapter every test uses, and how to evaluate prompt quality (which is not a unit test). Use when working on tailoring, prompts, the Gemini adapter, or any LLM failure path.
+description: How to change anything that touches the LLM in FixCV — the prompt structure, structured output and its re-validation, the timeout/retry/failure contract, token budgeting against the 15-second target, the fake adapter every test uses, and how to evaluate prompt quality (which is not a unit test). Use when working on tailoring, prompts, the Gemini adapter, or any LLM failure path.
 ---
 
 # Working on the LLM path

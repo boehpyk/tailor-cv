@@ -40,7 +40,7 @@ export interface DocumentAutosaveOptions {
 const MAX_TRANSIENT_RETRIES = 3;
 
 /**
- * How long a 429 without a usable `Retry-After` pauses saving. Every TailorCraft 429 carries the
+ * How long a 429 without a usable `Retry-After` pauses saving. Every FixCV 429 carries the
  * header, so this is the answer for a proxy's or a future endpoint's bare 429 — and a minute is
  * long enough not to hammer a limiter and short enough that a person still typing gets their
  * save.

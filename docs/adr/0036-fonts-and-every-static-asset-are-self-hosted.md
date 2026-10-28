@@ -13,7 +13,7 @@ for display, Figtree for UI, JetBrains Mono). The designer's mockups load them t
 
 That is a request to a third party on **every page load, from every visitor**, carrying their IP
 address, user agent and the page's origin in `Referer`/`Origin`. For a product whose users hand over
-a CV — often while unemployed and in a hurry — it is a leak of who is using TailorCraft, to a party
+a CV — often while unemployed and in a hurry — it is a leak of who is using FixCV, to a party
 the user never agreed to talk to, for a decoration. (A German court found exactly this embedding
 unlawful in 2022; the legal point matters less than the principle: Constitution §8 says nothing is
 sent anywhere the user was not told about.)

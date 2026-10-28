@@ -66,7 +66,8 @@ describe('the posting page — AC-25', () => {
 
     const block = await screen.findByText(body);
     expect(block).toHaveClass('whitespace-pre-wrap');
-    expect(container.querySelector('img')).toBeNull();
+    expect(block.closest('main')).not.toBeNull();
+    expect(container.querySelector('main img')).toBeNull();
     expect(container.querySelector('strong')).toBeNull();
     expect((window as unknown as Record<string, unknown>).__pwned).toBeUndefined();
   });

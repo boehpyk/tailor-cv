@@ -56,7 +56,7 @@ def _settings() -> Settings:
         mail_smtp_port=_SMTP_PORT,
         mail_smtp_security="none",
         mail_from_address=_FROM,
-        mail_from_name="TailorCraft",
+        mail_from_name="FixCV",
         public_base_url=_BASE_URL,
     )
 

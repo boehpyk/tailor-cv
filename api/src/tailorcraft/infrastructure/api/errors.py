@@ -160,7 +160,7 @@ BASE_CV_NOT_EXTRACTED_DETAIL = {
 
 ORIGIN_NOT_ALLOWED_DETAIL = {
     "code": "origin_not_allowed",
-    "message": "This request did not come from TailorCraft.",
+    "message": "This request did not come from FixCV.",
 }
 """403 from `require_trusted_origin` (AC-25, I-28). Not a `DomainError`: an `Origin` header is an HTTP
 fact the domain has no word for."""

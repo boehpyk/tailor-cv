@@ -147,7 +147,7 @@ the test module*, and a test asserts that the production wiring builds the stric
 loosened the default" is then a red test rather than a silent regression.
 
 **We do not impersonate a browser.** The User-Agent is honest and identifying —
-`TailorCraft/0.1 (+<public_base_url>)`. Constitution §5 closes the anti-bot road and FR-2 makes the
+`FixCV/0.1 (+<public_base_url>)`. Constitution §5 closes the anti-bot road and FR-2 makes the
 paste fallback the product's answer to a refusal. This is written down here because "just set a
 Chrome UA" is the reflexive fix the first time a Cloudflare 403 appears, and the moment of temptation
 is months after the moment of decision.

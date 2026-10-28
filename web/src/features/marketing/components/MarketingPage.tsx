@@ -1,6 +1,8 @@
 import { useId } from 'react';
 import { Link } from 'react-router';
 
+import logo from '@/assets/brand/fixcv-logo-light.png';
+
 import {
   HERO_BADGE,
   HERO_DOWNLOAD_AS,
@@ -68,17 +70,8 @@ export default function MarketingPage(): React.JSX.Element {
     <div className="min-h-dvh bg-surface">
       <header>
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-8 gap-y-2 px-4 py-4">
-          <Link
-            to="/"
-            className={`flex items-center gap-2.5 rounded-sm font-display text-xl font-bold tracking-tight text-slate-900 ${focusRing}`}
-          >
-            <span
-              aria-hidden="true"
-              className="flex size-7 items-center justify-center rounded-lg bg-brand-600"
-            >
-              <span className="size-4 rounded-sm border-[1.5px] border-dashed border-white" />
-            </span>
-            {WORDMARK}
+          <Link to="/" className={`-my-2 flex rounded-sm ${focusRing}`}>
+            <img src={logo} alt={WORDMARK} width={384} height={150} className="h-16 w-auto" />
           </Link>
           <nav className="flex items-center gap-6 text-[15px] sm:gap-8">
             <a href="#how-it-works" className={`max-sm:hidden ${navLink}`}>

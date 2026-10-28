@@ -14,7 +14,7 @@
 
 // --- Header ---------------------------------------------------------------------------------------
 
-export const WORDMARK = 'TailorCraft';
+export const WORDMARK = 'FixCV';
 export const NAV_HOW_IT_WORKS = 'How it works';
 export const NAV_PRICING = 'Pricing';
 export const NAV_LOG_IN = 'Log in';

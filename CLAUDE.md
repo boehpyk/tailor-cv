@@ -5,7 +5,7 @@ before planning any feature — it is the source of truth for stack, architectur
 
 ## Project
 
-**TailorCraft** — an AI-powered CV and cover-letter customizer. A job seeker drops in a base CV and a
+**FixCV** (`fixcv.app`; the code, images, env vars and databases keep the code name `tailorcraft`) — an AI-powered CV and cover-letter customizer. A job seeker drops in a base CV and a
 job posting; the app returns tailored documents, editable in the browser, downloadable as PDF, DOCX,
 Markdown or plain text. Guests need no account; registered users keep their base CV and history.
 Full product intent: [docs/PRD.md](./docs/PRD.md).

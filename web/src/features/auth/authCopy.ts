@@ -81,7 +81,7 @@ export const REGISTER_PANEL_HEADING = 'Keep what you made';
  */
 export const WORKSPACE_NAV_LABEL = 'Workspace';
 export const HOW_IT_WORKS_NAV_LABEL = 'How it works';
-export const FOOTER_HOW_IT_WORKS_LABEL = 'How TailorCraft works';
+export const FOOTER_HOW_IT_WORKS_LABEL = 'How FixCV works';
 
 /** AC-42 / I-51 — the header and the guard both say this when the boot refresh could not answer. */
 export const AUTH_UNAVAILABLE_NOTE = "Couldn't check whether you're logged in";
@@ -111,7 +111,7 @@ export const ACCOUNT_DISABLED_NOTICE = 'Your account has been disabled, so you w
 // --- Refusals -------------------------------------------------------------------------------------
 
 /** A thrown value that is not an `ApiError` never reached a response: offline, DNS, a dead proxy. */
-const NETWORK_FAILURE = "Couldn't reach TailorCraft.";
+const NETWORK_FAILURE = "Couldn't reach FixCV.";
 
 /**
  * The one sentence for every logout failure (I-31). A failed logout **leaves the user logged in** —
@@ -188,7 +188,7 @@ function copyForCode(
     case 'validation_error':
       return { message: 'Enter your email address and a password, then try again.' };
     case 'origin_not_allowed':
-      return { message: 'This page is out of date. Reload TailorCraft and try again.' };
+      return { message: 'This page is out of date. Reload FixCV and try again.' };
     case 'not_signed_in':
     case 'refresh_token_reused':
     case 'refresh_in_progress':

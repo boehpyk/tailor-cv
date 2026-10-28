@@ -7,7 +7,7 @@ import { ACCOUNT_PROMISE, OPERATOR_ACCESS_NOTE } from './workspaceCopy';
  * Constitution §8; it is spelled out here so editing the constant alone turns this red.
  */
 const OQ_14_SENTENCE =
-  'The person who runs TailorCraft can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.';
+  'The person who runs FixCV can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.';
 
 describe('the operator-access sentence — AC-37', () => {
   it('OPERATOR_ACCESS_NOTE equals the approved sentence exactly', () => {

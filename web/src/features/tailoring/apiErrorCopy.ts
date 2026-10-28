@@ -18,7 +18,7 @@ import { ApiError } from '@/api/client';
  * **Error B — the API rejected `POST /api/tailoring-runs`** (G-1 … G-14).
  *
  * A thrown value that is not an `ApiError` never reached a response with an envelope: offline, DNS,
- * a proxy's HTML error page that would not parse. "We couldn't reach TailorCraft" is the honest
+ * a proxy's HTML error page that would not parse. "We couldn't reach FixCV" is the honest
  * summary of all of those.
  */
 /**
@@ -38,7 +38,7 @@ export function rejectionMessage(
   scope: CopyScope = 'guest',
 ): string {
   if (!(error instanceof ApiError)) {
-    return "We couldn't reach TailorCraft. Check your connection, then try again.";
+    return "We couldn't reach FixCV. Check your connection, then try again.";
   }
   switch (error.code) {
     case 'validation_error':

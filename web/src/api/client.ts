@@ -19,7 +19,7 @@ export class ApiError extends Error {
     /**
      * The server's stable machine-readable code (e.g. `guest_session_expired`,
      * `unsupported_format`) when the body was the `{"error": {"code", "message"}}` envelope every
-     * TailorCraft error response uses — `null` otherwise (a network failure, or an endpoint that
+     * FixCV error response uses — `null` otherwise (a network failure, or an endpoint that
      * predates the envelope, like `/health/ready`'s bare report).
      *
      * A caller branches on `code`, never on `message`: `message` is prose for a human and can
@@ -45,7 +45,7 @@ export class ApiError extends Error {
     readonly details: Readonly<Record<string, unknown>> = {},
     /**
      * The `Retry-After` header as a number of seconds, when a response carried one in its
-     * delta-seconds form — the form every TailorCraft 429 uses — and `null` otherwise (no header,
+     * delta-seconds form — the form every FixCV 429 uses — and `null` otherwise (no header,
      * or the HTTP-date form, which nothing here sends and nothing here parses).
      *
      * A header, not a body field, so it is read in this module and nowhere else: `client.ts` is
@@ -71,7 +71,7 @@ function retryAfterSecondsOf(response: Response): number | null {
 }
 
 /**
- * The `{"error": {"code": "...", "message": "...", ...}}` shape every TailorCraft error response
+ * The `{"error": {"code": "...", "message": "...", ...}}` shape every FixCV error response
  * uses. `code` and `message` are always there; the index signature is the room for the extra keys a
  * particular code adds (see `ApiError.details`).
  */
@@ -349,7 +349,7 @@ interface BlobRequestOptions {
  * Perform a `GET` whose **success** is bytes, not JSON, and whose **failure** is JSON like every
  * other endpoint's.
  *
- * That asymmetry is the whole reason this function exists beside `request`. TailorCraft's two
+ * That asymmetry is the whole reason this function exists beside `request`. FixCV's two
  * download endpoints — the inline render and an export job's file — answer `200` with a
  * `Content-Type` of `application/pdf` or `text/markdown` and a `Content-Disposition`, and answer
  * every rejection with the ordinary `{"error": {"code", "message"}}` envelope. A single function

@@ -93,7 +93,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             log.info("app.stopped")
 
     app = FastAPI(
-        title="TailorCraft API",
+        title="FixCV API",
         version="0.1.0",
         lifespan=lifespan,
         # The OpenAPI schema is the frontend's contract (ADR-0001), so it stays available in dev.

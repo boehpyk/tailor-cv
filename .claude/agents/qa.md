@@ -14,7 +14,7 @@ reveals a bug, report it to the orchestrating human/agent; do not fix it yoursel
 
 ## When you are called: red-first, or after (sdlc.md §2)
 
-TailorCraft runs **tiered TDD**. Which mode you are in depends on the layer, and the task list says
+FixCV runs **tiered TDD**. Which mode you are in depends on the layer, and the task list says
 so explicitly (`RED` vs a plain test task).
 
 **Red-first** — you are called *before* the implementation exists, against a skeleton of real

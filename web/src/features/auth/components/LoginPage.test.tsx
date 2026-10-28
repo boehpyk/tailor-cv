@@ -257,7 +257,7 @@ describe('LoginPage', () => {
     expect(alert.textContent).not.toBe("That email and password don't match an account.");
   });
 
-  it('network failure: "Couldn\'t reach TailorCraft."', async () => {
+  it('network failure: "Couldn\'t reach FixCV."', async () => {
     makeFetchMock({
       'POST /api/auth/login': () => Promise.reject(new TypeError('Failed to fetch')),
     });
@@ -267,7 +267,7 @@ describe('LoginPage', () => {
     fireEvent.click(submitButton());
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent("Couldn't reach TailorCraft.");
+    expect(alert).toHaveTextContent("Couldn't reach FixCV.");
   });
 
   it('every distinct-copy code (I-9/I-10, I-14/I-15, I-12, network) renders different text from each other', async () => {

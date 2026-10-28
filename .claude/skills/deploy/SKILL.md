@@ -1,9 +1,9 @@
 ---
 name: deploy
-description: The TailorCraft deploy runbook — build immutable images, push to GHCR, release to the single VDS behind the manual gate, plus rollback and the pre-deploy footgun checklist. Use when deploying, cutting a release, or debugging the CD pipeline.
+description: The FixCV deploy runbook — build immutable images, push to GHCR, release to the single VDS behind the manual gate, plus rollback and the pre-deploy footgun checklist. Use when deploying, cutting a release, or debugging the CD pipeline.
 ---
 
-# Deploying TailorCraft
+# Deploying FixCV
 
 Principle: **production never builds — it pulls immutable, SHA-tagged images** (ADR-0003, cicd.md).
 Never `git pull` on the box.
