@@ -6889,3 +6889,51 @@ refused old origin and a healthy `/health/ready` were all checked from outside. 
 out once, which is the price of host-only cookies, and the same property is what made them safe.
 The mail still comes from `notifications.samolit.com`. Moving that is a separate step, with its own
 DNS records and deliverability check, whenever it's wanted.
+
+# brand-fixcv — a new sign over the same shop
+
+The domain moved in the morning; by the evening the name followed. **TailorCraft is now FixCV.**
+The logo is a lowercase "fix" next to a mint-green "cv" tile that's slightly crooked, as if someone
+just stuck it on. That suits a product whose whole job is fixing up something you already have.
+
+## Changing the sign, not the foundations
+
+The word `tailorcraft` appears about **4,350 times** in this repository. About 100 of those are
+the *brand*, the word a person actually reads: the page title, the header, "Couldn't reach
+TailorCraft.", the subject line of a password-reset mail. The other ~4,250 are the *code name*:
+the Python package, every `from tailorcraft.domain…` import, the Docker image tags, the
+`TAILORCRAFT_API_IMAGE` variable the deploy writes into the box's `.env`, the Postgres database
+names and the volumes that hold every uploaded CV.
+
+Renaming a shop's sign is a weekend's work. Renaming the company on every land-registry deed,
+utility contract and bank account is a quarter's work, and it carries a real risk of losing the
+keys to the cellar. The owner chose the sign. Users see FixCV everywhere, and the internals keep
+calling themselves `tailorcraft`, as plenty of products do (internal code names outlive brands all
+the time). A sentence at the top of CLAUDE.md now says so, so the next person who sees
+`tailorcraft` in a stack trace doesn't conclude the rename was half-finished.
+
+## The test that thought a logo was an attack
+
+The rename itself was a `sed` over one exact, case-sensitive token (`TailorCraft`). That way
+`tailorcraft` and `TAILORCRAFT_` were left alone. The history files were skipped too, because
+rewriting history is lying about it. The tests that pinned the old copy changed along with it.
+
+Then the new logo broke six tests that had nothing to do with branding. The admin pages show a
+stranger's CV as literal text, and their tests feed in a payload like `<img src=x onerror=…>` and
+assert `container.querySelector('img')` is `null`. That means nothing turned into a real image.
+Now there *is* a real image on every page: the logo. The assertion was always slightly too broad.
+It said "no image anywhere" when it meant "no image where the CV text lands". The fix narrows
+it to `main img`. The lesson: an assertion that's broader than its intent is a tripwire for
+the next unrelated change, so say exactly what you mean.
+
+## Small things worth noticing
+
+- **The accessible name didn't change shape.** The header's `<h1>` used to be a decorative square
+  plus the text "TailorCraft". Now it's an `<img alt="FixCV">`. A screen reader still hears one
+  word, not "fix cv dot app" read off the picture.
+- **`width`/`height` on the `<img>`**, even though CSS sets the height: it lets the browser reserve
+  the space before the PNG arrives, so the header doesn't jump.
+- **A setting outranks its default.** `MAIL_FROM_NAME` now defaults to "FixCV", but if the box's
+  hand-made `.env` says `TailorCraft`, mail keeps arriving from TailorCraft. Changing code is not the
+  same as changing configuration. The move to `fixcv.app` this morning was the mirror image of
+  that: there, changing configuration was all it took.

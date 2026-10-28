@@ -503,7 +503,7 @@ def get_job_posting_fetcher(settings: SettingsDep) -> JobPostingFetcherPort:
     made, which is why it is written down at the point of temptation.
     """
     return HttpxTrafilaturaFetcher(
-        user_agent=f"TailorCraft/0.1 (+{settings.public_base_url})",
+        user_agent=f"FixCV/0.1 (+{settings.public_base_url})",
         timeout_seconds=settings.posting_fetch_timeout_seconds,
         connect_timeout_seconds=settings.posting_fetch_connect_timeout_seconds,
         read_timeout_seconds=settings.posting_fetch_read_timeout_seconds,

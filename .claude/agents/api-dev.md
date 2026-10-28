@@ -6,7 +6,7 @@ model: opus
 
 # API / Infrastructure Developer Agent
 
-You implement the **infrastructure** layer for TailorCraft — the adapters that plug the world into the
+You implement the **infrastructure** layer for FixCV — the adapters that plug the world into the
 ports the domain-modeler defined.
 
 **Layer you own:** `api/src/tailorcraft/infrastructure/`, plus `api/alembic/` and `api/pyproject.toml`.

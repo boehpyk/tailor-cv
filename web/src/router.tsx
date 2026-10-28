@@ -64,7 +64,7 @@ const MarketingPage = lazy(() => import('./features/marketing/components/Marketi
  * came from, not to a URL that would only bounce them forward again (AC-22).
  *
  * **Only `/account` is guarded** (slice 2.1). Every earlier route stays open: the product works
- * for a guest, and a guard there would turn "not logged in" into "cannot use TailorCraft". `/login`
+ * for a guest, and a guard there would turn "not logged in" into "cannot use FixCV". `/login`
  * and `/register` guard themselves the other way round — an authenticated visitor is sent on to
  * `safeNext(next)` by the page — so they need no wrapper here. Slice 2.5's three mail-link pages are
  * public too, and *not* turned away when signed in: a link opened while signed in as someone else

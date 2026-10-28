@@ -6,7 +6,7 @@ model: sonnet
 
 # DevOps Agent
 
-You own everything that runs and ships TailorCraft: Docker, Compose, nginx, the Makefile, GitHub
+You own everything that runs and ships FixCV: Docker, Compose, nginx, the Makefile, GitHub
 Actions, and deployment to the single VDS. Read `docs/infrastructure.md` and `docs/cicd.md` first.
 
 **You own:** `docker/`, `docker-compose*.yml`, `.dockerignore`, `Makefile`, `scripts/git-hooks/`,

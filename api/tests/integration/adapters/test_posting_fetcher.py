@@ -246,7 +246,7 @@ def _fetcher(
     AC-7 redirect-to-metadata test below meaningful rather than vacuous.
     """
     return HttpxTrafilaturaFetcher(
-        user_agent="TailorCraftTest/1.0 (+http://example.invalid)",
+        user_agent="FixCVTest/1.0 (+http://example.invalid)",
         timeout_seconds=timeout_seconds,
         connect_timeout_seconds=connect_timeout_seconds,
         read_timeout_seconds=read_timeout_seconds,

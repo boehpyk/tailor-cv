@@ -1,6 +1,6 @@
 ---
 name: react-feature
-description: How to add a frontend feature in TailorCraft — where state lives (server state to TanStack Query, form state local, nothing global by default), custom-hook boundaries, the typed API client, the tabbed TipTap editor pattern, polling a background export, and the component-splitting rules. Use when building or reviewing anything under web/.
+description: How to add a frontend feature in FixCV — where state lives (server state to TanStack Query, form state local, nothing global by default), custom-hook boundaries, the typed API client, the tabbed TipTap editor pattern, polling a background export, and the component-splitting rules. Use when building or reviewing anything under web/.
 ---
 
 # Adding a frontend feature

@@ -15,7 +15,7 @@ import { renderWithRouter } from '@/test/render';
  */
 
 const OPERATOR_SENTENCE =
-  'The person who runs TailorCraft can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.';
+  'The person who runs FixCV can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.';
 
 /** Matches an element whose own text contains the sentence, wherever the implementer puts it. */
 const containsSentence = (content: string): boolean => content.includes(OPERATOR_SENTENCE);

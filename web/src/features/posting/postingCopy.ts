@@ -15,7 +15,7 @@ export function postingRejectionMessage(
   retryWhen: string | null,
 ): string {
   if (!(error instanceof ApiError)) {
-    return "We couldn't reach TailorCraft. Check your connection, then try again.";
+    return "We couldn't reach FixCV. Check your connection, then try again.";
   }
   switch (error.code) {
     case 'rate_limited':

@@ -56,7 +56,7 @@ describe('System status is for admins only', () => {
     const fetch = stubAccountFetch({});
     renderWithRouter('/login');
 
-    await screen.findByRole('link', { name: 'How TailorCraft works' });
+    await screen.findByRole('link', { name: 'How FixCV works' });
     await settle();
 
     expect(within(footer()).queryByRole('heading', { name: 'System status' })).toBeNull();

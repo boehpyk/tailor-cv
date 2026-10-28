@@ -5,7 +5,7 @@
 
 ## Context
 
-TailorCraft accepts a CV **before** it knows who the user is (PRD §3: the guest is a first-class
+FixCV accepts a CV **before** it knows who the user is (PRD §3: the guest is a first-class
 persona, not a degraded one). That produces a category of data with no owner and no one to ask about
 deletion: an uploaded CV, an extracted-text blob, a tailored document and a rendered PDF, attached to
 nothing but a browser session.

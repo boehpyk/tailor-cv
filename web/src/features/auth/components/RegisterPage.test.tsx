@@ -206,7 +206,7 @@ describe('RegisterPage', () => {
     expect(alert.textContent).toBeTruthy();
   });
 
-  it('network failure: "Couldn\'t reach TailorCraft."', async () => {
+  it('network failure: "Couldn\'t reach FixCV."', async () => {
     makeFetchMock({
       'POST /api/auth/register': () => Promise.reject(new TypeError('Failed to fetch')),
     });
@@ -216,7 +216,7 @@ describe('RegisterPage', () => {
     fireEvent.click(submitButton());
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent("Couldn't reach TailorCraft.");
+    expect(alert).toHaveTextContent("Couldn't reach FixCV.");
   });
 
   it('password_too_short, password_too_long and password_matches_email render distinct text', async () => {

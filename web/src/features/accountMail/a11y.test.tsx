@@ -36,7 +36,7 @@ import {
  * and focus moved to the outcome; the routes are public; and nothing under `features/accountMail/`
  * uses `dangerouslySetInnerHTML`.
  *
- * **One `h1` per page is the shell's.** `App` owns `<h1>TailorCraft</h1>`, so a screen contributes
+ * **One `h1` per page is the shell's.** `App` owns `<h1>FixCV</h1>`, so a screen contributes
  * an `h2` — an `h1` of its own would make two. Each page is asserted for both halves: the single
  * `h1`, and its own `h2`.
  *
@@ -65,7 +65,7 @@ afterEach(() => {
 
 function expectOneH1(): void {
   expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-  expect(screen.getByRole('heading', { level: 1, name: 'TailorCraft' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { level: 1, name: 'FixCV' })).toBeInTheDocument();
 }
 
 /** Every form control on the page has an accessible name (`getByLabelText` would throw otherwise). */

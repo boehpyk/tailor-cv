@@ -139,7 +139,8 @@ describe('the run page — AC-28', () => {
     const letter = await screen.findByText(letterBody);
     expect(cv).toHaveClass('whitespace-pre-wrap');
     expect(letter).toHaveClass('whitespace-pre-wrap');
-    expect(container.querySelector('img')).toBeNull();
+    expect(cv.closest('main')).not.toBeNull();
+    expect(container.querySelector('main img')).toBeNull();
     expect(container.querySelector('strong')).toBeNull();
     expect(container.querySelector('em')).toBeNull();
     expect(container.querySelector('script')).toBeNull();

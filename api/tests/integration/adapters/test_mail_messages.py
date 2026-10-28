@@ -39,7 +39,7 @@ def _settings(**overrides: object) -> Settings:
     values: dict[str, object] = {
         "app_env": "test",
         "mail_from_address": "no-reply@cv.example",
-        "mail_from_name": "TailorCraft",
+        "mail_from_name": "FixCV",
         "public_base_url": _BASE,
         **overrides,
     }
@@ -70,8 +70,8 @@ _ALL: list[AccountMail] = [_CONFIRM, _RESET, _EXISTS]
 def test_every_message_carries_the_required_headers(mail: AccountMail) -> None:
     parsed = _wire(render(mail, _settings()))
 
-    assert parseaddr(str(parsed["From"])) == ("TailorCraft", "no-reply@cv.example")
-    assert parsed["From"] == "TailorCraft <no-reply@cv.example>"
+    assert parseaddr(str(parsed["From"])) == ("FixCV", "no-reply@cv.example")
+    assert parsed["From"] == "FixCV <no-reply@cv.example>"
     assert parsed["To"] == "alex.smith@example.org"
     assert parsed["Auto-Submitted"] == "auto-generated"
     assert parsed.get_content_type() == "text/plain"
@@ -90,9 +90,9 @@ def test_the_message_id_is_on_the_senders_domain(mail: AccountMail) -> None:
 @pytest.mark.parametrize(
     ("mail", "subject"),
     [
-        (_CONFIRM, "Confirm your email address for TailorCraft"),
-        (_RESET, "Reset your TailorCraft password"),
-        (_EXISTS, "You already have a TailorCraft account"),
+        (_CONFIRM, "Confirm your email address for FixCV"),
+        (_RESET, "Reset your FixCV password"),
+        (_EXISTS, "You already have a FixCV account"),
     ],
     ids=["confirm", "reset", "exists"],
 )

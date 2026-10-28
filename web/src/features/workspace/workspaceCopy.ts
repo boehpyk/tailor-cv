@@ -15,7 +15,7 @@ export const GATE_RETRY_LABEL = 'Retry';
  * (beside the Gemini sentence, in `TailorLaunch`) and the saved-CV notice on `/account`.
  */
 export const OPERATOR_ACCESS_NOTE =
-  'The person who runs TailorCraft can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.';
+  'The person who runs FixCV can read what is stored here — CVs, job postings and tailored documents — to operate and support the service.';
 
 /** AC-49: what the account workspace promises, before the first launch. Verbatim; pinned. */
 export const ACCOUNT_PROMISE = `You're signed in, so what you tailor here is saved to your history — the job posting, the tailored CV and cover letter, and any files you export — until you delete it. The AI provider sees your CV's text and the job posting when you tailor. ${OPERATOR_ACCESS_NOTE}`;

@@ -6,7 +6,7 @@ model: opus
 
 # Domain Modeler Agent
 
-You implement the **domain** and **application** layers for TailorCraft. This is the part of the
+You implement the **domain** and **application** layers for FixCV. This is the part of the
 codebase whose whole point is to model the business cleanly — treat it as a craft, and as the chance
 to get idiomatic Python right (Constitution §2, FR-7).
 

@@ -12,7 +12,7 @@ import type {
 import type { DocumentProblem } from '@/features/tailoring/types';
 
 /**
- * The table against `step`, TailorCraft's pure autosave decision (technical plan, "The editor";
+ * The table against `step`, FixCV's pure autosave decision (technical plan, "The editor";
  * `autosaveMachine.ts`'s own docstring, which is the source of truth here — there is no prior
  * spec to write this from, because the machine *is* the re-modelling of three review rounds' worth
  * of hook bugs into one place). Test-after, per CLAUDE.md: this is a "shape discovered against the
@@ -27,7 +27,7 @@ import type { DocumentProblem } from '@/features/tailoring/types';
  * state, and a closing `describe` computes every (state, event) pair this file did NOT already
  * exercise and asserts it is the machine's default branch — stay in place, no effects. That default
  * assertion is only true if the pair really is a no-op; if a transition was forgotten above, this
- * is where it turns red instead of silently passing by omission (TailorCraft's "no default case"
+ * is where it turns red instead of silently passing by omission (FixCV's "no default case"
  * rule, applied to a hand enumeration instead of a compiler).
  *
  * One documented disagreement, resolved in favour of the code (which agrees with its own

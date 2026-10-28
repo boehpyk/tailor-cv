@@ -830,6 +830,21 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   the `POST` redirect status were not recorded. Every user was signed out once. Phase 4's gate (to
 >   2026-10-29) now spans a host change as well as the reskin.
 >
+> - **`brand-fixcv`** (owner-initiated, outside the phases; 2026-10-27; branch
+>   `feature/brand-fixcv`, not yet merged) — the product is renamed **FixCV**. **Brand only, by the
+>   owner's choice**: every reader-facing `TailorCraft` became `FixCV` (header, `<title>`, mail
+>   subjects and bodies, `MAIL_FROM_NAME`'s default, error copy, the fetcher's `User-Agent`, the
+>   OpenAPI title, the constitution, ADRs, agents and skills). The code name **`tailorcraft`** stays
+>   for the Python package, image names, `TAILORCRAFT_*` env vars, the databases and the volumes, so
+>   production data and the deploy are untouched. This file, LESSONS.md and FORboehpyk.md keep the
+>   old name where they record the past. **Logo**: the owner's PNGs in `web/src/assets/brand/`; both
+>   headers show `fixcv-logo-light.png` with `alt="FixCV"`, so the `h1`'s accessible name is still
+>   one word. The favicon (64 px) and an `apple-touch-icon` (256 px) are in `index.html`. The dark
+>   logo is not shipped, because the app has no dark theme. **Six admin XSS tests (four files)** asserted "no
+>   `img` in the container", which the logo broke. They now assert no `img` inside `main`, where the
+>   payload would land. **Box follow-up:** if the box `.env` sets `MAIL_FROM_NAME=TailorCraft`, edit
+>   it. The setting outranks the new default.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,

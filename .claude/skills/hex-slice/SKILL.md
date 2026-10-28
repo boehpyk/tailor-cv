@@ -1,9 +1,9 @@
 ---
 name: hex-slice
-description: The canonical recipe for adding a vertical slice to TailorCraft — choosing the bounded context, defining value objects, the aggregate, domain events, a Protocol port, an application use case, the SQLAlchemy imperative mapping, the Alembic migration, the FastAPI router and the DI wiring. Use when building or reviewing any feature that touches the backend domain.
+description: The canonical recipe for adding a vertical slice to FixCV — choosing the bounded context, defining value objects, the aggregate, domain events, a Protocol port, an application use case, the SQLAlchemy imperative mapping, the Alembic migration, the FastAPI router and the DI wiring. Use when building or reviewing any feature that touches the backend domain.
 ---
 
-# Adding a vertical slice to TailorCraft
+# Adding a vertical slice to FixCV
 
 Follow this order every time. It keeps `domain/` pure (import-linter clean) and makes the design
 legible to the person reading it in three months, who is you.

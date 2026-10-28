@@ -105,7 +105,7 @@ def render_header(
     _emit(out, "=" * 100)
     _emit(
         out,
-        "TailorCraft prompt eval (make eval) -- NOT a test. It calls the real API and costs money.",
+        "FixCV prompt eval (make eval) -- NOT a test. It calls the real API and costs money.",
     )
     _emit(out, "=" * 100)
     _emit(

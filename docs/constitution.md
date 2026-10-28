@@ -1,10 +1,10 @@
-# TailorCraft Constitution
+# FixCV Constitution
 
 > The Constitution is the one document that **survives years**. Feature specs die per-feature; this
 > does not. It changes only by an explicit, committed edit — never silently in chat. When code and
 > Constitution disagree, one of them is a bug: fix the code, or amend this file on purpose.
 
-**Project:** TailorCraft — AI-powered CV & cover-letter customizer
+**Project:** FixCV — AI-powered CV & cover-letter customizer
 **Owner:** solo developer (boehpyk)
 **Status:** Living · established 2026-09-04
 **Primary reference:** [PRD.md](./PRD.md)
@@ -207,7 +207,7 @@ phase that depends on it closes.
   Nothing else is ever mailed: no marketing, no notifications ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)).
 - **The operator can read stored data, and the user is told so.** An admin can read CVs, job
   postings and tailored documents to operate and support the service. Users are told in one
-  sentence where they hand data over: *"The person who runs TailorCraft can read what is stored
+  sentence where they hand data over: *"The person who runs FixCV can read what is stored
   here — CVs, job postings and tailored documents — to operate and support the service."*
   ([ADR-0032](./adr/0032-a-role-is-one-column-on-the-user-read-on-every-admin-request.md)).
 - **Untrusted input crosses a validation boundary** before touching the domain. Three inputs are

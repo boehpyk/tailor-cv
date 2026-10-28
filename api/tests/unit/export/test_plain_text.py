@@ -78,9 +78,9 @@ def test_bold_and_italic_markers_are_stripped() -> None:
 
 
 def test_link_renders_as_its_text_followed_by_the_url_in_parentheses() -> None:
-    text = render_plain_text(_tokens("[TailorCraft](https://tailorcraft.example/cv)\n"))
+    text = render_plain_text(_tokens("[FixCV](https://tailorcraft.example/cv)\n"))
 
-    assert text == "TailorCraft (https://tailorcraft.example/cv)"
+    assert text == "FixCV (https://tailorcraft.example/cv)"
 
 
 def test_link_with_a_disallowed_scheme_renders_as_the_text_alone_with_no_url() -> None:

@@ -1,5 +1,6 @@
 import { Link, Outlet } from 'react-router';
 
+import logo from './assets/brand/fixcv-logo-light.png';
 import { FOOTER_HOW_IT_WORKS_LABEL } from './features/auth/authCopy';
 import { AuthStatus } from './features/auth/components/AuthStatus';
 import { useAuth } from './features/auth/hooks/useAuth';
@@ -16,7 +17,7 @@ const focusRing =
  * is what every page shares.
  *
  * The header carries the wordmark — a link home **inside** the page's one `<h1>`, whose accessible
- * name stays exactly "TailorCraft" (the mark beside it is decorative and `aria-hidden`) — and
+ * name stays exactly "FixCV" (the logo image's `alt`; the image's own ".app" is not read) — and
  * `AuthStatus` (slice 2.1, AC-42), the one `<nav>`. Below `sm` the signed-in nav is moved to a bar
  * fixed to the bottom of the viewport by its own `max-sm:` classes (web-design-refresh AC-11): one
  * DOM for every width, so `main` and the footer carry the bottom padding that keeps content clear
@@ -41,15 +42,9 @@ export function App(): React.JSX.Element {
           `<main>` is only a section header. */}
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-x-8 gap-y-2 px-4 py-3">
-          <h1 className="font-display text-lg font-bold tracking-tight text-slate-900">
-            <Link to="/" className={`flex items-center gap-2.5 ${focusRing}`}>
-              <span
-                aria-hidden="true"
-                className="flex size-7 items-center justify-center rounded-lg bg-brand-600"
-              >
-                <span className="size-4 rounded-sm border-[1.5px] border-dashed border-white" />
-              </span>
-              TailorCraft
+          <h1>
+            <Link to="/" className={`-my-2 flex ${focusRing}`}>
+              <img src={logo} alt="FixCV" width={384} height={150} className="h-14 w-auto" />
             </Link>
           </h1>
           <AuthStatus />
