@@ -6,7 +6,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 
 > **Status: nineteen slices shipped (1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, and the `__Host-tc_guest`
 > security slice); slice 4.4 `admin-guests-and-storage` was released 2026-10-15, and Phase 4's
-> two-week gate clock runs to 2026-10-29; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
+> two-week gate was met on 2026-10-29 (no SSH or `psql` since the release; 416 admin tests green at
+> `ad44cc9`), closing Phase 4; Phase 2 is closed, its gate met on 2026-10-03. Slice 3.1 `tracking-application-board` was
 > merged as PR #21 (`bfb98a9`) and released 2026-10-06 (deploy run 37529074626). The
 > `identity-host-prefixed-guest-cookie` slice was merged as PR #22 (`998c4b4`) and released
 > 2026-10-09 (deploy run 37852977749). Slice 3.2 `export-pdf-layout-templates` was merged as PR #23

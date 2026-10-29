@@ -6937,3 +6937,68 @@ the next unrelated change, so say exactly what you mean.
   hand-made `.env` says `TailorCraft`, mail keeps arriving from TailorCraft. Changing code is not the
   same as changing configuration. The move to `fixcv.app` this morning was the mirror image of
   that: there, changing configuration was all it took.
+
+# Interlude — the gate that closed on a Thursday
+
+Phase 4's gate never asked "does `/admin` work?" The tests answer that. It asked "will the owner
+actually *live* in it?" For two weeks, from 4.4's release on 2026-10-15 to 2026-10-29, every
+routine operator chore had to happen in the browser: looking up a user, erasing an account, a purge,
+a sweep, a storage check. A single SSH session would have restarted the clock. On the 29th the owner's
+answer was simple: no SSH, no `psql`. The second half of the gate is mechanical. The route walker
+proves that every `/api/admin` route carries `require_admin`, and that walker plus the firewall tests
+ran green (416 admin tests at `ad44cc9`) the same morning.
+
+Two things make this gate worth remembering:
+
+- **A gate that measures behaviour needs a human witness.** No test can show that nobody opened a
+  terminal. So the record names its evidence for what it is: the owner's word. It doesn't dress that
+  up as a measurement. Being honest about the *kind* of evidence is part of the evidence.
+- **The thing measured changed under the clock.** `web-design-refresh` reskinned `/admin` two days
+  before the end, by the owner's choice. The gate therefore closed on the new paint, not the old one.
+  That's fine, as long as the record says so. A gate is a claim about a specific piece of code, and
+  you have to name which code.
+
+Phase 4 is closed. Phase 3's gate is still open, and it needs the friend group, not more code.
+
+# Interlude — the oldest IOU, settled
+
+Phase 1's gate had been the project's oldest open item since 2026-09-24 (OQ-7). Phase 2, 3 and 4 all
+began while it sat unrecorded, and every slice since has carried a line saying so. On 2026-10-29 the
+owner closed it in one sentence: *everything is ok*.
+
+The record says exactly that, and no more. The friend test, the 20-layout parse run and the 10-posting
+quality check are recorded as the owner's attestation. Names, times and verdicts were not given, so
+none are written down. Beside that sits what the repo can show for itself: 1.3's eval run covered the
+10 postings, nine pairs inside budget and one long CV timing out, a limitation accepted back then.
+
+The lesson is the same one Phase 4 taught, from the other side. **A record should say what kind of
+evidence it rests on.** "Met, because the owner says so" is a legitimate record. "Met", with the
+reason left out, is how a belief turns into a fact two months later. The eval corpus holds six
+Markdown CVs. That isn't a 20-layout PDF/DOCX run, and the record says so, so nobody mistakes one for the
+other.
+
+Later the same day, the owner closed Phase 3 the same way, on their word, so every phase gate is now
+recorded. Then came a detail that looked like a contradiction: a friend's test on 2026-10-20 "took
+an hour", and the bound is two minutes. Before anything was rewritten, the owner was asked, and the
+answer dissolved the conflict. The tailor-and-download took under two minutes, and she simply kept
+using the app for an hour afterwards. That's the best kind of result a usability test can give.
+
+It's a small story with a real lesson: **a number without its definition isn't evidence yet.** "An
+hour" measured the session; the gate measures the task. When a fact seems to contradict a record,
+ask what it measured before you correct either one.
+
+# Interlude — "we delete guest CVs after 24 hours" stops being marketing
+
+Since 2026-09-21 the roadmap's "Last" list had carried one sentence: the production purge is the
+only thing between *"we delete guest CVs after 24 hours"* being true and being marketing. On
+2026-10-29 the owner set `GUEST_PURGE_ENABLED=true` on the box and **recreated** `api worker beat`.
+Not `restart`: a restart keeps the old environment, and the flag silently does nothing.
+
+The first reading straight afterwards looked alarming and wasn't: `scheduled: true`, `overdue: 0`,
+**`stale: true`**. Stale meant "the last run is old". It was the hand-run rehearsal from two weeks
+earlier, and beat hadn't ticked yet. A health signal is only useful if you know what it compares
+against, and here it compared against a run that predates the schedule. The next tick clears it.
+
+That took five weeks of rehearse-first patience: dev in September, production from the browser on
+2026-10-15, a backup, and then a single line of `.env`. A `DELETE` on a schedule is the kind of
+thing you rehearse, not discover.
