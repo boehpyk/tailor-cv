@@ -39,8 +39,8 @@ Read the relevant entry before you touch that slice's code.
 served by a single VDS through the Traefik already on the box (external `traefik` network,
 entrypoint `websecure`, resolver `le`). Stack in
 `/home/boehpyk/www/tailor-cv`, deployed as `boehpyk`. The root `.env` on the box is hand-made, mode
-600, `APP_ENV=production`, `TRUSTED_PROXY_HOPS=2`, and **`GUEST_PURGE_ENABLED=false`** (the purge is
-run from `/admin/storage`). Mail is Resend over SMTP. The deploy secrets are **`production`
+600, `APP_ENV=production`, `TRUSTED_PROXY_HOPS=2`, and **`GUEST_PURGE_ENABLED=true`** (switched on
+2026-10-29; beat purges hourly, and `/admin/storage` stays the manual path). Mail is Resend over SMTP. The deploy secrets are **`production`
 environment secrets** behind `required_reviewers` + `branch_policy`, so **every merge to `main` is a
 real release waiting for approval**. A run uses the workflow file **from its own commit**. A control
 nobody has verified is a belief: check with `gh api repos/<owner>/<repo>/environments/production`.

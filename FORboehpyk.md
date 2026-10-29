@@ -6986,3 +6986,19 @@ using the app for an hour afterwards. That's the best kind of result a usability
 It's a small story with a real lesson: **a number without its definition isn't evidence yet.** "An
 hour" measured the session; the gate measures the task. When a fact seems to contradict a record,
 ask what it measured before you correct either one.
+
+# Interlude — "we delete guest CVs after 24 hours" stops being marketing
+
+Since 2026-09-21 the roadmap's "Last" list had carried one sentence: the production purge is the
+only thing between *"we delete guest CVs after 24 hours"* being true and being marketing. On
+2026-10-29 the owner set `GUEST_PURGE_ENABLED=true` on the box and **recreated** `api worker beat`.
+Not `restart`: a restart keeps the old environment, and the flag silently does nothing.
+
+The first reading straight afterwards looked alarming and wasn't: `scheduled: true`, `overdue: 0`,
+**`stale: true`**. Stale meant "the last run is old". It was the hand-run rehearsal from two weeks
+earlier, and beat hadn't ticked yet. A health signal is only useful if you know what it compares
+against, and here it compared against a run that predates the schedule. The next tick clears it.
+
+That took five weeks of rehearse-first patience: dev in September, production from the browser on
+2026-10-15, a backup, and then a single line of `.env`. A `DELETE` on a schedule is the kind of
+thing you rehearse, not discover.
