@@ -4,8 +4,8 @@ An error class *is* its contract, so every one has a real body at the skeleton s
 carries text:** no CV, posting, gap, quote or provider message. Ids, counts, closed values and fixed
 labels only (Constitution §8). The API layer maps these to status codes.
 
-`value_objects` will import these inside `__post_init__` at T6, since this module imports it at the
-top: the deferred import every other context uses for the same cycle.
+`value_objects` imports these inside `__post_init__`, since this module imports it at the top: the
+deferred import every other context uses for the same cycle.
 """
 
 from __future__ import annotations
