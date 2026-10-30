@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.domain.identity.ownership import Owner
-from tailorcraft.domain.intake.value_objects import BaseCvId
+from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.scoring.errors import BaseCvNotReadyForScoring
 from tailorcraft.domain.scoring.value_objects import (
     CvFingerprint,
     CvForScoring,
@@ -35,6 +37,22 @@ class ScoringPair:
     posting_fingerprint: PostingFingerprint
 
 
+def _build_pair(
+    cv_id: ScoredCvRef, posting_id: ScoredPostingRef, cv_text: str, posting_text: str
+) -> ScoringPair:
+    """The CPU-shaped part: collapsing whitespace in, and hashing, up to 250,000 characters."""
+    cv = CvForScoring(cv_text)
+    posting = PostingForScoring(posting_text)
+    return ScoringPair(
+        cv_id=cv_id,
+        posting_id=posting_id,
+        cv=cv,
+        posting=posting,
+        cv_fingerprint=cv.fingerprint,
+        posting_fingerprint=posting.fingerprint,
+    )
+
+
 class ResolveScoringPair:
     """Authorize both ids against `owner` and build the `ScoringPair`.
 
@@ -55,4 +73,19 @@ class ResolveScoringPair:
     async def __call__(
         self, owner: Owner, base_cv_id: BaseCvId, job_posting_id: JobPostingId
     ) -> ScoringPair:
-        raise NotImplementedError
+        cv = await self._get_base_cv(base_cv_id, owner)
+        posting = await self._get_job_posting(job_posting_id, owner)
+
+        cv_text = cv.extracted_text
+        # The status says what it means, and I-2 makes the second clause the same fact: it is there
+        # for `mypy`, which cannot see the invariant.
+        if cv.status is not BaseCvStatus.EXTRACTED or cv_text is None:
+            raise BaseCvNotReadyForScoring(str(base_cv_id))
+
+        return await asyncio.to_thread(
+            _build_pair,
+            ScoredCvRef(cv.id.value),
+            ScoredPostingRef(posting.id.value),
+            cv_text.value,
+            posting.text.value,
+        )

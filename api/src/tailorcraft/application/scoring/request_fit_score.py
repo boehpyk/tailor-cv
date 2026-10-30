@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import NoReturn, assert_never
 
 from tailorcraft.application.scoring.resolve_scoring_pair import ScoringPair
-from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.scoring.errors import (
+    FitScoreSpendCapReached,
+    FitScoringFailed,
+    TooManyFitScores,
+)
 from tailorcraft.domain.scoring.fit_score import FitScore
 from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
 from tailorcraft.domain.scoring.value_objects import MicroUsd, ScoringPrices
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.events import EventPublisherPort
+
+_USER_LIMIT_WINDOW = timedelta(hours=24)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,4 +107,80 @@ class RequestFitScore:
         self._max_per_user = max_per_user
 
     async def __call__(self, cmd: RequestFitScoreCommand) -> RequestOutcome:
-        raise NotImplementedError
+        owner, pair = cmd.owner, cmd.pair
+        at = self._clock.now()
+        day = at.date()
+
+        await self._refuse_at_the_limit(owner, at)
+
+        worst = self._prices.worst_case_attempt(
+            pair.cv.character_count,
+            pair.posting.character_count,
+            self._prompt_overhead_characters,
+            self._max_output_tokens,
+        )
+        reserved = worst * self._max_attempts
+        if not await self._ledger.try_reserve(day, reserved, self._daily_cap):
+            raise FitScoreSpendCapReached(
+                f"the day's ledger cannot take {reserved.value} micro-USD"
+            )
+
+        # Only `FitScoringFailed` is caught: a cancellation must cancel, reservation standing.
+        try:
+            assessed = await self._scorer.assess(pair.cv, pair.posting)
+        except FitScoringFailed as failed:
+            cost = self._prices.cost_of(failed.usage, worst)
+            await self._settle_then_raise(day, reserved, cost, failed)
+
+        cost = self._prices.cost_of(assessed.usage, worst)
+        score = FitScore.from_assessment(
+            id=self._scores.next_identity(),
+            owner=owner,
+            base_cv_id=pair.cv_id,
+            job_posting_id=pair.posting_id,
+            cv_fingerprint=pair.cv_fingerprint,
+            posting_fingerprint=pair.posting_fingerprint,
+            assessed=assessed,
+            cost=cost,
+            at=at,
+        )
+        # `DomainError` only. Anything else means the transaction is gone, so a settle would be
+        # written into nothing: the reservation stands (S-15).
+        try:
+            stored = await self._scores.store(score)
+        except DomainError as refused:
+            await self._settle_then_raise(day, reserved, cost, refused)
+
+        await self._ledger.settle(day, reserved, cost)
+
+        created = stored.id == score.id
+        if created:
+            await self._events.publish(*score.release_events())
+        return RequestOutcome(stored=stored, created=created)
+
+    async def _refuse_at_the_limit(self, owner: Owner, at: datetime) -> None:
+        since: datetime | None
+        match owner:
+            case GuestOwner():
+                since, limit = None, self._max_per_session
+            case UserOwner():
+                since, limit = at - _USER_LIMIT_WINDOW, self._max_per_user
+            case _:
+                assert_never(owner)
+
+        scored = await self._scores.scored_at_since(owner, since)
+        count = len(scored)
+        if count >= limit:
+            retry_not_before = None if since is None else scored[count - limit] + _USER_LIMIT_WINDOW
+            raise TooManyFitScores(count, limit, retry_not_before)
+
+    async def _settle_then_raise(
+        self, day: date, reserved: MicroUsd, actual: MicroUsd, error: DomainError
+    ) -> NoReturn:
+        """S-16: `error` is the user's answer whether or not the settle lands. `Exception`, never
+        `BaseException`: a cancellation during the settle still cancels."""
+        try:
+            await self._ledger.settle(day, reserved, actual)
+        except Exception as settle_failure:
+            raise error from settle_failure
+        raise error

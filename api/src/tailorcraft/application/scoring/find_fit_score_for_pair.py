@@ -6,6 +6,7 @@ from tailorcraft.application.scoring.resolve_scoring_pair import ResolveScoringP
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.scoring.errors import BaseCvNotReadyForScoring
 from tailorcraft.domain.scoring.fit_score import FitScore
 from tailorcraft.domain.scoring.ports import FitScoreRepository
 
@@ -29,9 +30,15 @@ class FindFitScoreForPair:
         `JobPostingNotFound` propagate (S-22, S-23). `BaseCvNotReadyForScoring` becomes `None`
         (S-24's 200 null): a CV with no text has no score, and a page that is only asking has done
         nothing wrong."""
-        raise NotImplementedError
+        try:
+            pair = await self._resolve_pair(owner, base_cv_id, job_posting_id)
+        except BaseCvNotReadyForScoring:
+            return None
+        return await self.for_pair(owner, pair)
 
     async def for_pair(self, owner: Owner, pair: ScoringPair) -> FitScore | None:
         """`POST`'s stored-hit check, before the limiter: `FitScoreRepository.find_for_pair`, by the
         pair's fingerprints."""
-        raise NotImplementedError
+        return await self._scores.find_for_pair(
+            owner, pair.cv_fingerprint, pair.posting_fingerprint
+        )
