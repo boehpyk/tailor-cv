@@ -17,6 +17,7 @@ that no label quotes it (a CV-derived value reaches logs and Sentry through an e
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any
 
 import pytest
@@ -127,6 +128,21 @@ def test_a_quote_of_exactly_eight_characters_is_accepted() -> None:
 )
 def test_text_that_is_not_json_is_not_json(raw: str) -> None:
     refused(raw, "not_json")
+
+
+def _deeply_nested(shape: str) -> str:
+    depth = sys.getrecursionlimit() * 10
+    if shape == "arrays":
+        return "[" * depth + "]" * depth
+    objects = '{"a":' * depth + "1" + "}" * depth
+    return f"```json\n{objects}\n```" if shape == "fenced" else objects
+
+
+@pytest.mark.parametrize("shape", ["arrays", "objects", "fenced"])
+def test_json_nested_past_the_recursion_limit_is_not_json(shape: str) -> None:
+    """`json.loads` raises `RecursionError`, not `ValueError`, here. A hostile or broken completion
+    must become a label, never an unhandled exception out of the adapter's thread."""
+    refused(_deeply_nested(shape), "not_json")
 
 
 @pytest.mark.parametrize("raw", ["[]", "42", "null", '"text"', "true"])
