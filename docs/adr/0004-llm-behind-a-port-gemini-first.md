@@ -76,3 +76,24 @@ able to tell the difference between "still working" and "this failed, try again"
 - Swapping providers is one adapter and one binding. That claim is only true if nothing outside the
   adapter ever imports the SDK — which import-linter checks for `domain`, and code review must check
   for `application`.
+
+## Amendment: 2026-10-30, from the plan of slice 5.1 (`fit-score`)
+
+Slice 5.1 adds a fit score (ADR-0040). Everything above stands, and two sentences need a reader's note.
+
+- **A second port and a second model, not a second provider.** `FitScorerPort` sits beside `LlmPort`,
+  with its own method, because the two say different things in the domain's language. Its adapter,
+  `GeminiFitScorer`, uses a cheaper Gemini model configured apart from `gemini_model`, and the tailoring
+  model, prompt and behaviour do not change. Constitution §5's *no second LLM provider* holds, so
+  *"swapping providers is one adapter and one binding"* now reads **two adapters and two bindings**, and
+  it stays true only if nothing outside `infrastructure/llm/` imports the SDK.
+- **A failed score is an answer and a ledger figure, not a recorded state.** *"A failed run is a recorded
+  state of `TailoringRun`"* stays about `TailoringRun`. A score is not a run: it follows ADR-0013's
+  no-row shape, the user is on the socket to be told, and the money is in the ledger (ADR-0041,
+  ADR-0014 (e)). *Never an unhandled exception* and *"still working" versus "this failed"* both still
+  apply to it.
+
+The rest applies unchanged: a timeout and a bounded retry on every call, no prompt or completion body in
+a log, a defined behaviour for each failure, and structured output re-validated on receipt. There, the
+parser also refuses a gap that does not quote the posting. The suite still never calls the API, and
+score stability is measured by hand, like prompt quality.

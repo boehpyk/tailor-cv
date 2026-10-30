@@ -221,3 +221,28 @@ once, as an exclusion, and then retired with its readers.
 Authorization stays one equality. An admin is never a variant of `Owner` — no `AdminOwner`, no
 `owner == x or is_admin` — the admin's routes pass the **target's** `UserOwner` (ADR-0034,
 ADR-0008 (k)), and the admin's authority is the firewall.
+
+## Amendment: 2026-10-30, from the plan of slice 5.1 (`fit-score`)
+
+Slice 5.1 adds fit scores (ADR-0040). Decisions 1–3 apply unchanged, and so does (a)'s shape.
+
+**(e) `scoring_fit_score` is the fifth owned table, and the first with a unique constraint over an
+owner.**
+
+- **The same shape.** Two nullable foreign keys, each `ON DELETE CASCADE`, and
+  `ck_scoring_fit_score_exactly_one_owner`. `FitScore` carries the two private attributes,
+  `_assign_owner` and the `owner` property, written a fifth time, with no shared base class. It is born
+  with both columns present, so no staged migration is needed.
+- **The new part:** `uq_scoring_fit_score_guest_pair` and `uq_scoring_fit_score_user_pair`, each over one
+  owner column and the two fingerprints. `NULL`s are distinct, so each constraint binds only its own
+  owner, and two plain constraints are enough. They also serve as the cascade's and the count's indexes.
+- **An owner change can now violate a constraint.** The claim re-keys a row into the user's constraint,
+  so the row may collide with one the user already has. ADR-0025's amendment handles this: such a row is
+  not moved, and a collision with a concurrent insert rolls the whole claim back.
+- **No score crosses owners, even for identical text.** Two people with the same CV get two rows and two
+  calls. A cross-owner cache would serve one person's gaps to another, the sharing §5 refuses for bytes.
+- **`base_cv_id` and `job_posting_id` carry no foreign key** (ADR-0040 decision 8), and they always point
+  at rows with the score's owner, because all three are resolved against the same requester. That rule
+  from (b) is what the claim's exclusion of a working copy keeps true.
+- **(d)'s contraction trigger now covers one more clause.** The claim's new statement finds working
+  copies with `copied_from_base_cv_id IS NOT NULL`, so the contract migration drops that clause too.

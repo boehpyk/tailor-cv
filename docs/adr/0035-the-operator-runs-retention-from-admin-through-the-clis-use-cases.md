@@ -117,3 +117,15 @@ target — ids, counts and closed words only. No rate limit, no `Origin` check, 
 - **Watch:** the walk's time as the volume grows (re-measure past 10 000 files before adding a
   cache); a path-built `GuestOwner` outside `admin_guests.py` (the AST scan fails); a purge `POST`
   answering 200 while the lock was held.
+
+## Amendment: 2026-10-30, from the plan of slice 5.1 (`fit-score`)
+
+Slice 5.1 adds fit scores (ADR-0040). `/admin/guests`, `/admin/guests/:id` and `/admin/users/:id` show **a
+count of them, and nothing else**. Decision 4's *"four counts by correlated subqueries"* now reads five,
+and the users' page takes its count from `AccountCounts`.
+
+**A score's body has no admin route.** Decision 3's *"a guest session's data is read through the guest's
+own use cases"* does not extend to it, and a test asserts that no score or gap text appears in any admin
+response. So the sentence the user is told, that the operator can read stored CVs, job postings and
+tailored documents (Constitution §8), stays exact and needs no change. Erasing a session or an account
+takes the scores by cascade, through the steps decision 1 already reuses, with no new deletion code.
