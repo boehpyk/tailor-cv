@@ -51,7 +51,11 @@ from tailorcraft.infrastructure.tasks import container
 from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 
 # Ports bound by a composition root other than the two checked here. Each entry names that root.
-_BOUND_ELSEWHERE: dict[str, str] = {}
+_BOUND_ELSEWHERE: dict[str, str] = {
+    "FitScorerPort": "nothing yet: temporary, T31 of fit-score removes it",
+    "FitScoreRepository": "nothing yet: temporary, T31 of fit-score removes it",
+    "SpendLedgerPort": "nothing yet: temporary, T31 of fit-score removes it",
+}
 
 
 def _domain_protocols() -> dict[str, type]:
