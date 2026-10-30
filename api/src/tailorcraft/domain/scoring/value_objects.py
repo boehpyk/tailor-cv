@@ -23,7 +23,7 @@ from uuid import UUID
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _MIN_GAP_LENGTH = 3
 _MAX_GAP_LENGTH = 120
-_MAX_GAPS = 3
+MAX_FIT_GAPS = 3
 _MIN_SCORE_WITHOUT_GAPS = 90
 _MAX_MODEL_NAME_LENGTH = 64
 _PROMPT_VERSION = re.compile(r"[A-Za-z0-9._-]{1,16}")
@@ -234,8 +234,8 @@ class FitAssessment:
     def __post_init__(self) -> None:
         from tailorcraft.domain.scoring.errors import InvalidFitAssessment
 
-        if len(self.gaps) > _MAX_GAPS:
-            raise InvalidFitAssessment(f"an assessment holds at most {_MAX_GAPS} gaps")
+        if len(self.gaps) > MAX_FIT_GAPS:
+            raise InvalidFitAssessment(f"an assessment holds at most {MAX_FIT_GAPS} gaps")
         if not self.gaps and self.score.value < _MIN_SCORE_WITHOUT_GAPS:
             raise InvalidFitAssessment(
                 f"a score below {_MIN_SCORE_WITHOUT_GAPS} must name at least one gap"

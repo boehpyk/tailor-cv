@@ -40,7 +40,7 @@ from tailorcraft.domain.scoring.errors import (
     InvalidScorePercent,
 )
 from tailorcraft.domain.scoring.value_objects import (
-    _MAX_GAPS,
+    MAX_FIT_GAPS,
     FitAssessment,
     FitGap,
     ScorePercent,
@@ -145,7 +145,7 @@ def parse_fit_score_response(raw: str, posting_text: str) -> FitAssessment:
         percent = ScorePercent(score)
     except InvalidScorePercent:
         raise FitScoreResponseInvalid(PROBLEM_SCORE_OUT_OF_RANGE) from None
-    if len(gaps) > _MAX_GAPS:
+    if len(gaps) > MAX_FIT_GAPS:
         raise FitScoreResponseInvalid(PROBLEM_TOO_MANY_GAPS) from None
     posting = _collapsed(posting_text).casefold()
     fit_gaps = tuple(_parsed_gap(item, posting) for item in gaps)
