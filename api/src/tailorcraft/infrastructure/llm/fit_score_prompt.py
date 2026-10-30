@@ -11,15 +11,14 @@ that holds: a steered answer can skew the number, but it cannot place a link in 
 requirement the posting does not state.
 
 Two strings in, on purpose: no email, id or filename can reach the provider (Constitution §8). The
-keys and the bounds the parser enforces are imported, so the two cannot disagree. The exception is the
-90 below, a copy of the domain's private floor for a score with no gaps, which AC-27 fixes.
+keys and the bounds the parser and the domain enforce are imported, so they cannot disagree.
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-from tailorcraft.domain.scoring.value_objects import MAX_FIT_GAPS
+from tailorcraft.domain.scoring.value_objects import MAX_FIT_GAPS, MIN_SCORE_WITHOUT_GAPS
 from tailorcraft.infrastructure.llm.fit_score_parsing import (
     KEY_GAPS,
     KEY_POSTING_QUOTE,
@@ -39,8 +38,8 @@ _CV_END: Final = "===== END CANDIDATE CV ====="
 
 # The rubric is steps and fixed bands because the same pair must reach the same number (AC-51): a
 # bare "rate this from 0 to 100" leaves the scale to the model's mood. Rule 3 settles the one tension
-# in the contract: gaps are never invented (OQ-4), yet a score below 90 must name one (AC-27). An
-# honest model that finds no gap therefore belongs at 90 or above, and it has to be told so.
+# in the contract: gaps are never invented (OQ-4), yet a score below the floor must name one (AC-27).
+# An honest model that finds no gap therefore belongs at the floor or above, and it has to be told so.
 _ROLE_AND_CONSTRAINTS: Final = f"""\
 You estimate how well one candidate's CV fits one job posting. Your answer is a percentage and the
 most important requirements of the posting that the CV does not show.
@@ -57,14 +56,15 @@ Rules, all of them binding:
    demands from those it merely prefers. For each one, check whether the CV shows it. Only what the
    CV states counts: length, wording and self-praise earn nothing.
 2. Choose the score, a whole number from 0 to 100, from these bands:
-   90 to 100: the CV shows every demanded requirement.
-   70 to 89: the CV shows most demanded requirements and misses one or two.
+   {MIN_SCORE_WITHOUT_GAPS} to 100: the CV shows every demanded requirement.
+   70 to {MIN_SCORE_WITHOUT_GAPS - 1}: the CV shows most demanded requirements and misses one or two.
    40 to 69: the CV shows about half of the demanded requirements.
    10 to 39: the CV shows few of them.
    0 to 9: the CV shows nothing the posting asks for.
 3. DO NOT INVENT GAPS. A gap is a requirement this posting states and this CV does not show. Name at
    most {MAX_FIT_GAPS}, most important first, and name fewer rather than pad the list. A score below
-   90 must name at least one real gap. If you cannot find one, the score is 90 or above, and then you
+   {MIN_SCORE_WITHOUT_GAPS} must name at least one real gap. If you cannot find one, the score is \
+{MIN_SCORE_WITHOUT_GAPS} or above, and then you
    may name none. Never name the same requirement twice.
 4. Each gap has two parts:
    "{KEY_REQUIREMENT}" names the requirement in a short phrase, 3 to 120 characters on one line, in
@@ -85,7 +85,7 @@ It must have exactly this shape:
   {{"{KEY_SCORE}": <integer>, "{KEY_GAPS}": [{{"{KEY_REQUIREMENT}": "...", "{KEY_POSTING_QUOTE}": "..."}}]}}
 
 "{KEY_SCORE}" is a JSON integer, with no percent sign. "{KEY_GAPS}" is a list, empty only at a score
-of 90 or above. An answer breaking any rule above is discarded in full."""
+of {MIN_SCORE_WITHOUT_GAPS} or above. An answer breaking any rule above is discarded in full."""
 
 
 def build_fit_score_prompt(cv: str, posting: str) -> str:

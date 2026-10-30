@@ -24,7 +24,7 @@ _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _MIN_GAP_LENGTH = 3
 _MAX_GAP_LENGTH = 120
 MAX_FIT_GAPS = 3
-_MIN_SCORE_WITHOUT_GAPS = 90
+MIN_SCORE_WITHOUT_GAPS = 90
 _MAX_MODEL_NAME_LENGTH = 64
 _PROMPT_VERSION = re.compile(r"[A-Za-z0-9._-]{1,16}")
 _TOKENS_PER_PRICE_UNIT = 1_000_000
@@ -236,9 +236,9 @@ class FitAssessment:
 
         if len(self.gaps) > MAX_FIT_GAPS:
             raise InvalidFitAssessment(f"an assessment holds at most {MAX_FIT_GAPS} gaps")
-        if not self.gaps and self.score.value < _MIN_SCORE_WITHOUT_GAPS:
+        if not self.gaps and self.score.value < MIN_SCORE_WITHOUT_GAPS:
             raise InvalidFitAssessment(
-                f"a score below {_MIN_SCORE_WITHOUT_GAPS} must name at least one gap"
+                f"a score below {MIN_SCORE_WITHOUT_GAPS} must name at least one gap"
             )
         if len({gap.value.casefold() for gap in self.gaps}) != len(self.gaps):
             raise InvalidFitAssessment("an assessment must not repeat a gap")
