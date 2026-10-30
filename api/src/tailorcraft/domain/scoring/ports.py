@@ -56,8 +56,9 @@ class FitScoreRepository(Protocol):
         ...
 
     async def scored_at_since(self, owner: Owner, since: datetime | None) -> Sequence[datetime]:
-        """When each of the owner's scores was made, oldest first, from `since` on. `None` counts
-        every score: a guest's limit never frees up (AC-8, AC-12)."""
+        """When each of the owner's scores was made, oldest first, strictly after `since`. Exclusive,
+        so a score exactly 24 h old has stopped counting at the second `retry_not_before` names.
+        `None` counts every score: a guest's limit never frees up (AC-8, AC-12)."""
         ...
 
 

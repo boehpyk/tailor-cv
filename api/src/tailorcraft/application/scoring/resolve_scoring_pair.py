@@ -17,17 +17,6 @@ from tailorcraft.domain.scoring.value_objects import (
     ScoredCvRef,
     ScoredPostingRef,
 )
-from tailorcraft.domain.shared.errors import DomainError
-
-
-class BaseCvNotReadyForScoring(DomainError):
-    """The CV is the requester's, but it has no extracted text to judge (S-24): 409
-    `base_cv_not_extracted` on a `POST`, `None` from `FindFitScoreForPair` on a `GET`.
-
-    Scoring's own rather than tailoring's `BaseCvNotReadyForTailoring`, so that closing tailoring
-    (5.2) or changing its answer cannot move this one. It lives here, not in `domain/scoring`,
-    because only this use case ever sees a `BaseCvStatus`.
-    """
 
 
 @dataclass(frozen=True, slots=True, repr=False)

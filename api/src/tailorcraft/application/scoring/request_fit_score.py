@@ -41,7 +41,10 @@ class RequestFitScore:
        the day it reserved, and the row's `scored_at` is this `at`.
     2. `scored_at_since(owner, since)`: `None` for a guest, `at` minus 24 hours for a user. At the
        limit, `TooManyFitScores(count, limit, retry_not_before)`, with no reservation and no call
-       (`retry_not_before` is `None` for a guest, oldest + 24 h for a user, AC-8, AC-12).
+       (AC-8, AC-12). `retry_not_before` is `None` for a guest. For a user it is
+       `scored[count - limit] + 24 h`, `scored` being oldest first: the moment the count drops below
+       the limit, which a claim may have left it above (AC-35). At exactly the limit, that is the
+       oldest.
     3. `worst = prices.worst_case_attempt(cv chars, posting chars, overhead, max output tokens)`,
        and `try_reserve(day, worst * max_attempts, daily_cap)`. `False` is
        `FitScoreSpendCapReached`, no call. `True` has committed: **nothing is held from here until

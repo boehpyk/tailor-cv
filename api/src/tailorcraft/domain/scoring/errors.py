@@ -43,8 +43,8 @@ class TooManyFitScores(DomainError):
     """The owner is at their limit of stored scores (AC-8, AC-12). A use-case check, and soft: calls in
     flight are not rows yet.
 
-    `retry_not_before` is the oldest counted score plus 24 hours for a user, and `None` for a guest,
-    whose limit never frees up.
+    `retry_not_before` is when a user drops below the limit, and `None` for a guest, whose limit
+    never frees up.
     """
 
     def __init__(self, count: int, limit: int, retry_not_before: datetime | None) -> None:
@@ -52,6 +52,15 @@ class TooManyFitScores(DomainError):
         self.count = count
         self.limit = limit
         self.retry_not_before = retry_not_before
+
+
+class BaseCvNotReadyForScoring(DomainError):
+    """The CV is the requester's, but it has no extracted text to judge (S-24): 409
+    `base_cv_not_extracted` on a `POST`, `None` from `FindFitScoreForPair` on a `GET`.
+
+    Scoring's own rather than tailoring's `BaseCvNotReadyForTailoring`, so that closing tailoring
+    (5.2) or changing its answer cannot move this one.
+    """
 
 
 class FitScoreSpendCapReached(DomainError):
