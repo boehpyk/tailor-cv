@@ -1,14 +1,13 @@
-"""The `FitScore` aggregate: one owner's stored assessment of one pair.
-
-SKELETON (T4): the signatures are real, the behaviour arrives at T9.
-"""
+"""The `FitScore` aggregate: one owner's stored assessment of one pair."""
 
 from __future__ import annotations
 
 from datetime import datetime
+from typing import assert_never
 
-from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
+from tailorcraft.domain.scoring.events import FitScoreRecorded
 from tailorcraft.domain.scoring.value_objects import (
     AssessedFit,
     CvFingerprint,
@@ -24,6 +23,7 @@ from tailorcraft.domain.scoring.value_objects import (
     ScorePercent,
     ScoringUsage,
 )
+from tailorcraft.domain.shared.errors import InvariantViolated
 from tailorcraft.domain.shared.events import RecordsEvents
 
 
@@ -87,44 +87,107 @@ class FitScore(RecordsEvents):
         Not `record`, the plan's name: that is `RecordsEvents.record(event)`, which this class needs,
         and a classmethod of the same name would replace it.
         """
-        raise NotImplementedError
+        # `utcoffset() is None` rather than `tzinfo is None`: a tzinfo may still decline an offset.
+        if at.utcoffset() is None:
+            raise InvariantViolated("a fit score's instant must be timezone-aware")
+        if at.microsecond != 0:
+            raise InvariantViolated("a fit score's instant must be whole-second")
+
+        score = cls()
+        score._id = id
+        score._assign_owner(owner)
+        score._base_cv_id = base_cv_id
+        score._job_posting_id = job_posting_id
+        score._cv_fingerprint = cv_fingerprint
+        score._posting_fingerprint = posting_fingerprint
+        score._score = assessed.assessment.score
+        score._gaps = assessed.assessment.gaps
+        score._model = assessed.usage.model
+        score._prompt_version = assessed.usage.prompt_version
+        score._input_tokens = assessed.usage.input_tokens
+        score._output_tokens = assessed.usage.output_tokens
+        score._unmetered_attempts = assessed.usage.unmetered_attempts
+        score._llm_duration_ms = assessed.usage.duration_ms
+        score._cost = cost
+        score._scored_at = at
+        score.record(
+            FitScoreRecorded(
+                occurred_at=at,
+                fit_score_id=id,
+                gap_count=len(assessed.assessment.gaps),
+                input_tokens=assessed.usage.input_tokens,
+                output_tokens=assessed.usage.output_tokens,
+                cost_microusd=cost.value,
+                duration_ms=assessed.usage.duration_ms,
+                model=assessed.usage.model,
+                prompt_version=assessed.usage.prompt_version,
+            )
+        )
+        return score
+
+    def _assign_owner(self, owner: Owner) -> None:
+        """The only writer of the two owner attributes (FS-1): exactly one is set, by construction."""
+        match owner:
+            case GuestOwner(guest_session_id=guest_session_id):
+                self._owner_guest_session_id = guest_session_id
+                self._owner_user_id = None
+            case UserOwner(user_id=user_id):
+                self._owner_guest_session_id = None
+                self._owner_user_id = user_id
+            case _:
+                assert_never(owner)
 
     @property
     def id(self) -> FitScoreId:
-        raise NotImplementedError
+        return self._id
 
     @property
     def owner(self) -> Owner:
-        raise NotImplementedError
+        """Rebuilds the variant from the two attributes. The states `_assign_owner` cannot produce are
+        refused by the database's CHECK, so the last arm means a row written around both: loud."""
+        match (self._owner_guest_session_id, self._owner_user_id):
+            case (GuestSessionId() as guest_session_id, None):
+                return GuestOwner(guest_session_id)
+            case (None, UserId() as user_id):
+                return UserOwner(user_id)
+            case _:
+                raise InvariantViolated("a fit score must have exactly one owner (FS-1)")
 
     @property
     def base_cv_id(self) -> ScoredCvRef:
-        raise NotImplementedError
+        return self._base_cv_id
 
     @property
     def job_posting_id(self) -> ScoredPostingRef:
-        raise NotImplementedError
+        return self._job_posting_id
 
     @property
     def cv_fingerprint(self) -> CvFingerprint:
-        raise NotImplementedError
+        return self._cv_fingerprint
 
     @property
     def posting_fingerprint(self) -> PostingFingerprint:
-        raise NotImplementedError
+        return self._posting_fingerprint
 
     @property
     def assessment(self) -> FitAssessment:
-        raise NotImplementedError
+        return FitAssessment(self._score, self._gaps)
 
     @property
     def usage(self) -> ScoringUsage:
-        raise NotImplementedError
+        return ScoringUsage(
+            input_tokens=self._input_tokens,
+            output_tokens=self._output_tokens,
+            unmetered_attempts=self._unmetered_attempts,
+            duration_ms=self._llm_duration_ms,
+            model=self._model,
+            prompt_version=self._prompt_version,
+        )
 
     @property
     def cost(self) -> MicroUsd:
-        raise NotImplementedError
+        return self._cost
 
     @property
     def scored_at(self) -> datetime:
-        raise NotImplementedError
+        return self._scored_at
