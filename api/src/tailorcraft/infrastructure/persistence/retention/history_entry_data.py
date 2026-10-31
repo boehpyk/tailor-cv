@@ -2,7 +2,7 @@
 
 Deleting one entry of a signed-in user's history is retention's shape — *delete what an owner has for
 X, rows committed, then files* — over three contexts' tables, so it is Core SQL here rather than a
-`remove` on `TailoringRunRepository`. Five statements, one transaction, the owner in every `WHERE`:
+`remove` on `TailoringRunRepository`. Six statements, one transaction, the owner in every `WHERE`:
 
     DELETE FROM tailoring_run WHERE id = :r AND user_id = :u RETURNING job_posting_id;  -- 0 rows → None
     DELETE FROM tracking_application WHERE tailoring_run_id = :r AND user_id = :u RETURNING id;
@@ -11,6 +11,7 @@ X, rows committed, then files* — over three contexts' tables, so it is Core SQ
     DELETE FROM posting_job_posting
      WHERE id = :p AND user_id = :u
        AND NOT EXISTS (SELECT 1 FROM tailoring_run WHERE job_posting_id = :p);        -- rowcount
+    DELETE FROM scoring_fit_score WHERE job_posting_id = :p AND user_id = :u;         -- if it went
 
 **`RETURNING` makes "what I deleted" and "what I must unlink" one set.** 2.2's erasure collects keys
 first and locks the user row so nothing slips in between; here the export rows' `(id, format)` come
@@ -54,6 +55,11 @@ snapshot and miss a card committed while the run's `DELETE` waited — CLAUDE.md
 footgun in another shape. An untracked entry's card `DELETE` matches nothing and changes nothing
 else: its report reads `tracked_application_deleted=False`, as every 2.3 report implicitly did.
 
+**Since slice 5.1 a posting that goes takes its fit scores with it** (AC-38); one that stays keeps
+them, since the pair still exists. Copied from the same pattern: a store holds the posting `FOR KEY
+SHARE`, the `FOR UPDATE` above waits on that, and the scores' `DELETE` is a separate statement whose
+fresh snapshot sees a row committed during the wait.
+
 **Nothing here logs and nothing here commits.** `CommittingHistoryEntryData`
 (`infrastructure/retention/data_access.py`) commits after this returns — which is what makes the
 unlinks that follow in `EraseHistoryEntry` safe — and the entry point logs from the report.
@@ -74,6 +80,7 @@ from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.retention.value_objects import DeletedHistoryEntry
+from tailorcraft.domain.scoring.value_objects import ScoredPostingRef
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
@@ -81,6 +88,7 @@ from tailorcraft.domain.tracking.tracked_application import TrackedApplication
 from tailorcraft.domain.tracking.value_objects import TrackedApplicationId, TrackedRunRef
 from tailorcraft.infrastructure.persistence.mapping.export.export_job import export_job_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
+from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
@@ -109,7 +117,7 @@ class SqlAlchemyHistoryEntryData:
     async def delete_history_entry(
         self, user_id: UserId, run_id: UUID
     ) -> DeletedHistoryEntry | None:
-        """The port's contract; the five statements are the module docstring's.
+        """The port's contract; the six statements are the module docstring's.
 
         **Loaded aggregates leave the identity map first**, by identity: `EraseHistoryEntry` loaded
         the run through `GetTailoringRun` to authorize it, and a Core `DELETE` does not tell the ORM
@@ -205,6 +213,12 @@ class SqlAlchemyHistoryEntryData:
         posting_deleted = posting.rowcount > 0
         if posting_deleted:
             self._expunge(JobPosting, posting_id)
+            await connection.execute(
+                delete(fit_score_table).where(
+                    fit_score_table.c.job_posting_id == ScoredPostingRef(posting_id.value),
+                    fit_score_table.c.user_id == user_id,
+                )
+            )
 
         return DeletedHistoryEntry(
             export_files=tuple(export_files),

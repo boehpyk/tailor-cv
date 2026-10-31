@@ -10,6 +10,13 @@ composition root, exactly as `CommittingExpiredGuestDataAdapter` is the purge's
 
 It lives in `infrastructure/intake/` rather than `persistence/`, beside that precedent's reasoning:
 it is not an adapter to a store but a decision about *when* one becomes durable, made for one route.
+
+**Since slice 5.1 the CV's fit scores go in the same transaction** (AC-37), and this class is the one
+place both delete routes share, so `DeleteSavedBaseCv` does not change and `/admin` needs no code. A
+score has no foreign key to its CV (ADR-0014), so the race with a store in flight is closed by order:
+the store holds the CV `FOR KEY SHARE`, the CV's `DELETE` waits on that, and the scores' `DELETE` is a
+**separate statement**, whose fresh READ COMMITTED snapshot sees a row committed during the wait. A
+store arriving after the CV's `DELETE` waits on it, then finds the CV gone and is refused.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.identity.ownership import UserOwner
@@ -25,6 +33,8 @@ from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.ports import BaseCvRepository
 from tailorcraft.domain.intake.saved_base_cv_summary import SavedBaseCvSummary
 from tailorcraft.domain.intake.value_objects import BaseCvId
+from tailorcraft.domain.scoring.value_objects import ScoredCvRef
+from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
 
 
 class CommittingBaseCvRemoval:
@@ -75,7 +85,8 @@ class CommittingBaseCvRemoval:
         await self._inner.save_label(cv)
 
     async def remove(self, cv_id: BaseCvId, owner: UserOwner) -> None:
-        """The inner `DELETE`, **then commit** — the whole reason this class exists.
+        """The inner `DELETE`, the scores' `DELETE`, **then commit** — the commit being the whole
+        reason this class exists.
 
         The commit is what `DeleteSavedBaseCv`'s unlink, which follows this call, is allowed to rely
         on (AC-27 checks it from a separate connection at the moment `delete` is called). It is safe
@@ -83,6 +94,12 @@ class CommittingBaseCvRemoval:
         `create_session_factory` sets `expire_on_commit=False`: nothing is flushed, nothing expired.
         """
         await self._inner.remove(cv_id, owner)
+        await self._session.execute(
+            delete(fit_score_table).where(
+                fit_score_table.c.base_cv_id == ScoredCvRef(cv_id.value),
+                fit_score_table.c.user_id == owner.user_id,
+            )
+        )
         await self._session.commit()
 
 
