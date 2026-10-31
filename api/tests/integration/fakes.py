@@ -2106,7 +2106,8 @@ class FakeFitScorer:
 
 class RecordingSpendLedger:
     """`SpendLedgerPort` with the real arithmetic: `try_reserve` adds unless that passes the cap,
-    `settle` replaces the reservation with the actual cost, floored at zero, on the day it is given.
+    `settle` replaces the reservation with the actual cost, floored at zero, on the day it is given
+    **if that day has a figure**; with none it changes nothing, as the adapter's `UPDATE` does.
 
     `spent` is the figure per day. `reservations` and `settlements` are every call's arguments, in
     order, **including calls that then raised**. `reserve_raises` / `settle_raises` are the database
@@ -2145,4 +2146,8 @@ class RecordingSpendLedger:
         self.settlements.append((day, reserved, actual))
         if self._settle_raises is not None:
             raise self._settle_raises
-        self.spent[day] = max(self.spent.get(day, 0) + actual.value - reserved.value, 0)
+        if day not in self.spent:
+            # The adapter's `UPDATE` finds no row and changes nothing; creating an entry here hid a
+            # settle on the wrong day (T20).
+            return
+        self.spent[day] = max(self.spent[day] + actual.value - reserved.value, 0)
