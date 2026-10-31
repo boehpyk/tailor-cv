@@ -20,8 +20,8 @@ so the running image, which does not know these tables exist, is unaffected thro
 **No foreign key on `base_cv_id` or `job_posting_id`** (ADR-0014's convention, ADR-0040 decision 8), and
 no index beyond the two unique constraints, whose leading columns serve each owner's cascade and count.
 
-**Downgrade refuses while either table holds a row.** A score is someone's data, and the ledger is the
-only history of spend there is, as well as today's cap.
+**Downgrade refuses while `scoring_fit_score` holds a row:** a score is someone's data. The ledger holds
+nobody's data, so it does not block a downgrade and goes with its table.
 
 **Reviewed line by line.** The draft was right: every impl as `alembic_render.py` renders it, both
 instants `TIMESTAMP(timezone=True, precision=0)`, `gaps` as `JSONB`, each constraint named, no drop and
@@ -44,11 +44,10 @@ down_revision: str | None = "669b75917559"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_ANY_ROW_SQL = "SELECT 1 FROM scoring_fit_score UNION ALL SELECT 1 FROM scoring_daily_spend"
+_ANY_ROW_SQL = "SELECT 1 FROM scoring_fit_score"
 _REFUSAL = (
-    "refusing to downgrade 8ddd7ee1ca93: scoring_fit_score or scoring_daily_spend holds rows, and "
-    "the previous schema has nowhere to put them. This migration never deletes data to make a "
-    "downgrade fit."
+    "refusing to downgrade 8ddd7ee1ca93: scoring_fit_score holds rows, and the previous schema has "
+    "nowhere to put them. This migration never deletes data to make a downgrade fit."
 )
 
 
@@ -120,7 +119,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Taken before the look, so no row can land between the check and the `DROP TABLE`s (which need
     # `ACCESS EXCLUSIVE` anyway).
-    op.execute("LOCK TABLE scoring_fit_score, scoring_daily_spend IN ACCESS EXCLUSIVE MODE")
+    op.execute("LOCK TABLE scoring_fit_score IN ACCESS EXCLUSIVE MODE")
     if context.is_offline_mode():
         # A generated script has no connection to ask, so the refusal travels in the SQL itself.
         # Interpolates only this module's constants, none of which holds a quote.
