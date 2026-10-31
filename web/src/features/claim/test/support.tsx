@@ -53,6 +53,7 @@ export function claimResult(overrides: Partial<GuestWorkClaimResult> = {}): Gues
     job_postings: 1,
     tailoring_runs: 2,
     export_jobs: 0,
+    fit_scores: 0,
     working_copies_dropped: 0,
     ...overrides,
   };

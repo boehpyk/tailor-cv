@@ -17,5 +17,11 @@ export interface GuestWorkClaimResult {
   readonly job_postings: number;
   readonly tailoring_runs: number;
   readonly export_jobs: number;
+  /**
+   * Fit scores moved (slice 5.1, T22). Not named in the success note and not counted by
+   * `claimMovedNothing`: a score travels with the CV it judges, as the server's `claimed_anything`
+   * ignores it too.
+   */
+  readonly fit_scores: number;
   readonly working_copies_dropped: number;
 }

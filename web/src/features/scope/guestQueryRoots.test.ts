@@ -101,7 +101,7 @@ const GUEST_ROOT_NAMES = GUEST_QUERY_ROOTS.map(([root]) => root);
 describe('AC-45: every guest query-key builder starts with a declared root', () => {
   const builders = discoverBuilders(modules);
 
-  it('discovery finds the four known guest builders (positive control)', () => {
+  it('discovery finds the known guest builders (positive control)', () => {
     const names = builders.map((b) => b.name);
     for (const known of [
       'baseCvsQueryKey',
@@ -109,6 +109,7 @@ describe('AC-45: every guest query-key builder starts with a declared root', () 
       'tailoringRunsQueryKey',
       'tailoringRunQueryKey',
       'exportJobsQueryKey',
+      'fitScoreQueryKey',
     ]) {
       expect(names).toContain(known);
     }
