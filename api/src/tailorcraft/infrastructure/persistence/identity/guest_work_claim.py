@@ -200,6 +200,7 @@ class SqlAlchemyGuestWorkClaim:
             job_postings=job_postings.rowcount,
             tailoring_runs=tailoring_runs.rowcount,
             export_jobs=export_jobs.rowcount,
+            fit_scores=0,  # T22's GREEN reads the real count.
             working_copies_dropped=len(dropped_keys),
             files_to_unlink=tuple(dropped_keys),
         )

@@ -144,6 +144,7 @@ async def claim_guest_work(
         job_postings=report.job_postings,
         tailoring_runs=report.tailoring_runs,
         export_jobs=report.export_jobs,
+        fit_scores=report.fit_scores,
         working_copies_dropped=report.working_copies_dropped,
     )
     for error_type in report.unlink_failures:
@@ -154,5 +155,6 @@ async def claim_guest_work(
         job_postings=report.job_postings,
         tailoring_runs=report.tailoring_runs,
         export_jobs=report.export_jobs,
+        fit_scores=report.fit_scores,
         working_copies_dropped=report.working_copies_dropped,
     )

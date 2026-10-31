@@ -321,6 +321,7 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
             "job_postings": 2,
             "tailoring_runs": 1,
             "export_jobs": 0,
+            "fit_scores": 0,
             "working_copies_dropped": 0,
         }
         assert len(guest_llm.calls) == calls_before_the_claim == 1, (
@@ -335,6 +336,7 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
                 "job_postings": 2,
                 "tailoring_runs": 1,
                 "export_jobs": 0,
+                "fit_scores": 0,
                 "working_copies_dropped": 0,
             },
             never={
@@ -552,6 +554,7 @@ async def test_ac46_a_claim_then_a_purge_a_sweep_and_an_erasure_never_log_a_mark
                     "job_postings": 1,
                     "tailoring_runs": 1,
                     "export_jobs": 1,
+                    "fit_scores": 0,
                     "working_copies_dropped": 0,
                 }
                 (claim_line,) = _claim_lines(caplog.records[mark:])
