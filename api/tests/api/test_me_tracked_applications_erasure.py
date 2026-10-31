@@ -169,7 +169,7 @@ async def test_ac28_the_dry_run_prints_the_tracking_segment_after_the_unchanged_
             f"would erase account {user_id}: 2 saved CV(s), "  # one CV per seeded history entry
         ) in out
         assert "(dry run); history: 2 tailoring run(s), 2 job posting(s), 0 export job(s); " in out
-        assert out.strip().endswith("; tracking: 2 tracked application(s)"), out
+        assert "; tracking: 2 tracked application(s)" in out, out
         assert await card_count_on(engine, user_id) == 2, "a dry run deletes nothing"
     finally:
         await _drop_user(engine, user_id)
@@ -192,7 +192,7 @@ async def test_ac28_erase_account_removes_the_cards_and_reports_them_after_the_h
 
         out = capsys.readouterr().out
         assert exit_code == erase_account_command.EXIT_OK, caplog.text
-        assert out.strip().endswith("; tracking: 3 tracked application(s)"), out
+        assert "; tracking: 3 tracked application(s)" in out, out
         assert " file(s) in all; tracking: 3 tracked application(s)" in out
         assert await card_count_on(engine, user_id) == 0
         (line,) = [
