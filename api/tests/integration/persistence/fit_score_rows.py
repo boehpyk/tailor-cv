@@ -25,6 +25,7 @@ async def insert_score_row(
     user_id: UUID | None = None,
     guest_session_id: UUID | None = None,
     base_cv_id: UUID | None = None,
+    job_posting_id: UUID | None = None,
     pair: int = 1,
     score: int = 50,
 ) -> UUID:
@@ -44,7 +45,7 @@ async def insert_score_row(
             "g": guest_session_id,
             "u": user_id,
             "cv": base_cv_id or uuid4(),
-            "p": uuid4(),
+            "p": job_posting_id or uuid4(),
             "cfp": fingerprint(pair),
             "pfp": fingerprint(pair + 1000),
             "score": score,
