@@ -9,9 +9,10 @@ The tailoring call is the product (FR-3) and the most awkward dependency in the 
 non-deterministic, occasionally refusing, priced per call, and carrying the user's entire CV over the
 wire. Everything below follows from those five facts.
 
-All access goes through `LlmPort` (ADR-0004). The Gemini adapter lives in
-`infrastructure/llm/gemini.py` and **nothing else in the repository imports the SDK.** If a second
-file imports it, the port has stopped being a boundary and become a rename.
+All access goes through `LlmPort` (ADR-0004), and fit scoring through `FitScorerPort` (ADR-0040). The
+adapters live in `infrastructure/llm/gemini.py` and `infrastructure/llm/fit_scorer.py`, and **nothing
+outside `infrastructure/llm/` imports the SDK.** If a module outside it does, the port has stopped being
+a boundary and become a rename.
 
 ## The shape of a call
 
