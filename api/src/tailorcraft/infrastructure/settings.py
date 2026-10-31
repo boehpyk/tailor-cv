@@ -11,6 +11,7 @@ a module global.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal
@@ -451,6 +452,17 @@ class Settings(BaseSettings):
     fit_score_max_attempts: int = Field(default=2, ge=1, le=2)
     fit_score_retry_backoff_seconds: float = 1.0
     fit_score_max_output_tokens: int = 512
+    # USD per million tokens. **UNVERIFIED: remembered, not read. T50 reads Google's pricing page and
+    # corrects these.** A wrong price makes the cap wrong by that ratio. Above zero at startup (AC-18).
+    fit_score_input_price_usd_per_million: Decimal = Field(default=Decimal("0.10"), gt=0)
+    fit_score_output_price_usd_per_million: Decimal = Field(default=Decimal("0.40"), gt=0)
+    # Per UTC day. `0` is legal and means always busy: the off switch (AC-18).
+    fit_score_daily_spend_cap_usd: Decimal = Field(default=Decimal("2"), ge=0)
+    # Stored scores, counted in Postgres. A user's window is a rolling 24 hours (OQ-1).
+    fit_score_max_per_guest_session: int = Field(default=3, ge=1)
+    fit_score_max_per_user_per_day: int = Field(default=10, ge=1)
+    # New attempts per client IP, guests and users alike. Fails closed: this spends money.
+    fit_score_rate_limit_per_ip_per_hour: int = Field(default=10, ge=1)
 
     # -- Tailoring rate limits, caps & queue (slice 1.3) ----------------------
     # This endpoint costs MONEY per call and is open to guests, so its limiter is constructed with

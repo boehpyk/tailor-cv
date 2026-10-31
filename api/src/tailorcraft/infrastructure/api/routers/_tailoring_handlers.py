@@ -18,8 +18,8 @@ is computed once, handed to the limiter as an identifier, and goes nowhere else.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
-from typing import Final, assert_never
+from datetime import datetime
+from typing import assert_never
 
 import structlog
 from fastapi import Request, Response, status
@@ -59,7 +59,10 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
     TailoringRunId,
 )
-from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
+from tailorcraft.infrastructure.api.errors import (
+    PROVIDER_BUSY_COOLDOWN,
+    domain_error_to_http_exception,
+)
 from tailorcraft.infrastructure.api.schemas.tailoring import (
     CreateTailoringRunRequest,
     HistoryBaseCvResponse,
@@ -126,11 +129,6 @@ def is_retryable(reason: TailoringFailureReason | None) -> bool:
             return False
         case _:
             assert_never(reason)
-
-
-# ADR-0014, amendment of 2026-10-09: a fixed cooldown after `llm_rate_limited`. A constant, not a
-# setting — no operator has a reason to tune it (technical plan §3).
-PROVIDER_BUSY_COOLDOWN: Final = timedelta(seconds=60)
 
 
 def retry_not_before(

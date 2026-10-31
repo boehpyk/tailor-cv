@@ -61,6 +61,8 @@ from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.settings import Settings, get_settings
 from tailorcraft.infrastructure.tasks.app import app as celery_app
+from tests.integration.fakes import FakeFitScorer
+from tests.integration.scoring.support import assessed
 
 
 @pytest.fixture(scope="session")
@@ -420,6 +422,8 @@ def app(
     app.state.session_factory = lambda: session
     app.state.celery = celery_app
     app.state.password_hasher = password_hasher
+    # A fake, so no test can reach Google. A test wanting another outcome replaces it on `app.state`.
+    app.state.fit_scorer = FakeFitScorer(assessed())
 
     return app
 
