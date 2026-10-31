@@ -77,5 +77,7 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Above `asyncUtilTimeout` in setup.ts, so a slow wait reports its own failure, not this one.
+    testTimeout: 15000,
   },
 });

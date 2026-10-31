@@ -394,7 +394,7 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
 - **A test encodes what the code *should* do, never what it was observed doing.** When an AC and
   the code disagree, fix one on purpose and say which won.
 - Known flakes (pass on re-run): AC-20's login event-loop fraction, a 401 on
-  `…[control_character]`, the first admin Vitest test under load. If one recurs, it's a finding.
+  `…[control_character]`. If one recurs, it's a finding. Vitest under load was one until `web/src/test/setup.ts` raised `asyncUtilTimeout`.
 
 ## Privacy — this product's specific hazard
 
