@@ -438,6 +438,20 @@ class Settings(BaseSettings):
     # and moves when the model does, which is exactly what an adapter's configuration is for.
     llm_max_cv_characters: int = 25_000
 
+    # -- Fit scoring's model call (slice 5.1, ADR-0040) -----------------------
+    # Apart from `gemini_model`, because a cheap judgement is not a rewrite. The CV bound and the key
+    # are shared with tailoring. All defaulted, so the box's `.env` needs no edit. VERIFY at T50.
+    fit_score_model: str = "gemini-2.5-flash-lite"
+    # Per attempt, under the hard deadline below. 8 + 1 + 8 is over 14 on purpose: a second attempt
+    # gets what is left, and the deadline keeps the request inside the 15-second budget.
+    fit_score_request_timeout_seconds: float = 8.0
+    fit_score_total_deadline_seconds: int = 14
+    # Total attempts, not retries. Capped at 2 so "invalid output is retried at most once" (AC-24) is
+    # true of every configuration. The reservation multiplies by it (ADR-0041 decision 2).
+    fit_score_max_attempts: int = Field(default=2, ge=1, le=2)
+    fit_score_retry_backoff_seconds: float = 1.0
+    fit_score_max_output_tokens: int = 512
+
     # -- Tailoring rate limits, caps & queue (slice 1.3) ----------------------
     # This endpoint costs MONEY per call and is open to guests, so its limiter is constructed with
     # `fail_open=False` — the far end of the spectrum OQ-7 opened in 1.1 and 1.2 generalized: fail
