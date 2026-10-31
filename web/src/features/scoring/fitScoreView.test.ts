@@ -3,7 +3,8 @@ import { ApiError } from '../../api/client';
 import { fitScoreView, type FitScoreViewInput } from './fitScoreView';
 import type { FitScore, FitScoreForPair } from './types';
 
-// Slice 5.1, AC-45 / technical plan §6 and its T33-T35 precedence. Pure: inputs in, one view out.
+// Slice 5.1, AC-45 / technical plan §6 and its "Precedence corrected 2026-11-01".
+// Pure: inputs in, one view out.
 
 const SCORE: FitScore = {
   id: '0190a000-0000-7000-8000-000000000001',
