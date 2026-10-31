@@ -1,9 +1,5 @@
 """A guest's fit scores (slice 5.1, technical plan §4). One credential: the guest cookie, and **no
 session is minted**, `routers/tailoring.py`'s reason. The bodies are in `_fit_score_handlers.py`.
-
-SKELETON (T28). These signatures carry only the credential and the input: a route that depends on a
-scoring port makes that port "bound", which `test_port_bindings.py` refuses while the port is still
-in `_BOUND_ELSEWHERE`. T30 adds the dependencies and calls the shared bodies.
 """
 
 from __future__ import annotations
@@ -11,9 +7,18 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Query, status
+from fastapi import APIRouter, Body, Query, Request, Response, status
 
-from tailorcraft.infrastructure.api.deps import RequireGuestSessionDep
+from tailorcraft.domain.identity.ownership import GuestOwner
+from tailorcraft.infrastructure.api.deps import (
+    FindFitScoreForPairDep,
+    FitScoreRateLimiterDep,
+    RequestFitScoreDep,
+    RequireGuestSessionDep,
+    ResolveScoringPairDep,
+    SettingsDep,
+)
+from tailorcraft.infrastructure.api.routers import _fit_score_handlers as handlers
 from tailorcraft.infrastructure.api.routers._fit_score_handlers import (
     GET_RESPONSES,
     POST_RESPONSES,
@@ -42,11 +47,29 @@ _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
     responses={**POST_RESPONSES, **_GUEST_SESSION_EXPIRED},
 )
 async def request_fit_score(
+    request: Request,
+    response: Response,
     body: Annotated[CreateFitScoreRequest, Body()],
     session: RequireGuestSessionDep,
+    settings: SettingsDep,
+    rate_limiter: FitScoreRateLimiterDep,
+    resolve_pair: ResolveScoringPairDep,
+    find_score: FindFitScoreForPairDep,
+    request_score: RequestFitScoreDep,
 ) -> FitScoreResponse:
     """Score a new pair inside this request, or answer with the stored score."""
-    raise NotImplementedError
+    return await handlers.request_fit_score(
+        request=request,
+        response=response,
+        body=body,
+        requester=GuestOwner(session.id),
+        expires_at=session.expires_at,
+        settings=settings,
+        rate_limiter=rate_limiter,
+        resolve_pair=resolve_pair,
+        find_score=find_score,
+        request_score=request_score,
+    )
 
 
 @router.get(
@@ -55,9 +78,18 @@ async def request_fit_score(
     responses={**GET_RESPONSES, **_GUEST_SESSION_EXPIRED},
 )
 async def read_fit_score(
+    response: Response,
     base_cv_id: Annotated[UUID, Query()],
     job_posting_id: Annotated[UUID, Query()],
     session: RequireGuestSessionDep,
+    find_score: FindFitScoreForPairDep,
 ) -> FitScoreForPairResponse:
     """The stored score of a pair, or `null`. Never reaches the scorer (AC-48)."""
-    raise NotImplementedError
+    return await handlers.read_fit_score(
+        response=response,
+        base_cv_id=base_cv_id,
+        job_posting_id=job_posting_id,
+        requester=GuestOwner(session.id),
+        expires_at=session.expires_at,
+        find_score=find_score,
+    )
