@@ -123,6 +123,14 @@ describe('fitScoreView: request errors', () => {
     });
   });
 
+  it('409 too_many_fit_scores without retry_not_before carries retryNotBefore null', () => {
+    const error = api(409, 'too_many_fit_scores', { limit: 3 });
+    expect(fitScoreView(input({ request: { error } }))).toEqual({
+      kind: 'limit',
+      retryNotBefore: null,
+    });
+  });
+
   it('503 scoring_busy is busy', () => {
     expect(fitScoreView(input({ request: { error: api(503, 'scoring_busy') } }))).toEqual({
       kind: 'busy',
@@ -182,7 +190,7 @@ describe('fitScoreView: precedence, highest first', () => {
     ).toEqual({ kind: 'working' });
   });
 
-  it('held beats a stored score', () => {
+  it('a stored score beats an active hold (AC-46: the score already exists)', () => {
     expect(
       fitScoreView(
         input({
@@ -191,7 +199,7 @@ describe('fitScoreView: precedence, highest first', () => {
           held: true,
         }),
       ),
-    ).toEqual({ kind: 'held' });
+    ).toEqual({ kind: 'succeeded', score: SCORE });
   });
 
   it('held beats a pending read', () => {
@@ -206,12 +214,15 @@ describe('fitScoreView: precedence, highest first', () => {
     ).toEqual({ kind: 'held' });
   });
 
-  it("the request's own outcome beats a stored score", () => {
+  it.each([
+    ['failed', failed],
+    ['refused', api(422, 'scoring_refused')],
+    ['limit', api(409, 'too_many_fit_scores', { retry_not_before: null })],
+    ['busy', api(503, 'scoring_busy')],
+  ])('a stored score beats a %s request outcome', (_name, error) => {
     expect(
-      fitScoreView(
-        input({ read: { status: 'success', data: STORED }, request: { error: failed } }),
-      ),
-    ).toEqual({ kind: 'failed' });
+      fitScoreView(input({ read: { status: 'success', data: STORED }, request: { error } })),
+    ).toEqual({ kind: 'succeeded', score: SCORE });
   });
 
   it("the request's own outcome beats a pending read", () => {
