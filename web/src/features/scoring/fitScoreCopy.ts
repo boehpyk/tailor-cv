@@ -1,3 +1,5 @@
+import { retryPhrase } from '@/features/retry/hold';
+
 /**
  * **Every word the fit-score panel says, in one place** (slice 5.1, technical plan §6), so a test can
  * pin them: AC-47's notice verbatim, and AC-49's scan that no sentence promises a gain. The score is
@@ -71,6 +73,48 @@ export const SIGN_UP_LINK = 'Sign up';
 export function accountLimit(when: string): string {
   return `You can check again ${when}.`;
 }
+
+/**
+ * When an account may check again, from the 409's `retry_not_before`: *"at 14:00"* today,
+ * *"tomorrow at 09:00"*, or *"on Tuesday at 09:00"*, in the browser's locale. `nowMs` is when the
+ * answer arrived (`useErrorHold`'s `receivedAtMs`), so the sentence is fixed text. `"later"` when
+ * the instant is absent or unreadable.
+ */
+export function limitWhen(retryNotBefore: string | null, nowMs: number): string {
+  const at = retryNotBefore === null ? Number.NaN : Date.parse(retryNotBefore);
+  if (Number.isNaN(at)) {
+    return 'later';
+  }
+  const phrase = retryPhrase(at, nowMs);
+  if (!phrase.startsWith('at ')) {
+    return phrase; // "now", or "in N seconds"
+  }
+  // The day of the minute `retryPhrase` names (it rounds up), in local calendar days.
+  const named = new Date(Math.ceil(at / 60_000) * 60_000);
+  const days = Math.round((startOfDay(named) - startOfDay(new Date(nowMs))) / 86_400_000);
+  if (days <= 0) {
+    return phrase;
+  }
+  if (days === 1) {
+    return `tomorrow ${phrase}`;
+  }
+  return `on ${new Intl.DateTimeFormat(undefined, { weekday: 'long' }).format(named)} ${phrase}`;
+}
+
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+/**
+ * `held`: a 429 still holding the button. The house hold sentence, worded as `TailorLaunch` words
+ * its own (`useErrorHold`'s `phrase`, fixed at receipt).
+ */
+export function holdSentence(phrase: string | null): string {
+  return `You can try again ${phrase ?? 'soon'}.`;
+}
+
+/** A guest's 401 `guest_session_expired`: tailoring's sentence (`rejectionMessage`), word for word. */
+export const SESSION_EXPIRED = 'Your session has expired. Upload your CV again.';
 
 /** `busy`, guest: AC-15, with a link to `/register`. */
 export const GUEST_BUSY = 'Scoring is busy right now. Signing up still works.';

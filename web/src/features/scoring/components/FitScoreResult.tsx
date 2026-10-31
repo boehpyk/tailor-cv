@@ -1,5 +1,14 @@
 import type { ScopeMap } from '@/features/scope/scopeMap';
 
+import {
+  ACCOUNT_RETENTION,
+  ESTIMATE_LABEL,
+  GAPS_HEADING,
+  GUEST_RETENTION,
+  NO_CLEAR_GAP,
+  scorePercent,
+} from '../fitScoreCopy';
+
 import type { FitScore } from '../types';
 
 export interface FitScoreResultProps {
@@ -10,11 +19,36 @@ export interface FitScoreResultProps {
 
 /**
  * A stored score (presentational): *62%* with *estimate* beside it, the gaps as a `<ul>`, and the
- * retention sentence. Gaps are model text, rendered as text only, never as HTML.
+ * retention sentence. Gaps are model text, rendered as React text only, never as HTML.
  *
- * SKELETON (T35): a stub. T39 renders it against T38's tests.
+ * The number is plain slate (AC-49): no colour, no meter, no adjective. A meter would need a
+ * dynamic width, which is a `style=`.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- T35 skeleton; read in T39
-export function FitScoreResult(_props: FitScoreResultProps): React.JSX.Element {
-  return <div data-fit-score-view="succeeded" />;
+export function FitScoreResult({ score, scope }: FitScoreResultProps): React.JSX.Element {
+  return (
+    <div className="space-y-4">
+      <p className="flex items-baseline gap-2">
+        <span className="text-4xl font-semibold tabular-nums text-slate-900">
+          {scorePercent(score.score_percent)}
+        </span>
+        <span className="text-sm text-slate-600">{ESTIMATE_LABEL}</span>
+      </p>
+      <div className="space-y-2">
+        <h3 className="text-sm font-semibold text-slate-900">{GAPS_HEADING}</h3>
+        {score.gaps.length === 0 ? (
+          <p className="text-sm text-slate-700">{NO_CLEAR_GAP}</p>
+        ) : (
+          <ul className="list-disc space-y-1 pl-5 text-sm text-slate-700">
+            {score.gaps.map((gap) => (
+              // Unique: the API refuses duplicate gaps (`gaps_inconsistent`).
+              <li key={gap}>{gap}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <p className="text-sm text-slate-500">
+        {scope === 'account' ? ACCOUNT_RETENTION : GUEST_RETENTION}
+      </p>
+    </div>
+  );
 }
