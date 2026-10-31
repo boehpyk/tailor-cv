@@ -237,7 +237,9 @@ that its text need not change when it does. When it lands, it must count this ta
 - **Spared by schema, as in (a) and (d).** A user-owned score has no guest session, so the purge cannot
   select it, and a test with existing rows proves it.
 - **Stated where it happens (§5).** The panel says, for a guest, that guest CVs and scores are deleted
-  after 24 hours; and, for an account, that the score is saved until the CV or the job posting is
-  deleted. The claim's offer does not name scores: they travel with the work it does name.
+  after 24 hours; and, for an account, *"Your score is saved until you delete this CV or your
+  account."* (OQ-15, corrected 2026-10-30: no route deletes a posting on its own, so the sentence
+  names only what a user can delete. A posting that leaves with a history entry still takes its
+  scores, as the table says.) The claim's offer does not name scores: they travel with the work it does name.
 - **The spend ledger (ADR-0041) is not part of this.** It holds a date and a number, no personal data,
   and it survives every deletion, which is what lets the cap survive the purge.
