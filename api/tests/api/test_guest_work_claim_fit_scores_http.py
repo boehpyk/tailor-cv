@@ -8,14 +8,14 @@ session and connection per request) — slice 5.1, T21, **red first**; AC-34, S-
 - **S-31: a twin that appears *during* the claim.** The user's store of the same pair is uncommitted
   when the claim's `UPDATE` reaches that pair: the claim's `NOT EXISTS` cannot see it, the `UPDATE`
   waits on the unique index, and the store then commits. The claim fails on `uq_scoring_fit_score_user_pair`,
-  which the adapter translates to `GuestWorkClaimConflict`: **503, the whole claim rolled back, every
+  which the existing `SQLAlchemyError` handler answers: **503 `service_unavailable`, the whole claim rolled back, every
   guest row still guest-owned, the session present, the guest cookie not cleared**; a retry succeeds and
   finds the twin. The overlap is proven from `pg_stat_activity` (the claim's `UPDATE` observed waiting),
   not assumed from a sleep, and the staging is at the `UPDATE` the spec names: the claim's earlier
   statements have already run inside the same transaction when it waits.
 
-The 503's error code is not named by the spec (S-31: "503"), so these tests pin the status and the
-envelope only.
+S-31 is the generic 503: no `GuestWorkClaimConflict` class exists (technical plan, corrections). The
+tests pin the status and the envelope.
 """
 
 from __future__ import annotations

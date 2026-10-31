@@ -330,3 +330,32 @@ async def test_a_claim_of_a_session_with_no_scores_counts_zero(
     claimed = await _claim(session, scene)
 
     assert await _fit_scores_claimed(claimed) == 0
+
+
+# --- limits are not the claim's business ----------------------------------------------------------
+
+
+async def test_a_claim_moves_every_score_even_when_it_leaves_the_user_above_the_daily_limit(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """AC-35. The user already has the ten scores a day an account may make; the guest brings three
+    more. A claim never fails on a limit: all three move and the user holds thirteen. (A guard, not a
+    red: the statement has no limit in it today, and this test is what keeps it that way.)"""
+    scene = await _scene(session, clock)
+    for pair in range(1, 11):
+        await insert_score_row(session, user_id=scene.user.value, pair=pair, scored_at=scene.at)
+    moved = [
+        await insert_score_row(
+            session,
+            guest_session_id=scene.guest.guest_session_id.value,
+            base_cv_id=scene.own_cv,
+            pair=pair,
+            scored_at=scene.at,
+        )
+        for pair in (11, 12, 13)
+    ]
+
+    claimed = await _claim(session, scene)
+
+    assert [await owner_of(session, row) for row in moved] == [(None, scene.user.value)] * 3
+    assert await _fit_scores_claimed(claimed) == 3
