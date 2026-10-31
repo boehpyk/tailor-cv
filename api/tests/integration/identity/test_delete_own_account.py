@@ -105,6 +105,7 @@ async def test_the_correct_password_verifies_before_erase_account_reads_and_retu
         job_postings=0,
         export_jobs=0,
         files=1,
+        fit_scores=0,
     )
     assert order[0] == "verify"
     assert order.index("verify") < order.index("files_of_account")

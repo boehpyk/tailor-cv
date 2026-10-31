@@ -243,6 +243,7 @@ class SqlAlchemyAccountData:
             job_postings=row.job_postings,
             export_jobs=row.export_jobs,
             tracked_applications=row.tracked_applications,
+            fit_scores=0,  # T24's skeleton: T23's RED is open, and its GREEN counts the rows.
         )
 
 

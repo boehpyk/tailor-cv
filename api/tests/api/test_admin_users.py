@@ -71,6 +71,7 @@ _COUNT_KEYS = {
     "job_postings",
     "export_jobs",
     "tracked_applications",
+    "fit_scores",
 }
 _ITEM_KEYS = {"id", "email", "role", "created_at", "disabled_at"}
 

@@ -54,6 +54,7 @@ def _summary(sid: GuestSessionId | None = None) -> GuestSessionSummary:
         job_postings=2,
         tailoring_runs=3,
         export_jobs=4,
+        fit_scores=0,
     )
 
 

@@ -94,6 +94,7 @@ def _summary(
         job_postings=row.job_postings,
         tailoring_runs=row.tailoring_runs,
         export_jobs=row.export_jobs,
+        fit_scores=0,  # T24's skeleton: T23's RED is open, and its GREEN counts the rows.
     )
 
 

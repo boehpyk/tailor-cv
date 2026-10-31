@@ -1215,6 +1215,7 @@ class FakeAccountDataPort:
             job_postings=history.job_postings,
             export_jobs=len(export_files),
             tracked_applications=self._tracked_applications_by_user.get(user_id, 0),
+            fit_scores=0,
         )
 
 

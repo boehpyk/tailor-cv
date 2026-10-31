@@ -60,6 +60,7 @@ class AdminAccountCounts(BaseModel):
     job_postings: int
     export_jobs: int
     tracked_applications: int
+    fit_scores: int
 
 
 class AdminUserDetailResponse(BaseModel):
@@ -145,6 +146,7 @@ class AdminGuestSessionSummary(BaseModel):
     job_postings: int
     tailoring_runs: int
     export_jobs: int
+    fit_scores: int
 
 
 class AdminGuestSessionPageResponse(BaseModel):

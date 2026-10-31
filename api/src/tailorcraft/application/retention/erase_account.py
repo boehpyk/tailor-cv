@@ -85,4 +85,6 @@ class EraseAccount:
             files=len(refs),
             # The account's cards, counted before the delete like the rest (slice 3.1, AC-13).
             tracked_applications=counts.tracked_applications,
+            # The account's fit scores, gone by the cascade (slice 5.1, AC-36).
+            fit_scores=counts.fit_scores,
         )

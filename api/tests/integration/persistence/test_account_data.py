@@ -224,7 +224,7 @@ async def test_count_account_counts_base_cvs_files_and_logins(
     counts = await accounts.count_account(user_id)
 
     assert counts == AccountCounts(
-        base_cvs=2, files=2, logins=1, tailoring_runs=0, job_postings=0, export_jobs=0
+        base_cvs=2, files=2, logins=1, tailoring_runs=0, job_postings=0, export_jobs=0, fit_scores=0
     )
 
 
@@ -389,7 +389,7 @@ async def test_count_account_counts_the_history_and_files_matches_files_of_accou
     files = await accounts.files_of_account(user_id)
 
     assert counts == AccountCounts(
-        base_cvs=1, files=7, logins=0, tailoring_runs=2, job_postings=2, export_jobs=6
+        base_cvs=1, files=7, logins=0, tailoring_runs=2, job_postings=2, export_jobs=6, fit_scores=0
     )
     assert counts.files == len(files)
 

@@ -196,6 +196,7 @@ async def test_count_account_counts_the_users_cards_and_only_theirs(
         job_postings=3,
         export_jobs=0,
         tracked_applications=3,
+        fit_scores=0,
     )
 
 
