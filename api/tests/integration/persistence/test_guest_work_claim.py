@@ -12,7 +12,7 @@ the source restored byte-exact (`git diff` empty):
 
 - Re-point the run UPDATE at `export_job` (the run UPDATE effectively dropped): 6 red, among them
   `test_every_table_with_a_guest_session_id_column_is_re_keyed_by_name` ("transfer does not re-key
-  ['tailoring_run']"), `test_transfer_sends_exactly_six_statements_in_the_documented_order`,
+  ['tailoring_run']"), `test_transfer_sends_exactly_seven_statements_in_the_documented_order`,
   `test_nothing_but_the_owner_moves_...` and the `[tailoring_run]` AC-9 case.
 - `.values(guest_session_id=None, user_id=user_id, version=tailoring_run_table.c.version + 1)` on the
   run UPDATE: `test_transfer_never_writes_a_column_but_the_two_owner_columns` red (the SET clause names
@@ -283,7 +283,7 @@ async def _capture_transfer(
     return seeded, user_id, capture.statements, claimed
 
 
-async def test_transfer_sends_exactly_six_statements_in_the_documented_order(
+async def test_transfer_sends_exactly_seven_statements_in_the_documented_order(
     session: AsyncSession, engine: AsyncEngine, clock: FixedClock
 ) -> None:
     _, _, statements, _ = await _capture_transfer(session, engine, clock)
@@ -293,12 +293,13 @@ async def test_transfer_sends_exactly_six_statements_in_the_documented_order(
         ("UPDATE", "posting_job_posting"),
         ("UPDATE", "tailoring_run"),
         ("UPDATE", "export_job"),
+        ("UPDATE", "scoring_fit_score"),
         ("DELETE FROM", "intake_base_cv"),
         ("DELETE FROM", "identity_guest_session"),
     ], statements
     assert "copied_from_base_cv_id IS NULL" in statements[0]
-    assert statements[4].endswith("RETURNING intake_base_cv.file_key"), statements[4]
-    for update in statements[:4]:
+    assert statements[5].endswith("RETURNING intake_base_cv.file_key"), statements[5]
+    for update in statements[:5]:
         assert "WHERE" in update, update
         assert "guest_session_id = $" in update.split("WHERE")[1], update
 
@@ -310,7 +311,7 @@ async def test_transfer_never_writes_a_column_but_the_two_owner_columns(
     that names `version` would turn a paid result into `SKIPPED`."""
     _, _, statements, _ = await _capture_transfer(session, engine, clock)
 
-    for update in statements[:4]:
+    for update in statements[:5]:
         set_clause = update.split(" SET ", 1)[1].split(" WHERE ", 1)[0]
         written = {part.split("=")[0].strip() for part in set_clause.split(",")}
         assert written == _OWNER_COLUMNS, update

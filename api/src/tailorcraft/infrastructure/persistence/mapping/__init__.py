@@ -40,6 +40,9 @@ def load_all() -> None:
     Slice 3.1's `tracked_application` comes last. It imports `user_table` for its foreign key and
     names a `tailoring_run_id` with **no** foreign key (ADR-0029), so only its position after
     `identity.user` is load-bearing. It references no guest table at all (plan §0.5).
+
+    Slice 5.1's `fit_score` needs `guest_session` and `user` for its foreign keys, and `daily_spend`
+    is a plain `Table` that references nothing, listed so that `metadata` has it.
     """
     from tailorcraft.infrastructure.persistence.mapping.identity import guest_session
     from tailorcraft.infrastructure.persistence.mapping.intake import base_cv
@@ -57,6 +60,10 @@ def load_all() -> None:
     from tailorcraft.infrastructure.persistence.mapping.tracking import (  # isort: skip
         tracked_application,
     )
+    from tailorcraft.infrastructure.persistence.mapping.scoring import (  # isort: skip
+        daily_spend,
+        fit_score,
+    )
 
     # Imported for their side effect (each module calls `map_imperatively` at import time); the
     # assignment silences "unused import". A module missing from this list is silently unmapped —
@@ -72,4 +79,6 @@ def load_all() -> None:
         pending_registration,
         password_reset,
         tracked_application,
+        fit_score,
+        daily_spend,
     )

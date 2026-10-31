@@ -2,7 +2,7 @@
 §0.2, §3).
 
 A claim moves every row a guest session owns to a user, in one transaction. The invariant (*every row
-of a session changes owner together*) spans four contexts' tables, so it is held here, by one
+of a session changes owner together*) spans five contexts' tables, so it is held here, by one
 transaction over Core statements, and not by any aggregate (ADR-0025 decision 8, ADR-0018's argument
 for the purge). After `lock_session`, `transfer` runs exactly these, in this order:
 
@@ -12,6 +12,7 @@ UPDATE intake_base_cv      SET guest_session_id = NULL, user_id = :u
 UPDATE posting_job_posting SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
 UPDATE tailoring_run       SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
 UPDATE export_job          SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
+UPDATE scoring_fit_score   SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
 DELETE FROM intake_base_cv WHERE guest_session_id = :s RETURNING file_key;   -- what is left: copies
 DELETE FROM identity_guest_session WHERE id = :s;                            -- exactly one row
 ```
@@ -74,6 +75,7 @@ from tailorcraft.infrastructure.persistence.mapping.identity.guest_session impor
 )
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
+from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
@@ -81,8 +83,8 @@ from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run impo
 if TYPE_CHECKING:
     from tailorcraft.domain.identity.ports import GuestWorkClaimPort
 
-# Recognised by name, never by message (`violated_constraint`). The four `fk_<table>_user_id_
-# identity_user` names are `registry.py`'s convention, and each is already load-bearing in its
+# Recognised by name, never by message (`violated_constraint`). The `fk_<table>_user_id_identity_user`
+# names are `registry.py`'s convention, and each is already load-bearing in its
 # repository's `add`; renaming one is a breaking change here too.
 _USER_FKS: Final = frozenset(
     {
@@ -90,6 +92,7 @@ _USER_FKS: Final = frozenset(
         "fk_posting_job_posting_user_id_identity_user",
         "fk_tailoring_run_user_id_identity_user",
         "fk_export_job_user_id_identity_user",
+        "fk_scoring_fit_score_user_id_identity_user",
     }
 )
 
@@ -119,7 +122,7 @@ class SqlAlchemyGuestWorkClaim:
         return result.scalar_one_or_none()
 
     async def transfer(self, session_id: GuestSessionId, user_id: UserId) -> ClaimedGuestWork:
-        """The module docstring's six statements; counts from `rowcount`, keys from `RETURNING`.
+        """The module docstring's seven statements; counts from `rowcount`, keys from `RETURNING`.
 
         Raises `UserNotFound` when a `user_id` FK refuses a re-key (the account was erased first);
         the caller rolls the transaction back and nothing has moved. Raises `InvariantViolated` if
@@ -149,6 +152,11 @@ class SqlAlchemyGuestWorkClaim:
             export_jobs = await connection.execute(
                 update(export_job_table)
                 .where(export_job_table.c.guest_session_id == session_id)
+                .values(guest_session_id=None, user_id=user_id)
+            )
+            await connection.execute(
+                update(fit_score_table)
+                .where(fit_score_table.c.guest_session_id == session_id)
                 .values(guest_session_id=None, user_id=user_id)
             )
         except IntegrityError as exc:
