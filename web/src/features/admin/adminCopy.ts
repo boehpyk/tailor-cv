@@ -73,7 +73,8 @@ export const FIELD_ROLE = 'Role';
 export const FIELD_CREATED = 'Created';
 export const FIELD_STATUS = 'Status';
 export const COUNTS_HEADING = 'What this account holds';
-/** The seven counts, in display order; `logins` is *Signed-in sessions* (OQ-8). */
+/** The eight counts, in display order; `logins` is *Signed-in sessions* (OQ-8). Fit scores are a
+ * count only (slice 5.1, OQ-5): no admin page reads a score or its gaps. */
 export const COUNT_LABELS: Readonly<Record<keyof AccountCounts, string>> = {
   base_cvs: 'Saved CVs',
   files: 'Files',
@@ -82,6 +83,7 @@ export const COUNT_LABELS: Readonly<Record<keyof AccountCounts, string>> = {
   job_postings: 'Job postings',
   export_jobs: 'Exports',
   tracked_applications: 'Board cards',
+  fit_scores: 'Fit scores',
 };
 
 // --- Slice 4.2: actions (AC-34, AC-35, OQ-12, OQ-18) ----------------------------------------------
@@ -264,12 +266,13 @@ export const GUESTS_ERROR = "Couldn't load guest sessions.";
 export const GUESTS_EMPTY = 'No live guest sessions.';
 export const COLUMN_STARTED = 'Started';
 export const COLUMN_EXPIRES = 'Expires at';
-/** The four counts a session row and its overview show, in display order. */
+/** The five counts a session row and its overview show, in display order (fit scores: 5.1). */
 export const GUEST_COUNT_LABELS = {
   base_cvs: 'CVs',
   job_postings: 'Job postings',
   tailoring_runs: 'Tailoring runs',
   export_jobs: 'Exports',
+  fit_scores: 'Fit scores',
 } as const;
 
 // One session (AC-33)

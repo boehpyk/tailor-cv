@@ -71,6 +71,8 @@ export interface AccountCounts {
   readonly job_postings: number;
   readonly export_jobs: number;
   readonly tracked_applications: number;
+  /** Slice 5.1 (OQ-5): how many, never a score, gap or fingerprint. */
+  readonly fit_scores: number;
 }
 
 export interface AdminUserDetail extends AdminUserSummary {
@@ -346,6 +348,8 @@ export interface AdminGuestSessionSummary {
   readonly job_postings: number;
   readonly tailoring_runs: number;
   readonly export_jobs: number;
+  /** Slice 5.1 (OQ-5): how many, never a score, gap or fingerprint. */
+  readonly fit_scores: number;
 }
 
 /** One page, latest `expires_at` first; `next_cursor` is opaque, `null` on the last page. */
