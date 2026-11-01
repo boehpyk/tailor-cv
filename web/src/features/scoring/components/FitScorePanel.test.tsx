@@ -33,6 +33,7 @@ import {
   NO_CLEAR_GAP,
   REFUSED,
   RETRY_LOAD,
+  SESSION_EXPIRED,
   SIGN_UP_LINK,
   TRY_AGAIN,
   WORKING,
@@ -343,7 +344,9 @@ describe.each([
     fireEvent.click(await screen.findByRole('button', { name: CHECK_BUTTON }));
 
     expect(
-      await screen.findByText(/you can (try|check) again (in \d+ seconds?|at \d)/i),
+      await screen.findByText(
+        /^You can try again (in \d+ seconds?|at \d{1,2}:\d{2}(?:\s?[AP]M)?)\.$/,
+      ),
     ).toBeInTheDocument();
     const button = screen.getByRole('button');
     expect(button).toBeDisabled();
@@ -381,6 +384,16 @@ describe.each([
 });
 
 describe('FitScorePanel (guest only)', () => {
+  it('a 401 guest_session_expired says the session ended and offers no retry', async () => {
+    stubAccountFetch(routes({ stored: null }, status(401, 'guest_session_expired')));
+    renderPanel(GUEST);
+    fireEvent.click(await screen.findByRole('button', { name: CHECK_BUTTON }));
+
+    expect(await screen.findByText(SESSION_EXPIRED)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: TRY_AGAIN })).not.toBeInTheDocument();
+    expect(screen.queryByText(FAILED)).not.toBeInTheDocument();
+  });
+
   it('limit: gives the 3-check sentence and a link to /register (AC-45, OQ-9)', async () => {
     stubAccountFetch(
       routes(
