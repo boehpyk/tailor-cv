@@ -36,6 +36,7 @@ from tailorcraft.application.scoring.resolve_scoring_pair import ResolveScoringP
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
+from tailorcraft.domain.scoring.errors import FitScoreSpendCapReached
 from tailorcraft.domain.scoring.fit_score import FitScore
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
@@ -212,6 +213,9 @@ async def request_fit_score(
         try:
             outcome = await request_score(RequestFitScoreCommand(owner=requester, pair=pair))
         except DomainError as exc:
+            if isinstance(exc, FitScoreSpendCapReached):
+                # S-10, ADR-0041 decision 6: one line per refusal, the UTC day and nothing else.
+                log.warning("scoring.spend_cap_reached", day=exc.day.isoformat())
             if exc.__cause__ is not None:
                 log.error("scoring.settle_failed", error_type=type(exc.__cause__).__name__)
             raise

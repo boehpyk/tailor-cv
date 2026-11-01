@@ -10,7 +10,7 @@ deferred import every other context uses for the same cycle.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from tailorcraft.domain.scoring.value_objects import FitScoreFailureReason, ScoringUsage
 from tailorcraft.domain.shared.errors import DomainError
@@ -64,7 +64,14 @@ class BaseCvNotReadyForScoring(DomainError):
 
 
 class FitScoreSpendCapReached(DomainError):
-    """The day's ledger cannot take this reservation, so no call is made (S-10, ADR-0041 decision 6)."""
+    """The day's ledger cannot take this reservation, so no call is made (S-10, ADR-0041 decision 6).
+
+    `day` is the UTC day whose ledger refused, for the boundary's one log line; it names no owner.
+    """
+
+    def __init__(self, message: str, day: date) -> None:
+        super().__init__(message)
+        self.day = day
 
 
 class InvalidScoringText(DomainError):

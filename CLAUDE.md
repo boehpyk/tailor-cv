@@ -100,8 +100,9 @@ codebase, which is why it is machine-enforced rather than remembered.
 
 **The LLM boundary** ([ADR-0004](./docs/adr/0004-llm-behind-a-port-gemini-first.md)): everything
 non-deterministic or external crosses a port — `LlmPort`, `CvTextExtractorPort`,
-`JobPostingFetcherPort`, `DocumentRendererPort`, `FileStorePort`, `TaskQueuePort`, `Clock`. The port
-speaks the *domain's* language: `LlmPort` mentions no Gemini, no HTTP, no retries, no JSON. Nothing
+`JobPostingFetcherPort`, `DocumentRendererPort`, `FileStorePort`, a queue port per context
+(`TailoringQueuePort`, `ExportQueuePort`, `AccountMailQueuePort`), `Clock`. The port speaks the
+*domain's* language: `LlmPort` mentions no Gemini, no HTTP, no retries, no JSON. Nothing
 outside `infrastructure/llm/` imports the SDK. Every call has a timeout, a bounded retry, and a
 defined behaviour for four failures: unavailable, rate-limited, refused, and **output that parses but
 is wrong**. A failed run is a recorded state of `TailoringRun`, never a 500 with nothing on disk.

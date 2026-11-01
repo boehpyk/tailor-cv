@@ -122,7 +122,7 @@ class RequestFitScore:
         reserved = worst * self._max_attempts
         if not await self._ledger.try_reserve(day, reserved, self._daily_cap):
             raise FitScoreSpendCapReached(
-                f"the day's ledger cannot take {reserved.value} micro-USD"
+                f"the day's ledger cannot take {reserved.value} micro-USD", day
             )
 
         # Only `FitScoringFailed` is caught: a cancellation must cancel, reservation standing.

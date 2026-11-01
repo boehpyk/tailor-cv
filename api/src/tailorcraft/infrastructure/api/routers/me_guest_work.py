@@ -16,7 +16,7 @@ amendment (d)).
 No body, no query parameters: nothing to validate, so no 422 is possible (C-19). Every response the
 handler builds carries `Cache-Control: no-store`.
 
-**Logging** (AC-46): one `identity.guest_work_claimed` line per claim, the user id and the five counts
+**Logging** (AC-46): one `identity.guest_work_claimed` line per claim, the user id and the six counts
 — never the guest session id, the token, its hash, a file key or a path — and one
 `identity.guest_work_file_unlink_failed` warning per failed unlink, by exception class name (C-31).
 """
