@@ -101,6 +101,32 @@ function renderPanel(scope: WorkspaceScope, pair: FitScorePair | null = PAIR): v
   );
 }
 
+const PAIR_B: FitScorePair = {
+  base_cv_id: '0192f0a1-cccc-7000-8000-00000000cccc',
+  job_posting_id: '0192f0a1-dddd-7000-8000-00000000dddd',
+};
+
+/** Like `renderPanel`, but hands back a way to put another pair on screen in the same tree. */
+function renderSwitchable(scope: WorkspaceScope): (pair: FitScorePair) => void {
+  if (scope.kind === 'account') {
+    signInAs(USER_A);
+  }
+  const tree = (pair: FitScorePair): React.JSX.Element => (
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <WorkspaceScopeProvider scope={scope}>
+          <FitScorePanel pair={pair} />
+        </WorkspaceScopeProvider>
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  const client = createAppQueryClient();
+  const { rerender } = render(tree(PAIR));
+  return (pair) => {
+    rerender(tree(pair));
+  };
+}
+
 const checkButton = (): HTMLElement => screen.getByRole('button', { name: CHECK_BUTTON });
 const posts = (f: ReturnType<typeof stubAccountFetch>) =>
   f.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/fit-scores'));
@@ -380,6 +406,94 @@ describe.each([
 
     expect(screen.getByRole('button', { name: CHECK_BUTTON })).toBeEnabled();
     expect(screen.getByText(FIT_SCORE_NOTICE)).toBeInTheDocument();
+  });
+
+  describe('a pair change (the outcome belongs to the pair it was for)', () => {
+    async function afterPairChange(post: RouteHandler, clickFirst = true) {
+      const f = stubAccountFetch(routes({ stored: null }, post));
+      const switchTo = renderSwitchable(scope);
+      fireEvent.click(await screen.findByRole('button', { name: CHECK_BUTTON }));
+      if (clickFirst) {
+        await vi.waitFor(() => {
+          expect(posts(f)).toHaveLength(1);
+        });
+      }
+      return { f, switchTo };
+    }
+
+    async function expectEmptyOnB(f: ReturnType<typeof stubAccountFetch>): Promise<void> {
+      await vi.waitFor(() => {
+        expect(gets(f).some((c) => c.query.get('base_cv_id') === PAIR_B.base_cv_id)).toBe(true);
+      });
+      const button = await screen.findByRole('button', { name: CHECK_BUTTON });
+      await vi.waitFor(() => {
+        expect(button).toBeEnabled();
+      });
+      expect(screen.getByText(FIT_SCORE_NOTICE)).toBeInTheDocument();
+    }
+
+    it('refused (inputs_too_large) on A leaves B empty, with an enabled button', async () => {
+      const { f, switchTo } = await afterPairChange(status(422, 'inputs_too_large'));
+      await screen.findByText(REFUSED.inputs_too_large);
+      switchTo(PAIR_B);
+
+      await expectEmptyOnB(f);
+      expect(screen.queryByText(REFUSED.inputs_too_large)).not.toBeInTheDocument();
+    });
+
+    it('failed (scoring_failed) on A leaves B empty, with no failure sentence', async () => {
+      const { f, switchTo } = await afterPairChange(status(503, 'scoring_failed'));
+      await screen.findByText(FAILED);
+      switchTo(PAIR_B);
+
+      await expectEmptyOnB(f);
+      expect(screen.queryByText(FAILED)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: TRY_AGAIN })).not.toBeInTheDocument();
+    });
+
+    it('base_cv_not_found on A does not leave B permanently not-ready', async () => {
+      const { f, switchTo } = await afterPairChange(status(404, 'base_cv_not_found'));
+      await vi.waitFor(() => {
+        expect(screen.getByRole('button')).toBeDisabled();
+      });
+      switchTo(PAIR_B);
+
+      await expectEmptyOnB(f);
+      expect(screen.queryByText(NOT_READY)).not.toBeInTheDocument();
+    });
+
+    it('a POST still in flight for A does not show Checking… on B', async () => {
+      const { f, switchTo } = await afterPairChange(hang);
+      expect(await screen.findByRole('status')).toHaveTextContent(WORKING);
+      switchTo(PAIR_B);
+
+      await expectEmptyOnB(f);
+      expect(screen.queryByText(WORKING)).not.toBeInTheDocument();
+    });
+
+    it('a 429 hold still holds on B: it is per IP, not per pair (positive control)', async () => {
+      const { f, switchTo } = await afterPairChange(() =>
+        jsonResponse(
+          429,
+          { error: { code: 'rate_limited', message: 'Too many.' } },
+          { 'Retry-After': '120' },
+        ),
+      );
+      await vi.waitFor(() => {
+        expect(screen.getByRole('button')).toBeDisabled();
+      });
+      switchTo(PAIR_B);
+
+      await vi.waitFor(() => {
+        expect(gets(f).some((c) => c.query.get('base_cv_id') === PAIR_B.base_cv_id)).toBe(true);
+      });
+      expect(
+        await screen.findByText(
+          /^You can try again (in \d+ seconds?|at \d{1,2}:\d{2}(?:\s?[AP]M)?)\.$/,
+        ),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button')).toBeDisabled();
+    });
   });
 });
 
