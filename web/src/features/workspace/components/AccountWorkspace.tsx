@@ -12,6 +12,8 @@ import { effectiveSelection } from '@/features/savedCvs/selection';
 import { runLink } from '@/features/scope/scopeMap';
 import { useScopeMap } from '@/features/scope/useWorkspaceScope';
 import { useLatestAccountRun } from '@/features/history/hooks/useLatestAccountRun';
+import { FitScorePanel } from '@/features/scoring/components/FitScorePanel';
+import { FIT_SCORE_HEADING } from '@/features/scoring/fitScoreCopy';
 import { laterDeadline } from '@/features/retry/hold';
 import { useErrorHold, useRunHoldDeadline } from '@/features/retry/useHold';
 import { activeTailoringRunId, rejectionMessage } from '@/features/tailoring/apiErrorCopy';
@@ -134,6 +136,12 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
 
       <Section id="account-job-posting-heading" title="The job you are applying for">
         <JobPostingPanel />
+      </Section>
+
+      {/* Slice 5.1 (OQ-10): above tailoring, on the selected CV and the latest posting, the pair a
+          launch would send. Rendering reads the stored score; only the panel's button scores. */}
+      <Section id="account-fit-score-heading" title={FIT_SCORE_HEADING}>
+        <FitScorePanel pair={input} />
       </Section>
 
       <Section id="account-tailoring-heading" title="Your tailored CV and cover letter">

@@ -17,6 +17,8 @@ import { TailorLaunch } from '@/features/tailoring/components/TailorLaunch';
 import { useCreateTailoringRun } from '@/features/tailoring/hooks/useCreateTailoringRun';
 import { useTailoringRuns } from '@/features/tailoring/hooks/useTailoringRuns';
 import { latestTailoringRun } from '@/features/tailoring/latestTailoringRun';
+import { FitScorePanel } from '@/features/scoring/components/FitScorePanel';
+import { FIT_SCORE_HEADING } from '@/features/scoring/fitScoreCopy';
 import { checkBaseCv, checkJobPosting, launchInput } from '@/features/tailoring/launchReadiness';
 import { isActiveTailoringRunStatus } from '@/features/tailoring/types';
 
@@ -45,22 +47,25 @@ function hasUsableBaseCv(baseCv: BaseCvCheck): boolean {
 const EYEBROW_CLASS = 'text-xs font-semibold tracking-wide text-slate-600 uppercase';
 
 /**
- * The three landmarks, unchanged since 1.3's `App`: each `<section>` keeps its heading (they are
- * what `App.test.tsx` pairs up), and the two input sections are the tab panels' content. The shell
- * is drawn identically in every state so the page's structure never jumps as data lands. The
- * tailoring section rides in `InputTabs`' panel column (web-design-refresh AC-14), beside the rail.
+ * The four landmarks: each `<section>` keeps its heading (they are what `App.test.tsx` pairs up),
+ * and the two input sections are the tab panels' content. The shell is drawn identically in every
+ * state so the page's structure never jumps as data lands. The fit-score section (slice 5.1, OQ-10)
+ * and then the tailoring section ride in `InputTabs`' panel column (web-design-refresh AC-14),
+ * beside the rail, which keeps its three steps: a score is not a step.
  */
 function Shell({
   tab,
   onTabChange,
   baseCvPanel,
   jobPostingPanel,
+  fitScore,
   tailoring,
 }: {
   readonly tab: WorkspaceTab | null;
   readonly onTabChange: (tab: WorkspaceTab) => void;
   readonly baseCvPanel: ReactNode;
   readonly jobPostingPanel: ReactNode;
+  readonly fitScore: ReactNode;
   readonly tailoring: ReactNode;
 }): React.JSX.Element {
   return (
@@ -87,6 +92,12 @@ function Shell({
         </section>
       }
     >
+      <section aria-labelledby="fit-score-heading" className="mb-10">
+        <h2 id="fit-score-heading" className={`mb-4 ${EYEBROW_CLASS}`}>
+          {FIT_SCORE_HEADING}
+        </h2>
+        {fitScore}
+      </section>
       <section aria-labelledby="tailoring-heading" className="mb-10">
         <h2 id="tailoring-heading" className={`mb-4 ${EYEBROW_CLASS}`}>
           Your tailored CV and cover letter
@@ -162,6 +173,8 @@ export function GuestWorkspace(): React.JSX.Element {
         onTabChange={setTab}
         baseCvPanel={<BaseCvUploadPanel />}
         jobPostingPanel={<JobPostingPanel />}
+        // No pair while the lists load, so the panel reads nothing yet: it says what it needs.
+        fitScore={<FitScorePanel pair={null} />}
         tailoring={
           <p role="status" className="text-sm text-slate-500">
             Loading…
@@ -207,6 +220,9 @@ export function GuestWorkspace(): React.JSX.Element {
       onTabChange={setTab}
       baseCvPanel={<BaseCvUploadPanel />}
       jobPostingPanel={<JobPostingPanel />}
+      // The same pair a launch would send; the panel reads its stored score and never scores on
+      // its own: only its button sends the `POST`.
+      fitScore={<FitScorePanel pair={input} />}
       tailoring={
         // 2e's progress card: the stepper, the latest run, the launch and its refusal. No summary of
         // the two inputs here — the tabs above already show them (technical-plan §3).

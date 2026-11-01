@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -235,5 +235,50 @@ describe('WorkspacePage — the latest-run card (AC-25)', () => {
     expect(
       await screen.findByText('The model declined to rewrite this content.'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('WorkspacePage — the fit-score section (slice 5.1, T40, OQ-10)', () => {
+  it('reads the stored score for the launch pair, renders Check my score, and sends no POST', async () => {
+    const fetchMock = stubReadyWorkspace();
+
+    renderWithRouter('/');
+
+    const section = await screen.findByRole('region', {
+      name: 'How well does your CV fit this job?',
+    });
+    // A disabled button satisfies `findByRole` (not_ready, before the lists land): wait for enabled.
+    await waitFor(() => {
+      expect(within(section).getByRole('button', { name: 'Check my score' })).toBeEnabled();
+    });
+    const reads = fetchMock.mock.calls
+      .map(([input]) => String(input))
+      .filter((url) => url.startsWith('/api/fit-scores?'));
+    expect(reads).toEqual([
+      `/api/fit-scores?base_cv_id=${BASE_CV.id}&job_posting_id=${JOB_POSTING.id}`,
+    ]);
+    expect(countCallsTo(fetchMock, '/api/fit-scores', 'POST')).toBe(0);
+    // The rail keeps its three steps: a score is not a step.
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    expect(screen.getByText('Tailor')).toBeInTheDocument();
+  });
+
+  it('with no posting yet, says what it needs and reads nothing', async () => {
+    const fetchMock = stubReadyWorkspace({
+      jobPostings: () => Promise.resolve(jsonResponse(200, { items: [] })),
+    });
+
+    renderWithRouter('/');
+
+    const section = await screen.findByRole('region', {
+      name: 'How well does your CV fit this job?',
+    });
+    expect(
+      await within(section).findByText('Add your CV and a job posting first.'),
+    ).toBeInTheDocument();
+    expect(within(section).getByRole('button', { name: 'Check my score' })).toBeDisabled();
+    expect(
+      fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/fit-scores')),
+    ).toHaveLength(0);
   });
 });

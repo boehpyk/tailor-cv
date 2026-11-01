@@ -206,5 +206,9 @@ export function signedInRoutes(user: User): Record<string, RouteHandler> {
     // "On your board" badge. Empty, so a test about something else sees "Add to board" and nothing
     // else. A test about the board overrides it.
     'GET /api/me/board': ok({ items: [] }),
+    // Slice 5.1: the workspace's fit-score panel reads the stored score for the pair on screen.
+    // None, so a test about something else sees *Check my score*. No `POST` route: rendering must
+    // never score, and an unexpected one is an unrouted fetch.
+    'GET /api/me/fit-scores': ok({ fit_score: null }),
   };
 }
