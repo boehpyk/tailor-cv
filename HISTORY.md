@@ -847,6 +847,89 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   it. The setting outranks the new default. **Measured after release (2026-10-28):**
 >   `fixcv.app/health/ready` 200, the live `<title>` reads FixCV; the owner reports everything fine.
 >
+> - **`fit-score`** (slice **5.1**, Phase 5's first; approved 2026-10-30 and reworked the same day for
+>   inline scoring; **implemented 2026-10-30 to 2026-11-01 on `feature/fit-score`, not yet verified or
+>   released**: T50 to T54, the price check, the paid measurement, the manual pass, `/verify` and the
+>   release, are pending) — a person with a CV and a job posting clicks **Check my score** and gets, in
+>   the same request, an **estimated fit percentage and up to three missing requirements**, each quoting
+>   the posting, from `gemini-2.5-flash-lite` behind a new port. The same CV and posting text for the
+>   same owner returns the stored score with no second call. Guests and accounts both get it, free, under
+>   limits: 3 per guest session, 10 per user per rolling 24 h, 10 per IP per hour (Redis, fails
+>   **closed**), and a **$2 per UTC day** spend cap. Tailoring and export are untouched. **ADR-0040**: a
+>   new context, `scoring` (aggregate `FitScore`, one named constructor, no mutators, no state machine:
+>   only a success is a row); its domain imports only `shared` and `identity`'s `Owner` (*identity is
+>   the kernel*, now in CLAUDE.md); identity is by content (SHA-256 of whitespace-normalized text) per
+>   owner, never across owners; the call is **awaited inside the `POST`**, and the request holds no
+>   transaction, lock or pooled connection across it. **ADR-0041**: spend is **reserved** in Postgres
+>   (`scoring_daily_spend`, one row per UTC day, whole micro-USD) by one atomic upsert committed before
+>   the call, **settled** to the actual cost after it, and fails closed; a lost settle overstates the
+>   day by one reservation, on purpose. **Amendments (b3d7807):** ADR-0004 (a second port and model, not
+>   a second provider), ADR-0006 (h) (the score's retention; its paraphrase of the account sentence
+>   corrected at T35, `156328e`), ADR-0014 (e) (queue only when losing the result costs more than asking
+>   again; tailoring unchanged), ADR-0022 (e) (a fifth owned table, the first unique over an owner),
+>   ADR-0025 (the claim's seventh statement: never a working copy's score, never a pair the user already
+>   holds), ADR-0035 (a count on three admin pages, never a body), Constitution §4.3 and §7; ADR-0041
+>   gained a units and first-insert amendment and the Constitution's §3 LLM row and §4.2 port list were
+>   brought up to date at T48. **Migration `8ddd7ee1ca93`** (`down_revision 669b75917559`): two tables,
+>   additive, no backfill; `scoring_fit_score` (two owner FKs `ON DELETE CASCADE`, plain `base_cv_id` and
+>   `job_posting_id` per ADR-0014, `gaps` JSONB, `TIMESTAMP(0)`, one-owner and score-range CHECKs, a
+>   unique pair per owner); the downgrade refuses only while a score row exists (the ledger holds
+>   nobody's data). **Store**: `INSERT … ON CONFLICT DO NOTHING` in a savepoint, then 2.3's two locks
+>   copied with `read=True` (`FOR KEY SHARE`, compiled and read), so a CV or posting deleted mid-call
+>   leaves no row; two tabs show one number. **Parser** (`1860f7c`): every refusal a fixed label; a gap's
+>   quote must be a normalized substring of the posting **and at least 8 characters** (a one-letter
+>   quote passes any substring check); 0 gaps only at a score ≥ 90; deep JSON nesting is `not_json`.
+>   **Prompt v1** (`3b5330e`): fixed text **2,773 characters** (`PROMPT_OVERHEAD_CHARACTERS`, measured
+>   from the real prompt, `fe0b731`), `temperature=0`, a fixed seed, thinking off. **Deletion**: the
+>   purge and erasure by cascade, a saved CV's deletion and a history entry's (when its posting goes) by
+>   a separate statement in the same transaction (`77fa45a`); `erase-account` appends
+>   `; scoring: N fit score(s)` after the tracking segment (AC-36; 3.1's two `endswith` pins became `in`
+>   checks in their own commit, `7650971`); the claim, its response and its log line gain `fit_scores`
+>   (`102bef6`). **Frontend**: `FitScorePanel` above tailoring in both workspaces (one DOM), a pure
+>   `fitScoreView` with a precedence table (corrected red-first, `7d6b648` → `c527018`: a stored score
+>   beats every request outcome, so AC-46's failed-then-stored `POST` shows the number), copy pinned in
+>   `fitScoreCopy.ts` with AC-49's no-gain scan on word boundaries, `useErrorHold` for the 429, no
+>   polling, the notice as the button's accessible description; admin counts on three pages (`008132a`).
+>   RED cycles: value objects (`7417962` → `c059e2b`), aggregate (`31fa591` → `feb9f4e`), parser
+>   (`36d6e72` → `1860f7c`), use cases (`2380d90` → `e2696d9`), claim (`660e532` → `102bef6`),
+>   retention (`8dce53f` → `77fa45a`), HTTP (`e4861df` → `59db244`, 77 red), view (`9ffa0d9` →
+>   `c527018`), panel (`c1016cc` → `cc14046`, 36 red). **Measured:** T46 on `docker build --target
+>   production` with a fake scorer: 50 simultaneous `POST`s against a 5,000 micro-USD cap admitted 7,
+>   refused 43 with 503, called the scorer 7 times, sampled ledger max 4,724 and final 1,610: **never
+>   over**; 50 scores held in flight on a 5+5 pool, all 201, 35 `GET`s meanwhile p50 42.4 / p95 48.9 /
+>   max 49.8 ms, no pool timeout, no `POST` holding a connection (mutations: cap widened, commit removed
+>   → 30 s `QueuePool` timeout). Over the whole 50-`POST` ramp `GET` p95 was 782 ms, reported, not
+>   gated: AC-41's 300 ms applies to steady load, and the per-IP limit makes that ramp unreachable
+>   (owner, decided). AC-19 to AC-21 against a real uvicorn and a real disconnect (`5512c4a`). Main
+>   bundle **+7.70 kB raw / +2.07 kB gzip** against `main` (`66c4c1b`). The measurement runner
+>   (`make eval.score`, plan only; `confirm=1` spends: 58 scores, at most 116 calls, upper bound $0.13 at
+>   unverified prices) and its corpus (two injected postings, cross pairs) are built and tested offline
+>   (`dfecc14`, `f9e2db5`, `793aa2e`, 37 tests). **Plan corrections recorded in the technical plan's
+>   last section**, the ones a reader most needs: **(1)** an upsert's `WHERE` doesn't guard the day's
+>   first insert, so `cap = 0` would have let one call through a day; the adapter refuses
+>   `amount > cap` first (`f8d92c3`). **(2)** The fake ledger created a row on settle where the real
+>   `UPDATE` changes nothing, which hid a wrong-day settle from every application test; fixed with a
+>   fidelity test (`1fa7b5c`). **(3) AC-22's mutation claim (plan §0.2, §7) does not hold**, corrected
+>   here: hashing a 250,000-character CV costs about 4 ms, inside the loop-turnaround noise, so dropping
+>   `to_thread` doesn't move it; the guard is a thread-identity test and the turnaround tests are smoke
+>   (`5512c4a`). **(4)** T31 merged into T30: the port walker fails on a port both bound and exempted.
+>   **(5)** `scored_at_since` is exclusive and `retry_not_before` is `scored[count − limit] + 24 h`
+>   (amends AC-12, true after a claim leaves a user above 10). **(6)** S-13: the fit-score handlers
+>   catch `SQLAlchemyError` themselves so the 503 carries `no-store`. **(7)** Vitest's async timeouts
+>   raised (`7cb14b5`) after five flaky gate runs on this branch. **Carried to `/verify` and release:**
+>   T50 (prices and model read from Google's pages, no spend), T51 (the owner approves the spend; AC-50
+>   to AC-54; a failed AC-51 stops the merge; matched pairs were the implementer's choice, to confirm;
+>   the gap-smuggling posting is reported, not gated), T52 (manual pass, Chromium and Firefox, a real
+>   disconnect, log scan; the owner may reword the unpinned `refused` and `load_error` copy), T53, T54.
+>   Not measured yet: AC-41's stored-hit `POST` p95 and the `POST` overhead outside the call. **S-10's
+>   `scoring.spend_cap_reached` log line is not emitted** (the 503 is; found at T48). `parsing.py`'s
+>   comment names `ValueError` where `json.loads` raises `RecursionError`, and the tailoring parser's
+>   deep-nesting path is untraced. `me_guest_work.py`'s docstring still says "five counts". One T42
+>   gate run had 71 backend failures from two pytest sessions sharing `tailorcraft_test` (overlapping
+>   background commits), passing alone; `test_health_live_stays_responsive_during_twenty_concurrent_txt_renders`
+>   flaked once (p50 7.49 ms against 5). `ops-nightly-backups` must add `scoring_fit_score` to its scrub
+>   at its T1.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,

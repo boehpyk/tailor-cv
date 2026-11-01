@@ -7002,3 +7002,191 @@ against, and here it compared against a run that predates the schedule. The next
 That took five weeks of rehearse-first patience: dev in September, production from the browser on
 2026-10-15, a backup, and then a single line of `.env`. A `DELETE` on a schedule is the kind of
 thing you rehearse, not discover.
+
+# Slice 5.1 — fit-score: a free taste, with the till already counting
+
+*Implemented 2026-10-30 to 2026-11-01. Not yet verified or released: the price check, the paid
+measurement, the manual pass, `/verify` and the release are next.*
+
+## How a question about guests became a number on a page
+
+It started with a different question. On 2026-10-29 the owner asked how hard it would be to remove
+guests altogether. A day later the question changed shape: instead of locking the door, what if the
+expensive part (the tailoring) sat behind payment, and the cheap part stayed free for anyone who
+walked in? And then the owner asked to be *grilled* on it.
+
+A grilling is the opposite of a brainstorm. Nobody adds ideas; every idea has to survive a question.
+What exactly is free? How do you know whether it worked? What stops a stranger with a script from
+spending your money? What happens to the people who already have accounts? Most of the answers live
+in the local PRD, and this file doesn't repeat them. What matters here is the shape it left behind:
+before anything is sold, a guest gets a **free fit score**, a percentage and the top two or three
+things the job asks for that their CV doesn't show. It's the shop's free sample. It has to be good
+enough to make you want the real thing, and cheap enough that giving it away doesn't sink the shop.
+
+That gives slice 5.1 one job: **Check my score**, for guests and accounts, from a cheap Gemini model,
+with a hard ceiling on what it can cost.
+
+## The rework: the planner's first draft was the wrong size
+
+The first plan ran the score in the Celery worker, like tailoring: queue a task, poll for the
+result. It was 63 tasks. For a free score in an experiment, that's a lot, and most of it was
+machinery: a state machine (queued, running, failed), a polling hook, a sweep for stuck rows, a beat
+entry.
+
+The owner asked the obvious question: why not just wait for the answer? A cheap model replies in a
+few seconds. So the score runs **inline**: the `POST` awaits the model and answers with the number.
+That deleted the state machine whole. With nothing to represent *before* the call, **only a success
+becomes a row**. A failure is an answer on the socket and a line in the log, and the user clicks
+again.
+
+It's the difference between a restaurant with a ticket system and a coffee cart. The cart doesn't need
+tickets, because you stand there while it's made.
+
+Inline isn't free, though, and the plan had to earn it in three places.
+
+**Hold nothing while you wait.** The database pool has ten connections per process. A request that
+kept its connection open through a 14-second model call would take the whole API down at about ten
+people scoring at once, and it would show up as timeouts on *unrelated* pages. So the request runs in
+two short transactions with the call in the gap: reserve the money and **commit** (the connection goes
+back to the pool), then await the model holding nothing, then store and settle. A test suspends the
+fake model mid-call and asserts the pool has **zero** connections checked out (AC-19).
+
+**What does a hang-up do?** If the browser closes mid-call, does the server stop? On this stack it
+doesn't: every middleware is plain ASGI, so the handler runs on, stores the score and settles the
+money, and its response goes nowhere. The next page load shows the score. That's a property of
+today's uvicorn and Starlette, not a promise, so it's proven against a **real uvicorn with a real
+socket close** (AC-20), the one test in the slice that needs a real server. If someone ever adds a
+`BaseHTTPMiddleware`, that test goes red the same day.
+
+**Keep the loop free.** Hashing a 250,000-character CV and parsing the reply go to a thread. More on
+that below, because it produced the slice's most instructive wrong prediction.
+
+## The money: a reservation, like a hotel holding your card
+
+A free button a stranger can press, which spends real money, is a funded denial-of-wallet attack
+waiting for an author. Per-IP limits help, but they bound one address, not the sum of all of them.
+So there is a **daily cap of $2**, and the interesting part is making it hold when many requests
+arrive at once.
+
+The naive version checks "have we spent less than $2?", makes the call, then adds the cost. Fifty
+requests arriving together all pass the check before any of them adds anything. The cap is fiction
+on exactly the day it matters.
+
+ADR-0041 does what a hotel does with your card at check-in: it **reserves** the worst case up front,
+then settles to the real bill when you leave. One SQL statement adds the reservation *only if* it
+fits under the cap, atomically, and commits before the call. Afterwards, the row is reduced by the
+difference between what was reserved and what was spent. If the process dies in between, the
+reservation simply stays: the day reads a cent or so high until midnight. That error points the safe
+way, on purpose. No pending rows, no sweeper job, no state to recover.
+
+T46 hammered it: 50 simultaneous `POST`s against a tiny cap of 5,000 micro-dollars. Seven got
+through, 43 got *Scoring is busy*, the fake model was called exactly seven times, and the ledger never
+went over.
+
+## War stories
+
+**The guard that only guarded the second guest.** The reservation statement looks like this:
+`INSERT … ON CONFLICT (day) DO UPDATE SET spent = spent + :r WHERE spent + :r <= :cap`. Read it
+quickly and the `WHERE` guards the cap. Read it slowly and the `WHERE` belongs to the `DO UPDATE`
+half, which only runs when today's row **already exists**. The first reservation of each day is a
+plain insert, and it sails past any cap. Including a cap of **zero**, which is the documented off
+switch. "Off" would have meant "off, except for one call a day, whatever its size".
+
+It's a bouncer who checks the guest list for everyone except the first person through the door. The
+fix (`f8d92c3`) is one line in the adapter: refuse an amount above the cap before the statement runs.
+The fake ledger already did that, which is why the application tests never noticed. The lesson:
+**a conditional upsert is two statements wearing one coat. Test the empty table as its own case.**
+
+**The fake that was too kind.** Slice 4.4 already taught *build fakes from the real thing*. This
+one had the right *shape* and the wrong *manners*. The fake ledger's `settle` created an
+entry for a day that had no row. The real adapter's `UPDATE … WHERE day = :day` finds nothing and
+changes nothing. So imagine a use case that settles on the wrong day, say today instead of the day
+the call started, for a call that crossed midnight. Against the fake, the numbers came out right.
+Against Postgres, the cost would have vanished. T20's persistence tests caught the disagreement
+(`1fa7b5c`), the fake now no-ops too, and a fidelity test pins the adapter and the fake to the same
+answer. 4.4's fake lied about a field; this one lied by being helpful. **A fake must match the real
+thing at the edges, not just in the middle.**
+
+**The mutation that couldn't tell the difference.** The plan promised a proof: remove `to_thread`
+from the CV hashing, and the event-loop turnaround test goes red. The tester tried it. It didn't.
+SHA-256 over 250,000 characters takes about **4 ms**. The healthy p95 wobbled between 5.9 and 10.2 ms;
+the broken one measured 10.5 to 11.5. The regression was real, but smaller than the noise.
+
+The temptation was to tighten the threshold until it separated. That would have been a test tuned to
+one machine on one afternoon. Instead, the test changed what it observes: it now asserts that the
+hashing runs **on a thread that isn't the loop's**, which is deterministic and goes red under the
+mutation every time (`5512c4a`). The turnaround tests stay as smoke. The plan's claim was corrected
+in writing. **When a mutation can't move your statistic, change the observable, not the bar.**
+
+**The test that said "and nothing after this".** Account erasure prints a line, and slice 3.1's tests
+checked that it *ended* with `tracked application(s)`. This slice appends `; scoring: N fit
+score(s)`. The old test wasn't checking anything important about tracking; it was quietly forbidding
+the future. The fix became `in` checks, in their own commit before GREEN, so GREEN edited no test
+(`7650971`). **"Ends with" is a claim about every slice that comes after you.**
+
+**The rename that had nowhere to stand.** The parser needed a private constant (`_MAX_GAPS`) as a
+public name. The tidy order is "rename first, then use it". But that rename would have landed while
+the parser's RED tests were failing, and every commit here must be green. So GREEN imported the
+private name for exactly one commit, and the rename came right after (`1860f7c` → `e214c57`). It looks
+untidy in the log, and it's correct. **A mechanical commit can't sit between a RED and its GREEN.**
+
+**Tests that failed because the computer was busy.** Across five gate runs on this branch, one to
+six frontend tests failed, a different handful each time, and passed on retry. A flake that moves
+between files isn't a bug in any of them: it's load. Reproduced with sixteen busy loops on twelve
+cores, 5 failures. Testing Library gives up waiting after one second; under load, a correct test can
+need more. The timeout went to 5 s (`7cb14b5`), and three loaded runs out of three passed. A passing
+test still finishes as fast as it ever did; only a failing one waits longer.
+
+**The helper that went quiet.** This slice was built by a team of agents, and one of them hung for
+**77 minutes** at T28 with nothing to show for it. Nobody noticed for most of that time, because
+silence looks a lot like hard work. The rule now: an agent quiet for 30 minutes gets checked. A
+cousin of the same problem: two background commits overlapping meant two test runs sharing one test
+database, and 71 unrelated tests failed at once. Commits go one at a time, and you wait for the
+process to finish.
+
+## Small decisions worth stealing
+
+- **The score is identified by content, not by id.** Upload the same CV twice and you get the stored
+  score, not a second bill and possibly a different number. But never across owners: that would serve
+  one person's gaps to another and let anyone probe whether a CV exists.
+- **Every gap must quote the posting**, word for word after normalizing, and the quote must be at
+  least 8 characters. A model that invents a requirement can't back it with a quote, so the invention
+  is refused. Why 8? Because a one-letter quote is a substring of every posting ever written.
+- **A stored score beats a failed request.** The panel's view is a pure function with a precedence
+  table. The first version put "the request failed" above "a score exists". Then AC-46 asked: what if
+  the `POST` failed but the score got stored anyway (the hang-up case)? The user should see the
+  number, not an error. The table was corrected red-first, in its own commit.
+- **No meter bar.** A bar's width is a dynamic style, and the design system forbids `style=` in
+  components. The percentage is text, and nothing is coloured red or green: it's an estimate, not a
+  grade.
+- **"Busy", never "out of money".** At the cap, the page says scoring is busy. It's true, and it
+  tells a stranger nothing useful.
+
+## The numbers
+
+- **Prompt overhead:** 2,773 characters, measured from the real prompt.
+- **Spend under a burst (T46):** 50 at once, 7 admitted, 43 refused, ledger never over the cap.
+- **Reads while 50 scores are in flight:** `GET` p95 48.9 ms, no pool timeout. During the 50-request
+  ramp itself, p95 was 782 ms: reported, not gated, because the per-IP limit makes that burst
+  unreachable.
+- **Bundle:** +2.07 kB gzip on the main chunk.
+- **Not yet measured:** whether the score is *stable* (the same pair five times, within 5 points)
+  and what a score really costs. Those need real calls, and the owner approves that spend first.
+
+## What a good engineer takes from this one
+
+The most important code in this slice is boring: a `commit()` before an `await`, a one-line guard
+before an upsert, a fake that does nothing when there's nothing to do. Each one is small, and each one
+was the difference between a cap that holds and a cap that only looks like it does. Money code earns
+its keep in the edge cases: the first insert of the day, the call that crosses midnight, the process
+that dies mid-call.
+
+And the plan was wrong in a few places, and the record says so. A plan is a prediction. When the
+measurement disagrees, you fix the plan, not the measurement.
+
+## What's next
+
+T50: read Google's pricing and model pages and correct the settings if anything changed. T51: the
+owner approves the spend, and the real measurement runs (stability, discrimination, cost). If the
+score isn't stable, nothing merges. Then the manual pass in two browsers, `/verify`, and a
+manual-gated release with one additive migration.
