@@ -42,6 +42,9 @@ export interface FitScorePanelProps {
  * only call to `mutate` is the click handler, guarded by `isMutating` so a same-tick double click
  * sends one request (AC-48).
  *
+ * The mutation's pending state and error are shown only for the pair they were for, so a refusal on
+ * A never sits under B; the click guard is per pair too. The 429 hold is per IP and stays unfiltered.
+ *
  * `not_ready`, `empty`, `working`, `held` and `failed` all render one `CheckControl`, so its status
  * region and `HoldNote` stay mounted across them: *Checking…* fills a region that was already there,
  * and so does *You can try again now.* when a hold ends.
@@ -52,11 +55,13 @@ export function FitScorePanel({ pair }: FitScorePanelProps): React.JSX.Element {
   const read = useFitScore(pair);
   const request = useRequestFitScore();
   const hold = useErrorHold(request.error);
+  const forThisPair = isSamePair(request.variables, pair);
+  const error = forThisPair ? request.error : null;
 
   const view = fitScoreView({
     hasPair: pair !== null,
     read: { status: read.status, data: read.data },
-    request: { isPending: request.isPending, error: request.error },
+    request: { isPending: forThisPair && request.isPending, error },
     held: hold.held,
   });
 
@@ -64,15 +69,18 @@ export function FitScorePanel({ pair }: FitScorePanelProps): React.JSX.Element {
     if (pair === null) {
       return;
     }
-    if (queryClient.isMutating({ mutationKey: requestFitScoreMutationKey(map) }) > 0) {
+    const inFlight = queryClient.isMutating({
+      mutationKey: requestFitScoreMutationKey(map),
+      predicate: (m) => isSamePair(m.state.variables as FitScorePair | undefined, pair),
+    });
+    if (inFlight > 0) {
       return;
     }
     request.mutate(pair);
   }
 
   // A guest whose session lapsed: tailoring's sentence, and no *Try again* that would fail the same way.
-  const sessionEnded =
-    request.error instanceof ApiError && request.error.code === 'guest_session_expired';
+  const sessionEnded = error instanceof ApiError && error.code === 'guest_session_expired';
 
   switch (view.kind) {
     case 'succeeded':
@@ -159,6 +167,15 @@ export function FitScorePanel({ pair }: FitScorePanelProps): React.JSX.Element {
         />
       );
   }
+}
+
+function isSamePair(a: FitScorePair | undefined, b: FitScorePair | null): boolean {
+  return (
+    a !== undefined &&
+    b !== null &&
+    a.base_cv_id === b.base_cv_id &&
+    a.job_posting_id === b.job_posting_id
+  );
 }
 
 interface CheckControlProps {
