@@ -162,13 +162,18 @@ def test_a_gap_is_normalized() -> None:
     assert FitGap("  Needs   Kubernetes  ").value == "Needs Kubernetes"
 
 
-def test_a_gap_may_be_3_to_120_characters() -> None:
+def test_a_gap_may_be_3_to_200_characters() -> None:
     assert FitGap("a b").value == "a b"
-    assert FitGap("x" * 120).value == "x" * 120
+    assert FitGap("x" * 200).value == "x" * 200
 
 
-@pytest.mark.parametrize("bad", ["", "  ", "ab", " a ", "x" * 121])
-def test_a_gap_outside_3_to_120_characters_is_refused(bad: str) -> None:
+def test_a_144_character_gap_is_accepted() -> None:
+    # Eval pair 07 (T51): the model copied a whole 144-character posting bullet as the requirement.
+    assert FitGap("x" * 144).value == "x" * 144
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "ab", " a ", "x" * 201])
+def test_a_gap_outside_3_to_200_characters_is_refused(bad: str) -> None:
     with pytest.raises(InvalidFitGap):
         FitGap(bad)
 
@@ -176,7 +181,8 @@ def test_a_gap_outside_3_to_120_characters_is_refused(bad: str) -> None:
 def test_a_gap_is_measured_after_normalizing() -> None:
     with pytest.raises(InvalidFitGap):
         FitGap("  ab  ")
-    assert FitGap("x" * 120 + "   ").value == "x" * 120
+    assert FitGap("x" * 200 + "   ").value == "x" * 200
+    assert FitGap("x" * 100 + "     " + "y" * 99).value == "x" * 100 + " " + "y" * 99
 
 
 @pytest.mark.parametrize("bad", ["line one\nline two", "line one\rline two"])
