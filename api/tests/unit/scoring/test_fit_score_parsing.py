@@ -222,7 +222,7 @@ def test_four_gaps_are_too_many_and_never_truncated() -> None:
     [
         "",
         "ab",
-        "x" * 121,
+        "x" * 201,
         "See https://example.com/job",
         "Contact hr@example.com",
         "Phone 1234567",
