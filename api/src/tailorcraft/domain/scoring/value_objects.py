@@ -22,7 +22,8 @@ from uuid import UUID
 
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _MIN_GAP_LENGTH = 3
-_MAX_GAP_LENGTH = 120
+MAX_FIT_GAP_LENGTH = 200
+_MAX_GAP_LENGTH = MAX_FIT_GAP_LENGTH  # the private name tests import
 MAX_FIT_GAPS = 3
 MIN_SCORE_WITHOUT_GAPS = 90
 _MAX_MODEL_NAME_LENGTH = 64
@@ -196,7 +197,7 @@ class ScorePercent:
 class FitGap:
     """One requirement of the posting the CV does not show. Derived from a CV, so PII.
 
-    AC-25: 3 to 120 characters after normalizing whitespace, one line, no control characters, and no
+    AC-25: 3 to 200 characters after normalizing whitespace, one line, no control characters, and no
     URL, email address, run of 7 or more digits, or markup (`<`, `>`). `InvalidFitGap` otherwise, and
     the message never quotes the value.
     """

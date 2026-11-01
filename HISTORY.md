@@ -854,6 +854,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   the same request, an **estimated fit percentage and up to three missing requirements**, each quoting
 >   the posting, from `gemini-2.5-flash` behind a new port. T51 found `gemini-2.5-flash-lite` refused
 >   to new users (404), so the score uses `gemini-2.5-flash`, the owner's chosen fallback (2026-11-01).
+>   T51's second run found the model quotes long posting bullets as the requirement; the owner raised
+>   AC-25's gap ceiling to 200 and the prompt went to version 2 (2026-11-01).
 >   The same CV and posting text for the same owner returns the stored score with no second call.
 >   Guests and accounts both get it, free, under limits: 3 per guest session, 10 per user per rolling
 >   24 h, 10 per IP per hour (Redis, fails **closed**), and a **$2 per UTC day** spend cap. Tailoring
