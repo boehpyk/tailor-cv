@@ -185,6 +185,32 @@ def main(argv: list[str] | None = None) -> int:
         help="load and validate the corpus, print its sizes, and make no API call",
     )
 
+    # Slice 5.1, T43: the fit-score measurement (AC-50 to AC-54). Without --confirm-spend it prints
+    # the plan and the upper-bound cost and makes no call.
+    fit_eval = sub.add_parser(
+        "eval-fit-scores",
+        help="measure the fit scorer against the real Gemini API (costs money with --confirm-spend)",
+    )
+    fit_eval.add_argument(
+        "--corpus",
+        type=Path,
+        default=Path("eval/fit-score"),
+        help="directory containing the fit-score corpus.toml (default: eval/fit-score)",
+    )
+    fit_eval.add_argument(
+        "--repeat", type=int, default=5, help="scores per corpus pair, for stability (default 5)"
+    )
+    fit_eval.add_argument(
+        "--confirm-spend",
+        action="store_true",
+        help="make the calls; without it, print the plan and the upper bound and call nothing",
+    )
+    fit_eval.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="load and validate the corpus and make no API call",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "purge-guests":
@@ -241,6 +267,19 @@ def main(argv: list[str] | None = None) -> int:
             corpus_dir=args.corpus,
             only=args.only,
             width=args.width,
+            validate_only=args.validate_only,
+        )
+
+    if args.command == "eval-fit-scores":
+        # Imported here, as `eval-prompts` is: it pulls in the Gemini SDK.
+        from tailorcraft.infrastructure.llm.evaluation.fit_score_runner import (
+            run_from_cli as run_fit_eval,
+        )
+
+        return run_fit_eval(
+            corpus_dir=args.corpus,
+            repeat=args.repeat,
+            confirm_spend=args.confirm_spend,
             validate_only=args.validate_only,
         )
 

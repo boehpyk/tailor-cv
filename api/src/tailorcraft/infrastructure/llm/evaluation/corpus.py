@@ -436,3 +436,102 @@ def _read(root: Path, table: dict[str, object], where: str) -> str:
     text = path.read_text(encoding="utf-8")
     _require_reserved_domains(text, where)
     return text
+
+
+# -- the fit-score corpus (slice 5.1, `eval-fit-scores`) -------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CrossPair:
+    """A CV against a posting it was not written for, judged against its `matched` pair (AC-52)."""
+
+    cv: CorpusCv
+    posting: CorpusPosting
+    matched: CorpusPair
+
+
+@dataclass(frozen=True, slots=True)
+class InjectedPair:
+    """A CV against a synthetic posting that tries to steer the scorer. Reported, never gated (OQ-14)."""
+
+    id: str
+    cv: CorpusCv
+    posting: CorpusPosting
+    tries: str
+
+
+@dataclass(frozen=True, slots=True)
+class FitScoreCorpus:
+    base: Corpus
+    cross: tuple[CrossPair, ...]
+    injected: tuple[InjectedPair, ...]
+
+
+def load_fit_score_corpus(root: Path, *, max_cv_characters: int) -> FitScoreCorpus:
+    """Load `root/corpus.toml`: the prompt eval's corpus by reference (`base_corpus`, every rule of
+    `load_corpus` applied), plus the cross pairs and the injected postings, or raise `CorpusError`.
+
+    Every base CV has exactly one cross pair, whose posting none of that CV's own pairs uses, and whose
+    `matched_pair` is one of that CV's pairs: otherwise AC-52 would compare the wrong two numbers.
+    """
+    manifest_path = root / MANIFEST_NAME
+    if not manifest_path.is_file():
+        raise CorpusError(
+            f"no {MANIFEST_NAME} in {root.resolve()} — run from api/ or pass --corpus <directory>"
+        )
+    try:
+        with manifest_path.open("rb") as handle:
+            manifest = tomllib.load(handle)
+    except tomllib.TOMLDecodeError as error:
+        raise CorpusError(f"{MANIFEST_NAME} is not valid TOML: {error}") from None
+
+    base = load_corpus(
+        root / _string(manifest, "base_corpus", MANIFEST_NAME),
+        max_cv_characters=max_cv_characters,
+    )
+    cv_by_id = {cv.id: cv for cv in base.cvs}
+    posting_by_id = {posting.id: posting for posting in base.postings}
+    pair_by_id = {pair.id: pair for pair in base.pairs}
+
+    cross: list[CrossPair] = []
+    for table in _tables(manifest, "cross"):
+        cv_id = _string(table, "cv", "a [[cross]] table")
+        where = f"cross pair for cv `{cv_id}`"
+        posting_id = _string(table, "posting", where)
+        matched_id = _string(table, "matched_pair", where)
+        if cv_id not in cv_by_id:
+            raise CorpusError(f"{where}: no [[cv]] with id `{cv_id}` in the base corpus")
+        if posting_id not in posting_by_id:
+            raise CorpusError(f"{where}: no [[posting]] with id `{posting_id}` in the base corpus")
+        matched = pair_by_id.get(matched_id)
+        if matched is None or matched.cv.id != cv_id:
+            raise CorpusError(f"{where}: `matched_pair` must name one of this CV's own pairs")
+        if any(p.cv.id == cv_id and p.posting.id == posting_id for p in base.pairs):
+            raise CorpusError(
+                f"{where}: `{posting_id}` is one of this CV's own pairs, not a mismatch"
+            )
+        cross.append(
+            CrossPair(cv=cv_by_id[cv_id], posting=posting_by_id[posting_id], matched=matched)
+        )
+    crossed = [pair.cv.id for pair in cross]
+    _require_unique("cross", crossed)
+    if missing := sorted(set(cv_by_id) - set(crossed)):
+        raise CorpusError(f"every base CV needs one [[cross]] pair (AC-52); missing: {missing}")
+
+    injected: list[InjectedPair] = []
+    for table in _tables(manifest, "injected"):
+        posting = _load_posting(root, table)
+        where = f"injected `{posting.id}`"
+        cv_id = _string(table, "cv", where)
+        if cv_id not in cv_by_id:
+            raise CorpusError(f"{where}: no [[cv]] with id `{cv_id}` in the base corpus")
+        injected.append(
+            InjectedPair(
+                id=posting.id,
+                cv=cv_by_id[cv_id],
+                posting=posting,
+                tries=" ".join(_string(table, "tries", where).split()),
+            )
+        )
+    _require_unique("injected", [pair.id for pair in injected])
+    return FitScoreCorpus(base=base, cross=tuple(cross), injected=tuple(injected))

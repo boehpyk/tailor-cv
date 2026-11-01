@@ -192,6 +192,16 @@ class GeminiFitScorer:
             self._client = genai.Client(api_key=settings.gemini_api_key)
         self._generate: GenerateFn = generate if generate is not None else self._generate_with_sdk
 
+    @property
+    def generate(self) -> GenerateFn:
+        """The generate function `assess` calls: the real SDK path unless one was injected.
+
+        Read-only and public for one caller, `GeminiLlm.generate`'s reason: `eval-fit-scores` wraps the
+        REAL path in `RecordingGenerate` and injects the recorder into a second scorer, so every attempt's
+        usage is visible while all of `assess` still runs. It grants nothing `assess` did not.
+        """
+        return self._generate
+
     async def assess(self, cv: CvForScoring, posting: PostingForScoring) -> AssessedFit:
         """Raises `FitScoringFailed` on every failure, guaranteed by the floor below."""
         tally = _Tally()
