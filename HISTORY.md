@@ -852,14 +852,15 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   released**: T50 to T54, the price check, the paid measurement, the manual pass, `/verify` and the
 >   release, are pending) — a person with a CV and a job posting clicks **Check my score** and gets, in
 >   the same request, an **estimated fit percentage and up to three missing requirements**, each quoting
->   the posting, from `gemini-2.5-flash-lite` behind a new port. The same CV and posting text for the
->   same owner returns the stored score with no second call. Guests and accounts both get it, free, under
->   limits: 3 per guest session, 10 per user per rolling 24 h, 10 per IP per hour (Redis, fails
->   **closed**), and a **$2 per UTC day** spend cap. Tailoring and export are untouched. **ADR-0040**: a
->   new context, `scoring` (aggregate `FitScore`, one named constructor, no mutators, no state machine:
->   only a success is a row); its domain imports only `shared` and `identity`'s `Owner` (*identity is
->   the kernel*, now in CLAUDE.md); identity is by content (SHA-256 of whitespace-normalized text) per
->   owner, never across owners; the call is **awaited inside the `POST`**, and the request holds no
+>   the posting, from `gemini-2.5-flash` behind a new port. T51 found `gemini-2.5-flash-lite` refused
+>   to new users (404), so the score uses `gemini-2.5-flash`, the owner's chosen fallback (2026-11-01).
+>   The same CV and posting text for the same owner returns the stored score with no second call.
+>   Guests and accounts both get it, free, under limits: 3 per guest session, 10 per user per rolling
+>   24 h, 10 per IP per hour (Redis, fails **closed**), and a **$2 per UTC day** spend cap. Tailoring
+>   and export are untouched. **ADR-0040**: a new context, `scoring` (aggregate `FitScore`, one named
+>   constructor, no mutators, no state machine: only a success is a row); its domain imports only
+>   `shared` and `identity`'s `Owner` (*identity is the kernel*, now in CLAUDE.md); identity is by
+>   content (SHA-256 of whitespace-normalized text) per owner, never across owners; the call is **awaited inside the `POST`**, and the request holds no
 >   transaction, lock or pooled connection across it. **ADR-0041**: spend is **reserved** in Postgres
 >   (`scoring_daily_spend`, one row per UTC day, whole micro-USD) by one atomic upsert committed before
 >   the call, **settled** to the actual cost after it, and fails closed; a lost settle overstates the
@@ -903,7 +904,7 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   (owner, decided). AC-19 to AC-21 against a real uvicorn and a real disconnect (`5512c4a`). Main
 >   bundle **+7.70 kB raw / +2.07 kB gzip** against `main` (`66c4c1b`). The measurement runner
 >   (`make eval.score`, plan only; `confirm=1` spends: 58 scores, at most 116 calls, upper bound $0.13 at
->   unverified prices) and its corpus (two injected postings, cross pairs) are built and tested offline
+>   Flash-Lite estimates) and its corpus (two injected postings, cross pairs) are built and tested offline
 >   (`dfecc14`, `f9e2db5`, `793aa2e`, 37 tests). **Plan corrections recorded in the technical plan's
 >   last section**, the ones a reader most needs: **(1)** an upsert's `WHERE` doesn't guard the day's
 >   first insert, so `cap = 0` would have let one call through a day; the adapter refuses

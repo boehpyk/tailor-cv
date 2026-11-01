@@ -62,8 +62,8 @@ def _cfg(settings: Settings, **overrides: object) -> Settings:
     update: dict[str, object] = {
         "gemini_api_key": "placeholder-test-key-never-a-real-secret",
         "fit_score_retry_backoff_seconds": 0.0,
-        "fit_score_input_price_usd_per_million": Decimal("0.10"),
-        "fit_score_output_price_usd_per_million": Decimal("0.40"),
+        "fit_score_input_price_usd_per_million": Decimal("0.30"),
+        "fit_score_output_price_usd_per_million": Decimal("2.50"),
         **overrides,
     }
     return settings.model_copy(update=update)
@@ -209,20 +209,21 @@ async def test_a_pair_whose_repeats_do_not_all_score_is_unstable_not_skipped(
 async def test_cost_per_score_is_metered_tokens_priced_and_rounded_up_each_way(
     settings: Settings, corpus: FitScoreCorpus
 ) -> None:
-    # 1,000 in at $0.10/M = 100 micro-USD; 100 out at $0.40/M = 40: 140 per score, 58 scores.
+    # 1,000 in at $0.30/M = 300 micro-USD; 100 out at $2.50/M = 250: 550 per score, 58 scores.
     fake = FakeGenerate(corpus, _separating(corpus), prompt_tokens=1_000, completion_tokens=100)
     _, out = await _run(corpus, _cfg(settings), fake)
-    assert "mean $0.000140, p95 $0.000140, max $0.000140, total $0.008120 over 58 scores" in out
+    assert "mean $0.000550, p95 $0.000550, max $0.000550, total $0.031900 over 58 scores" in out
     assert "above the PRD" not in out
 
 
 async def test_a_mean_above_the_prd_target_is_flagged_for_the_owner(
     settings: Settings, corpus: FitScoreCorpus
 ) -> None:
-    # 10,000 in = 1,000 micro-USD, plus 1 out token rounded up to 1 = 1,001 > the PRD's 1,000.
-    fake = FakeGenerate(corpus, _separating(corpus), prompt_tokens=10_000, completion_tokens=3)
+    # 3,333 in = 999.9 rounded up to 1,000 micro-USD, plus 1 out token = 2.5 rounded up to 3:
+    # 1,003 > the PRD's 1,000.
+    fake = FakeGenerate(corpus, _separating(corpus), prompt_tokens=3_333, completion_tokens=1)
     _, out = await _run(corpus, _cfg(settings), fake)
-    assert "mean $0.001002" in out
+    assert "mean $0.001003" in out
     assert "the mean is above the PRD's $0.001000: report it to the owner" in out
 
 
@@ -235,8 +236,8 @@ async def test_the_plan_upper_bound_prices_every_attempt_at_one_token_per_charac
         tokens_in = (
             job.cv.character_count + job.posting.character_count + PROMPT_OVERHEAD_CHARACTERS
         )
-        in_cost = (Decimal(tokens_in) * Decimal("0.10")).to_integral_value(ROUND_CEILING)
-        out_cost = (Decimal(cfg.fit_score_max_output_tokens) * Decimal("0.40")).to_integral_value(
+        in_cost = (Decimal(tokens_in) * Decimal("0.30")).to_integral_value(ROUND_CEILING)
+        out_cost = (Decimal(cfg.fit_score_max_output_tokens) * Decimal("2.50")).to_integral_value(
             ROUND_CEILING
         )
         expected += int(in_cost + out_cost) * cfg.fit_score_max_attempts
