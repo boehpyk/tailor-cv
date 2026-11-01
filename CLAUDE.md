@@ -21,7 +21,7 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 ## Status
 
 Twenty-two slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, `__Host-tc_guest`,
-`web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest is **`brand-fixcv`** (the
+`web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. **Slice 5.1 `fit-score` is implemented on `feature/fit-score`, not yet verified or released.** The latest released is **`brand-fixcv`** (the
 product is renamed FixCV, brand only, PR #42, `cf54c71`), released 2026-10-28 (run 40608951576).
 Before it, **`domain-fixcv-app`** (production moves to `fixcv.app`, config only, ADR-0038, PR #40,
 `8468b5f`) was released 2026-10-27 (run 40591221234). Before that, **`web-design-refresh`** (a frontend-only reskin plus the static `/welcome` page,
@@ -70,7 +70,7 @@ strictly ordered dependencies:
 Enforced by **import-linter** in CI and by a **PreToolUse hook that blocks the write** before you get
 that far (`.claude/hooks/domain-purity-guard.sh`). Ports are `typing.Protocol`s in
 `domain/<context>/ports.py`; adapters live in `infrastructure/`. Bounded contexts: `intake`,
-`posting`, `tailoring`, `export`, `identity`, `retention`, `tracking` (3.1) — see Constitution §4.
+`posting`, `tailoring`, `export`, `identity`, `retention`, `tracking` (3.1), `scoring` (5.1) — see Constitution §4.
 
 Canonical order to add a feature: **domain** (value objects → aggregate → events → port) →
 **application** (use case) → **infrastructure** (mapping, repository, migration, adapter, router,
@@ -239,9 +239,10 @@ python -m tailorcraft.cli check-settings                  # every startup refusa
 python -m tailorcraft.cli erase-account --user-id <uuid> --dry-run   # counts; deletes nothing
 python -m tailorcraft.cli erase-account --user-id <uuid>
 # Since 2.3 the account's history goes too, and each line appends it after 2.2's unchanged prefix;
-# since 3.1 the board's cards are appended after that (no files, so N file(s) is unchanged):
-#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s); tracking: N tracked application(s)
-#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all; tracking: N tracked application(s)
+# since 3.1 the board's cards are appended after that (no files, so N file(s) is unchanged), and
+# since 5.1 the fit scores after those (no files either):
+#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s); tracking: N tracked application(s); scoring: N fit score(s)
+#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all; tracking: N tracked application(s); scoring: N fit score(s)
 # The dry run's file count includes derived export files. A history entry a user deletes in the UI
 # goes the same way (rows committed, then files); an unlink that fails leaves an orphan for the sweep.
 # Exit: 0 erased (incl. with unlink failures — stderr names the orphan sweep) · 1 no such account,
@@ -280,6 +281,10 @@ make layout.previews
 
 # LLM evaluation — NOT a test. Calls the real API, costs money, is not in `make check`.
 make eval
+make eval.score            # fit-score measurement (5.1): prints the plan and its upper bound, calls nothing
+make eval.score confirm=1  # spends it (58 scores, ≤ 116 calls); the owner approves first
+# Fit-score spend: one scoring_daily_spend row per UTC day, reserved before the call. The off switch is
+# FIT_SCORE_DAILY_SPEND_CAP_USD=0 in .env, applied with `up -d api` (never `restart`). docs/infrastructure.md.
 
 make hooks.install       # git config core.hooksPath scripts/git-hooks
 ```
@@ -293,6 +298,7 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
   mutable defaults, dead code or secrets in source.
 - **Domain purity:** no third-party imports in `domain/`. A domain module may not import a **sibling
   context** either. Retention reaches other rows through its own ports and plain values.
+- **`identity` is the kernel:** any context may import its `Owner` and ids (as `tracking` and `scoring` do); nothing else crosses.
 - **No base class for aggregates that merely share a shape.** Where a type deliberately contradicts
   another, comment why at that point.
 - **Config:** `os.environ` is read only in the settings object.
@@ -358,6 +364,7 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
   column. A constraint the mapping must satisfy, or any CHECK, lands with the mapping. The pre-commit
   hook tests the **working tree**, so stash the rest per commit. `TDD_RED=1` refuses a commit with
   no staged test. `commit-msg` rejects subjects over 72 characters only after the full suite.
+  A mechanical rename never sits between a RED and its GREEN. Commit one at a time; watch a subagent silent for 30 min.
 - Domain tests have no I/O. Application/API tests use a **real Postgres** (`tailorcraft_test`,
   transactional rollback), never the dev DB. **No test calls Gemini.** Time comes from a fake
   `Clock`, whole-second, and race seeds use the same clock.
@@ -367,7 +374,7 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
   isolation.
 - **A performance or liveness assertion is proven only by a mutation:** reintroduce the regression,
   watch it go red, and record both numbers. Time event-loop *turnaround*, not an in-process request.
-  Pick the statistic for the workload.
+  Pick the statistic for the workload. A mutation too small to move it needs a different observable.
 - Inject a fault **below** the floor you test (patch the library call, not the adapter).
   `AsyncSession.get` reaches the sync `Session.execute`.
 - Harness traps:
@@ -380,8 +387,8 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
   - Seed data goes through the domain grammars.
 - Fakes: a fake needs the isolation of the thing it fakes and the **real response shape** (build
   it from a real response, pin it). Widening a port's return breaks monkeypatched stubs, so grep and
-  fix them first.
-- Structural rules: every domain `Protocol` is bound or exempted (`test_port_bindings.py`). "Every
+  fix them first. A fake kinder than the adapter at an edge (a missing row) hides the caller's bug.
+- Structural rules: every domain `Protocol` is bound or exempted, never both (`test_port_bindings.py`). "Every
   table with X" is discovered from the catalogue. "At head" is `get_current_head()`, never a pinned
   revision. A router-level dependency duplicated by a handler param is an equivalent mutant, so pin
   `router.dependencies`. **Check that a gate exists before a plan leans on it.**
@@ -424,6 +431,7 @@ a hurry. Constitution §8 applies to every slice:
 - **Guest work moves into an account only by an explicit offer that names it.** On a shared
   computer, the previous visitor's CV is in the browser for up to 24 hours; an automatic claim on
   login would file a stranger's CV in this account, kept until deleted.
+- **A fit score's gaps are CV-derived PII** (5.1, ADR-0040): never logged; deleted by the purge, erasure, deleting its CV, and deleting a history entry that takes its posting.
 
 ## Infrastructure footguns (baked-in guards)
 
@@ -488,6 +496,7 @@ Full stories in [LESSONS.md](./LESSONS.md) and [docs/infrastructure.md](./docs/i
   separate `DELETE`. The inserter takes `FOR KEY SHARE` **after** its `INSERT`.
 - `with_for_update(key_share=True)` alone is `FOR NO KEY UPDATE`; `FOR KEY SHARE` also needs
   `read=True`. Compile and read the SQL.
+- An upsert's `ON CONFLICT … DO UPDATE … WHERE` doesn't guard the first insert: check it before.
 - Take the strongest lock first: `FOR SHARE` then `FOR UPDATE` on one row deadlocks two callers.
   The user row is locked before any reset.
 - A `SET` on a pooled connection does not survive a commit. Pin the connection and commit the

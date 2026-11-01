@@ -9,7 +9,7 @@ Follow this order every time. It keeps `domain/` pure (import-linter clean) and 
 legible to the person reading it in three months, who is you.
 
 ## 1. Choose the bounded context
-`intake` · `posting` · `tailoring` · `export` · `identity` · `retention` (Constitution §4). Code goes
+`intake` · `posting` · `tailoring` · `export` · `identity` · `retention` · `tracking` · `scoring` (Constitution §4). Code goes
 under `domain/<context>/`, `application/<context>/`, `infrastructure/<context>/`. Use the spec's
 ubiquitous language exactly — a base CV is never a "resume" in code.
 

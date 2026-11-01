@@ -126,3 +126,17 @@ unverified until then, $2 is several thousand scores: an abuse ceiling, not an o
   already allows.
 - **The pattern is reusable, but not yet shared.** The next spend-bearing call that wants a ceiling should
   read this first. A generic ledger for one caller would be a port for nobody.
+
+## Amendment: 2026-11-01, from the implementation of slice 5.1
+
+Two clarifications. The decisions stand.
+
+- **Units (decision 1).** Every figure is an integer number of micro-USD. The domain's `ScoringPrices`
+  holds each price as `MicroUsd` **per million tokens**, so $0.10 per million is `MicroUsd(100_000)`
+  and the cost formula above stays in integers. The `Decimal` settings are converted once, at the
+  composition root: **prices round up and the daily cap rounds down**, both in the safe direction.
+- **The day's first reservation (decision 2).** The statement's `WHERE` belongs to `DO UPDATE`, so it
+  runs only when the day's row exists. The first reservation of a UTC day is a plain insert and would
+  pass any cap, `0` included, which would make the off switch let one call through a day. The adapter
+  therefore refuses an amount above the cap **before** the statement (`f8d92c3`). With that guard the
+  sentence "no row returned is a refusal" is true of every reservation, the first included.

@@ -51,9 +51,9 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
 | Migrations | Alembic | [0007](./adr/0007-persistence-conventions-for-domain-aggregates.md) |
 | Database | PostgreSQL 16 | [0003](./adr/0003-infra-single-vds-compose-traefik.md) |
 | Cache / broker / results | Redis 7 | [0003](./adr/0003-infra-single-vds-compose-traefik.md) |
-| Background work | Celery 5 (Redis broker) behind a `TaskQueuePort` | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
+| Background work | Celery 5 (Redis broker) behind a queue port per context (`TailoringQueuePort`, `ExportQueuePort`, `AccountMailQueuePort`) | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
 | Scheduled work | Celery Beat — the guest-retention purge | [0006](./adr/0006-guest-retention-and-local-file-storage.md) |
-| LLM | Google Gemini API behind an `LlmPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md) |
+| LLM | Google Gemini API: tailoring behind an `LlmPort`, fit scoring on a cheaper model behind a `FitScorerPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md), [0040](./adr/0040-a-fit-score-is-its-own-context-one-stored-assessment-per-owner-and-content-pair-computed-inside-the-request.md) |
 | CV text extraction | `pypdf` / `python-docx` behind a `CvTextExtractorPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md) |
 | Job posting fetch | `httpx` + `trafilatura` behind a `JobPostingFetcherPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md) |
 | PDF rendering | WeasyPrint (HTML → PDF), in a Celery worker | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
@@ -113,9 +113,10 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    business rules. Domain value objects are frozen `@dataclass`es that validate in `__post_init__`.
 
 2. **Ports keep vendors swappable.** Every external dependency crosses a domain-defined
-   `typing.Protocol` (or ABC): `LlmPort`, `CvTextExtractorPort`, `JobPostingFetcherPort`,
-   `DocumentRendererPort`, `FileStorePort`, `TaskQueuePort`, `Clock`, plus one repository port per
-   aggregate. The concrete adapter lives in `infrastructure/` and is wired in one composition root.
+   `typing.Protocol` (or ABC): `LlmPort`, `FitScorerPort`, `CvTextExtractorPort`,
+   `JobPostingFetcherPort`, `DocumentRendererPort`, `FileStorePort`, `AccountMailPort`, a queue port per
+   context (`TailoringQueuePort`, `ExportQueuePort`, `AccountMailQueuePort`), `Clock`, the
+   `SpendLedgerPort`, plus one repository port per aggregate. The concrete adapter lives in `infrastructure/` and is wired in one composition root.
    This is *why* swapping Gemini for another model is a binding change and not a rewrite (ADR-0004).
 
 3. **Bounded contexts** (initial map — refine as the model sharpens):

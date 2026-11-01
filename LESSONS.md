@@ -361,6 +361,54 @@ numbers are here.
   main bundle; a reskin of about sixty always-loaded components measured **+3.91 kB** (markup and
   class strings, no dependency). The owner amended the budget to 4 KB rather than lazy-load the run
   page, which is a behaviour change with its own fallback and failure path.
+- **An upsert's `WHERE` guards the conflict, not the insert** (5.1, `f8d92c3`). ADR-0041's
+  reservation is `INSERT … ON CONFLICT (day) DO UPDATE SET spent = spent + :r WHERE spent + :r <=
+  :cap`. The `WHERE` belongs to the `DO UPDATE`, so it only runs when the day's row already exists.
+  The day's **first** reservation is a plain insert and passes any cap, including `cap = 0`, the
+  off switch: scoring would have been "off" for every call but the first one each UTC day. The
+  adapter now refuses `amount > cap` before the statement, which is what the fake already did.
+  Read a conditional upsert as two statements, and test the empty table as its own case.
+- **A fake that is kinder than the adapter hides the caller's bug** (5.1, `1fa7b5c`). The fake
+  `RecordingSpendLedger.settle` created an entry for a day with no row; the real `UPDATE … WHERE
+  day = :day` finds nothing and changes nothing. So a use case settling on the **wrong day** (say,
+  today's after a call that crossed midnight) looked correct in every application test and would
+  have lost the cost in production. The fake now no-ops too, and a fidelity test pins the adapter
+  and the fake to the same answer. 4.4's lesson from the other side: a fake must match the real
+  thing's *behaviour at the edges*, not just its return shape.
+- **A mutation that can't move the statistic doesn't prove the guard** (5.1, `5512c4a`). The plan
+  said dropping `to_thread` from the pair's hashing would turn AC-22's loop-turnaround test red.
+  Measured, it can't: SHA-256 over a 250,000-character CV costs about 4 ms and a 30,000-character
+  parse under 1 ms, inside the turnaround's own noise (healthy p95 5.9–10.2 ms, mutated
+  10.5–11.5). The guard is a deterministic test that the work runs **off the loop's thread**; the
+  turnaround tests stay as smoke (p95 < 50 ms). The parse mutation also never suspended and starved
+  the sampler for three minutes, hence a `sleep(0.001)` and a `wait_for` in the sampler. When a
+  mutation is too small to separate, change the test's observable, not its threshold.
+- **A test that pins "the line ends with X" forbids the next slice's segment** (5.1, `7650971`).
+  3.1's erase-account tests asserted `endswith("tracked application(s)")`, which AC-36's
+  `; scoring: N fit score(s)` contradicts. They became `in` checks, and the new slice's test pins
+  the whole line, so order and the unchanged prefix are still proven. That fix is a test edit, so
+  it went in its own commit before GREEN (`TDD_RED=1`, the new RED still open): GREEN edits no test.
+- **A mechanical commit can't sit between a RED and its GREEN** (5.1, `1860f7c` → `e214c57`). The
+  parser needed the domain's private `_MAX_GAPS` as a public name. Renaming first would have put a
+  commit on top of a red gate, and every commit is green. So GREEN imported the private name for
+  one commit and the rename followed. Schedule refactors before the RED or after the GREEN.
+- **A port both bound and exempted fails the port walker** (5.1, `59db244`). The scoring ports went
+  into `_BOUND_ELSEWHERE` while their routes didn't exist; the commit that gives the routes their
+  dependencies binds them, so the exemptions must leave in that same commit. That is why T31 merged
+  into T30. Plan the exemption's removal with the binding, not after it.
+- **Vitest's 1-second async default fails correct tests on a busy box** (5.1, `7cb14b5`). The full
+  gate failed 1 to 6 frontend tests, in different files each time, in five runs on this branch,
+  and passed on retry. Reproduced with 16 busy loops on 12 cores: 5 failed, 1645 passed. Testing
+  Library's `findBy`/`waitFor` gave up after 1 s. `web/src/test/setup.ts` raises
+  `asyncUtilTimeout` to 5 s and `vite.config.ts` `testTimeout` to 15 s: 1650 passed in three runs
+  of three under the same load, 132–136 s against 123 s. A passing test still returns as soon as
+  it can; only a failing one waits longer. A flake that moves between files is load, not code.
+- **A subagent that goes quiet needs a watchdog** (5.1). One implementer hung for 77 minutes at T28
+  with nothing on disk to show for it, and the session waited. Check on any agent silent for 30
+  minutes (its working tree, its last command), and stop and restart it rather than wait. Related:
+  overlapping background commits run two pytest sessions against one `tailorcraft_test` and fail
+  dozens of unrelated tests (`ALTER TABLE` errors in `_migrated`, 71 at T42): web-design-refresh's
+  "two suites at once" again. Commit one at a time, and wait for the process to exit.
 
 ## Infrastructure footguns (baked-in guards)
 

@@ -180,7 +180,7 @@ def _assert_the_claim_line_is_counts_and_a_user_id_only(
     counts: dict[str, int],
     never: dict[str, str],
 ) -> None:
-    """AC-46: `user_id` and the five counts, and **no** session id, token, hash or key — by value
+    """AC-46: `user_id` and the six counts, and **no** session id, token, hash or key — by value
     anywhere in the line, and by field name."""
     assert line["user_id"] == user_id
     for name, expected in counts.items():
