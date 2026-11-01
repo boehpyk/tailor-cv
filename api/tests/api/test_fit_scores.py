@@ -559,6 +559,60 @@ async def test_a_full_cap_is_503_scoring_busy_with_no_call(
     assert fake.calls == []
 
 
+CAP_LINE = "scoring.spend_cap_reached"
+
+
+def _cap_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if CAP_LINE in r.getMessage()]
+
+
+async def test_a_refusal_at_the_cap_logs_one_line_with_the_utc_day_and_nothing_identifying(
+    client: AsyncClient,
+    app: FastAPI,
+    session: AsyncSession,
+    settings: Settings,
+    who: Who,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    override_settings(app, settings, fit_score_daily_spend_cap_usd=Decimal(0))
+    scorer(app)
+    inputs = await seed(session, who.owner)
+    owner_id = str(
+        who.owner.guest_session_id.value if who.is_guest else who.owner.user_id.value  # type: ignore[union-attr]
+    )
+    before = SystemClock().now().date().isoformat()
+
+    with caplog.at_level(logging.DEBUG):
+        answered(await post(client, who, inputs), 503, "scoring_busy")
+
+    after = SystemClock().now().date().isoformat()
+    lines = _cap_records(caplog)
+    assert len(lines) == 1, f"expected one {CAP_LINE} line, got {len(lines)}"
+    everything = f"{lines[0].getMessage()} {lines[0].__dict__}"
+    assert before in everything or after in everything
+    for forbidden in (owner_id, "127.0.0.1", inputs.cv_id, inputs.posting_id):
+        assert forbidden not in everything
+
+
+async def test_a_stored_hit_with_the_cap_full_logs_no_cap_line(
+    client: AsyncClient,
+    app: FastAPI,
+    session: AsyncSession,
+    settings: Settings,
+    who: Who,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    scorer(app)
+    inputs = await seed(session, who.owner)
+    answered(await post(client, who, inputs), 201)
+    override_settings(app, settings, fit_score_daily_spend_cap_usd=Decimal(0))
+
+    with caplog.at_level(logging.DEBUG):
+        answered(await post(client, who, inputs), 200)
+
+    assert _cap_records(caplog) == []
+
+
 # ------------------------------------------------- S-1..S-9: every failure the scorer can report
 
 
