@@ -30,7 +30,9 @@ export function requestFitScoreMutationKey(
  *   fetch the same thing; the panel reads only `useFitScore`, so the score shows for its pair even
  *   after the screen moved to another pair and back. The write is synchronous, so there is no frame
  *   of an empty *Check my score* between *Checking…* and the score. The read's `gcTime` is the
- *   default, so an unobserved pair's entry survives until it is shown again.
+ *   default, so an unobserved pair's entry survives until it is shown again. It writes **only if
+ *   that pair's query still exists**: a claim's `removeQueries(['scoring'])` while the `POST` is in
+ *   flight must stay removed, or the guest's CV-derived gaps come back (ADR-0040).
  * - **`onError` invalidates without returning** (AC-46): the failure shows at once, and if the
  *   server finished anyway (a dropped connection, S-17) the re-read finds the stored row and the
  *   score replaces the failure.
@@ -48,7 +50,12 @@ export function useRequestFitScore(): ReturnType<
     mutationKey: requestFitScoreMutationKey(map),
     mutationFn: (pair: FitScorePair) => requestFitScore(map, pair),
     onSuccess: (score, pair) => {
-      queryClient.setQueryData<FitScoreForPair>(fitScoreQueryKey(pair, map), { fit_score: score });
+      const queryKey = fitScoreQueryKey(pair, map);
+      // A claim's removeQueries must not be undone by a POST still in flight: the gaps are
+      // CV-derived PII (ADR-0040), so write only into a read that still exists.
+      if (queryClient.getQueryCache().find({ queryKey, exact: true })) {
+        queryClient.setQueryData<FitScoreForPair>(queryKey, { fit_score: score });
+      }
     },
     onError: (_error, pair) => {
       void queryClient.invalidateQueries({ queryKey: fitScoreQueryKey(pair, map) });

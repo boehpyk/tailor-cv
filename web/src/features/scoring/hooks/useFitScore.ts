@@ -36,8 +36,9 @@ export function fitScoreQueryKey(
  * key, and the stored row appears.
  *
  * **No `refetchInterval`.** A score has no lifecycle to watch: it is either stored or not, and the
- * only thing that changes it is this tab's own `POST`, which invalidates. One read per load or
- * invalidation (plan §4).
+ * only thing that changes it is this tab's own `POST`: a success writes the stored score into this
+ * key (`setQueryData`, only while the query still exists), and a failure invalidates it. One read
+ * per load or invalidation (plan §4).
  *
  * Retries as `useTailoringRun` does: a 4xx is an answer and is not retried; a network failure or a
  * 5xx gets `MAX_TRANSIENT_RETRIES`. A read is safe to retry, which is exactly what a write is not
