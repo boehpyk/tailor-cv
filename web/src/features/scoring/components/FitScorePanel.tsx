@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useIsMutating, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
 import { HoldNote } from '@/features/retry/components/HoldNote';
@@ -23,6 +23,7 @@ import { requestFitScoreMutationKey, useRequestFitScore } from '../hooks/useRequ
 import { FitScoreFailure } from './FitScoreFailure';
 import { FitScoreResult } from './FitScoreResult';
 
+import type { Mutation } from '@tanstack/react-query';
 import type { Hold } from '@/features/retry/useHold';
 import type { FitScorePair } from '../types';
 
@@ -42,8 +43,11 @@ export interface FitScorePanelProps {
  * only call to `mutate` is the click handler, guarded by `isMutating` so a same-tick double click
  * sends one request (AC-48).
  *
- * The mutation's pending state and error are shown only for the pair they were for, so a refusal on
- * A never sits under B; the click guard is per pair too. The 429 hold is per IP and stays unfiltered.
+ * *Checking…* and the click guard read one source: the mutation cache, filtered to the pair on
+ * screen. The single `useRequestFitScore` observer follows only the latest `mutate`, so after
+ * A → B → A it would describe B; the cache still holds A's call. A's score reaches the screen
+ * through A's read query (`onSuccess` writes it there). The error is the observer's, shown only for
+ * its own pair, so a refusal on A never sits under B. The 429 hold is per IP and stays unfiltered.
  *
  * `not_ready`, `empty`, `working`, `held` and `failed` all render one `CheckControl`, so its status
  * region and `HoldNote` stay mounted across them: *Checking…* fills a region that was already there,
@@ -55,13 +59,16 @@ export function FitScorePanel({ pair }: FitScorePanelProps): React.JSX.Element {
   const read = useFitScore(pair);
   const request = useRequestFitScore();
   const hold = useErrorHold(request.error);
-  const forThisPair = isSamePair(request.variables, pair);
-  const error = forThisPair ? request.error : null;
+  const mutationKey = requestFitScoreMutationKey(map);
+  const isSamePairMutation = (m: Mutation): boolean =>
+    isSamePair(m.state.variables as FitScorePair | undefined, pair);
+  const pendingForThisPair = useIsMutating({ mutationKey, predicate: isSamePairMutation }) > 0;
+  const error = isSamePair(request.variables, pair) ? request.error : null;
 
   const view = fitScoreView({
     hasPair: pair !== null,
     read: { status: read.status, data: read.data },
-    request: { isPending: forThisPair && request.isPending, error },
+    request: { isPending: pendingForThisPair, error },
     held: hold.held,
   });
 
@@ -69,11 +76,8 @@ export function FitScorePanel({ pair }: FitScorePanelProps): React.JSX.Element {
     if (pair === null) {
       return;
     }
-    const inFlight = queryClient.isMutating({
-      mutationKey: requestFitScoreMutationKey(map),
-      predicate: (m) => isSamePair(m.state.variables as FitScorePair | undefined, pair),
-    });
-    if (inFlight > 0) {
+    // `useIsMutating` lags a tick; the client's count is synchronous, so it guards a double click.
+    if (queryClient.isMutating({ mutationKey, predicate: isSamePairMutation }) > 0) {
       return;
     }
     request.mutate(pair);
