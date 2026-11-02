@@ -471,6 +471,61 @@ describe.each([
       expect(screen.queryByText(WORKING)).not.toBeInTheDocument();
     });
 
+    /** A on screen with its POST in flight, B's POST in flight too, A back on screen. */
+    async function aThenBThenA(resolveA?: () => Promise<Response>) {
+      const post: RouteHandler = (call) => {
+        const body = call.body as FitScorePair;
+        return body.base_cv_id === PAIR.base_cv_id && resolveA !== undefined
+          ? resolveA()
+          : new Promise<Response>(() => undefined);
+      };
+      const { f, switchTo } = await afterPairChange(post);
+      switchTo(PAIR_B);
+      await expectEmptyOnB(f);
+      fireEvent.click(checkButton());
+      await vi.waitFor(() => {
+        expect(posts(f)).toHaveLength(2);
+      });
+      switchTo(PAIR);
+      return { f, switchTo };
+    }
+
+    it('A in flight, B in flight, back on A still shows Checking… and a disabled button', async () => {
+      await aThenBThenA();
+
+      expect(await screen.findByRole('status')).toHaveTextContent(WORKING);
+      expect(screen.getByRole('button', { name: CHECK_BUTTON })).toBeDisabled();
+    });
+
+    it('A in flight, switching to B and clicking Check sends a POST for B (the guard is per pair)', async () => {
+      const { f, switchTo } = await afterPairChange(hang);
+      switchTo(PAIR_B);
+      await expectEmptyOnB(f);
+      fireEvent.click(checkButton());
+
+      await vi.waitFor(() => {
+        expect(posts(f)).toHaveLength(2);
+      });
+      expect(posts(f)[1]?.body).toMatchObject(PAIR_B);
+    });
+
+    it('back on A after B was sent, A shows its score when its POST resolves', async () => {
+      let release: (r: Response) => void = () => undefined;
+      await aThenBThenA(
+        () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+          }),
+      );
+      await screen.findByRole('status');
+      await act(async () => {
+        release(jsonResponse(200, SCORE));
+        await Promise.resolve();
+      });
+
+      expect(await screen.findByText('62%')).toBeInTheDocument();
+    });
+
     it('a 429 hold still holds on B: it is per IP, not per pair (positive control)', async () => {
       const { f, switchTo } = await afterPairChange(() =>
         jsonResponse(
