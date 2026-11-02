@@ -225,3 +225,92 @@ async def test_concurrent_gets_beside_50_suspended_scores_never_wait_for_the_poo
     assert max(burst.hold_pool) <= READERS, f"a POST holds a connection: {set(burst.hold_pool)}"
     assert ramp_worst < 5_000, f"a GET waited {ramp_worst:.0f} ms: it queued for a connection"
     assert _p95(hold) <= 300, f"AC-41: GET p95 {_p95(hold):.1f} ms while the scores are held"
+
+
+# --- AC-41, the two POST figures (T53) ---------------------------------------------------------
+
+POSTS = 100
+
+
+class TimedScorer:
+    """Instant fake that records how long it sat inside `assess`, so a POST's time outside the call
+    is its total minus this."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.inside_ms = 0.0
+
+    async def assess(self, cv: object, posting: object) -> object:
+        started = time.perf_counter()
+        self.calls += 1
+        result = assessed(62)
+        self.inside_ms += (time.perf_counter() - started) * 1000
+        return result
+
+
+def _unlimited(world: World) -> None:
+    override_settings(
+        world.app,
+        world.settings,
+        fit_score_max_per_user_per_day=10_000,
+        fit_score_rate_limit_per_ip_per_hour=10_000,
+        login_rate_limit_per_ip_per_hour=10_000,
+    )
+
+
+async def test_post_on_a_stored_score_answers_within_300_ms_p95_and_never_scores(
+    world: World, engine: AsyncEngine
+) -> None:
+    _unlimited(world)
+    scorer = TimedScorer()
+    world.app.state.fit_scorer = scorer
+    who = await world.account()
+    body = await seed_pair(engine, who.owner)
+    async with new_client(world.app) as client:
+        first = await client.post(URL, json=body, headers=who.headers)
+        assert first.status_code == 201, first.text
+        assert scorer.calls == 1
+        elapsed: list[float] = []
+        bodies: list[dict[str, object]] = []
+        for _ in range(POSTS):
+            started = time.perf_counter()
+            response = await client.post(URL, json=body, headers=who.headers)
+            elapsed.append((time.perf_counter() - started) * 1000)
+            assert response.status_code == 200, response.text
+            bodies.append(response.json())
+    print(
+        f"T53 stored-hit POST: {POSTS} sequential, p50 {statistics.median(elapsed):.1f} ms, "
+        f"p95 {_p95(elapsed):.1f} ms, max {max(elapsed):.1f} ms; scorer calls {scorer.calls}"
+    )
+    assert scorer.calls == 1, "a stored hit reached the scorer"
+    assert all(b == bodies[0] for b in bodies), "stored hits differ"
+    assert _p95(elapsed) <= 300, f"AC-41: stored-hit POST p95 {_p95(elapsed):.1f} ms"
+
+
+async def test_post_overhead_outside_the_scorer_is_100_ms_p95(
+    world: World, engine: AsyncEngine
+) -> None:
+    _unlimited(world)
+    scorer = TimedScorer()
+    world.app.state.fit_scorer = scorer
+    who = await world.account()
+    # Distinct word counts make distinct fingerprints (text is whitespace-normalised): identical content would be a stored hit.
+    pairs = [
+        await seed_pair(engine, who.owner, cv_characters=300 + i, posting_words=40 + i)
+        for i in range(POSTS)
+    ]
+    outside: list[float] = []
+    async with new_client(world.app) as client:
+        for body in pairs:
+            inside_before = scorer.inside_ms
+            started = time.perf_counter()
+            response = await client.post(URL, json=body, headers=who.headers)
+            total = (time.perf_counter() - started) * 1000
+            assert response.status_code == 201, response.text
+            outside.append(total - (scorer.inside_ms - inside_before))
+    print(
+        f"T53 POST overhead outside assess: {POSTS} new pairs, p50 {statistics.median(outside):.1f} ms, "
+        f"p95 {_p95(outside):.1f} ms, max {max(outside):.1f} ms; scorer calls {scorer.calls}"
+    )
+    assert scorer.calls == POSTS
+    assert _p95(outside) <= 100, f"AC-41: POST overhead p95 {_p95(outside):.1f} ms"
