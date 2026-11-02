@@ -23,7 +23,6 @@ from uuid import UUID
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _MIN_GAP_LENGTH = 3
 MAX_FIT_GAP_LENGTH = 200
-_MAX_GAP_LENGTH = MAX_FIT_GAP_LENGTH  # the private name tests import
 MAX_FIT_GAPS = 3
 MIN_SCORE_WITHOUT_GAPS = 90
 _MAX_MODEL_NAME_LENGTH = 64
@@ -211,9 +210,9 @@ class FitGap:
         if any(_breaks_a_line_or_controls(char) for char in self.value):
             raise InvalidFitGap("a gap must be one line with no control characters")
         normalized = _collapse_whitespace(self.value)
-        if not _MIN_GAP_LENGTH <= len(normalized) <= _MAX_GAP_LENGTH:
+        if not _MIN_GAP_LENGTH <= len(normalized) <= MAX_FIT_GAP_LENGTH:
             raise InvalidFitGap(
-                f"a gap must be {_MIN_GAP_LENGTH} to {_MAX_GAP_LENGTH} characters, "
+                f"a gap must be {_MIN_GAP_LENGTH} to {MAX_FIT_GAP_LENGTH} characters, "
                 f"got {len(normalized)}"
             )
         if _GAP_FORBIDDEN.search(normalized):

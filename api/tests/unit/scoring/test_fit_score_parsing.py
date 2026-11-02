@@ -350,8 +350,10 @@ def test_a_refusal_hides_its_cause(raw: str) -> None:
 
 
 def test_the_prompt_states_the_gap_length_ceiling_from_the_domain_constant() -> None:
-    from tailorcraft.domain.scoring.value_objects import _MAX_GAP_LENGTH
+    from tailorcraft.domain.scoring.value_objects import MAX_FIT_GAP_LENGTH
     from tailorcraft.infrastructure.llm.fit_score_prompt import build_fit_score_prompt
 
-    assert _MAX_GAP_LENGTH == 200
-    assert f"3 to {_MAX_GAP_LENGTH} characters" in build_fit_score_prompt("cv text", "posting text")
+    assert MAX_FIT_GAP_LENGTH == 200
+    assert f"3 to {MAX_FIT_GAP_LENGTH} characters" in build_fit_score_prompt(
+        "cv text", "posting text"
+    )

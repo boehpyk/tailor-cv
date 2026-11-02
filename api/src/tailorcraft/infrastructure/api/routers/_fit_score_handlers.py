@@ -52,6 +52,7 @@ from tailorcraft.infrastructure.api.schemas.scoring import (
     FitScoreForPairResponse,
     FitScoreResponse,
 )
+from tailorcraft.infrastructure.llm.gemini import qualified_type
 from tailorcraft.infrastructure.rate_limit import (
     RateLimiterUnavailable,
     RedisFixedWindowRateLimiter,
@@ -132,7 +133,7 @@ def _unavailable(exc: Exception) -> HTTPException:
     """S-13 to S-15: the generic answer, `main.py`'s `SQLAlchemyError` sentence plus `no-store`. Also
     `store`'s last-resort `RuntimeError`, which no app-level handler catches. The type alone is logged:
     the driver's message can quote a parameter."""
-    log.error("scoring.request_failed", error_type=type(exc).__name__)
+    log.error("scoring.request_failed", error_type=qualified_type(exc))
     return HTTPException(
         status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={
@@ -217,7 +218,7 @@ async def request_fit_score(
                 # S-10, ADR-0041 decision 6: one line per refusal, the UTC day and nothing else.
                 log.warning("scoring.spend_cap_reached", day=exc.day.isoformat())
             if exc.__cause__ is not None:
-                log.error("scoring.settle_failed", error_type=type(exc.__cause__).__name__)
+                log.error("scoring.settle_failed", error_type=qualified_type(exc.__cause__))
             raise
     except DomainError as exc:
         raise _refusal(exc) from None
