@@ -16,10 +16,12 @@ from tailorcraft.domain.scoring.errors import (
 from tailorcraft.domain.scoring.fit_score import FitScore
 from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
 from tailorcraft.domain.scoring.value_objects import (
+    FitScoreFailureReason,
     MicroUsd,
     ModelName,
     PromptVersion,
     ScoringPrices,
+    ScoringUsage,
 )
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.errors import DomainError
@@ -60,22 +62,24 @@ class RequestFitScore:
        `scored[count - limit] + 24 h`, `scored` being oldest first: the moment the count drops below
        the limit, which a claim may have left it above (AC-35). At exactly the limit, that is the
        oldest.
-    3. `worst = prices.worst_case_attempt(cv chars, posting chars, overhead, max output tokens)`,
+    3. A CV over `max_cv_characters` is `FitScoringFailed(INPUTS_TOO_LARGE)` with all-zero usage: no
+       reservation, no call, no row (S-9).
+    4. `worst = prices.worst_case_attempt(cv chars, posting chars, overhead, max output tokens)`,
        and `try_reserve(day, worst * max_attempts, daily_cap)`. `False` is
        `FitScoreSpendCapReached`, no call. `True` has committed: **nothing is held from here until
-       step 5.**
-    4. `scorer.assess(pair.cv, pair.posting)`. `CancelledError` passes through with no settle and no
+       step 6.**
+    5. `scorer.assess(pair.cv, pair.posting)`. `CancelledError` passes through with no settle and no
        row: the reservation stands (AC-17, AC-21). `FitScoringFailed` settles to
        `prices.cost_of(failed.usage, worst)` and re-raises.
-    5. `FitScore.from_assessment(...)`, then `scores.store(score)`. A `DomainError` from `store`
+    6. `FitScore.from_assessment(...)`, then `scores.store(score)`. A `DomainError` from `store`
        (S-25 to S-27: paid for, nothing stored) settles to the actual cost and re-raises.
-    6. `settle(day, reserved, cost)`: this commits the row and its cost together (AC-14).
-    7. Only if `stored` is this `score`: publish its events. The loser publishes nothing.
+    7. `settle(day, reserved, cost)`: this commits the row and its cost together (AC-14).
+    8. Only if `stored` is this `score`: publish its events. The loser publishes nothing.
 
     **If a settle fails while another error is on its way out (S-16)**, that error still wins: it is
     the user's answer, the reservation stands, and it is raised `from` the settle's exception. This
     layer has no logger, so `__cause__` is how the router gets the type name to log. A settle
-    failing at step 6 has no such error to defer to and propagates, so nothing commits (S-15).
+    failing at step 7 has no such error to defer to and propagates, so nothing commits (S-15).
 
     `prompt_overhead_characters` is an argument because the prompt is infrastructure's: the
     composition root measures it. The limits, prices and cap have no defaults here, since `Settings`
@@ -123,6 +127,21 @@ class RequestFitScore:
         day = at.date()
 
         await self._refuse_at_the_limit(owner, at)
+
+        # Refuse what the user can fix before what they can't: a full cap must not hide a too-long
+        # CV. The adapter's own check stays as the backstop.
+        if pair.cv.character_count > self._max_cv_characters:
+            raise FitScoringFailed(
+                FitScoreFailureReason.INPUTS_TOO_LARGE,
+                ScoringUsage(
+                    input_tokens=0,
+                    output_tokens=0,
+                    unmetered_attempts=0,
+                    duration_ms=0,
+                    model=self._model,
+                    prompt_version=self._prompt_version,
+                ),
+            )
 
         worst = self._prices.worst_case_attempt(
             pair.cv.character_count,
