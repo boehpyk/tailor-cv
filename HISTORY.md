@@ -848,9 +848,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   `fixcv.app/health/ready` 200, the live `<title>` reads FixCV; the owner reports everything fine.
 >
 > - **`fit-score`** (slice **5.1**, Phase 5's first; approved 2026-10-30 and reworked the same day for
->   inline scoring; **implemented 2026-10-30 to 2026-11-01 on `feature/fit-score`, not yet verified or
->   released**: T50 to T54, the price check, the paid measurement, the manual pass, `/verify` and the
->   release, are pending) — a person with a CV and a job posting clicks **Check my score** and gets, in
+>   inline scoring; **implemented 2026-10-30 to 2026-11-01 on `feature/fit-score`; T50–T52 done,
+>   `/verify` 2026-11-02, not yet released**) — a person with a CV and a job posting clicks **Check my score** and gets, in
 >   the same request, an **estimated fit percentage and up to three missing requirements**, each quoting
 >   the posting, from `gemini-2.5-flash` behind a new port. T51 found `gemini-2.5-flash-lite` refused
 >   to new users (404), so the score uses `gemini-2.5-flash`, the owner's chosen fallback (2026-11-01).
@@ -919,15 +918,50 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   **(5)** `scored_at_since` is exclusive and `retry_not_before` is `scored[count − limit] + 24 h`
 >   (amends AC-12, true after a claim leaves a user above 10). **(6)** S-13: the fit-score handlers
 >   catch `SQLAlchemyError` themselves so the 503 carries `no-store`. **(7)** Vitest's async timeouts
->   raised (`7cb14b5`) after five flaky gate runs on this branch. **Carried to `/verify` and release:**
->   T50 (prices and model read from Google's pages, no spend), T51 (the owner approves the spend; AC-50
->   to AC-54; a failed AC-51 stops the merge; matched pairs were the implementer's choice, to confirm;
->   the gap-smuggling posting is reported, not gated), T52 (manual pass, Chromium and Firefox, a real
->   disconnect, log scan; the owner may reword the unpinned `refused` and `load_error` copy), T53, T54.
->   Not measured yet: AC-41's stored-hit `POST` p95 and the `POST` overhead outside the call. **S-10's
->   `scoring.spend_cap_reached` log line is not emitted** (the 503 is; found at T48). `parsing.py`'s
+>   raised (`7cb14b5`) after five flaky gate runs on this branch. **(8)** S-10's
+>   `scoring.spend_cap_reached` line was found missing at T48 and added red-first (`c178e4a` →
+>   `d4d1e0b`). **T50** (2026-11-01, no spend): Google's prices matched the settings for Flash-Lite.
+>   **T51** (owner-approved spend, three runs, about $0.10 real): the first run's 58 calls all 404'd
+>   (Flash-Lite closed to new users; the floor logged each by type, $0 real), so the model became
+>   `gemini-2.5-flash` at $0.30/$2.50 (`369e74a`); the second run failed pair 07 ten times as
+>   `gap_invalid` (a 144-character posting bullet), so AC-25's ceiling rose to 200 and the prompt went to
+>   **version 2** red-first (`9e9b5e4`, `3602d26` → `1956791`). **The third run passed:** AC-51 ranges 0
+>   on every pair but one at exactly 5; AC-52 matched beats cross by 40–90 points on all six CVs;
+>   injections didn't steer (0 and 10); AC-53 **$0.000846 mean per score**, $0.049 total; AC-54 no
+>   thinking tokens, 100 % parsed, at most 0.244 input tokens per character; provider p50 968 ms, p95
+>   1,215 ms (AC-42). Pair 08 moved 40 → 10 between prompt versions: the score is sensitive to wording,
+>   so any prompt change re-runs T51. **T52** (Chromium only, owner decision; Firefox not run): every
+>   reachable state, 360 px, the claim moving 3 scores, a real disconnect 150 ms into the call (stored,
+>   settled, no access-log line), 3,000 log lines free of CV, posting and gap words. **`/verify`
+>   (2026-11-02)**, round 1: `make check` green, red-first audit clean, reviewer **NEEDS CHANGES**. MAJOR:
+>   the panel applied the last `POST`'s outcome to whatever pair was on screen, so after "This CV is too
+>   long to score." a shorter CV kept that sentence and no button until a reload; fixed red-first
+>   (`22d45aa` → `36b652f`): the outcome counts only when `request.variables` is the pair on screen, the
+>   429 hold stays per IP, the double-click guard is per pair. MINOR: the CV-length pre-flight ran after
+>   the reservation, so near the cap a too-long CV heard "busy" instead of "too long"; the use case now
+>   refuses it first (`65ac61c`, `d6c4e38` → `a6ada52`; the adapter's check stays as a backstop). STYLE
+>   in `df71cec`. Two MINORs left by the owner: `from_assessment` outside the settle `try` (only a broken
+>   `Clock` reaches it) and the adapter's failure classes tested after. **AC-41 closed** (`25129e9`,
+>   100 requests each on the production image, fake scorer): a stored-hit `POST` p50 18.6 / **p95 23.0** /
+>   max 126.6 ms (budget 300); the `POST`'s time outside `assess` p50 25.3 / **p95 27.6** / max 250.6 ms
+>   (budget 100). Mutations: 0.35 s in `FindFitScoreForPair.for_pair` reddens both (413.8 / 443.5 ms);
+>   0.15 s before `try_reserve` reddens only the overhead test (234.8 ms), so each test guards its own
+>   path. Round 2: reviewer **PASS**, with three MINORs in round 1's own fixes, all fixed (owner):
+>   "Checking…" read the one `useMutation` observer while the click guard read the mutation cache, so
+>   after A → B → A pair A showed an enabled button that did nothing; both now read the mutation cache
+>   filtered to the pair on screen, and a success writes its score into its own pair's read
+>   (`setQueryData`, not an invalidation), so A's score lands even when the observer follows B
+>   (`30267b3` → `7b3d805`; the per-pair guard gained its missing pin). Refusing a long CV in the use case
+>   had silenced the adapter's `scoring.inputs_too_large` line; the router logs it now, counts only,
+>   mutation-proven (`852c1ed`). Round 3: reviewer **PASS**, and it caught a privacy regression in round
+>   2's own fix: the success path's `setQueryData` could re-create a claimed guest's score and gaps after
+>   the claim's `removeQueries(['scoring'])`, when the `POST` was still in flight. `removeQueries` only
+>   clears what exists at that moment, so any late writer can undo it; the write now happens only into
+>   a read that still exists (`3c67e65` → `a8255a6`). **Still open:** AC-53's comparison with Google's
+>   billing view. `parsing.py`'s
 >   comment names `ValueError` where `json.loads` raises `RecursionError`, and the tailoring parser's
->   deep-nesting path is untraced. `me_guest_work.py`'s docstring still says "five counts". One T42
+>   deep-nesting path is untraced. `test_concurrent_gets_beside_50_suspended_scores_never_wait_for_the_pool`
+>   flaked once under the full suite (`the GETs did not overlap the hold`, 16 < 20; passes alone). One T42
 >   gate run had 71 backend failures from two pytest sessions sharing `tailorcraft_test` (overlapping
 >   background commits), passing alone; `test_health_live_stays_responsive_during_twenty_concurrent_txt_renders`
 >   flaked once (p50 7.49 ms against 5). `ops-nightly-backups` must add `scoring_fit_score` to its scrub
