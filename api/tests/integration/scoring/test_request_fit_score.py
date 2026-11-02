@@ -37,11 +37,14 @@ from tailorcraft.domain.scoring.value_objects import (
     CvForScoring,
     FitScoreFailureReason,
     MicroUsd,
+    ModelName,
     PostingForScoring,
+    PromptVersion,
 )
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.scoring.support import (
     DAY,
+    MAX_CV_CHARACTERS,
     MAX_PER_SESSION,
     MAX_PER_USER,
     RESERVED,
@@ -498,6 +501,56 @@ async def test_a_reservation_the_day_cannot_take_is_busy_with_no_call_settlement
     assert w.ledger.spent == {w.day: 1_999_000}
     assert w.scores.all() == []
     assert w.events.published == []
+
+
+async def test_a_too_long_cv_near_the_cap_is_inputs_too_large_not_busy(clock: FixedClock) -> None:
+    w = World(clock)
+    guest = await w.guest()
+    w.ledger.spent[w.day] = 1_999_000  # a reservation would fail here (test above)
+
+    with pytest.raises(FitScoringFailed) as info:
+        await w.ask(guest, pair_of(cv_text="c" * (MAX_CV_CHARACTERS + 1)))
+
+    assert info.value.reason is FitScoreFailureReason.INPUTS_TOO_LARGE
+
+
+async def test_a_too_long_cv_is_refused_before_any_reservation_call_or_row(
+    clock: FixedClock,
+) -> None:
+    w = World(clock)
+    guest = await w.guest()
+
+    with pytest.raises(FitScoringFailed) as info:
+        await w.ask(guest, pair_of(cv_text="c" * (MAX_CV_CHARACTERS + 1)))
+
+    assert info.value.reason is FitScoreFailureReason.INPUTS_TOO_LARGE
+    assert w.journal == ["scored_at_since"]
+    assert w.ledger.reservations == []
+    assert w.ledger.settlements == []
+    assert w.ledger.spent == {}
+    assert w.scorer.calls == []
+    assert w.scores.all() == []
+    assert w.events.published == []
+    used = info.value.usage
+    assert (used.input_tokens, used.output_tokens, used.unmetered_attempts, used.duration_ms) == (
+        0,
+        0,
+        0,
+        0,
+    )
+    assert (used.model, used.prompt_version) == (ModelName("gemini-test"), PromptVersion("1"))
+
+
+async def test_a_cv_of_exactly_the_limit_is_not_refused_by_the_length_check(
+    clock: FixedClock,
+) -> None:
+    # Passes on arrival: the boundary guard for the refusal above (`>`, not `>=`).
+    w = World(clock)
+
+    outcome = await w.ask(await w.guest(), pair_of(cv_text="c" * MAX_CV_CHARACTERS))
+
+    assert outcome.created is True
+    assert len(w.scorer.calls) == 1
 
 
 async def test_a_reservation_that_exactly_fits_what_is_left_is_taken(clock: FixedClock) -> None:

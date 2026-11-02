@@ -559,6 +559,23 @@ async def test_a_full_cap_is_503_scoring_busy_with_no_call(
     assert fake.calls == []
 
 
+async def test_a_too_long_cv_with_the_cap_full_is_422_inputs_too_large_not_busy(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings, who: Who
+) -> None:
+    # The seeded CV is ~300 characters; a limit of 100 makes it too long.
+    override_settings(
+        app, settings, fit_score_daily_spend_cap_usd=Decimal(0), llm_max_cv_characters=100
+    )
+    fake = scorer(app)
+    ledger = ledger_of(app)
+    inputs = await seed(session, who.owner)
+
+    answered(await post(client, who, inputs), 422, "inputs_too_large")
+
+    assert fake.calls == []
+    assert ledger.reservations == []
+
+
 CAP_LINE = "scoring.spend_cap_reached"
 
 
