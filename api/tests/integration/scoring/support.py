@@ -74,6 +74,7 @@ MAX_OUTPUT_TOKENS = 512
 MAX_ATTEMPTS = 2
 MAX_PER_SESSION = 3
 MAX_PER_USER = 10
+MAX_CV_CHARACTERS = 25_000  # the settings default
 
 WORST_ATTEMPT = 605  # see the module docstring
 RESERVED = 1210  # WORST_ATTEMPT * MAX_ATTEMPTS
@@ -254,6 +255,7 @@ class World:
         max_attempts: int = MAX_ATTEMPTS,
         overhead: int = OVERHEAD,
         max_output_tokens: int = MAX_OUTPUT_TOKENS,
+        max_cv_characters: int = MAX_CV_CHARACTERS,
     ) -> RequestFitScore:
         return RequestFitScore(
             scores=self.scores,
@@ -268,6 +270,9 @@ class World:
             max_output_tokens=max_output_tokens,
             max_per_session=MAX_PER_SESSION,
             max_per_user=MAX_PER_USER,
+            max_cv_characters=max_cv_characters,
+            model=ModelName("gemini-test"),
+            prompt_version=PromptVersion("1"),
         )
 
     async def ask(self, owner: Owner, pair: ScoringPair, **config: object) -> RequestOutcome:

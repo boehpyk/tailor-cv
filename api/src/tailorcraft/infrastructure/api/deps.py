@@ -121,7 +121,12 @@ from tailorcraft.domain.retention.ports import (
 )
 from tailorcraft.domain.retention.value_objects import RetentionWindow
 from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
-from tailorcraft.domain.scoring.value_objects import MicroUsd, ScoringPrices
+from tailorcraft.domain.scoring.value_objects import (
+    MicroUsd,
+    ModelName,
+    PromptVersion,
+    ScoringPrices,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
@@ -161,6 +166,7 @@ from tailorcraft.infrastructure.identity.token_access import (
 )
 from tailorcraft.infrastructure.intake.committing import CommittingBaseCvRemoval
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
+from tailorcraft.infrastructure.llm.fit_score_prompt import FIT_SCORE_PROMPT_VERSION
 from tailorcraft.infrastructure.llm.fit_scorer import PROMPT_OVERHEAD_CHARACTERS
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.mail.queue import CeleryAccountMailQueue
@@ -789,6 +795,9 @@ def get_request_fit_score(
         max_output_tokens=settings.fit_score_max_output_tokens,
         max_per_session=settings.fit_score_max_per_guest_session,
         max_per_user=settings.fit_score_max_per_user_per_day,
+        max_cv_characters=settings.llm_max_cv_characters,
+        model=ModelName(settings.fit_score_model),
+        prompt_version=PromptVersion(FIT_SCORE_PROMPT_VERSION),
     )
 
 

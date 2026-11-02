@@ -15,7 +15,12 @@ from tailorcraft.domain.scoring.errors import (
 )
 from tailorcraft.domain.scoring.fit_score import FitScore
 from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
-from tailorcraft.domain.scoring.value_objects import MicroUsd, ScoringPrices
+from tailorcraft.domain.scoring.value_objects import (
+    MicroUsd,
+    ModelName,
+    PromptVersion,
+    ScoringPrices,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.events import EventPublisherPort
@@ -92,6 +97,9 @@ class RequestFitScore:
         max_output_tokens: int,
         max_per_session: int,
         max_per_user: int,
+        max_cv_characters: int,
+        model: ModelName,
+        prompt_version: PromptVersion,
     ) -> None:
         self._scores = scores
         self._scorer = scorer
@@ -105,6 +113,9 @@ class RequestFitScore:
         self._max_output_tokens = max_output_tokens
         self._max_per_session = max_per_session
         self._max_per_user = max_per_user
+        self._max_cv_characters = max_cv_characters
+        self._model = model
+        self._prompt_version = prompt_version
 
     async def __call__(self, cmd: RequestFitScoreCommand) -> RequestOutcome:
         owner, pair = cmd.owner, cmd.pair
