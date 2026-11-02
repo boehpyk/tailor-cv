@@ -36,8 +36,9 @@ from tailorcraft.application.scoring.resolve_scoring_pair import ResolveScoringP
 from tailorcraft.domain.identity.ownership import Owner
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
-from tailorcraft.domain.scoring.errors import FitScoreSpendCapReached
+from tailorcraft.domain.scoring.errors import FitScoreSpendCapReached, FitScoringFailed
 from tailorcraft.domain.scoring.fit_score import FitScore
+from tailorcraft.domain.scoring.value_objects import FitScoreFailureReason
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.api.routers._me_responses import (
@@ -217,6 +218,18 @@ async def request_fit_score(
             if isinstance(exc, FitScoreSpendCapReached):
                 # S-10, ADR-0041 decision 6: one line per refusal, the UTC day and nothing else.
                 log.warning("scoring.spend_cap_reached", day=exc.day.isoformat())
+            elif (
+                isinstance(exc, FitScoringFailed)
+                and exc.reason is FitScoreFailureReason.INPUTS_TOO_LARGE
+            ):
+                # The use case refuses before the adapter now, so the adapter's line (the backstop)
+                # no longer fires: the same line and fields here. Counts only.
+                log.info(
+                    "scoring.inputs_too_large",
+                    base_cv_character_count=pair.cv.character_count,
+                    limit=settings.llm_max_cv_characters,
+                    llm_call_skipped=True,
+                )
             if exc.__cause__ is not None:
                 log.error("scoring.settle_failed", error_type=qualified_type(exc.__cause__))
             raise

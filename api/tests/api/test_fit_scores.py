@@ -24,6 +24,7 @@ S-10..15, S-22..29), not from the handlers, whose bodies are `NotImplementedErro
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -79,7 +80,7 @@ from tests.api.me_support import (
 )
 from tests.integration.fakes import FakeFitScorer, RecordingSpendLedger
 from tests.integration.owners import extracted_cv, extraction_failed_cv, pasted_posting
-from tests.integration.scoring.support import THE_GAPS, assessed, usage
+from tests.integration.scoring.support import THE_GAPS, assessed, extracted_cv_with, usage
 
 GUEST_URL = "/api/fit-scores"
 ACCOUNT_URL = "/api/me/fit-scores"
@@ -574,6 +575,44 @@ async def test_a_too_long_cv_with_the_cap_full_is_422_inputs_too_large_not_busy(
 
     assert fake.calls == []
     assert ledger.reservations == []
+
+
+TOO_LARGE_LINE = "scoring.inputs_too_large"
+_CV_MARKER = "Zanzibarquill"
+
+
+async def test_a_too_long_cv_logs_one_inputs_too_large_line_with_counts_and_no_cv_text(
+    client: AsyncClient,
+    app: FastAPI,
+    session: AsyncSession,
+    settings: Settings,
+    who: Who,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The use case refuses before the adapter, so the router is the one place this line comes from.
+    override_settings(app, settings, llm_max_cv_characters=100)
+    fake = scorer(app)
+    at = SystemClock().now() - timedelta(minutes=5)
+    cv = extracted_cv_with(who.owner, at, f"{_CV_MARKER} " * 40)
+    posting = pasted_posting(who.owner, at, marker="p")
+    inputs = Inputs(str(cv.id.value), str(posting.id.value))
+    await SqlAlchemyBaseCvRepository(session).add(cv)
+    await SqlAlchemyJobPostingRepository(session).add(posting)
+    await session.commit()
+
+    with caplog.at_level(logging.DEBUG):
+        answered(await post(client, who, inputs), 422, "inputs_too_large")
+
+    assert fake.calls == []
+    lines = [r for r in caplog.records if TOO_LARGE_LINE in r.getMessage()]
+    assert len(lines) == 1, f"expected one {TOO_LARGE_LINE} line, got {len(lines)}"
+    fields = json.loads(lines[0].getMessage())
+    # Whitespace collapsed and stripped: 40 words, 39 spaces.
+    assert fields["base_cv_character_count"] == len(f"{_CV_MARKER} " * 40) - 1
+    assert fields["limit"] == 100
+    assert fields["llm_call_skipped"] is True
+    for record in caplog.records:
+        assert _CV_MARKER not in f"{record.getMessage()} {record.__dict__}"
 
 
 CAP_LINE = "scoring.spend_cap_reached"
