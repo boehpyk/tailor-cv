@@ -7144,6 +7144,40 @@ cousin of the same problem: two background commits overlapping meant two test ru
 database, and 71 unrelated tests failed at once. Commits go one at a time, and you wait for the
 process to finish.
 
+**The delete that a late arrival undid.** This one took three review rounds to surface, and each fix
+set up the next.
+
+Round 1 found the panel showing the *previous* pair's outcome. Get "This CV is too long to score",
+upload a shorter CV, and the panel still said "too long", with no button, until a reload. The
+mutation's error belonged to the pair it ran for, and nobody had checked which pair that was. Round 2
+found a subtler cousin. Click A, switch to B and click, then switch back to A: A showed an enabled
+button that did nothing. "Checking…" read the one mutation observer, which now followed B. The click
+guard read the cache of all mutations in flight, which still held A. Two sources of truth, and they
+disagreed. The fix made both read the mutation cache, and gave the success path a new job: write the
+score straight into *its own* pair's read with `setQueryData`, so A's score lands even while the
+observer is busy with B.
+
+Round 3 found what that new write had broken. When a guest signs up and claims their work, the claim
+calls `removeQueries(['scoring'])`: the guest's scores, and their gaps, which are drawn from the
+CV, must leave the browser's cache. But suppose a guest `POST` is still waiting on Gemini when the
+claim runs. The cache is cleared. Then the `POST` comes back, `onSuccess` fires, and `setQueryData`
+**creates the entry again**, gaps and all. The old code had invalidated instead, and invalidating a
+key that no longer exists does nothing, so the bug only appeared once the write did.
+
+Think of a house-clearing crew that empties a room, and then a parcel delivered to the old tenant gets
+put back on the shelf. `removeQueries` isn't a rule that says "nothing goes here any more". It's a
+one-off sweep of what's there **at that moment**. Anything still in flight can write behind it. The
+fix (`3c67e65` → `a8255a6`) is one `if`: write only into a read that still exists. The pair on screen,
+or one you just left, still has its query, so the score lands. A pair the claim swept away does not,
+so nothing comes back.
+
+The lesson goes beyond TanStack Query. **A cleanup is a snapshot, not a rule. Before you clear
+something, ask what is still in flight that could put it back.** Slice 2.4 met the same shape in
+the database: a guest tab uploading a CV just after another tab had claimed the session. There, the
+foreign key refused the late write. A browser cache has no foreign keys, so the guard has to be
+written by hand. The pattern to watch for: a fix that swaps "invalidate" for "write" has turned a
+no-op on a missing key into a create.
+
 ## Small decisions worth stealing
 
 - **The score is identified by content, not by id.** Upload the same CV twice and you get the stored
@@ -7170,8 +7204,10 @@ process to finish.
   ramp itself, p95 was 782 ms: reported, not gated, because the per-IP limit makes that burst
   unreachable.
 - **Bundle:** +2.07 kB gzip on the main chunk.
-- **Not yet measured:** whether the score is *stable* (the same pair five times, within 5 points)
-  and what a score really costs. Those need real calls, and the owner approves that spend first.
+- **Stability and cost (T51, real calls, owner-approved):** every pair's range was 0 over five
+  repeats, except one at exactly 5. Matched pairs beat mismatched ones by 40–90 points. A score cost
+  **$0.000846** on average, on `gemini-2.5-flash`, after Flash-Lite turned out to be closed to new users.
+- **A stored-hit `POST`:** p95 23.0 ms. **The `POST`'s own work around the model call:** p95 27.6 ms.
 
 ## What a good engineer takes from this one
 
@@ -7186,7 +7222,8 @@ measurement disagrees, you fix the plan, not the measurement.
 
 ## What's next
 
-T50: read Google's pricing and model pages and correct the settings if anything changed. T51: the
-owner approves the spend, and the real measurement runs (stability, discrimination, cost). If the
-score isn't stable, nothing merges. Then the manual pass in two browsers, `/verify`, and a
-manual-gated release with one additive migration.
+T50 to T53 are done: the price check, the paid measurement, the manual pass (Chromium only) and
+`/verify`, whose three review rounds are the story above. One thing is left before the release:
+Google's bill should show roughly the $0.10 our ledger says we spent. If it doesn't, our price
+settings are wrong, and the cap is wrong by the same ratio. Then comes a manual-gated release with one
+additive migration.
