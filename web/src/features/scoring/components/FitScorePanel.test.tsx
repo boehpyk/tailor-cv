@@ -4,6 +4,7 @@ import { MemoryRouter } from 'react-router';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { authStore, __resetForTests } from '@/features/auth/authStore';
+import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
 import { WorkspaceScopeProvider } from '@/features/scope/WorkspaceScope';
 import { createAppQueryClient } from '@/queryClient';
 import {
@@ -38,6 +39,7 @@ import {
   TRY_AGAIN,
   WORKING,
 } from '../fitScoreCopy';
+import { fitScoreQueryKey } from '../hooks/useFitScore';
 import { FitScorePanel } from './FitScorePanel';
 
 import type { FitScore, FitScorePair } from '../types';
@@ -576,6 +578,41 @@ describe('FitScorePanel (guest only)', () => {
     expect(await screen.findByText(GUEST_LIMIT)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: SIGN_UP_LINK })).toHaveAttribute('href', '/register');
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+});
+
+describe('FitScorePanel (claim during a guest POST)', () => {
+  it('a score that lands after the claim forgot the scoring root is not cached again (ADR-0040)', async () => {
+    let release: (r: Response) => void = () => undefined;
+    const f = stubAccountFetch(
+      routes({ stored: null }, () => new Promise<Response>((resolve) => (release = resolve))),
+    );
+    const client = createAppQueryClient();
+    const { unmount } = render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <WorkspaceScopeProvider scope={GUEST}>
+            <FitScorePanel pair={PAIR} />
+          </WorkspaceScopeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: CHECK_BUTTON }));
+    await vi.waitFor(() => {
+      expect(posts(f)).toHaveLength(1);
+    });
+    unmount();
+    client.removeQueries({ queryKey: ['scoring'] });
+
+    await act(async () => {
+      release(jsonResponse(201, SCORE));
+      await vi.waitFor(() => {
+        expect(client.isMutating()).toBe(0);
+      });
+    });
+
+    expect(client.getQueryData(fitScoreQueryKey(PAIR, GUEST_SCOPE_MAP))).toBeUndefined();
+    expect(client.getQueryCache().find({ queryKey: ['scoring'] })).toBeUndefined();
   });
 });
 

@@ -294,7 +294,8 @@ async def test_post_overhead_outside_the_scorer_is_100_ms_p95(
     scorer = TimedScorer()
     world.app.state.fit_scorer = scorer
     who = await world.account()
-    # Distinct word counts make distinct fingerprints (text is whitespace-normalised): identical content would be a stored hit.
+    # Distinct word counts make distinct fingerprints (text is whitespace-normalised):
+    # identical content would be a stored hit.
     pairs = [
         await seed_pair(engine, who.owner, cv_characters=300 + i, posting_words=40 + i)
         for i in range(POSTS)
