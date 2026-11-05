@@ -71,9 +71,12 @@ describe('the guest session page — AC-33', () => {
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Guest session' })).toBeVisible();
     expect(within(mainEl()).getAllByRole('heading', { level: 1 })).toHaveLength(1);
-    for (const count of ['3', '4', '5', '6']) {
+    for (const count of ['3', '4', '5', '6', '7']) {
       expect(mainEl()).toHaveTextContent(new RegExp(`\\b${count}\\b`));
     }
+    // Slice 5.1 (OQ-5): the fit-score count under its own label, a number and nothing else.
+    const fitTerm = within(mainEl()).getByText('Fit scores', { selector: 'dt' });
+    expect(fitTerm.nextElementSibling).toHaveTextContent(/^7$/);
     expect(mainEl()).toHaveTextContent(/\d{1,2}:\d{2}/);
   });
 
@@ -150,9 +153,10 @@ describe('delete a guest session — AC-34', () => {
 
     const dialog = await openDialog();
 
-    for (const count of ['3', '4', '5', '6']) {
+    for (const count of ['3', '4', '5', '6', '7']) {
       expect(dialog).toHaveTextContent(new RegExp(`\\b${count}\\b`));
     }
+    expect(dialog).toHaveTextContent('Fit scores: 7');
     expect(dialog).toHaveTextContent('before the 24-hour purge');
     expect(dialog).toHaveTextContent('cannot be undone');
     expect(dialog).not.toHaveTextContent('A run still in progress is discarded');

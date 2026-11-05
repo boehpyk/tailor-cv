@@ -49,7 +49,8 @@ root, the poller hook — and six rows of the failure contract with it.
 asked for it.** Consider a disconnect at second eleven of a twelve-second call. Synchronously, the
 event loop discards the response, the money is spent, and *nothing is recorded anywhere* — which is
 precisely the failure ADR-0004 exists to forbid ("a failed run is a recorded state of `TailoringRun`,
-never a 500 with nothing on disk"). Queued, the worker is not attached to the socket: it finishes,
+never a 500 with nothing on disk"). *(Corrected in amendment (d) below: on the stack as it stands, a
+disconnect does not cancel the handler. A shutdown does.)* Queued, the worker is not attached to the socket: it finishes,
 records the outcome, and the user's next poll — or their next page load — finds two documents waiting
 for them. The user paid for those documents. Losing them because a train went into a tunnel is not an
 acceptable answer.
@@ -71,6 +72,9 @@ So this ADR adds a second axis, and the full rule now reads:
 > **Queue the work when it is CPU-bound, _or when its result must outlive the request that asked for
 > it_.**
 
+*(Qualified in amendment (d) below: the second axis applies when losing the result costs more than
+asking again.)*
+
 The two axes are independent. An export is queued for the first reason. A tailoring run is queued for
 the second. Something could be queued for both. Nothing that satisfies neither belongs on a queue —
 that is what stops this from becoming "queue everything", which trades one 500 for a class of bugs
@@ -85,6 +89,8 @@ failed fetch as **nothing at all** — an HTTP error and a paste fallback. Which
 **Neither, because that was never the question.** There is one question, asked at one moment:
 
 > **Was anything spent, and is there an artifact to own?**
+
+*(Answered "yes, and no" for the first time in amendment (e) below.)*
 
 - 1.1 says yes: bytes are on a volume, and the row is the receipt for them.
 - 1.2 says no: a failed fetch holds nothing and cost nothing but a socket.
@@ -505,3 +511,47 @@ boundary fact with a clock, and a TypeScript copy of it would be a second author
   cools down. The cooldown does not grow on repeated failures (ADR-0031, Alternatives).
 
 §6 is unchanged: the worker's retry stays in the adapter, two attempts, invisible to the user.
+
+## Amendment: 2026-10-30, from the plan of slice 5.1 (`fit-score`)
+
+Slice 5.1 awaits an LLM call inside a request (ADR-0040). This ADR decided tailoring, and tailoring
+does not change, so nothing here is overturned: `GeminiLlm`, the queue, the poll and the row all stand.
+But §1's rule and §2's question are written generally, and a fit score fails both as written. So this
+amendment is required, not cosmetic: an exception nobody wrote down would read as a violation.
+
+**(d) §1's second axis has a qualifier: it applies when losing the result costs more than asking
+again.** The rule now reads:
+
+> **Queue the work when it is CPU-bound, _or when its result must outlive the request that asked for
+> it and losing it costs more than asking again_.**
+
+| | Tailoring run | Fit score |
+|---|---|---|
+| Cost of the call | about a cent | a fraction of a cent |
+| What a person loses | twelve seconds, and a document they would edit | a few seconds, and a number |
+| Getting it again | another paid call that writes a different document | one click, and the stored number if it landed |
+| Queued? | yes | no |
+
+**The disconnect in §1 does not happen as described on today's stack.** Every middleware is pure ASGI,
+so a disconnect does not cancel the handler: it runs on, records the outcome and sends to nobody. §1's
+decision stands for tailoring all the same. A shutdown does cancel, a deploy should not cost someone a
+paid document, and this property belongs to today's stack, not to the framework. ADR-0040 holds it with
+a test against a real uvicorn.
+
+**The revisit trigger is in ADR-0040:** the measured cost per score above $0.005, or a lost-score
+complaint.
+
+**(e) §2's question can be answered "yes, and no".** For a failed fit score, money was spent and there
+is no artifact to own. §2's title, *"a run that spends money is always a row"*, is about runs, and a
+score is not a run. What §2 wanted from the row was a receipt, and that still exists: the failed call's
+cost is in the spend ledger (ADR-0041), just not on a row of its own. So the question has one more
+line:
+
+- **Yes and no** (5.1): what was spent is recorded in the ledger, and no row is written, because there
+  is nothing to own and the person who asked is on the socket to be told.
+
+`TailoringFailureReason` stays persisted and `FitScoreFailureReason` is never persisted, for the reason
+§2 gives about `FetchFailureReason`.
+
+§4's rejected *unique partial index* is unaffected: `scoring_fit_score`'s unique constraints
+state a different fact, one assessment per pair (ADR-0040 decision 6).

@@ -138,6 +138,13 @@ export interface WorkspaceStubs {
    * in flight after a test that never awaited it ends.
    */
   readonly exports?: Record<string, (callNumber: number) => Promise<Response>>;
+  /**
+   * `GET /api/fit-scores?base_cv_id=…&job_posting_id=…`, the workspace's fit-score panel (slice
+   * 5.1). Defaults to a resolved `{ fit_score: null }` for the same reason as `exports`: the read
+   * retries, so a rejection would leave backoff timers behind. Its `POST` has no default: a test
+   * that never presses *Check my score* must not send one, and an unexpected one rejects loudly.
+   */
+  readonly fitScore?: () => Promise<Response>;
 }
 
 /**
@@ -194,6 +201,9 @@ export function stubWorkspaceFetch(stubs: WorkspaceStubs): ReturnType<typeof vi.
       const callNumber = (exportsCallCounts.get(id) ?? 0) + 1;
       exportsCallCounts.set(id, callNumber);
       return handler(callNumber);
+    }
+    if (url.startsWith('/api/fit-scores?') && method === 'GET') {
+      return (stubs.fitScore ?? (() => Promise.resolve(jsonResponse(200, { fit_score: null }))))();
     }
     return Promise.reject(new Error(`unhandled fetch: ${method} ${url}`));
   });

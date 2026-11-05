@@ -420,3 +420,48 @@ describe('AccountWorkspace — what it promises (AC-49)', () => {
     expect(document.body.textContent).toContain('24 hours');
   });
 });
+
+// --- Slice 5.1 (T40, OQ-10): the fit-score section, above tailoring --------------------------------
+
+describe('AccountWorkspace — the fit-score section (slice 5.1)', () => {
+  it('sits above tailoring, reads the selected pair with the bearer, and sends no POST', async () => {
+    const fetch = workspace();
+
+    renderWithRouter('/');
+    await ready();
+
+    const section = screen.getByRole('region', { name: 'How well does your CV fit this job?' });
+    // A disabled button satisfies `findByRole` (not_ready, before the lists land): wait for enabled.
+    await waitFor(() => {
+      expect(within(section).getByRole('button', { name: 'Check my score' })).toBeEnabled();
+    });
+    const tailoring = screen.getByRole('region', { name: 'Your tailored CV and cover letter' });
+    expect(section.compareDocumentPosition(tailoring) & 4).toBeTruthy();
+
+    const reads = callsTo(fetch, 'GET', '/api/me/fit-scores');
+    expect(reads).toHaveLength(1);
+    expect(reads[0]?.query.get('base_cv_id')).toBe('saved-cv-1');
+    expect(reads[0]?.query.get('job_posting_id')).toBe(ACCOUNT_POSTING.id);
+    expect(reads[0]?.authorization).toBe(bearerFor(USER_A));
+    expect(callsTo(fetch, 'POST', '/api/me/fit-scores')).toHaveLength(0);
+    expect(callsTo(fetch, 'POST', '/api/fit-scores')).toHaveLength(0);
+  });
+
+  it('with no CV chosen, says what it needs and reads nothing', async () => {
+    const fetch = workspace({
+      'GET /api/me/base-cvs': ok({
+        items: [
+          makeSavedCv({ id: 'cv-a', original_filename: 'a.pdf' }),
+          makeSavedCv({ id: 'cv-b', original_filename: 'b.pdf' }),
+        ],
+      }),
+    });
+
+    renderWithRouter('/');
+    await screen.findByRole('radio', { name: /a\.pdf/ });
+
+    const section = screen.getByRole('region', { name: 'How well does your CV fit this job?' });
+    expect(within(section).getByText('Add your CV and a job posting first.')).toBeInTheDocument();
+    expect(callsTo(fetch, 'GET', '/api/me/fit-scores')).toHaveLength(0);
+  });
+});

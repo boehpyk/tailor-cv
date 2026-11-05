@@ -51,9 +51,9 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
 | Migrations | Alembic | [0007](./adr/0007-persistence-conventions-for-domain-aggregates.md) |
 | Database | PostgreSQL 16 | [0003](./adr/0003-infra-single-vds-compose-traefik.md) |
 | Cache / broker / results | Redis 7 | [0003](./adr/0003-infra-single-vds-compose-traefik.md) |
-| Background work | Celery 5 (Redis broker) behind a `TaskQueuePort` | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
+| Background work | Celery 5 (Redis broker) behind a queue port per context (`TailoringQueuePort`, `ExportQueuePort`, `AccountMailQueuePort`) | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
 | Scheduled work | Celery Beat — the guest-retention purge | [0006](./adr/0006-guest-retention-and-local-file-storage.md) |
-| LLM | Google Gemini API behind an `LlmPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md) |
+| LLM | Google Gemini API: tailoring behind an `LlmPort`, fit scoring on a cheaper model behind a `FitScorerPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md), [0040](./adr/0040-a-fit-score-is-its-own-context-one-stored-assessment-per-owner-and-content-pair-computed-inside-the-request.md) |
 | CV text extraction | `pypdf` / `python-docx` behind a `CvTextExtractorPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md) |
 | Job posting fetch | `httpx` + `trafilatura` behind a `JobPostingFetcherPort` | [0004](./adr/0004-llm-behind-a-port-gemini-first.md) |
 | PDF rendering | WeasyPrint (HTML → PDF), in a Celery worker | [0005](./adr/0005-celery-redis-for-exports-and-purges.md) |
@@ -113,9 +113,10 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    business rules. Domain value objects are frozen `@dataclass`es that validate in `__post_init__`.
 
 2. **Ports keep vendors swappable.** Every external dependency crosses a domain-defined
-   `typing.Protocol` (or ABC): `LlmPort`, `CvTextExtractorPort`, `JobPostingFetcherPort`,
-   `DocumentRendererPort`, `FileStorePort`, `TaskQueuePort`, `Clock`, plus one repository port per
-   aggregate. The concrete adapter lives in `infrastructure/` and is wired in one composition root.
+   `typing.Protocol` (or ABC): `LlmPort`, `FitScorerPort`, `CvTextExtractorPort`,
+   `JobPostingFetcherPort`, `DocumentRendererPort`, `FileStorePort`, `AccountMailPort`, a queue port per
+   context (`TailoringQueuePort`, `ExportQueuePort`, `AccountMailQueuePort`), `Clock`, the
+   `SpendLedgerPort`, plus one repository port per aggregate. The concrete adapter lives in `infrastructure/` and is wired in one composition root.
    This is *why* swapping Gemini for another model is a binding change and not a rewrite (ADR-0004).
 
 3. **Bounded contexts** (initial map — refine as the model sharpens):
@@ -128,6 +129,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    | `export` | rendering a document to PDF/DOCX/MD/TXT; a PDF in one of a small, closed set of checked-in layouts, chosen per export request and recorded on the job ([ADR-0030](./adr/0030-a-pdf-layout-is-a-closed-set-of-checked-in-stylesheets-chosen-per-export.md)) | `ExportJob` |
    | `identity` | accounts, pending registrations, password resets, sessions, tokens, the account mail that proves an address ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)), and the guest → user claim (a policy and a port, no aggregate — [ADR-0025](./adr/0025-a-guests-work-becomes-a-users-by-an-explicit-claim.md)) | `GuestSession`, `User`, `Login` — two principals, no shared base ([ADR-0010](./adr/0010-guest-session-cookie-is-an-opaque-hashed-token.md), [ADR-0020](./adr/0020-a-login-is-a-refresh-token-family-revocation-is-deletion.md)); `PendingRegistration` — not an account: a `User` exists only once its address is proven ([ADR-0027](./adr/0027-an-account-that-has-not-proven-its-address-does-not-exist.md)); `PasswordReset` — addressed, then issued, then deleted ([ADR-0028](./adr/0028-a-password-reset-proves-the-address-and-revokes-every-login.md)) |
    | `tracking` | a registered user's tracked applications — one card per succeeded run they tailored, moved through six stages on a board read through a cross-context query port; registered users only, never guest data; its domain imports no sibling context ([ADR-0029](./adr/0029-application-tracking-is-its-own-context-a-user-only-card-on-one-succeeded-run.md), [ADR-0024 amendment (a)](./adr/0024-a-read-model-that-joins-contexts-is-a-query-port-keyset-paginated.md)) | `TrackedApplication`; `ApplicationBoard` is a read model, not an aggregate |
+   | `scoring` | one owner's estimated fit score for one CV and job posting: computed inside the request by a cheap model behind its own port, stored only on success, identified by content per owner and never changed; every call's cost is reserved in a daily ledger first; its domain imports only `shared` and `identity`'s `Owner` ([ADR-0040](./adr/0040-a-fit-score-is-its-own-context-one-stored-assessment-per-owner-and-content-pair-computed-inside-the-request.md), [ADR-0041](./adr/0041-spend-is-reserved-in-postgres-before-the-call-and-settled-after-it-and-fails-closed.md)) | `FitScore`; the spend ledger is one row per day behind a port, not an aggregate |
    | `retention` | deleting everything an owner has, rows committed then files: the guest 1-day purge on a timer, and account erasure and history-entry deletion on request (each also takes the tracked applications it covers — ADR-0029) (no aggregate — a policy, use cases and ports that *return* their failures) ([ADR-0006](./adr/0006-guest-retention-and-local-file-storage.md), [ADR-0018](./adr/0018-the-guest-purge-is-a-policy-with-no-aggregate.md), [ADR-0023](./adr/0023-a-signed-in-users-tailoring-is-account-data-and-the-workspace-follows-the-credential.md)) | — |
 
    Ubiquitous language: keep a glossary in each context's spec. A **base CV** is never a "resume" in
@@ -187,6 +189,8 @@ A change is **done** only when all of these are green:
 | Export generation success | **> 98 %** without error | PRD §8 |
 | API response (non-LLM, non-export) | < 300 ms p95 | this file |
 | — **named exception:** intake upload + extraction | **< 3 s p95** server-side, files ≤ 10 MB | ADR-0009 |
+| Fit score, click to score | **≤ 8 s p95**, the model's call ≤ 6 s p95, a hard deadline of 14 s inside the 15 s above; a stored score as any non-LLM route | [ADR-0040](./adr/0040-a-fit-score-is-its-own-context-one-stored-assessment-per-owner-and-content-pair-computed-inside-the-request.md) |
+| Fit score spend | **≤ $2 per UTC day**, reserved before each call, failing closed | [ADR-0041](./adr/0041-spend-is-reserved-in-postgres-before-the-call-and-settled-after-it-and-fails-closed.md) |
 | Guest data lifetime | **≤ 24 h**, enforced by a scheduled purge, not by hope | PRD §9 / FR-6 |
 | Uptime signal | `/health/ready` probes Postgres + Redis **and** Celery queue liveness | ADR-0005 |
 

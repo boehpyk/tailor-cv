@@ -28,9 +28,11 @@ from tailorcraft.infrastructure.api.routers import (
     admin_users,
     auth,
     export,
+    fit_scores,
     health,
     intake,
     me_export_jobs,
+    me_fit_scores,
     me_guest_work,
     me_job_postings,
     me_tailoring_runs,
@@ -40,6 +42,7 @@ from tailorcraft.infrastructure.api.routers import (
     tailoring,
 )
 from tailorcraft.infrastructure.identity.password_hasher import Argon2PasswordHasher
+from tailorcraft.infrastructure.llm.fit_scorer import GeminiFitScorer
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
@@ -81,11 +84,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
         app.state.argon2_executor = argon2_executor
         app.state.password_hasher = Argon2PasswordHasher(argon2_executor)
+        # Long-lived for the hasher's reason: its client builds an SSL context, which blocks, so it
+        # happens here and never on a request (AC-22).
+        fit_scorer = GeminiFitScorer(settings)
+        app.state.fit_scorer = fit_scorer
 
         log.info("app.started", env=settings.app_env)
         try:
             yield
         finally:
+            await fit_scorer.aclose()
             await app.state.engine.dispose()
             # By lifespan shutdown uvicorn has drained every request, so nothing is waiting on a
             # hash; `wait=True` lets one already running finish rather than abandoning its thread.
@@ -273,6 +281,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # above: `guest-sessions`, `storage`, `guest-purge` and `orphan-sweep` are not `users` or `access`.
     app.include_router(admin_guests.router)
     app.include_router(admin_retention.router)
+    # `/api/fit-scores` and `/api/me/fit-scores` (slice 5.1) share no prefix with any other router.
+    app.include_router(fit_scores.router)
+    app.include_router(me_fit_scores.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

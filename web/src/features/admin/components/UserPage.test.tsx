@@ -164,7 +164,7 @@ describe('/admin/users/:userId — AC-33', () => {
     expect(screen.queryByText(USER_LOADING)).not.toBeInTheDocument();
   });
 
-  it('the seven counts are a definition list, each number under its own label', async () => {
+  it('the eight counts are a definition list, each number under its own label', async () => {
     serve(ANN);
     open('u-ann');
 
@@ -173,6 +173,10 @@ describe('/admin/users/:userId — AC-33', () => {
       const term = screen.getByText(COUNT_LABELS[key], { selector: 'dt' });
       expect(term.nextElementSibling).toHaveTextContent(new RegExp(`^${String(COUNTS[key])}$`));
     }
+    // Slice 5.1 (OQ-5), named rather than read from the labels it checks: a count, never a score.
+    expect(screen.getByText('Fit scores', { selector: 'dt' }).nextElementSibling).toHaveTextContent(
+      /^8$/,
+    );
   });
 
   it('404 user_not_found: "This account no longer exists." and a link back to the list', async () => {

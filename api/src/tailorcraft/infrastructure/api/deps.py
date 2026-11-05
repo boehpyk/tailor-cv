@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 from collections.abc import AsyncIterator, Callable
 from datetime import timedelta
+from decimal import Decimal
 from typing import Annotated, Final
 
 import redis.asyncio as aioredis
@@ -68,6 +70,9 @@ from tailorcraft.application.retention.list_live_guest_sessions import ListLiveG
 from tailorcraft.application.retention.purge_expired_guest_sessions import PurgeExpiredGuestSessions
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
 from tailorcraft.application.retention.summarize_storage import SummarizeStorage
+from tailorcraft.application.scoring.find_fit_score_for_pair import FindFitScoreForPair
+from tailorcraft.application.scoring.request_fit_score import RequestFitScore
+from tailorcraft.application.scoring.resolve_scoring_pair import ResolveScoringPair
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
@@ -115,6 +120,13 @@ from tailorcraft.domain.retention.ports import (
     OrphanFileScannerPort,
 )
 from tailorcraft.domain.retention.value_objects import RetentionWindow
+from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
+from tailorcraft.domain.scoring.value_objects import (
+    MicroUsd,
+    ModelName,
+    PromptVersion,
+    ScoringPrices,
+)
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
@@ -154,8 +166,14 @@ from tailorcraft.infrastructure.identity.token_access import (
 )
 from tailorcraft.infrastructure.intake.committing import CommittingBaseCvRemoval
 from tailorcraft.infrastructure.intake.extraction import PypdfDocxTextExtractor
+from tailorcraft.infrastructure.llm.fit_score_prompt import FIT_SCORE_PROMPT_VERSION
+from tailorcraft.infrastructure.llm.fit_scorer import PROMPT_OVERHEAD_CHARACTERS
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.mail.queue import CeleryAccountMailQueue
+from tailorcraft.infrastructure.persistence.scoring.spend_ledger import (
+    CommittingSpendLedger,
+    SqlSpendLedger,
+)
 from tailorcraft.infrastructure.posting.address_policy import TargetAddressPolicy
 from tailorcraft.infrastructure.posting.fetching import HttpxTrafilaturaFetcher
 from tailorcraft.infrastructure.rate_limit import RedisFixedWindowRateLimiter
@@ -664,6 +682,126 @@ def get_tailoring_queue(celery: CeleryDep, settings: SettingsDep) -> TailoringQu
 
 
 TailoringQueueDep = Annotated[TailoringQueuePort, Depends(get_tailoring_queue)]
+
+
+# ---------------------------------------------------------------------------------------------
+# scoring (slice 5.1, ADR-0040, ADR-0041).
+# ---------------------------------------------------------------------------------------------
+
+_MICRO_USD_PER_USD: Final = 1_000_000
+
+
+def _micro_usd(dollars: Decimal) -> Decimal:
+    return dollars * _MICRO_USD_PER_USD
+
+
+def fit_score_prices(settings: Settings) -> ScoringPrices:
+    """The `Decimal` settings as the domain's `MicroUsd` per million tokens, **rounded up**: an
+    overstated cost is the safe way to be wrong (ADR-0041). $0.10 is `MicroUsd(100_000)`."""
+    return ScoringPrices(
+        input_per_million=MicroUsd(
+            math.ceil(_micro_usd(settings.fit_score_input_price_usd_per_million))
+        ),
+        output_per_million=MicroUsd(
+            math.ceil(_micro_usd(settings.fit_score_output_price_usd_per_million))
+        ),
+    )
+
+
+def fit_score_daily_cap(settings: Settings) -> MicroUsd:
+    """The day's ceiling, **rounded down**, the same safe direction for a ceiling."""
+    return MicroUsd(math.floor(_micro_usd(settings.fit_score_daily_spend_cap_usd)))
+
+
+def get_fit_scorer(request: Request) -> FitScorerPort:
+    """Binds `FitScorerPort` -> the `GeminiFitScorer` on `app.state`, `get_password_hasher`'s shape:
+    its client builds an SSL context, which must not happen on a request (AC-22). Only the two `POST`
+    routes may reach this (AC-48). The test `app` fixture places a fake, so no test reaches Google."""
+    scorer: FitScorerPort = request.app.state.fit_scorer
+    return scorer
+
+
+FitScorerDep = Annotated[FitScorerPort, Depends(get_fit_scorer)]
+
+
+def get_fit_score_repository(session: SessionDep) -> FitScoreRepository:
+    """Binds `FitScoreRepository`. Deferred import, for `get_tailoring_run_repository`'s reason."""
+    from tailorcraft.infrastructure.persistence.repositories.scoring.fit_score import (
+        SqlAlchemyFitScoreRepository,
+    )
+
+    return SqlAlchemyFitScoreRepository(session)
+
+
+FitScoreRepositoryDep = Annotated[FitScoreRepository, Depends(get_fit_score_repository)]
+
+
+def get_spend_ledger(session: SessionDep) -> SpendLedgerPort:
+    """Binds `SpendLedgerPort` -> `CommittingSpendLedger`, whose commits end transaction A before the
+    call and transaction B after it (plan §0.2). The bare adapter here would hold a connection
+    across the call, which is the one thing this request must not do (AC-19)."""
+    return CommittingSpendLedger(SqlSpendLedger(session), session)
+
+
+SpendLedgerDep = Annotated[SpendLedgerPort, Depends(get_spend_ledger)]
+
+
+def get_fit_score_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """The per-IP limit on new attempts. **Fails closed**, `get_tailoring_rate_limiter`'s reason:
+    this endpoint spends money, and guests can reach it (AC-11, S-12)."""
+    return RedisFixedWindowRateLimiter(redis, namespace="scoring:create", fail_open=False)
+
+
+FitScoreRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_fit_score_rate_limiter)]
+
+
+def get_resolve_scoring_pair(
+    get_base_cv: GetBaseCvDep, get_job_posting: GetJobPostingDep
+) -> ResolveScoringPair:
+    return ResolveScoringPair(get_base_cv, get_job_posting)
+
+
+ResolveScoringPairDep = Annotated[ResolveScoringPair, Depends(get_resolve_scoring_pair)]
+
+
+def get_find_fit_score_for_pair(
+    scores: FitScoreRepositoryDep, resolve_pair: ResolveScoringPairDep
+) -> FindFitScoreForPair:
+    return FindFitScoreForPair(scores, resolve_pair)
+
+
+FindFitScoreForPairDep = Annotated[FindFitScoreForPair, Depends(get_find_fit_score_for_pair)]
+
+
+def get_request_fit_score(
+    scores: FitScoreRepositoryDep,
+    scorer: FitScorerDep,
+    ledger: SpendLedgerDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+    settings: SettingsDep,
+) -> RequestFitScore:
+    """The composition root's conversion point: settings become domain values here, once."""
+    return RequestFitScore(
+        scores=scores,
+        scorer=scorer,
+        ledger=ledger,
+        events=events,
+        clock=clock,
+        prices=fit_score_prices(settings),
+        daily_cap=fit_score_daily_cap(settings),
+        max_attempts=settings.fit_score_max_attempts,
+        prompt_overhead_characters=PROMPT_OVERHEAD_CHARACTERS,
+        max_output_tokens=settings.fit_score_max_output_tokens,
+        max_per_session=settings.fit_score_max_per_guest_session,
+        max_per_user=settings.fit_score_max_per_user_per_day,
+        max_cv_characters=settings.llm_max_cv_characters,
+        model=ModelName(settings.fit_score_model),
+        prompt_version=PromptVersion(FIT_SCORE_PROMPT_VERSION),
+    )
+
+
+RequestFitScoreDep = Annotated[RequestFitScore, Depends(get_request_fit_score)]
 
 
 def get_tailoring_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:

@@ -79,8 +79,9 @@ export const GUEST_SCOPE_MAP: ScopeMap = {
  * - `['posting']` — `['posting', 'jobPostings']`
  * - `['tailoring']` — `['tailoring', 'tailoringRuns']`, `['tailoring', 'tailoringRun', id]`
  * - `['export']` — `['export', 'exportJobs', runId]`
+ * - `['scoring']` — `['scoring', 'fitScore', baseCvId, postingId]` (slice 5.1)
  *
- * A fifth guest feature with its own first segment must be added here, or a claim leaves its cache
+ * A new guest feature with its own first segment must be added here, or a claim leaves its cache
  * behind; a test pins that every guest key builder's first element is in this list (AC-45). Mutation
  * keys share these roots and are untouched by `removeQueries`, which reads the query cache only.
  */
@@ -89,6 +90,7 @@ export const GUEST_QUERY_ROOTS: readonly (readonly [string])[] = [
   ['posting'],
   ['tailoring'],
   ['export'],
+  ['scoring'],
 ];
 
 /**

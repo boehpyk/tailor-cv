@@ -22,7 +22,7 @@ const VALUE = 'font-medium text-slate-900 break-all';
 
 /**
  * One account (AC-33): the email as `<h1>`, its fields, the role read-only with the sentence that
- * says why, and the seven counts as a `<dl>` — each `<dd>` straight after its `<dt>`.
+ * says why, and the eight counts as a `<dl>` — each `<dd>` straight after its `<dt>`.
  * Presentational.
  */
 export function AccountOverview({ user }: AccountOverviewProps): React.JSX.Element {

@@ -404,6 +404,9 @@ class AccountErasureReport:
     job_postings: int
     export_jobs: int
     files: int
+    # Slice 5.1: the account's fit scores, gone by the cascade. No default, unlike the card count below,
+    # so it sits before it: a dataclass field with no default cannot follow one that has one.
+    fit_scores: int
     # Slice 3.1 (T7). A deliberate exception to this class's "no defaults" rule: the default lets the
     # field land before anything fills it, so every existing report stays valid and behaviour is
     # unchanged. The adapter fills it from T17, and `EraseAccount` passes it through from T9.
@@ -428,6 +431,9 @@ class AccountCounts:
     tailoring_runs: int
     job_postings: int
     export_jobs: int
+    # Slice 5.1: the account's fit scores. No default, so it sits before the card count (see
+    # `AccountErasureReport`).
+    fit_scores: int
     # Slice 3.1 (T7): the account's tracked applications (cards). Defaulted so the field lands before
     # anything fills it; `AccountDataPort.count_account`'s adapter fills it from T17. A count, never a
     # tracking type.

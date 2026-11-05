@@ -82,6 +82,7 @@ def _claimed(files: tuple[FileRef, ...] = ()) -> ClaimedGuestWork:
         job_postings=2,
         tailoring_runs=3,
         export_jobs=4,
+        fit_scores=5,
         working_copies_dropped=len(files),
         files_to_unlink=files,
     )
@@ -191,6 +192,7 @@ async def test_a_live_session_is_locked_then_transferred_then_each_file_unlinked
         job_postings=2,
         tailoring_runs=3,
         export_jobs=4,
+        fit_scores=5,
         working_copies_dropped=3,
         files_unlinked=3,
         unlink_failures=(),

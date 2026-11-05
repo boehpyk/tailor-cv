@@ -74,6 +74,7 @@ _GUEST_OWNED_TABLES: Final[tuple[str, ...]] = (
     "posting_job_posting",
     "tailoring_run",
     "export_job",
+    "scoring_fit_score",
 )
 
 
@@ -137,11 +138,11 @@ async def test_deleting_a_guest_session_cascades_to_its_base_cvs(
 async def test_guest_session_id_is_not_null_indexed_and_cascades_to_identity_guest_session(
     session: AsyncSession, table_name: str
 ) -> None:
-    """AC-2. For each of the four guest-owned tables: `guest_session_id` is the first column of at
+    """AC-2. For each of the guest-owned tables: `guest_session_id` is the first column of at
     least one index (the cascade delete and, on `intake_base_cv`/`export_job`, a real application
     query both depend on it existing) and carries a foreign key to `identity_guest_session.id` with
     `ON DELETE CASCADE` (`confdeltype = 'c'`). Since 2.2 (`intake_base_cv`) and 2.3 (the other
-    three, ADR-0023) the column is nullable on all four — the row can be user-owned — and
+    three, ADR-0023) the column is nullable on all of them — the row can be user-owned — and
     `ck_<table>_exactly_one_owner` carries the "exactly one owner" invariant the `NOT NULL` used to.
 
     This is a proof, not a discovery: the task list and CLAUDE.md both record that every column here

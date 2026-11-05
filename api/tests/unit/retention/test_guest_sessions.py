@@ -36,6 +36,7 @@ def _summary(**changes: object) -> GuestSessionSummary:
         job_postings=0,
         tailoring_runs=0,
         export_jobs=0,
+        fit_scores=0,
     )
     return replace(base, **changes)  # type: ignore[arg-type]
 

@@ -13,8 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class GuestWorkClaimResponse(BaseModel):
-    """`{"base_cvs", "job_postings", "tailoring_runs", "export_jobs", "working_copies_dropped"}` —
-    exactly these five keys (AC-24), each a non-negative count."""
+    """`{"base_cvs", "job_postings", "tailoring_runs", "export_jobs", "fit_scores",
+    "working_copies_dropped"}` — exactly these six keys (AC-24, slice 5.1's AC-34), each a
+    non-negative count."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -22,4 +23,5 @@ class GuestWorkClaimResponse(BaseModel):
     job_postings: int = Field(ge=0)
     tailoring_runs: int = Field(ge=0)
     export_jobs: int = Field(ge=0)
+    fit_scores: int = Field(ge=0)
     working_copies_dropped: int = Field(ge=0)

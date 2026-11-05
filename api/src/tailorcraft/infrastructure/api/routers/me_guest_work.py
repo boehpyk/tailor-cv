@@ -16,7 +16,7 @@ amendment (d)).
 No body, no query parameters: nothing to validate, so no 422 is possible (C-19). Every response the
 handler builds carries `Cache-Control: no-store`.
 
-**Logging** (AC-46): one `identity.guest_work_claimed` line per claim, the user id and the five counts
+**Logging** (AC-46): one `identity.guest_work_claimed` line per claim, the user id and the six counts
 — never the guest session id, the token, its hash, a file key or a path — and one
 `identity.guest_work_file_unlink_failed` warning per failed unlink, by exception class name (C-31).
 """
@@ -144,6 +144,7 @@ async def claim_guest_work(
         job_postings=report.job_postings,
         tailoring_runs=report.tailoring_runs,
         export_jobs=report.export_jobs,
+        fit_scores=report.fit_scores,
         working_copies_dropped=report.working_copies_dropped,
     )
     for error_type in report.unlink_failures:
@@ -154,5 +155,6 @@ async def claim_guest_work(
         job_postings=report.job_postings,
         tailoring_runs=report.tailoring_runs,
         export_jobs=report.export_jobs,
+        fit_scores=report.fit_scores,
         working_copies_dropped=report.working_copies_dropped,
     )

@@ -55,6 +55,7 @@ SUMMARY_KEYS = {
     "job_postings",
     "tailoring_runs",
     "export_jobs",
+    "fit_scores",
 }
 ITEM_404 = {
     "get_cv": "base_cv_not_found",

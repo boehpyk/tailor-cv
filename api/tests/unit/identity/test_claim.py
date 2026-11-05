@@ -25,6 +25,7 @@ _COUNT_FIELDS = (
     "job_postings",
     "tailoring_runs",
     "export_jobs",
+    "fit_scores",
     "working_copies_dropped",
 )
 _ROW_COUNT_FIELDS = ("base_cvs", "job_postings", "tailoring_runs", "export_jobs")
@@ -43,6 +44,7 @@ def _claimed(**overrides: Any) -> ClaimedGuestWork:
         "job_postings": 2,
         "tailoring_runs": 3,
         "export_jobs": 4,
+        "fit_scores": 5,
         "working_copies_dropped": 2,
         "files_to_unlink": (_ref(1), _ref(2)),
     }
@@ -56,6 +58,7 @@ def _report(**overrides: Any) -> GuestWorkClaimReport:
         "job_postings": 2,
         "tailoring_runs": 3,
         "export_jobs": 4,
+        "fit_scores": 5,
         "working_copies_dropped": 2,
         "files_unlinked": 2,
         "unlink_failures": (),
@@ -77,9 +80,10 @@ def test_claimed_guest_work_holds_what_it_was_given() -> None:
         claimed.job_postings,
         claimed.tailoring_runs,
         claimed.export_jobs,
+        claimed.fit_scores,
         claimed.working_copies_dropped,
         claimed.files_to_unlink,
-    ) == (1, 2, 3, 4, 2, (_ref(1), _ref(2)))
+    ) == (1, 2, 3, 4, 5, 2, (_ref(1), _ref(2)))
 
 
 def test_a_claim_that_moved_and_dropped_nothing_is_valid() -> None:
@@ -88,6 +92,7 @@ def test_a_claim_that_moved_and_dropped_nothing_is_valid() -> None:
         job_postings=0,
         tailoring_runs=0,
         export_jobs=0,
+        fit_scores=0,
         working_copies_dropped=0,
         files_to_unlink=(),
     )
@@ -183,10 +188,11 @@ def test_nothing_is_all_zeros() -> None:
         report.job_postings,
         report.tailoring_runs,
         report.export_jobs,
+        report.fit_scores,
         report.working_copies_dropped,
         report.files_unlinked,
         report.unlink_failures,
-    ) == (0, 0, 0, 0, 0, 0, ())
+    ) == (0, 0, 0, 0, 0, 0, 0, ())
 
 
 def test_nothing_equals_a_report_constructed_with_every_count_zero() -> None:
@@ -195,6 +201,7 @@ def test_nothing_equals_a_report_constructed_with_every_count_zero() -> None:
         job_postings=0,
         tailoring_runs=0,
         export_jobs=0,
+        fit_scores=0,
         working_copies_dropped=0,
         files_unlinked=0,
         unlink_failures=(),
@@ -241,8 +248,9 @@ def test_of_maps_the_four_row_counts_and_the_dropped_count() -> None:
         report.job_postings,
         report.tailoring_runs,
         report.export_jobs,
+        report.fit_scores,
         report.working_copies_dropped,
-    ) == (1, 2, 3, 4, 2)
+    ) == (1, 2, 3, 4, 5, 2)
 
 
 def test_of_counts_every_unlink_as_done_when_none_failed() -> None:
@@ -295,6 +303,7 @@ def test_of_a_claim_that_moved_no_rows_but_dropped_a_copy_claimed_nothing() -> N
         job_postings=0,
         tailoring_runs=0,
         export_jobs=0,
+        fit_scores=0,
         working_copies_dropped=1,
         files_to_unlink=(_ref(1),),
     )

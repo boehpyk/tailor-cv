@@ -91,6 +91,7 @@ async def test_happy_path_collects_keys_then_deletes_then_unlinks_each_in_that_o
         job_postings=0,
         export_jobs=0,
         files=3,
+        fit_scores=0,
     )
     assert order == [
         "files_of_account",
@@ -218,6 +219,7 @@ async def test_the_report_counts_the_accounts_history_and_every_file_it_tried() 
         job_postings=2,
         export_jobs=3,
         files=5,
+        fit_scores=0,
     )
 
 

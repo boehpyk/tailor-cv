@@ -38,9 +38,10 @@ class GuestSessionSummary:
     job_postings: int
     tailoring_runs: int
     export_jobs: int
+    fit_scores: int
 
     def __post_init__(self) -> None:
-        for name in ("base_cvs", "job_postings", "tailoring_runs", "export_jobs"):
+        for name in ("base_cvs", "job_postings", "tailoring_runs", "export_jobs", "fit_scores"):
             if getattr(self, name) < 0:
                 raise InvariantViolated(f"{name} must be >= 0")
         # `utcoffset() is None`, not `tzinfo is None`: a tzinfo may decline to give an offset.

@@ -6,7 +6,8 @@ Every **live** guest session, one keyset page at a time, in **one statement** (t
            (SELECT count(*) FROM intake_base_cv      WHERE guest_session_id = s.id),
            (SELECT count(*) FROM posting_job_posting WHERE guest_session_id = s.id),
            (SELECT count(*) FROM tailoring_run       WHERE guest_session_id = s.id),
-           (SELECT count(*) FROM export_job          WHERE guest_session_id = s.id)
+           (SELECT count(*) FROM export_job          WHERE guest_session_id = s.id),
+           (SELECT count(*) FROM scoring_fit_score   WHERE guest_session_id = s.id)
     FROM identity_guest_session s
     WHERE expires_at > :as_of
       AND (expires_at, id) < (:cursor_expires_at, :cursor_id)   -- only when a cursor is given
@@ -14,10 +15,10 @@ Every **live** guest session, one keyset page at a time, in **one statement** (t
     LIMIT :limit + 1
 
 **Never `token_hash`** (AC-28): the columns are named, and that one is the only column on the table
-that could authenticate a request. Nothing from the four child tables but a count either — no file
+that could authenticate a request. Nothing from the five child tables but a count either — no file
 key, no filename, no text a stranger typed.
 
-**Correlated counts, not `LEFT JOIN … GROUP BY`**: four joins on one session multiply each other's
+**Correlated counts, not `LEFT JOIN … GROUP BY`**: five joins on one session multiply each other's
 rows, and each subquery is one probe of the child table's existing `guest_session_id` index, over at
 most 51 sessions a page.
 
@@ -48,6 +49,7 @@ from tailorcraft.infrastructure.persistence.mapping.identity.guest_session impor
 )
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
+from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
@@ -71,7 +73,7 @@ def _count_owned(table: Table) -> ColumnElement[int]:
 
 def _summaries(
     as_of: datetime,
-) -> Select[tuple[GuestSessionId, datetime, datetime, int, int, int, int]]:
+) -> Select[tuple[GuestSessionId, datetime, datetime, int, int, int, int, int]]:
     return select(
         _s.id,
         _s.created_at,
@@ -80,11 +82,12 @@ def _summaries(
         _count_owned(job_posting_table).label("job_postings"),
         _count_owned(tailoring_run_table).label("tailoring_runs"),
         _count_owned(export_job_table).label("export_jobs"),
+        _count_owned(fit_score_table).label("fit_scores"),
     ).where(_s.expires_at > as_of)
 
 
 def _summary(
-    row: Row[tuple[GuestSessionId, datetime, datetime, int, int, int, int]],
+    row: Row[tuple[GuestSessionId, datetime, datetime, int, int, int, int, int]],
 ) -> GuestSessionSummary:
     return GuestSessionSummary(
         session_id=row.id,
@@ -94,6 +97,7 @@ def _summary(
         job_postings=row.job_postings,
         tailoring_runs=row.tailoring_runs,
         export_jobs=row.export_jobs,
+        fit_scores=row.fit_scores,
     )
 
 

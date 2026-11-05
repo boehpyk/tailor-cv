@@ -230,7 +230,7 @@ def run_from_cli(
     """
     settings = get_settings()
     configure_logging(settings)
-    _route_logs_to_stderr()
+    route_logs_to_stderr()
     try:
         corpus = load_corpus(corpus_dir, max_cv_characters=settings.llm_max_cv_characters)
         pairs = corpus.select(only)
@@ -451,7 +451,7 @@ def _non_whitespace(text: str) -> int:
     return sum(1 for char in text if not char.isspace())
 
 
-def _route_logs_to_stderr() -> None:
+def route_logs_to_stderr() -> None:
     """`configure_logging` writes to stdout, which is right for a container and wrong here: the report
     is stdout, and `make eval > report.txt` should capture the report and nothing else."""
     for handler in logging.getLogger().handlers:

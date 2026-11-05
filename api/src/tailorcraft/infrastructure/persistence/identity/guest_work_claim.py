@@ -2,7 +2,7 @@
 §0.2, §3).
 
 A claim moves every row a guest session owns to a user, in one transaction. The invariant (*every row
-of a session changes owner together*) spans four contexts' tables, so it is held here, by one
+of a session changes owner together*) spans five contexts' tables, so it is held here, by one
 transaction over Core statements, and not by any aggregate (ADR-0025 decision 8, ADR-0018's argument
 for the purge). After `lock_session`, `transfer` runs exactly these, in this order:
 
@@ -12,6 +12,13 @@ UPDATE intake_base_cv      SET guest_session_id = NULL, user_id = :u
 UPDATE posting_job_posting SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
 UPDATE tailoring_run       SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
 UPDATE export_job          SET guest_session_id = NULL, user_id = :u WHERE guest_session_id = :s;
+UPDATE scoring_fit_score g SET guest_session_id = NULL, user_id = :u
+ WHERE g.guest_session_id = :s
+   AND g.base_cv_id NOT IN (SELECT id FROM intake_base_cv                   -- not a working copy's
+                             WHERE guest_session_id = :s AND copied_from_base_cv_id IS NOT NULL)
+   AND NOT EXISTS (SELECT 1 FROM scoring_fit_score u                        -- not a pair the user has
+                    WHERE u.user_id = :u AND u.cv_fingerprint = g.cv_fingerprint
+                      AND u.posting_fingerprint = g.posting_fingerprint);
 DELETE FROM intake_base_cv WHERE guest_session_id = :s RETURNING file_key;   -- what is left: copies
 DELETE FROM identity_guest_session WHERE id = :s;                            -- exactly one row
 ```
@@ -27,6 +34,14 @@ DELETE FROM identity_guest_session WHERE id = :s;                            -- 
   made from one is claimed and dangles — history derives "CV deleted" at read time. A base CV has
   exactly one file, its `file_key`; export files hang off export jobs, which are claimed, never off
   a base CV, so there is no derived key to collect here.
+- **A fit score moves unless it is a working copy's or a twin** (slice 5.1, AC-34). Both leftovers go
+  with the session's `DELETE`, by cascade, so they need no statement. The working-copy clause relies
+  on the order above: the copies are the session's only copied rows until their own `DELETE`.
+- **A twin that commits during the claim** is invisible to `NOT EXISTS`, so
+  `uq_scoring_fit_score_user_pair` fires. That is not a user FK, so it propagates: the router rolls the
+  whole claim back and `main.py`'s `SQLAlchemyError` handler answers the generic 503 (S-31). A retry
+  sees the twin and skips it. Locking the user row would stall every insert for that user to beat a
+  same-pair, same-instant collision.
 - **The session's `DELETE` is the purge's signal** (§0.5): the purge unlinks a session's files only
   when its own `DELETE` removed the row, and after this commits it removes nothing.
 
@@ -56,7 +71,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, exists, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.util import identity_key
@@ -74,6 +89,7 @@ from tailorcraft.infrastructure.persistence.mapping.identity.guest_session impor
 )
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
+from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
@@ -81,8 +97,8 @@ from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run impo
 if TYPE_CHECKING:
     from tailorcraft.domain.identity.ports import GuestWorkClaimPort
 
-# Recognised by name, never by message (`violated_constraint`). The four `fk_<table>_user_id_
-# identity_user` names are `registry.py`'s convention, and each is already load-bearing in its
+# Recognised by name, never by message (`violated_constraint`). The `fk_<table>_user_id_identity_user`
+# names are `registry.py`'s convention, and each is already load-bearing in its
 # repository's `add`; renaming one is a breaking change here too.
 _USER_FKS: Final = frozenset(
     {
@@ -90,6 +106,7 @@ _USER_FKS: Final = frozenset(
         "fk_posting_job_posting_user_id_identity_user",
         "fk_tailoring_run_user_id_identity_user",
         "fk_export_job_user_id_identity_user",
+        "fk_scoring_fit_score_user_id_identity_user",
     }
 )
 
@@ -119,7 +136,7 @@ class SqlAlchemyGuestWorkClaim:
         return result.scalar_one_or_none()
 
     async def transfer(self, session_id: GuestSessionId, user_id: UserId) -> ClaimedGuestWork:
-        """The module docstring's six statements; counts from `rowcount`, keys from `RETURNING`.
+        """The module docstring's seven statements; counts from `rowcount`, keys from `RETURNING`.
 
         Raises `UserNotFound` when a `user_id` FK refuses a re-key (the account was erased first);
         the caller rolls the transaction back and nothing has moved. Raises `InvariantViolated` if
@@ -149,6 +166,25 @@ class SqlAlchemyGuestWorkClaim:
             export_jobs = await connection.execute(
                 update(export_job_table)
                 .where(export_job_table.c.guest_session_id == session_id)
+                .values(guest_session_id=None, user_id=user_id)
+            )
+            users_score = fit_score_table.alias("users_score")
+            fit_scores = await connection.execute(
+                update(fit_score_table)
+                .where(
+                    fit_score_table.c.guest_session_id == session_id,
+                    fit_score_table.c.base_cv_id.not_in(
+                        select(base_cv_table.c.id).where(
+                            base_cv_table.c.guest_session_id == session_id,
+                            base_cv_table.c.copied_from_base_cv_id.is_not(None),
+                        )
+                    ),
+                    ~exists().where(
+                        users_score.c.user_id == user_id,
+                        users_score.c.cv_fingerprint == fit_score_table.c.cv_fingerprint,
+                        users_score.c.posting_fingerprint == fit_score_table.c.posting_fingerprint,
+                    ),
+                )
                 .values(guest_session_id=None, user_id=user_id)
             )
         except IntegrityError as exc:
@@ -192,6 +228,7 @@ class SqlAlchemyGuestWorkClaim:
             job_postings=job_postings.rowcount,
             tailoring_runs=tailoring_runs.rowcount,
             export_jobs=export_jobs.rowcount,
+            fit_scores=fit_scores.rowcount,
             working_copies_dropped=len(dropped_keys),
             files_to_unlink=tuple(dropped_keys),
         )

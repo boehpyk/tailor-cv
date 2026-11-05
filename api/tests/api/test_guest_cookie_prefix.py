@@ -59,6 +59,7 @@ ZEROS = {
     "job_postings": 0,
     "tailoring_runs": 0,
     "export_jobs": 0,
+    "fit_scores": 0,
     "working_copies_dropped": 0,
 }
 

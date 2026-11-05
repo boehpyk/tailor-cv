@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __resetForTests, authStore } from '@/features/auth/authStore';
@@ -22,7 +22,7 @@ function renderApp(): void {
  * T44 — structure and markup coverage for `App.tsx`'s landmark and heading wiring (task-list T44,
  * "the landmark and heading wiring in `App.tsx`"). Not behavioural: every query underneath is left
  * permanently pending (a `fetch` stub that never resolves, as `TailorPanel.test.tsx`'s loading-state
- * test already does), because the four `<section>`s and their headings render unconditionally —
+ * test already does), because the `<section>`s and their headings render unconditionally —
  * before any list has settled — so nothing here needs a network response to exist. What is under
  * test is section/heading pairing and document order, which the 26 behavioural `TailorPanel` tests
  * do not touch at all: they render `<TailorPanel />` in isolation, never inside `<App />`.
@@ -83,15 +83,49 @@ describe('App', () => {
   it('renders the tailoring landmark as a section distinct from the base-CV and job-posting landmarks', () => {
     renderApp();
 
-    // Three named regions, not one merged landmark a screen-reader user would have to page through
-    // as a single block.
+    // Named regions, not one merged landmark a screen-reader user would have to page through as a
+    // single block. Slice 5.1 (T40) adds the fit-score section: four regions on `/`, four `h2`s.
     expect(screen.getByRole('region', { name: 'Your base CV' })).toBeInTheDocument();
     expect(
       screen.getByRole('region', { name: 'The job you are applying for' }),
     ).toBeInTheDocument();
     expect(
+      screen.getByRole('region', { name: 'How well does your CV fit this job?' }),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole('region', { name: 'Your tailored CV and cover letter' }),
     ).toBeInTheDocument();
+    expect(within(screen.getByRole('main')).getAllByRole('region')).toHaveLength(4);
+    expect(
+      within(screen.getByRole('main'))
+        .getAllByRole('heading', { level: 2 })
+        .map((heading) => heading.textContent),
+    ).toEqual([
+      'Your base CV',
+      'The job you are applying for',
+      'How well does your CV fit this job?',
+      'Your tailored CV and cover letter',
+    ]);
+  });
+
+  it('T40 (OQ-10): places the fit-score section after the inputs and before tailoring', () => {
+    renderApp();
+
+    const DOCUMENT_POSITION_FOLLOWING = 4;
+    const postingHeading = screen.getByRole('heading', { name: 'The job you are applying for' });
+    const fitHeading = screen.getByRole('heading', {
+      level: 2,
+      name: 'How well does your CV fit this job?',
+    });
+    const tailoringHeading = screen.getByRole('heading', {
+      name: 'Your tailored CV and cover letter',
+    });
+    expect(
+      postingHeading.compareDocumentPosition(fitHeading) & DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      fitHeading.compareDocumentPosition(tailoringHeading) & DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   // -----------------------------------------------------------------------------------------

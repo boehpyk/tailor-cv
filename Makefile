@@ -177,6 +177,9 @@ eval: ## Run the prompt eval set against the real Gemini API, by hand (ADR-0004)
 	@echo "This calls the real API and costs money. It is not part of 'make check'."
 	$(API) python -m tailorcraft.cli eval-prompts
 
+eval.score: ## Fit-score measurement: prints the plan and upper bound; confirm=1 spends it (AC-50)
+	$(API) python -m tailorcraft.cli eval-fit-scores $(if $(confirm),--confirm-spend)
+
 #-----------------------------------------------------------
 # Git hooks
 #-----------------------------------------------------------
@@ -200,4 +203,4 @@ help: ## Show this help
 
 .PHONY: up.dev mail.ui layout.previews down.dev up.prod down.prod logs shell migrate migration.make migration.down deps \
         db.dump purge.dry purge fmt lint types imports test.db test test.twice web.types web.lint \
-        web.format web.format.check web.test web.build web.check check eval compose.mail.check nginx.referrer.check hooks.install help
+        web.format web.format.check web.test web.build web.check check eval eval.score compose.mail.check nginx.referrer.check hooks.install help

@@ -170,6 +170,7 @@ async def get_user(
             job_postings=counts.job_postings,
             export_jobs=counts.export_jobs,
             tracked_applications=counts.tracked_applications,
+            fit_scores=counts.fit_scores,
         ),
     )
     await db.commit()

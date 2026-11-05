@@ -183,6 +183,7 @@ async def test_ac16_two_claims_of_one_session_are_one_200_with_counts_and_one_20
         "job_postings": before["posting_job_posting"],
         "tailoring_runs": before["tailoring_run"],
         "export_jobs": before["export_job"],
+        "fit_scores": 0,
         "working_copies_dropped": 0,
     }
     assert bodies[1] == dict.fromkeys(bodies[0], 0)

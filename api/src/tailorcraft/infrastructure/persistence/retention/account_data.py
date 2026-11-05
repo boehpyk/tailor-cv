@@ -49,6 +49,7 @@ from tailorcraft.infrastructure.persistence.mapping.identity.pending_registratio
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
+from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
 from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
     tailoring_run_table,
 )
@@ -201,7 +202,8 @@ class SqlAlchemyAccountData:
 
         Since slice 3.1, `tracked_applications` counts the account's cards (AC-28) — one more scalar
         subquery, over `ix_tracking_application_user_id_stage_changed_at`'s leading `user_id`. A
-        card has no file, so `files` is unchanged by it.
+        card has no file, so `files` is unchanged by it. Likewise `fit_scores` since slice 5.1, over
+        `uq_scoring_fit_score_user_pair`'s leading `user_id`.
         """
 
         def count_of(table_user_id: ColumnElement[UserId | None]) -> ScalarSelect[int]:
@@ -230,6 +232,7 @@ class SqlAlchemyAccountData:
                     count_of(job_posting_table.c.user_id).label("job_postings"),
                     count_of(export_job_table.c.user_id).label("export_jobs"),
                     count_of(tracked_application_table.c.user_id).label("tracked_applications"),
+                    count_of(fit_score_table.c.user_id).label("fit_scores"),
                 ).where(user_table.c.id == user_id)
             )
         ).one_or_none()
@@ -243,6 +246,7 @@ class SqlAlchemyAccountData:
             job_postings=row.job_postings,
             export_jobs=row.export_jobs,
             tracked_applications=row.tracked_applications,
+            fit_scores=row.fit_scores,
         )
 
 

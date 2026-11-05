@@ -17,7 +17,8 @@ must be textually inside one specific file".
 
 from __future__ import annotations
 
-from typing import assert_never
+from datetime import timedelta
+from typing import Final, assert_never
 
 from fastapi import HTTPException, status
 
@@ -76,6 +77,23 @@ from tailorcraft.domain.retention.errors import (
     HistoryEntryInProgress,
     InvalidGuestSessionCursor,
 )
+from tailorcraft.domain.scoring.errors import (
+    BaseCvNotReadyForScoring,
+    FitScoreSpendCapReached,
+    FitScoringFailed,
+    InvalidFingerprint,
+    InvalidFitAssessment,
+    InvalidFitGap,
+    InvalidMicroUsd,
+    InvalidModelName,
+    InvalidPromptVersion,
+    InvalidScorePercent,
+    InvalidScoringPrices,
+    InvalidScoringText,
+    InvalidScoringUsage,
+    TooManyFitScores,
+)
+from tailorcraft.domain.scoring.value_objects import FitScoreFailureReason
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -157,6 +175,23 @@ BASE_CV_NOT_EXTRACTED_DETAIL = {
 }
 """409 for a CV whose text was never extracted: 1.3's `BaseCvNotReadyForTailoring` (G-8). Slice 2.2's
 `SavedBaseCvNotCopyable` (S-28) shared it until 2.4 retired the copy route (ADR-0022 amendment (d))."""
+
+BASE_CV_NOT_SCOREABLE_DETAIL = {
+    "code": "base_cv_not_extracted",
+    "message": "We couldn't read that CV, so there's nothing to score. Upload a different file.",
+}
+"""409 for scoring's `BaseCvNotReadyForScoring` (S-24): tailoring's code, because the client's branch
+is the same, and a sentence of its own, because tailoring's says "nothing to tailor"."""
+
+SCORING_FAILED_DETAIL = {
+    "code": "scoring_failed",
+    "message": "We couldn't get a score. Please try again.",
+}
+"""503 for a failed call, and for anything in `scoring` that should never have reached a route."""
+
+# ADR-0014, amendment of 2026-10-09: a fixed cooldown after `llm_rate_limited`. A constant, not a
+# setting: no operator has a reason to tune it. Here because scoring's 429 is built in this module.
+PROVIDER_BUSY_COOLDOWN: Final = timedelta(seconds=60)
 
 ORIGIN_NOT_ALLOWED_DETAIL = {
     "code": "origin_not_allowed",
@@ -381,6 +416,25 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     # genuine bug, and a real 500 is the honest answer to it, exactly as this function's docstring
     # says. (The document value objects' errors used to be on this list; since 1.4 the `PUT`
     # router constructs those value objects from the client's text, so they are mapped below.)
+
+    if isinstance(
+        exc,
+        FitScoringFailed
+        | TooManyFitScores
+        | BaseCvNotReadyForScoring
+        | FitScoreSpendCapReached
+        | InvalidScoringText
+        | InvalidFingerprint
+        | InvalidScorePercent
+        | InvalidFitGap
+        | InvalidFitAssessment
+        | InvalidMicroUsd
+        | InvalidModelName
+        | InvalidPromptVersion
+        | InvalidScoringUsage
+        | InvalidScoringPrices,
+    ):
+        return _scoring_error_to_http(exc)
 
     if isinstance(exc, TailoringRunNotFound):
         # G-29: also what `GetTailoringRun` raises (`from TailoringRunNotOwnedBySession`)
@@ -691,6 +745,83 @@ def account_error_to_http_exception(
             },
         )
     return domain_error_to_http_exception(exc)
+
+
+def _scoring_error_to_http(exc: DomainError) -> HTTPException:
+    """Map one `scoring` `DomainError` to its status and `code` (slice 5.1, technical plan §4).
+
+    Fixed sentences only: nothing here quotes a CV, a posting or a provider. Both credentials share
+    this, and a limit's `retry_not_before` (`None` only for a guest) picks the sentence.
+    """
+    if isinstance(exc, FitScoringFailed):
+        return _fit_scoring_failure_to_http(exc.reason)
+    if isinstance(exc, TooManyFitScores):
+        message = (
+            f"You've used your {exc.limit} free checks. Sign up to check more."
+            if exc.retry_not_before is None
+            else f"You've reached the limit of {exc.limit} checks in 24 hours."
+        )
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "too_many_fit_scores",
+                "message": message,
+                "limit": exc.limit,
+                # A string: this dict goes straight to `JSONResponse`, which has no datetime encoder.
+                "retry_not_before": (
+                    None if exc.retry_not_before is None else exc.retry_not_before.isoformat()
+                ),
+            },
+        )
+    if isinstance(exc, BaseCvNotReadyForScoring):
+        return HTTPException(status.HTTP_409_CONFLICT, detail=BASE_CV_NOT_SCOREABLE_DETAIL)
+    if isinstance(exc, FitScoreSpendCapReached):
+        # S-10. A 503 holds nothing on the client (ADR-0031 §6). "Busy", never "out of money".
+        return HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "scoring_busy", "message": "Scoring is busy right now."},
+        )
+    # A value object refusing. `InvalidScoringText` is believed unreachable (plan's corrections), and
+    # the rest would mean a bad row or a bad setting: nothing the caller can fix, and never a bare 500.
+    return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=SCORING_FAILED_DETAIL)
+
+
+def _fit_scoring_failure_to_http(reason: FitScoreFailureReason) -> HTTPException:
+    """S-1 to S-9. Closed by `assert_never`, so a new reason is a `mypy` error naming it here."""
+    match reason:
+        case FitScoreFailureReason.LLM_RATE_LIMITED:
+            # S-2. The 429 contract, so the client's existing hold applies (ADR-0031).
+            seconds = int(PROVIDER_BUSY_COOLDOWN.total_seconds())
+            return HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={
+                    "code": "rate_limited",
+                    "message": f"Scoring is busy. Try again in {seconds} seconds.",
+                },
+                headers={"Retry-After": str(seconds)},
+            )
+        case FitScoreFailureReason.LLM_REFUSED:
+            return HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "code": "scoring_refused",
+                    "message": "We couldn't score this CV against this job.",
+                },
+            )
+        case FitScoreFailureReason.INPUTS_TOO_LARGE:
+            return HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "inputs_too_large", "message": "This CV is too long to score."},
+            )
+        case (
+            FitScoreFailureReason.LLM_UNAVAILABLE
+            | FitScoreFailureReason.LLM_TIMED_OUT
+            | FitScoreFailureReason.LLM_OUTPUT_INVALID
+            | FitScoreFailureReason.LLM_ERROR
+        ):
+            return HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=SCORING_FAILED_DETAIL)
+        case _:
+            assert_never(reason)
 
 
 def _identity_error_to_http(exc: DomainError) -> HTTPException:

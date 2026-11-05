@@ -6,8 +6,8 @@ between the two principals, and the `Owner` type it rewrites lives in `ownership
 `retention` was considered and rejected: retention *deletes* what an owner has; a claim *keeps* it.
 
 **No aggregate.** An aggregate protects an invariant its own methods can enforce. The claim's
-invariant is *every row of a session changes owner together*, and it spans four contexts' tables
-(`intake`, `posting`, `tailoring`, `export`). Nothing in this process can hold that. **One transaction
+invariant is *every row of a session changes owner together*, and it spans five contexts' tables
+(`intake`, `posting`, `tailoring`, `export`, `scoring`). Nothing in this process can hold that. **One transaction
 in one adapter** does, behind `GuestWorkClaimPort`, as ADR-0018 argued for the purge. The one domain
 rule the claim applies, `GuestSession.is_expired`, stays on `GuestSession`, where it is applied
 rather than restated.
@@ -62,6 +62,7 @@ class ClaimedGuestWork:
     job_postings: int
     tailoring_runs: int
     export_jobs: int
+    fit_scores: int
     working_copies_dropped: int
     files_to_unlink: tuple[FileRef, ...]
 
@@ -73,6 +74,7 @@ class ClaimedGuestWork:
                 "job_postings": self.job_postings,
                 "tailoring_runs": self.tailoring_runs,
                 "export_jobs": self.export_jobs,
+                "fit_scores": self.fit_scores,
                 "working_copies_dropped": self.working_copies_dropped,
             },
         )
@@ -94,6 +96,7 @@ class GuestWorkClaimReport:
     job_postings: int
     tailoring_runs: int
     export_jobs: int
+    fit_scores: int
     working_copies_dropped: int
     files_unlinked: int
     unlink_failures: tuple[str, ...]
@@ -106,6 +109,7 @@ class GuestWorkClaimReport:
                 "job_postings": self.job_postings,
                 "tailoring_runs": self.tailoring_runs,
                 "export_jobs": self.export_jobs,
+                "fit_scores": self.fit_scores,
                 "working_copies_dropped": self.working_copies_dropped,
                 "files_unlinked": self.files_unlinked,
             },
@@ -119,6 +123,7 @@ class GuestWorkClaimReport:
             job_postings=0,
             tailoring_runs=0,
             export_jobs=0,
+            fit_scores=0,
             working_copies_dropped=0,
             files_unlinked=0,
             unlink_failures=(),
@@ -139,6 +144,7 @@ class GuestWorkClaimReport:
             job_postings=claimed.job_postings,
             tailoring_runs=claimed.tailoring_runs,
             export_jobs=claimed.export_jobs,
+            fit_scores=claimed.fit_scores,
             working_copies_dropped=claimed.working_copies_dropped,
             files_unlinked=len(claimed.files_to_unlink) - len(failed),
             unlink_failures=failed,
@@ -147,6 +153,8 @@ class GuestWorkClaimReport:
     @property
     def claimed_anything(self) -> bool:
         """Whether any of the four row counts is above zero (dropped working copies do not count).
+
+        A fit score is not one of the four: it travels with a CV and a posting, which are.
 
         A dropped working copy is discarded, not claimed (ADR-0022 amendment (d)), so a claim that
         only dropped copies must not be announced as having moved work.

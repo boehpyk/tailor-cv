@@ -78,6 +78,9 @@ Used by:
   `discard` on the run, export-job and posting fakes (the rows those two model going), and
   `FakeAccountDataPort`'s `export_files_by_user` / `history_by_user` (`EraseAccount`'s widened
   report). Every addition is backward-compatible: 2.2's callers pass none of the new arguments.
+- Slice 5.1's application tests (T15 — `tests/integration/scoring/`): `FakeFitScoreRepository`,
+  `FakeFitScorer` and `RecordingSpendLedger`, appended at the end of this module. They share an
+  optional `journal` so the order of the ports' calls is a list equality. Purely additive.
 """
 
 from __future__ import annotations
@@ -86,7 +89,7 @@ import asyncio
 import copy
 import hashlib
 from collections.abc import Awaitable, Callable, Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import NamedTuple, Protocol
 from uuid import UUID, uuid4
 
@@ -152,6 +155,17 @@ from tailorcraft.domain.posting.value_objects import (
 )
 from tailorcraft.domain.retention.errors import AccountNotFound
 from tailorcraft.domain.retention.value_objects import AccountCounts, DeletedHistoryEntry
+from tailorcraft.domain.scoring.errors import FitScoringFailed
+from tailorcraft.domain.scoring.fit_score import FitScore
+from tailorcraft.domain.scoring.value_objects import (
+    AssessedFit,
+    CvFingerprint,
+    CvForScoring,
+    FitScoreId,
+    MicroUsd,
+    PostingFingerprint,
+    PostingForScoring,
+)
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -1201,6 +1215,7 @@ class FakeAccountDataPort:
             job_postings=history.job_postings,
             export_jobs=len(export_files),
             tracked_applications=self._tracked_applications_by_user.get(user_id, 0),
+            fit_scores=0,
         )
 
 
@@ -1966,3 +1981,174 @@ class InMemoryApplicationBoardQuery:
         )
         self.last_board = board
         return board
+
+
+# --- Scoring (slice 5.1, T15) --------------------------------------------------------------------
+#
+# `FakeFitScoreRepository`, `FakeFitScorer` and `RecordingSpendLedger` are the three scoring ports
+# (`domain/scoring/ports.py`), used by `tests/integration/scoring/`. They share one optional
+# `journal`: a plain list each appends a fixed word to when its port method is called
+# (`scored_at_since`, `reserve`, `assess`, `store`, `settle`, and the test's publisher `publish`).
+# That list is how "reserved before the call, settled after it" becomes a list equality rather than
+# an end-state guess.
+
+
+class FakeFitScoreRepository:
+    """In-memory `FitScoreRepository`, faithful where the real adapter is.
+
+    - `store` is `INSERT … ON CONFLICT DO NOTHING` then a re-read: a second score for the same owner
+      and pair stores nothing and **returns the winner's row** (ADR-0040's two-tab rule).
+    - `scored_at_since` is **exclusive** and **oldest first**, scoped to one owner; `None` counts every
+      score (the port's docstring). `since_calls` records what it was asked.
+    - `store_raises` is an error raised by `store` in place of storing (the refusals S-25 to S-27, or a
+      database failure): nothing is written.
+
+    `seed` places a row without logging, so arrangement never shows up as the use case's behaviour. A
+    seeded row must hold no pending event.
+    """
+
+    def __init__(
+        self, *, journal: list[str] | None = None, store_raises: Exception | None = None
+    ) -> None:
+        self._rows: list[FitScore] = []
+        self._journal = journal
+        self._store_raises = store_raises
+        self.since_calls: list[tuple[Owner, datetime | None]] = []
+        self.find_calls = 0
+        self.store_calls = 0
+
+    def seed(self, score: FitScore) -> None:
+        self._rows.append(score)
+
+    def all(self) -> list[FitScore]:
+        return list(self._rows)
+
+    def next_identity(self) -> FitScoreId:
+        return FitScoreId(value=uuid4())
+
+    async def store(self, score: FitScore) -> FitScore:
+        if self._journal is not None:
+            self._journal.append("store")
+        self.store_calls += 1
+        if self._store_raises is not None:
+            raise self._store_raises
+        for row in self._rows:
+            if (
+                row.owner == score.owner
+                and row.cv_fingerprint == score.cv_fingerprint
+                and row.posting_fingerprint == score.posting_fingerprint
+            ):
+                return row
+        self._rows.append(score)
+        return score
+
+    async def find_for_pair(
+        self, owner: Owner, cv_fingerprint: CvFingerprint, posting_fingerprint: PostingFingerprint
+    ) -> FitScore | None:
+        self.find_calls += 1
+        for row in self._rows:
+            if (
+                row.owner == owner
+                and row.cv_fingerprint == cv_fingerprint
+                and row.posting_fingerprint == posting_fingerprint
+            ):
+                return row
+        return None
+
+    async def scored_at_since(self, owner: Owner, since: datetime | None) -> Sequence[datetime]:
+        if self._journal is not None:
+            self._journal.append("scored_at_since")
+        self.since_calls.append((owner, since))
+        return sorted(
+            row.scored_at
+            for row in self._rows
+            if row.owner == owner and (since is None or row.scored_at > since)
+        )
+
+
+class FakeFitScorer:
+    """`FitScorerPort` that returns a fixed `AssessedFit` or raises a fixed `FitScoringFailed`, one
+    instance per test. `calls` is every `(cv, posting)` it was asked about.
+
+    `on_call` is a synchronous hook run the instant `assess` starts (before the outcome), which is
+    how a test snapshots the ledger at that moment or stages a rival's store. `block=True` makes
+    `assess` wait forever after `started` is set, so a test can cancel the request while it is
+    suspended in the call.
+    """
+
+    def __init__(
+        self,
+        outcome: AssessedFit | FitScoringFailed,
+        *,
+        journal: list[str] | None = None,
+        on_call: Callable[[], None] | None = None,
+        block: bool = False,
+    ) -> None:
+        self._outcome = outcome
+        self._journal = journal
+        self._on_call = on_call
+        self._block = block
+        self.calls: list[tuple[CvForScoring, PostingForScoring]] = []
+        self.started = asyncio.Event()
+
+    async def assess(self, cv: CvForScoring, posting: PostingForScoring) -> AssessedFit:
+        if self._journal is not None:
+            self._journal.append("assess")
+        self.calls.append((cv, posting))
+        self.started.set()
+        if self._on_call is not None:
+            self._on_call()
+        if self._block:
+            await asyncio.Event().wait()
+        if isinstance(self._outcome, FitScoringFailed):
+            raise self._outcome
+        return self._outcome
+
+
+class RecordingSpendLedger:
+    """`SpendLedgerPort` with the real arithmetic: `try_reserve` adds unless that passes the cap,
+    `settle` replaces the reservation with the actual cost, floored at zero, on the day it is given
+    **if that day has a figure**; with none it changes nothing, as the adapter's `UPDATE` does.
+
+    `spent` is the figure per day. `reservations` and `settlements` are every call's arguments, in
+    order, **including calls that then raised**. `reserve_raises` / `settle_raises` are the database
+    failing at that point (S-14, S-16).
+    """
+
+    def __init__(
+        self,
+        *,
+        journal: list[str] | None = None,
+        reserve_raises: Exception | None = None,
+        settle_raises: Exception | None = None,
+    ) -> None:
+        self._journal = journal
+        self._reserve_raises = reserve_raises
+        self._settle_raises = settle_raises
+        self.spent: dict[date, int] = {}
+        self.reservations: list[tuple[date, MicroUsd, MicroUsd]] = []
+        self.settlements: list[tuple[date, MicroUsd, MicroUsd]] = []
+
+    async def try_reserve(self, day: date, amount: MicroUsd, cap: MicroUsd) -> bool:
+        if self._journal is not None:
+            self._journal.append("reserve")
+        self.reservations.append((day, amount, cap))
+        if self._reserve_raises is not None:
+            raise self._reserve_raises
+        total = self.spent.get(day, 0) + amount.value
+        if total > cap.value:
+            return False
+        self.spent[day] = total
+        return True
+
+    async def settle(self, day: date, reserved: MicroUsd, actual: MicroUsd) -> None:
+        if self._journal is not None:
+            self._journal.append("settle")
+        self.settlements.append((day, reserved, actual))
+        if self._settle_raises is not None:
+            raise self._settle_raises
+        if day not in self.spent:
+            # The adapter's `UPDATE` finds no row and changes nothing; creating an entry here hid a
+            # settle on the wrong day (T20).
+            return
+        self.spent[day] = max(self.spent[day] + actual.value - reserved.value, 0)

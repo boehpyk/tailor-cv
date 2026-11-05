@@ -1,7 +1,12 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup } from '@testing-library/react';
+import { cleanup, configure } from '@testing-library/react';
 import { afterEach } from 'vitest';
+
+// `findBy*` and `waitFor` give up after 1 s by default, which a worker starved of CPU can miss in a
+// correct test: a full run under load failed 5 tests, in different files each time. This only
+// lengthens the wait before a failure; a test that passes still returns as soon as it can.
+configure({ asyncUtilTimeout: 5000 });
 
 // React Testing Library does not unmount between tests on its own under Vitest. Without this, a
 // component from a previous test is still in the document and `getByText` finds two matches — which

@@ -39,11 +39,12 @@ export function sessionSummary(
     id: SESSION_ID,
     created_at: '2026-10-13T10:00:00Z',
     expires_at: '2026-10-14T10:00:00Z',
-    // Four different numbers (none a date part), so a count wired to the wrong label fails.
+    // Five different numbers (none a date part), so a count wired to the wrong label fails.
     base_cvs: 3,
     job_postings: 4,
     tailoring_runs: 5,
     export_jobs: 6,
+    fit_scores: 7,
     ...overrides,
   };
 }

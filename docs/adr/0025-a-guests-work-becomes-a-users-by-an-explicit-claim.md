@@ -168,3 +168,50 @@ router logs counts and never the session id beside the user id.
 - **No migration.** Every CHECK, cascade and `guest_session_id` index the claim needs exists already;
   the slice asserts that by reading the catalogue, not by trusting comments.
 - **Accounts can sit above a cap**, bounded per claim and by the limiter, with the trigger above.
+
+## Amendment: 2026-10-30, from the plan of slice 5.1 (`fit-score`)
+
+Slice 5.1 adds a fifth owned table, `scoring_fit_score` (ADR-0040, ADR-0022 (e)). The Consequence above
+foresaw this, and the catalogue test turns red until it is done. All eight decisions stand, with the
+changes below.
+
+**The claim is now seven statements, and one of them does not move every row.** A narrow exception to
+decision 3's *"everything the session owns"*:
+
+```sql
+-- After the four UPDATEs. Working copies are still guest-owned here, so the subquery finds exactly them.
+UPDATE scoring_fit_score g SET guest_session_id = NULL, user_id = :u
+ WHERE g.guest_session_id = :s
+   AND g.base_cv_id NOT IN (SELECT id FROM intake_base_cv
+                             WHERE guest_session_id = :s AND copied_from_base_cv_id IS NOT NULL)
+   AND NOT EXISTS (SELECT 1 FROM scoring_fit_score u
+                    WHERE u.user_id = :u AND u.cv_fingerprint = g.cv_fingerprint
+                      AND u.posting_fingerprint = g.posting_fingerprint);
+```
+
+- **A score on a working copy is never claimed.** It is a judgement of a CV some account keeps, possibly
+  another person's. This is decision 3's rule on working copies, carried through to what was derived from
+  them.
+- **A score whose pair the user already holds is not claimed.** The user's stays, so a claim never
+  replaces a number they have seen, and the unique constraint is never asked to choose.
+- **No score is deleted by name.** Whatever the `UPDATE` leaves on the session goes with the session's own
+  `DELETE`, by cascade, in the same transaction.
+- **The response gains `fit_scores`**, counted from the statement's `rowcount`. `ClaimedGuestWork` and the
+  report gain it too. The offer's copy does not name scores: they travel with the work it does name.
+
+**A claim can now fail on a concurrent write, and that is a new answer beside decision 2's.** If the user
+stores the same pair between this statement's snapshot and its write, `uq_scoring_fit_score_user_pair`
+fires. It is translated by name to `GuestWorkClaimConflict`: the whole claim rolls back, the answer is
+**503**, everything stays guest-owned, the cookie is not cleared, and a retry finds the twin and succeeds.
+`FOR UPDATE` on the user row would avoid it, and would stall every insert for that user to beat a
+same-pair, same-instant collision. Rejected.
+
+**Decision 5's table gains one row.**
+
+| Actor | Outcome against a claim |
+|---|---|
+| A score being stored | a guest's: its FK waits for the session lock, the session is gone ⇒ 401, the answer is lost and the ledger settled. A user's on the same pair: first wins, as above |
+
+**Decision 6 needs no change.** The table has no `version`, and a score in flight is not a row yet.
+**Decision 7 holds:** claimed scores may leave a user above the ten counted in 24 hours, since each keeps
+its original `scored_at`. **Decision 8's *"four contexts' tables"*** now reads five.

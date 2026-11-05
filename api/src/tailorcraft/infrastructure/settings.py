@@ -11,6 +11,7 @@ a module global.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Final, Literal
@@ -437,6 +438,34 @@ class Settings(BaseSettings):
     # It lives here rather than in a value object because "how much fits" is a fact about THIS model
     # and moves when the model does, which is exactly what an adapter's configuration is for.
     llm_max_cv_characters: int = 25_000
+
+    # -- Fit scoring's model call (slice 5.1, ADR-0040) -----------------------
+    # Apart from `gemini_model`, because a cheap judgement is not a rewrite. The CV bound and the key
+    # are shared with tailoring. All defaulted, so the box's `.env` needs no edit. Flash, not
+    # Flash-Lite: T51 found `gemini-2.5-flash-lite` refused to new users (404); the owner's fallback
+    # (2026-11-01) is the tailoring model, already proven on the key, with thinking off.
+    fit_score_model: str = "gemini-2.5-flash"
+    # Per attempt, under the hard deadline below. 8 + 1 + 8 is over 14 on purpose: a second attempt
+    # gets what is left, and the deadline keeps the request inside the 15-second budget.
+    fit_score_request_timeout_seconds: float = 8.0
+    fit_score_total_deadline_seconds: int = 14
+    # Total attempts, not retries. Capped at 2 so "invalid output is retried at most once" (AC-24) is
+    # true of every configuration. The reservation multiplies by it (ADR-0041 decision 2).
+    fit_score_max_attempts: int = Field(default=2, ge=1, le=2)
+    fit_score_retry_backoff_seconds: float = 1.0
+    fit_score_max_output_tokens: int = 512
+    # USD per million tokens, `gemini-2.5-flash` paid tier: Google's pricing page (updated 2026-10-30,
+    # read 2026-11-01). A wrong price makes the cap wrong by that ratio. Above zero at startup (AC-18).
+    fit_score_input_price_usd_per_million: Decimal = Field(default=Decimal("0.30"), gt=0)
+    fit_score_output_price_usd_per_million: Decimal = Field(default=Decimal("2.50"), gt=0)
+    # Per UTC day. `0` is legal and means always busy: the off switch (AC-18). Unchanged by the move
+    # to Flash, so at Flash's prices it covers roughly 3x fewer scores than it did at Flash-Lite's.
+    fit_score_daily_spend_cap_usd: Decimal = Field(default=Decimal("2"), ge=0)
+    # Stored scores, counted in Postgres. A user's window is a rolling 24 hours (OQ-1).
+    fit_score_max_per_guest_session: int = Field(default=3, ge=1)
+    fit_score_max_per_user_per_day: int = Field(default=10, ge=1)
+    # New attempts per client IP, guests and users alike. Fails closed: this spends money.
+    fit_score_rate_limit_per_ip_per_hour: int = Field(default=10, ge=1)
 
     # -- Tailoring rate limits, caps & queue (slice 1.3) ----------------------
     # This endpoint costs MONEY per call and is open to guests, so its limiter is constructed with

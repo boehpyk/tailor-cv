@@ -210,3 +210,36 @@ erases the account; they are never guest data.**
 Guest data may now go **before** 24 hours, when an operator erases one session from `/admin`
 (ADR-0035), through the purge's own per-session step: rows committed, then files, as §2 says. The
 24-hour bound itself is unchanged — nothing keeps guest data longer.
+
+## Amendment: 2026-10-30, from the plan of slice 5.1 (`fit-score`)
+
+Slice 5.1 adds fit scores (ADR-0040): a whole-number estimate and up to three gaps, which are short text
+derived from a CV and so are PII. They are guest data or account data depending on the owner.
+
+The letter (g) is absent on purpose: it is held by ADR-0039, a backups decision that has not landed, so
+that its text need not change when it does. When it lands, it must count this table as owned data.
+
+**(h) A fit score lives as long as its owner's promise, and dies earlier with its CV or posting.**
+
+| Trigger | What goes |
+|---|---|
+| Guest purge (≤ 24 h), or an admin deleting a guest session | The rows, by FK cascade from `identity_guest_session`. **No new purge code** |
+| The claim (ADR-0025's amendment) | The rows move and become kept data under (e). A score on a working copy, or on a pair the user already holds, goes with the session's cascade |
+| Account erasure, from the CLI, `/admin` or self-service | The rows, by FK cascade from `identity_user`, under the row lock (c) already holds. `erase-account` counts them |
+| Deleting a saved CV, self-service or `/admin` | The user's rows with that `base_cv_id`, in the transaction that deletes the CV |
+| Deleting a history entry, when its posting goes with it | The user's rows with that `job_posting_id`, in the same transaction. A posting kept because another entry uses it keeps its scores |
+
+- **This differs from (d) on purpose.** Deleting a saved CV does not reach a history entry, because a
+  tailored document is separately owned and may still be being sent. A score is a judgement of that CV
+  and has no meaning without it. The rule is by row id, even if the same text lives under another row:
+  privacy over cache, and that duplicate's next check pays again.
+- **No files.** A score is one row, so §2's order has nothing to unlink and the orphan sweep is unaffected.
+- **Spared by schema, as in (a) and (d).** A user-owned score has no guest session, so the purge cannot
+  select it, and a test with existing rows proves it.
+- **Stated where it happens (§5).** The panel says, for a guest, that guest CVs and scores are deleted
+  after 24 hours; and, for an account, *"Your score is saved until you delete this CV or your
+  account."* (OQ-15, corrected 2026-10-30: no route deletes a posting on its own, so the sentence
+  names only what a user can delete. A posting that leaves with a history entry still takes its
+  scores, as the table says.) The claim's offer does not name scores: they travel with the work it does name.
+- **The spend ledger (ADR-0041) is not part of this.** It holds a date and a number, no personal data,
+  and it survives every deletion, which is what lets the cap survive the purge.

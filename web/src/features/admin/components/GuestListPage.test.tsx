@@ -85,7 +85,7 @@ describe('the guest list — AC-32', () => {
     });
   });
 
-  it('a row links to its session page and shows the four counts and the expiry time', async () => {
+  it('a row links to its session page and shows the five counts and the expiry time', async () => {
     open();
 
     const main = screen.getByRole('main');
@@ -96,9 +96,11 @@ describe('the guest list — AC-32', () => {
     });
     const row = link.closest('tr, li');
     expect(row).not.toBeNull();
-    for (const count of ['3', '4', '5', '6']) {
+    for (const count of ['3', '4', '5', '6', '7']) {
       expect(row).toHaveTextContent(new RegExp(`\\b${count}\\b`));
     }
+    // Slice 5.1 (OQ-5): fit scores are a count with its own column, never a score.
+    expect(within(main).getByRole('columnheader', { name: 'Fit scores' })).toBeInTheDocument();
     expect(row).toHaveTextContent(/\d{1,2}:\d{2}/);
     expect(screen.getAllByText(/expires at/i).length).toBeGreaterThan(0);
   });

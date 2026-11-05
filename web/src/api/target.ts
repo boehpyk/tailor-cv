@@ -26,6 +26,8 @@ export interface ApiTarget {
    * (`?limit=1`, AC-40), because an account's postings accumulate with its history.
    */
   readonly latestJobPostingsPath: string;
+  /** The fit-score collection (slice 5.1): `POST` to score a pair, `GET ?base_cv_id=&job_posting_id=` to read it. */
+  readonly fitScoresPath: string;
   /**
    * `'required'` for account data — every request carries the bearer; `null` for a guest's — no
    * request carries one, and the `__Host-tc_guest` cookie authorizes it.
@@ -39,6 +41,7 @@ export const GUEST_API_TARGET: ApiTarget = {
   exportJobsPath: '/api/export-jobs',
   jobPostingsPath: '/api/job-postings',
   latestJobPostingsPath: '/api/job-postings',
+  fitScoresPath: '/api/fit-scores',
   auth: null,
 };
 
@@ -51,6 +54,7 @@ export const ACCOUNT_API_TARGET: ApiTarget = {
   exportJobsPath: '/api/me/export-jobs',
   jobPostingsPath: '/api/me/job-postings',
   latestJobPostingsPath: '/api/me/job-postings?limit=1',
+  fitScoresPath: '/api/me/fit-scores',
   auth: 'required',
 };
 

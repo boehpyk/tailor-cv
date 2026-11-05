@@ -573,6 +573,7 @@ def _summary(summary: GuestSessionSummary) -> AdminGuestSessionSummary:
         job_postings=summary.job_postings,
         tailoring_runs=summary.tailoring_runs,
         export_jobs=summary.export_jobs,
+        fit_scores=summary.fit_scores,
     )
 
 

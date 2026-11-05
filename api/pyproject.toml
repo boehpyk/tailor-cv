@@ -42,10 +42,10 @@ dependencies = [
     # .github/workflows/ci.yml, in the same commit — the WeasyPrint lesson, where the import
     # succeeds and the first *use* fails, in the container nobody is watching.
     "trafilatura>=2.0",
-    # The Google Gemini SDK — the first (and so far only) adapter behind `LlmPort`, added by the
-    # slice that first asks a model for anything. It is imported in exactly ONE file,
-    # `infrastructure/llm/gemini.py`; ADR-0004's "swapping providers is one adapter and one binding"
-    # is true only while that stays so, which is why `google` is in the forbidden lists of BOTH
+    # The Google Gemini SDK — the adapters behind `LlmPort` and `FitScorerPort`, added by the slice
+    # that first asks a model for anything. It is imported only under `infrastructure/llm/`;
+    # ADR-0004's "swapping providers is two adapters and two bindings" is true only while that
+    # stays so, which is why `google` is in the forbidden lists of BOTH
     # import-linter contracts below (see the note there) rather than left to code review.
     #
     # Wheels all the way down on cp313 — no apt package, nothing to mirror into

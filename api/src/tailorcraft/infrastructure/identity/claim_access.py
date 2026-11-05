@@ -56,7 +56,7 @@ class CommittingGuestWorkClaim:
         return await self._inner.lock_session(token_hash)
 
     async def transfer(self, session_id: GuestSessionId, user_id: UserId) -> ClaimedGuestWork:
-        """The inner six statements, **then commit** — the whole reason this class exists."""
+        """The inner seven statements, **then commit** — the whole reason this class exists."""
         claimed = await self._inner.transfer(session_id, user_id)
         await self._session.commit()
         return claimed

@@ -1,12 +1,13 @@
-"""`GeminiLlm` — the `LlmPort` adapter, and **the only file in this repository that imports the
-Gemini SDK.**
+"""`GeminiLlm` — the `LlmPort` adapter. **Nothing outside `infrastructure/llm/` imports the Gemini
+SDK**, and `fit_scorer.py` is the only other module here that does (ADR-0004's 2026-10-30 amendment).
 
 That is a gate, not a convention: `google` is in the forbidden module list of *both* the domain and
 the application import-linter contracts, as the bare namespace package rather than `google.genai`
-(the narrower string is rejected outright by import-linter). If a second module under `api/src/` ever
+(the narrower string is rejected outright by import-linter). If a module outside this package ever
 imports it, the port has stopped being a boundary and become a rename — `LlmPort` mentions no Gemini,
 no HTTP, no JSON, no timeout and no retry count precisely so that swapping the provider is a change
-to one file rather than to the business model (ADR-0004).
+to two adapters rather than to the business model (ADR-0004). `classify_api_error`, `qualified_type`
+and `elapsed_ms` are public because `fit_scorer.py` shares them.
 
 **This is not a guarded egress — the host is fixed and first-party, so ADR-0012 does not attach.** A
 reader arriving from `infrastructure/posting/fetching.py` will otherwise look for an address policy
@@ -201,7 +202,7 @@ def build_generate_config(settings: Settings) -> genai_types.GenerateContentConf
         # says "0 is DISABLED. -1 is AUTOMATIC ... model dependent", and the real async path sends it
         # as `generationConfig.thinkingConfig.thinking_budget = 0`. "Model dependent" is the warning
         # for whoever changes `gemini_model`: a model that rejects a zero budget answers 400, which
-        # `_classify_api_error` leaves to the floor as `llm_error` on every run — revisit this line
+        # `classify_api_error` leaves to the floor as `llm_error` on every run — revisit this line
         # in the same commit as the swap.
         thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
     )
@@ -353,7 +354,7 @@ class GeminiLlm:
                 failure_reason="llm_timed_out",
                 attempt=counter.value,
                 error_type="builtins.TimeoutError",
-                duration_ms=_elapsed_ms(started_at),
+                duration_ms=elapsed_ms(started_at),
                 deadline_seconds=self._settings.llm_total_deadline_seconds,
                 deadline="total",
             )
@@ -458,17 +459,17 @@ class GeminiLlm:
             # Already in the domain's vocabulary: `LlmRefused` from `raw_completion_from_response`,
             # or whatever a stub raised. Logged here rather than at each raise site so every failure
             # leaving this method has produced exactly one `llm.call_failed` line.
-            self._log_failure(failure.reason.value, attempt, _qualified_type(failure), started_at)
+            self._log_failure(failure.reason.value, attempt, qualified_type(failure), started_at)
             raise
         except genai_errors.APIError as exc:
             # The SDK's own error tree: `ClientError` (4xx) and `ServerError` (5xx), both carrying a
             # numeric `code` and a gRPC-style `status`. Classified rather than caught per subclass,
             # because the interesting distinctions (429, UNAVAILABLE) cut across that split.
-            translated = _classify_api_error(exc)
+            translated = classify_api_error(exc)
             if translated is None:
                 self._log_floor(attempt, exc, started_at)
                 raise LlmError() from None
-            self._log_failure(translated.reason.value, attempt, _qualified_type(exc), started_at)
+            self._log_failure(translated.reason.value, attempt, qualified_type(exc), started_at)
             raise translated from None
         except httpx.TimeoutException:
             # A per-phase transport timeout — connect, read, write or pool. **Not a subclass of the
@@ -491,7 +492,7 @@ class GeminiLlm:
             # exceptions through untouched (measured against the installed google-genai, not
             # assumed), and the builtin `ConnectionError` is included so a future transport swap
             # still lands on the right reason rather than on the floor.
-            self._log_failure("llm_unavailable", attempt, _qualified_type(exc), started_at)
+            self._log_failure("llm_unavailable", attempt, qualified_type(exc), started_at)
             raise LlmUnavailable() from None
         except Exception as exc:
             # **THE FLOOR** (step 10), load-bearing rather than defensive habit. `LlmPort.tailor`
@@ -510,7 +511,7 @@ class GeminiLlm:
         # Deliberately outside the timed block: `duration_ms` is the MODEL's share of the 15-second
         # budget (the technical plan's budget table attributes it to Google), and parsing is our own
         # sub-5-millisecond string work accounted for separately.
-        duration_ms = _elapsed_ms(started_at)
+        duration_ms = elapsed_ms(started_at)
 
         # Step 7 — parse AND re-validate. A schema in the request is a request, not a guarantee.
         try:
@@ -599,7 +600,7 @@ class GeminiLlm:
             await client.aio.aclose()
             client.close()
         except Exception as exc:
-            log.warning("llm.client_close_failed", error_type=_qualified_type(exc))
+            log.warning("llm.client_close_failed", error_type=qualified_type(exc))
 
     # -- logging ---------------------------------------------------------------------------------
 
@@ -623,14 +624,14 @@ class GeminiLlm:
             failure_reason=failure_reason,
             attempt=attempt,
             error_type=error_type,
-            duration_ms=_elapsed_ms(started_at),
+            duration_ms=elapsed_ms(started_at),
             **extra,
         )
 
     def _log_floor(self, attempt: int, exc: Exception, started_at: float) -> None:
         """The floor's line. Separate only so the two privacy rules have one place to be stated:
         fully-qualified type, never the message, never `exc_info`."""
-        self._log_failure("llm_error", attempt, _qualified_type(exc), started_at)
+        self._log_failure("llm_error", attempt, qualified_type(exc), started_at)
 
     def _log_invalid_output(
         self, invalid: LlmOutputInvalid, attempt: int, duration_ms: int, completion: RawCompletion
@@ -653,13 +654,13 @@ class GeminiLlm:
             _EVENT_FAILED,
             failure_reason=invalid.reason.value,
             attempt=attempt,
-            error_type=_qualified_type(invalid),
+            error_type=qualified_type(invalid),
             duration_ms=duration_ms,
             **extra,
         )
 
 
-def _classify_api_error(exc: genai_errors.APIError) -> TailoringFailed | None:
+def classify_api_error(exc: genai_errors.APIError) -> TailoringFailed | None:
     """Step 9's exception-shaped half: one SDK `APIError` → the domain's name for it, or `None`.
 
     `None` means *we have no better name than the floor's*, and returning it rather than guessing is
@@ -696,12 +697,12 @@ def _classify_api_error(exc: genai_errors.APIError) -> TailoringFailed | None:
     return None
 
 
-def _qualified_type(exc: BaseException) -> str:
+def qualified_type(exc: BaseException) -> str:
     """`module.QualName` — the only thing about an exception this module is allowed to log."""
     return f"{type(exc).__module__}.{type(exc).__qualname__}"
 
 
-def _elapsed_ms(started_at: float) -> int:
+def elapsed_ms(started_at: float) -> int:
     """Milliseconds since `started_at`, from `time.perf_counter()`.
 
     `perf_counter` and not the `Clock` port, and the reason is in `LlmCallMetrics`' docstring: the

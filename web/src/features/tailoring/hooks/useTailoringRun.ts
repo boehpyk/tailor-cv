@@ -54,7 +54,7 @@ export const MAX_TRANSIENT_RETRIES = 3;
  * Anything else (a network failure, a 5xx, an unparseable body from a proxy) may well succeed a
  * moment later.
  */
-function isClientError(error: Error): boolean {
+export function isClientError(error: Error): boolean {
   return error instanceof ApiError && error.status >= 400 && error.status < 500;
 }
 

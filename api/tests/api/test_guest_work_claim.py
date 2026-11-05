@@ -90,6 +90,7 @@ COUNT_KEYS = {
     "job_postings",
     "tailoring_runs",
     "export_jobs",
+    "fit_scores",
     "working_copies_dropped",
 }
 ZEROS = dict.fromkeys(COUNT_KEYS, 0)
@@ -99,6 +100,7 @@ ONE_GUESTS_WORK = {
     "job_postings": 1,
     "tailoring_runs": 1,
     "export_jobs": 1,
+    "fit_scores": 0,
     "working_copies_dropped": 0,
 }
 GUEST_TABLES = ("intake_base_cv", "posting_job_posting", "tailoring_run", "export_job")
