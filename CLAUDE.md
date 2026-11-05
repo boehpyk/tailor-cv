@@ -20,9 +20,10 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-Twenty-two slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, `__Host-tc_guest`,
-`web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. **Slice 5.1 `fit-score` is verified on `feature/fit-score` (AC-53 closed 2026-11-05), not yet released.** The latest released is **`brand-fixcv`** (the
-product is renamed FixCV, brand only, PR #42, `cf54c71`), released 2026-10-28 (run 40608951576).
+Twenty-three slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, `__Host-tc_guest`,
+`web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is **`fit-score`** (slice 5.1, a free
+Gemini fit score, one additive migration, PR #45, `468b127`), released 2026-11-05 (run 42106143344).
+Before it, **`brand-fixcv`** (the product is renamed FixCV, brand only, PR #42, `cf54c71`) was released 2026-10-28 (run 40608951576).
 Before it, **`domain-fixcv-app`** (production moves to `fixcv.app`, config only, ADR-0038, PR #40,
 `8468b5f`) was released 2026-10-27 (run 40591221234). Before that, **`web-design-refresh`** (a frontend-only reskin plus the static `/welcome` page,
 ADR-0036/0037, PR #37, `a539040`) was released 2026-10-27 (run 40539367985), **before** OQ-17's
