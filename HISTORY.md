@@ -957,8 +957,10 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   2's own fix: the success path's `setQueryData` could re-create a claimed guest's score and gaps after
 >   the claim's `removeQueries(['scoring'])`, when the `POST` was still in flight. `removeQueries` only
 >   clears what exists at that moment, so any late writer can undo it; the write now happens only into
->   a read that still exists (`3c67e65` → `a8255a6`). **Still open:** AC-53's comparison with Google's
->   billing view. `parsing.py`'s
+>   a read that still exists (`3c67e65` → `a8255a6`). **AC-53 closed 2026-11-05:** the owner reads about
+>   $0.10 on Google's billing view (no charge showed on 2026-11-02: billing lag). That is consistent with
+>   the records rather than an exact match: the third run's $0.049, T52's $0.003186 in the dev ledger, and
+>   the rest inferred as the second run, whose figure was not saved. Settings unchanged. `parsing.py`'s
 >   comment names `ValueError` where `json.loads` raises `RecursionError`, and the tailoring parser's
 >   deep-nesting path is untraced. `test_concurrent_gets_beside_50_suspended_scores_never_wait_for_the_pool`
 >   flaked once under the full suite (`the GETs did not overlap the hold`, 16 < 20; passes alone). One T42
