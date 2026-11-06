@@ -848,8 +848,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   `fixcv.app/health/ready` 200, the live `<title>` reads FixCV; the owner reports everything fine.
 >
 > - **`fit-score`** (slice **5.1**, Phase 5's first; approved 2026-10-30 and reworked the same day for
->   inline scoring; **implemented 2026-10-30 to 2026-11-01 on `feature/fit-score`; T50–T52 done,
->   `/verify` 2026-11-02, not yet released**) — a person with a CV and a job posting clicks **Check my score** and gets, in
+>   inline scoring; implemented 2026-10-30 to 2026-11-01, `/verify` 2026-11-02; **released 2026-11-05**;
+>   PR #45, `468b127`, deploy run 42106143344) — a person with a CV and a job posting clicks **Check my score** and gets, in
 >   the same request, an **estimated fit percentage and up to three missing requirements**, each quoting
 >   the posting, from `gemini-2.5-flash` behind a new port. T51 found `gemini-2.5-flash-lite` refused
 >   to new users (404), so the score uses `gemini-2.5-flash`, the owner's chosen fallback (2026-11-01).
@@ -960,7 +960,10 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   a read that still exists (`3c67e65` → `a8255a6`). **AC-53 closed 2026-11-05:** the owner reads about
 >   $0.10 on Google's billing view (no charge showed on 2026-11-02: billing lag). That is consistent with
 >   the records rather than an exact match: the third run's $0.049, T52's $0.003186 in the dev ledger, and
->   the rest inferred as the second run, whose figure was not saved. Settings unchanged. `parsing.py`'s
+>   the rest inferred as the second run, whose figure was not saved. Settings unchanged. **Measured after
+>   release (T54):** the deploy log ran `669b75917559 -> 8ddd7ee1ca93`; the first production score settled
+>   the ledger at **773 microdollars** (eval mean 846) on 2026-11-05, and the panel showed it (70% on a dummy CV, the owner's word, 2026-11-06), so T54 is closed. A tailoring run wrote no ledger row,
+>   correctly: only **Check my score** spends from it. `parsing.py`'s
 >   comment names `ValueError` where `json.loads` raises `RecursionError`, and the tailoring parser's
 >   deep-nesting path is untraced. `test_concurrent_gets_beside_50_suspended_scores_never_wait_for_the_pool`
 >   flaked once under the full suite (`the GETs did not overlap the hold`, 16 < 20; passes alone). One T42

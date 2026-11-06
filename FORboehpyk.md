@@ -7222,8 +7222,19 @@ measurement disagrees, you fix the plan, not the measurement.
 
 ## What's next
 
-T50 to T53 are done: the price check, the paid measurement, the manual pass (Chromium only) and
-`/verify`, whose three review rounds are the story above. One thing is left before the release:
-Google's bill should show roughly the $0.10 our ledger says we spent. If it doesn't, our price
-settings are wrong, and the cap is wrong by the same ratio. Then comes a manual-gated release with one
-additive migration.
+It shipped on 2026-11-05 (PR #45), with one additive migration, and two small checks earned their place
+on the way out.
+
+**The bill that said nothing.** On 2026-11-02, Google's billing view showed $0 for real calls. That
+could have been lag, or it could have meant our price settings were wrong, and the spend cap would be
+wrong by the same ratio. So the release waited. Three days later the bill read about $0.10. Our records
+explain most of that (a $0.049 final run and $0.003 of manual testing) and the rest is an inference: the
+earlier run's figure was never saved. Lesson: when you can check a number against somebody else's meter,
+do it, and write down how well it matched instead of rounding up to "matches". Also, keep every paid
+run's receipt.
+
+**The empty table.** After the release, the first check of the production ledger came back with zero
+rows, straight after a successful CV tailoring. It looked like the spend tracking was broken. It wasn't:
+tailoring and scoring are separate paths, and only **Check my score** touches that ledger. One click on
+the right button, and the row read 773 microdollars, close to the 846 we'd predicted. Lesson: before you
+debug a surprising result, ask whether your test exercised the thing you're measuring.
