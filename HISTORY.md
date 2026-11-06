@@ -962,7 +962,7 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   the records rather than an exact match: the third run's $0.049, T52's $0.003186 in the dev ledger, and
 >   the rest inferred as the second run, whose figure was not saved. Settings unchanged. **Measured after
 >   release (T54):** the deploy log ran `669b75917559 -> 8ddd7ee1ca93`; the first production score settled
->   the ledger at **773 microdollars** (eval mean 846) on 2026-11-05. A tailoring run wrote no ledger row,
+>   the ledger at **773 microdollars** (eval mean 846) on 2026-11-05, and the panel showed it (70% on a dummy CV, the owner's word, 2026-11-06), so T54 is closed. A tailoring run wrote no ledger row,
 >   correctly: only **Check my score** spends from it. `parsing.py`'s
 >   comment names `ValueError` where `json.loads` raises `RecursionError`, and the tailoring parser's
 >   deep-nesting path is untraced. `test_concurrent_gets_beside_50_suspended_scores_never_wait_for_the_pool`
