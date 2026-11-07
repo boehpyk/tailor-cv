@@ -7,9 +7,12 @@ refusing, F-15 with `concurrent_app`) is T30's and the held specifications in
 
 from __future__ import annotations
 
+import pytest
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.billing.credit_account import CreditAccount
+from tailorcraft.domain.billing.errors import RunAlreadyRefunded
 from tailorcraft.domain.billing.value_objects import (
     ChargedRunRef,
     CreditEntryKind,
@@ -19,6 +22,9 @@ from tailorcraft.domain.billing.value_objects import (
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.identifiers import uuid7
+from tailorcraft.infrastructure.persistence.mapping.billing.credit_account import (
+    credit_entry_table,
+)
 from tailorcraft.infrastructure.persistence.repositories.billing.credit_account import (
     SqlAlchemyCreditAccountRepository,
     lock_for_charge_statement,
@@ -75,3 +81,49 @@ async def test_an_opened_account_round_trips_with_its_entries_oldest_first(
 
 async def test_find_answers_none_for_a_user_without_an_account(session: AsyncSession) -> None:
     assert await SqlAlchemyCreditAccountRepository(session).find(UserId(uuid7())) is None
+
+
+async def test_a_refund_losing_the_unique_index_race_is_run_already_refunded_and_the_session_lives(
+    session: AsyncSession, clock: FixedClock
+) -> None:
+    """F-14: the account was loaded before another refund of the same run committed, so CR-4 passes
+    in memory and only `uq_billing_credit_entry_refund_run` refuses. The repository answers
+    `RunAlreadyRefunded`, and the session is usable for the sweep's next run."""
+    owner = await persist_user(session, clock)
+    credits = SqlAlchemyCreditAccountRepository(session)
+    run = ChargedRunRef(uuid7())
+    account = CreditAccount.open(
+        user_id=owner.user_id,
+        opening=OpeningGrant.WELCOME,
+        entry_id=credits.next_entry_identity(),
+        at=clock.now(),
+    )
+    account.charge(run, entry_id=credits.next_entry_identity(), at=clock.now())
+    await credits.add(account)
+    await session.commit()
+    session.expunge_all()
+
+    loser = await credits.find(owner.user_id)
+    assert loser is not None
+    # The winner's refund, committed after the loser loaded the account.
+    await session.execute(
+        insert(credit_entry_table).values(
+            id=credits.next_entry_identity(),
+            user_id=owner.user_id,
+            kind=CreditEntryKind.REFUND,
+            credits=1,
+            tailoring_run_id=run,
+            created_at=clock.now(),
+        )
+    )
+    await session.commit()
+    assert loser.refund(run, entry_id=credits.next_entry_identity(), at=clock.now())
+
+    with pytest.raises(RunAlreadyRefunded) as raised:
+        await credits.save(loser)
+
+    assert raised.value.run == run
+    found = await credits.find(owner.user_id)
+    assert found is not None
+    assert [e.kind for e in found.entries].count(CreditEntryKind.REFUND) == 1
+    assert found.balance == 1

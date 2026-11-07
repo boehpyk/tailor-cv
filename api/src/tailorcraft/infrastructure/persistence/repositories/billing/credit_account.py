@@ -16,6 +16,7 @@ previous holder committed, never a copy loaded before the wait.
 `billing_credit_entry`. The account row's own `UPDATE` (a pack click, an opt-in) is the only update.
 
 Nothing commits: the caller's transaction does (the request's, or the failure's in the worker).
+The one exception is F-14's refund race, below, which rolls back.
 """
 
 from __future__ import annotations
@@ -23,13 +24,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.domain.billing.credit_account import CreditAccount
-from tailorcraft.domain.billing.errors import CreditAccountNotFound
-from tailorcraft.domain.billing.value_objects import CreditEntryId
+from tailorcraft.domain.billing.errors import CreditAccountNotFound, RunAlreadyRefunded
+from tailorcraft.domain.billing.value_objects import CreditEntryId, CreditEntryKind
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.infrastructure.identifiers import uuid7
+from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.mapping.billing.credit_account import (
     credit_account_table,
 )
@@ -38,6 +41,10 @@ if TYPE_CHECKING:
     from sqlalchemy import Select
 
     from tailorcraft.domain.billing.ports import CreditAccountRepository
+
+# Recognised by name, never by message (`violated_constraint`). Renaming the index in a migration
+# without changing this turns F-14 back into an untranslated `IntegrityError`.
+_REFUND_RUN_UNIQUE = "uq_billing_credit_entry_refund_run"
 
 
 def lock_for_charge_statement(user_id: UserId) -> Select[tuple[CreditAccount]]:
@@ -79,8 +86,34 @@ class SqlAlchemyCreditAccountRepository:
         return account
 
     async def save(self, account: CreditAccount) -> None:
+        """Insert the pending entries (and the account, when new); `RunAlreadyRefunded` on F-14.
+
+        **The flush is restricted to this aggregate's objects.** A bare `flush()` would also write
+        whatever else the caller dirtied: in the worker that is the run `RecordRunFailure` has just
+        marked failed, whose version check then fires here, outside the run repository's
+        `StaleDataError` translation and its SAVEPOINT. The run is the run repository's to write.
+
+        **F-14 rolls back the whole transaction, then raises `RunAlreadyRefunded`.** The losing
+        refund's `INSERT` waits on the winner's uncommitted index entry and fails once it commits.
+        A SAVEPOINT would contain the aborted statement but not the loser's own `mark_failed`, which
+        is still dirty in the session: the sweep's next `runs.save` (its `begin_nested()` flushes on
+        entry) would write it, outside any SAVEPOINT, and fail on its version. The rollback discards
+        both, which is what the worker does for any failed save (T23); it also expires every loaded
+        instance, which the sweep survives because it re-reads each run by id. Only refunds can
+        reach this index, and only the worker refunds, so no request transaction is ever rolled back
+        here. Any other refusal propagates untranslated.
+        """
+        pending = account.pending_entries()
+        # Read before the flush: a failed flush expires what the session holds.
+        refunded = next((e.run for e in pending if e.kind is CreditEntryKind.REFUND), None)
         self._session.add(account)
-        await self._session.flush()
+        try:
+            await self._session.flush([account, *pending])
+        except IntegrityError as exc:
+            if refunded is None or violated_constraint(exc) != _REFUND_RUN_UNIQUE:
+                raise
+            await self._session.rollback()
+            raise RunAlreadyRefunded(refunded) from None
         account.mark_entries_saved()
 
 
