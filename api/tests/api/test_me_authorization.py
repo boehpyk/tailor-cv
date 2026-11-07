@@ -64,6 +64,7 @@ from tests.api.me_support import (
     new_client,
     register,
     seed_entry,
+    seed_guest_queued_run,
 )
 from tests.api.test_auth_route_dependency_boundary import (
     _all_dependency_calls,
@@ -334,7 +335,7 @@ async def test_ac22_a_user_owned_id_on_every_guest_route_is_404_and_creates_noth
     await mint_guest(client, session)
     # Read up front: a 404 rolls the shared session back, which expires every loaded aggregate.
     run, job = entry.run_id.value, entry.jobs[0].id.value
-    cv_id, posting_id = str(entry.cv_id.value), str(entry.posting_id.value)
+    posting_id = str(entry.posting_id.value)
     runs_before = await count_rows(session, "tailoring_run")
     jobs_before = await count_rows(session, "export_job")
 
@@ -348,10 +349,8 @@ async def test_ac22_a_user_owned_id_on_every_guest_route_is_404_and_creates_noth
         "exports": await client.get(f"/api/tailoring-runs/{run}/exports"),
         "job": await client.get(f"/api/export-jobs/{job}"),
         "file": await client.get(f"/api/export-jobs/{job}/file"),
-        "run with a saved cv": await client.post(
-            "/api/tailoring-runs",
-            json={"base_cv_id": cv_id, "job_posting_id": posting_id},
-        ),
+        # No "run with a saved cv" row: slice 5.2 retires the guest POST (403 `account_required`),
+        # so a guest request naming a user-owned CV no longer reaches the 404 this table asserts.
         "posting": await client.get(f"/api/job-postings/{posting_id}"),
     }
 
@@ -371,15 +370,11 @@ async def test_ac34_every_guest_response_shape_carries_an_expires_at(
     posting = await client.post(
         "/api/job-postings", json={"source": "pasted", "text": "We are hiring. " * 20}
     )
-    run = await client.post(
-        "/api/tailoring-runs",
-        json={"base_cv_id": cv.json()["id"], "job_posting_id": posting.json()["id"]},
-    )
+    run_id = await seed_guest_queued_run(client, cv.json()["id"], posting.json()["id"])
     shapes = {
         "JobPostingResponse": posting,
         "JobPostingSummary": await client.get("/api/job-postings"),
-        "TailoringRunResponse (POST)": run,
-        "TailoringRunResponse (GET)": await client.get(f"/api/tailoring-runs/{run.json()['id']}"),
+        "TailoringRunResponse (GET)": await client.get(f"/api/tailoring-runs/{run_id}"),
         "TailoringRunSummary": await client.get("/api/tailoring-runs"),
     }
 

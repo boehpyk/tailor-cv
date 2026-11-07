@@ -26,6 +26,8 @@ from sqlalchemy import event, select, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
+from tailorcraft.domain.billing.credit_account import CreditAccount
+from tailorcraft.domain.billing.value_objects import GrantAmount, OpeningGrant
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
@@ -43,6 +45,9 @@ from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.persistence.database import create_session_factory
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
+from tailorcraft.infrastructure.persistence.repositories.billing.credit_account import (
+    SqlAlchemyCreditAccountRepository,
+)
 from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
     SqlAlchemyExportJobRepository,
 )
@@ -63,6 +68,7 @@ from tailorcraft.infrastructure.tasks.app import app as celery_app
 from tests.integration.owners import (
     extracted_cv,
     queued_export,
+    queued_run,
     ready_export,
     succeeded_run,
 )
@@ -234,6 +240,23 @@ class Account:
         return self.owner.user_id
 
 
+async def seed_credit_account_row(session: AsyncSession, user_id: UserId) -> None:
+    """The account every user has since slice 5.2 (technical-plan 0.6), through the domain and the
+    real repository: the `existing_account` opening (+1, what a backfilled user gets) topped up with
+    one 100-credit grant, so a test that is not about credits never runs out. Does not commit."""
+    credits = SqlAlchemyCreditAccountRepository(session)
+    at = SystemClock().now()
+    account = CreditAccount.open(
+        user_id=user_id,
+        opening=OpeningGrant.EXISTING_ACCOUNT,
+        entry_id=credits.next_entry_identity(),
+        at=at,
+    )
+    account.grant(GrantAmount(value=100), entry_id=credits.next_entry_identity(), at=at)
+    account.release_events()
+    await credits.add(account)
+
+
 async def seed_user_and_sign_in(
     client: AsyncClient, settings: Settings, *, email: str | None = None
 ) -> tuple[str, UUID]:
@@ -267,6 +290,7 @@ async def seed_user_and_sign_in(
         )
         user.release_events()
         await users.add(user)
+        await seed_credit_account_row(seed_session, user.id)
         await seed_session.commit()
     finally:
         if owns_session:
@@ -302,6 +326,45 @@ async def mint_guest(client: AsyncClient, session: AsyncSession) -> GuestOwner:
     ).scalar_one()
     assert isinstance(sid, GuestSessionId)
     return GuestOwner(sid)
+
+
+async def seed_guest_queued_run(
+    client: AsyncClient, base_cv_id: str, job_posting_id: str, at: datetime | None = None
+) -> str:
+    """A `queued` run owned by the guest who owns `base_cv_id`, written through the domain and the real
+    repository, **committed**. Returns the run id.
+
+    Slice 5.2 retires the guest `POST /api/tailoring-runs` (it is 403 `account_required`), but AC-17
+    keeps guest reads and edits of runs made before the release, and the claim, the purge and the
+    privacy markers still have to be proven over guest-owned runs, so those tests seed the run the
+    way a pre-release request left it instead of requesting one.
+    """
+    app = client._transport.app  # type: ignore[attr-defined]
+    assert isinstance(app, FastAPI)
+    session: AsyncSession = app.state.session_factory()
+    owns_session = get_session not in app.dependency_overrides
+    try:
+        sid = (
+            await session.execute(
+                select(base_cv_table.c.guest_session_id).where(
+                    base_cv_table.c.id == BaseCvId(UUID(base_cv_id))
+                )
+            )
+        ).scalar_one()
+        assert isinstance(sid, GuestSessionId)
+        run = queued_run(
+            GuestOwner(sid),
+            at or SystemClock().now(),
+            base_cv_id=BaseCvId(UUID(base_cv_id)),
+            job_posting_id=JobPostingId(UUID(job_posting_id)),
+        )
+        run_id = run.id.value
+        await SqlAlchemyTailoringRunRepository(session).add(run)
+        await session.commit()
+    finally:
+        if owns_session:
+            await session.close()
+    return str(run_id)
 
 
 @dataclass(frozen=True)

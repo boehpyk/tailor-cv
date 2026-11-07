@@ -54,6 +54,7 @@ from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.errors import LlmTimedOut
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 from tailorcraft.infrastructure.api.deps import get_job_posting_fetcher
+from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
@@ -70,6 +71,7 @@ from tests.api.me_support import (
     ME_RUNS,
     bearer,
     new_client,
+    seed_guest_queued_run,
 )
 from tests.api.test_export import _run_export_worker
 from tests.api.test_history_privacy_markers import _draft, _MarkerFetcher
@@ -236,18 +238,15 @@ async def test_ac34_a_guest_who_registers_and_claims_loses_nothing_not_even_to_a
         assert fetched.status_code == 201, fetched.text
         assert fetcher.calls == 1
 
-        async def request_run(posting_id: object) -> str:
-            requested = await browser.post(
-                GUEST_RUNS, json={"base_cv_id": cv_id, "job_posting_id": posting_id}
-            )
-            assert requested.status_code == 202, requested.text
-            return str(requested.json()["id"])
+        async def request_run(posting_id: object, *, at: datetime) -> str:
+            return await seed_guest_queued_run(browser, cv_id, str(posting_id), at)
 
         # One active run at a time: the first settles before the second is requested.
-        run_ok = await request_run(pasted.json()["id"])
+        now = SystemClock().now()
+        run_ok = await request_run(pasted.json()["id"], at=now - timedelta(seconds=30))
         ok_llm = FakeLlm(_draft("ac34-first-cv", "ac34-first-letter"))
         assert await _run_worker(world, run_ok, ok_llm) is ExecuteTailoringRunOutcome.SUCCEEDED
-        run_failed = await request_run(fetched.json()["id"])
+        run_failed = await request_run(fetched.json()["id"], at=now - timedelta(seconds=10))
         failing_llm = FakeLlm(LlmTimedOut())
         assert (
             await _run_worker(world, run_failed, failing_llm) is ExecuteTailoringRunOutcome.FAILED

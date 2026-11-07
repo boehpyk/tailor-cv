@@ -67,6 +67,7 @@ from tests.integration.owners import (
     pasted_posting,
     queued_run,
     running_run,
+    seed_credit_account,
     seed_user,
     uploaded_cv,
 )
@@ -82,6 +83,7 @@ class _World:
         self.cvs = FakeBaseCvRepository()
         self.postings = FakeJobPostingRepository()
         self.runs = FakeTailoringRunRepository()
+        self.credits = FakeCreditAccountRepository()
         self.events = RecordingEventPublisher(self.runs)
         self.earlier = clock.now() - timedelta(hours=1)
 
@@ -92,11 +94,13 @@ class _World:
             GetJobPosting(self.postings, self.sessions, self.users, self.clock),
             self.events,
             self.clock,
-            charge=ChargeCreditForRun(FakeCreditAccountRepository()),
+            charge=ChargeCreditForRun(self.credits),
         )
 
     async def user(self, email: str = "alex@example.com") -> UserOwner:
-        return await seed_user(self.users, email, self.earlier)
+        owner = await seed_user(self.users, email, self.earlier)
+        seed_credit_account(self.credits, owner.user_id, self.earlier)
+        return owner
 
     async def guest(self, label: str = "guest") -> GuestOwner:
         session = await create_active_session(

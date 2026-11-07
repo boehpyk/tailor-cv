@@ -129,6 +129,7 @@ from tailorcraft.infrastructure.api.guest_session import COOKIE_NAME
 from tailorcraft.infrastructure.clock import FixedClock
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks import container as tailoring_container
+from tests.api.me_support import seed_guest_queued_run
 from tests.integration.fakes import FakeLlm, FakeTailoringQueue
 
 # ---------------------------------------------------------------------------------------------
@@ -273,18 +274,15 @@ async def _create_queued_run(
     *,
     cv_text: str | None = None,
     posting_text: str | None = None,
+    at: datetime | None = None,
 ) -> str:
-    """`_ready_inputs` plus the `POST` itself, with a non-raising queue installed. Returns the new
-    run's id, left `queued` (the worker is never run)."""
+    """`_ready_inputs` plus a seeded guest-owned `queued` run (5.2 retired the guest `POST`), with a
+    non-raising queue installed. Returns the new run's id (the worker is never run)."""
     _install_queue(app)
     base_cv_id, job_posting_id = await _ready_inputs(
         client, cv_text=cv_text, posting_text=posting_text
     )
-    response = await client.post(
-        "/api/tailoring-runs", json={"base_cv_id": base_cv_id, "job_posting_id": job_posting_id}
-    )
-    assert response.status_code == 202, response.text
-    return str(response.json()["id"])
+    return await seed_guest_queued_run(client, base_cv_id, job_posting_id, at)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -598,7 +596,7 @@ async def test_a_run_abandoned_past_the_stale_window_is_recorded_failed_and_retr
 
     clock0 = FixedClock(datetime(2026, 1, 1, tzinfo=UTC))
     app.dependency_overrides[get_clock] = lambda: clock0
-    run_id = await _create_queued_run(client, app)
+    run_id = await _create_queued_run(client, app, at=clock0.now())
 
     # Simulate a worker that picked the run up and then died mid-call: mark it `running` directly
     # through the repository (bypassing the use case, which would also call the LLM).
@@ -776,13 +774,10 @@ async def test_a_full_successful_and_a_full_failed_run_never_log_cv_posting_or_d
             cv_text=_cv_body_text(success_cv_marker),
             posting_text=_posting_body_text(success_posting_marker),
         )
-        create_ok = await client.post(
-            "/api/tailoring-runs",
-            json={"base_cv_id": base_cv_id, "job_posting_id": job_posting_id},
-            headers={"x-forwarded-for": privacy_ip},
+        ok_run_id = await seed_guest_queued_run(client, base_cv_id, job_posting_id)
+        await client.get(  # the request that carries the IP the logs must never show
+            f"/api/tailoring-runs/{ok_run_id}", headers={"x-forwarded-for": privacy_ip}
         )
-        assert create_ok.status_code == 202, create_ok.text
-        ok_run_id = create_ok.json()["id"]
         ok_outcome = await _run_worker(session, settings, ok_run_id)
         assert ok_outcome is ExecuteTailoringRunOutcome.SUCCEEDED
         assert len(fake_llm_ok.calls) == 1, (
@@ -799,13 +794,7 @@ async def test_a_full_successful_and_a_full_failed_run_never_log_cv_posting_or_d
             cv_text=_cv_body_text(fail_cv_marker),
             posting_text=_posting_body_text(fail_posting_marker),
         )
-        create_fail = await client.post(
-            "/api/tailoring-runs",
-            json={"base_cv_id": fail_base_cv_id, "job_posting_id": fail_job_posting_id},
-            headers={"x-forwarded-for": privacy_ip},
-        )
-        assert create_fail.status_code == 202, create_fail.text
-        fail_run_id = create_fail.json()["id"]
+        fail_run_id = await seed_guest_queued_run(client, fail_base_cv_id, fail_job_posting_id)
         fail_outcome = await _run_worker(session, settings, fail_run_id)
         assert fail_outcome is ExecuteTailoringRunOutcome.FAILED
         assert len(fake_llm_fail.calls) == 1, (

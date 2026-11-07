@@ -13,12 +13,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+from tailorcraft.domain.billing.credit_account import CreditAccount
+from tailorcraft.domain.billing.value_objects import GrantAmount, OpeningGrant
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
 from tailorcraft.domain.identity.guest_session import GuestSession
 from tailorcraft.domain.identity.ownership import Owner, UserOwner
 from tailorcraft.domain.identity.user import User
-from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash
+from tailorcraft.domain.identity.value_objects import EmailAddress, PasswordHash, UserId
 from tailorcraft.domain.intake.base_cv import BaseCv
 from tailorcraft.domain.intake.value_objects import (
     BaseCvId,
@@ -43,7 +45,11 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
     TailoringRunId,
 )
-from tests.integration.fakes import FakeGuestSessionRepository, FakeUserRepository
+from tests.integration.fakes import (
+    FakeCreditAccountRepository,
+    FakeGuestSessionRepository,
+    FakeUserRepository,
+)
 
 _HASH = PasswordHash(value="$argon2id$v=19$m=65536,t=3,p=4$c29tZXNhbHQ$ZmFrZWhhc2g")
 
@@ -56,6 +62,25 @@ async def seed_user(users: FakeUserRepository, email: str, at: datetime) -> User
     user.release_events()
     await users.add(user)
     return UserOwner(user.id)
+
+
+def seed_credit_account(
+    credits: FakeCreditAccountRepository, user_id: UserId, at: datetime, *, balance: int = 101
+) -> None:
+    """Give a seeded user the account every user has since slice 5.2 (technical-plan 0.6).
+
+    Opened with the `existing_account` grant a backfilled user gets (+1), then topped up with one
+    100-credit grant so a test that is not about credits never runs out. Built through the domain.
+    """
+    account = CreditAccount.open(
+        user_id=user_id,
+        opening=OpeningGrant.EXISTING_ACCOUNT,
+        entry_id=credits.next_entry_identity(),
+        at=at,
+    )
+    if balance > 1:
+        account.grant(GrantAmount(value=balance - 1), entry_id=credits.next_entry_identity(), at=at)
+    credits.seed(account)
 
 
 async def seed_expired_session(
