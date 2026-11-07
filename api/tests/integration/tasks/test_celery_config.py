@@ -244,3 +244,33 @@ def test_create_celery_accepts_a_stale_window_one_second_above_the_hard_time_lim
     built = tasks_app_module.create_celery()
 
     assert built.conf.task_time_limit == 180
+
+
+# --- Slice 5.2 (T19, plan §0.5): the lost-queued window must stay above the visibility timeout ----
+
+
+def test_create_celery_refuses_a_queued_lost_window_equal_to_the_visibility_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """600 is refused: a redelivery and a sweep at the same second is the race this rules out."""
+    settings = Settings(app_env="test", tailoring_queued_lost_after_seconds=600)
+    monkeypatch.setattr(tasks_app_module, "get_settings", lambda: settings)
+
+    with pytest.raises(MisconfiguredSettings) as exc_info:
+        tasks_app_module.create_celery()
+
+    message = str(exc_info.value)
+    assert "tailoring_queued_lost_after_seconds" in message
+    assert "visibility_timeout" in message
+
+
+def test_create_celery_accepts_a_queued_lost_window_one_second_above_the_visibility_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = Settings(app_env="test", tailoring_queued_lost_after_seconds=601)
+    monkeypatch.setattr(tasks_app_module, "get_settings", lambda: settings)
+
+    built = tasks_app_module.create_celery()
+
+    # One constant feeds the refusal and the broker: the boundary is the number the broker uses.
+    assert built.conf.broker_transport_options["visibility_timeout"] == 600

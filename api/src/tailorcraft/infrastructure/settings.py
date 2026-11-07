@@ -508,6 +508,12 @@ class Settings(BaseSettings):
     # and the run stays `running`. The sweep is what records it, at most this window plus one beat
     # interval later.
     tailoring_stale_after_seconds: int = 300
+    # How long a run may stay `queued` before the sweep records it `failed` / `not_queued` and refunds
+    # its credit (slice 5.2, plan §0.5): its task was lost. **Must stay above the broker's
+    # `visibility_timeout`** (600 s, `BROKER_VISIBILITY_TIMEOUT_SECONDS` in `tasks/limits.py`), and
+    # `create_celery` refuses to start otherwise, in every environment: a redelivered message gets its
+    # chance before the sweep decides the run.
+    tailoring_queued_lost_after_seconds: int = 1800
     # A named queue from the first slice so 1.5's export tasks can land on a second one without a
     # long render starving a tailoring run. One line now; expensive to retrofit.
     tailoring_queue_name: str = "tailoring"

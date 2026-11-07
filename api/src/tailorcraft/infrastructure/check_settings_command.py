@@ -26,6 +26,7 @@ gate can see it.
 | `MAIL_FROM_ADDRESS` not an email address under production (2.5) | `Settings` model validator | constructing `Settings` |
 | `PUBLIC_BASE_URL` not `https://` under production (2.5) | `Settings` model validator | constructing `Settings` |
 | `MAIL_TOTAL_DEADLINE_SECONDS` ≥ the soft limit (2.5) | `tasks/limits.py` (called by `create_celery`) | `refuse_mail_deadline_within_soft_limit` |
+| `TAILORING_QUEUED_LOST_AFTER_SECONDS` ≤ the visibility timeout (5.2) | `tasks/limits.py` (called by `create_celery`) | `refuse_queued_lost_window_within_visibility_timeout` |
 
 Nothing is built: no engine, no Redis client, no Celery app, no logging configuration, no Sentry.
 
@@ -55,6 +56,7 @@ from pydantic import ValidationError
 from tailorcraft.infrastructure.settings import MisconfiguredSettings, get_settings
 from tailorcraft.infrastructure.tasks.limits import (
     refuse_mail_deadline_within_soft_limit,
+    refuse_queued_lost_window_within_visibility_timeout,
     refuse_stale_windows_within_time_limit,
 )
 
@@ -73,6 +75,7 @@ def run_from_cli() -> int:
         settings = get_settings()
         refuse_stale_windows_within_time_limit(settings)
         refuse_mail_deadline_within_soft_limit(settings)
+        refuse_queued_lost_window_within_visibility_timeout(settings)
     except MisconfiguredSettings as exc:
         print(f"{_PREFIX}: {exc}", file=sys.stderr)
         return EXIT_REFUSED
