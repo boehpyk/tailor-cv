@@ -801,12 +801,27 @@ class FakeTailoringRunRepository:
     async def count_for_owner(self, owner: Owner) -> int:
         return len([run for run in self._by_id.values() if run.owner == owner])
 
-    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+    async def find_active_for_owner(
+        self, owner: Owner, excluding: TailoringRunId | None = None
+    ) -> TailoringRun | None:
         active_statuses = (TailoringRunStatus.QUEUED, TailoringRunStatus.RUNNING)
         for run in self._by_id.values():
-            if run.owner == owner and run.status in active_statuses:
+            if run.owner == owner and run.status in active_statuses and run.id != excluding:
                 return run
         return None
+
+    async def list_lost_queued(
+        self, requested_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """`TailoringRunRepository.list_lost_queued`'s contract: `QUEUED`, requested strictly before
+        the cutoff, oldest first, ties by id, at most `limit`."""
+        candidates = [
+            run
+            for run in self._by_id.values()
+            if run.status is TailoringRunStatus.QUEUED and run.requested_at < requested_before
+        ]
+        candidates.sort(key=lambda run: (run.requested_at, run.id.value))
+        return candidates[:limit]
 
     async def list_stale_running(
         self, started_before: datetime, limit: int

@@ -43,7 +43,8 @@ class FitScoreRepository(Protocol):
         """Store `score` and return the row now stored: this one, or the winner's of a two-tab race.
 
         Raises `BaseCvNotFound`, `JobPostingNotFound`, `GuestSessionExpired` or `UserNotFound` when
-        what the score points at went during the call. Nothing is written, and the surrounding
+        what the score points at went during the call, and `TailoringRunNotFound` when a draft's run
+        did (slice 5.2). Nothing is written, and the surrounding
         transaction survives, so the settlement after it still commits. Those errors belong to other
         contexts, so they are named here and never imported (ADR-0040 decision 1).
         """
@@ -59,6 +60,15 @@ class FitScoreRepository(Protocol):
         """When each of the owner's scores was made, oldest first, strictly after `since`. Exclusive,
         so a score exactly 24 h old has stopped counting at the second `retry_not_before` names.
         `None` counts every score: a guest's limit never frees up (AC-8, AC-12)."""
+        ...
+
+
+class DraftTextPort(Protocol):
+    """A tailored draft as the flat text a score judges, so the after-score sees the same shape of
+    input as the before-score's extracted text (plan §0.8)."""
+
+    async def to_plain_text(self, markdown: str) -> str:
+        """The draft's Markdown as plain text: markers gone, words kept."""
         ...
 
 

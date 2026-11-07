@@ -57,6 +57,7 @@ _BOUND_ELSEWHERE: dict[str, str] = {
     "DailyCounterPort": "unbound until slice 5.2's T26 (ADR-0043)",
     "DemandCounterQuery": "unbound until slice 5.2's T26 (ADR-0043)",
     "CreditAccountRepository": "unbound until slice 5.2's T26 (ADR-0042)",
+    "DraftTextPort": "unbound until slice 5.2's T26 (plan §0.8)",
 }
 
 

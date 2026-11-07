@@ -192,8 +192,10 @@ class CommittingTailoringRunRepository:
     async def count_for_owner(self, owner: Owner) -> int:
         return await self._inner.count_for_owner(owner)
 
-    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
-        return await self._inner.find_active_for_owner(owner)
+    async def find_active_for_owner(
+        self, owner: Owner, excluding: TailoringRunId | None = None
+    ) -> TailoringRun | None:
+        return await self._inner.find_active_for_owner(owner, excluding)
 
     async def list_stale_running(
         self, started_before: datetime, limit: int
@@ -202,6 +204,12 @@ class CommittingTailoringRunRepository:
         `save`, which commits one abandoned run at a time. A failure part-way through a batch then
         keeps every run already recorded, and the next tick lists only the rest."""
         return await self._inner.list_stale_running(started_before, limit)
+
+    async def list_lost_queued(
+        self, requested_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """A read, so no commit: `list_stale_running`'s reason."""
+        return await self._inner.list_lost_queued(requested_before, limit)
 
 
 class CommittingExportJobRepository:

@@ -151,11 +151,16 @@ class TailoringRunRepository(Protocol):
         `count_for_session` gives."""
         ...
 
-    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+    async def find_active_for_owner(
+        self, owner: Owner, excluding: TailoringRunId | None = None
+    ) -> TailoringRun | None:
         """`owner`'s one run in flight (`QUEUED` or `RUNNING`), or `None` — either variant (slice
         2.3). Same soft at-most-one-active rule and same reason for returning the run rather than a
         bool as `find_active_for_session`, whose meaning this generalizes: a signed-in user's
-        double-click must not buy two paid calls any more than a guest's."""
+        double-click must not buy two paid calls any more than a guest's.
+
+        `excluding` (slice 5.2) leaves that one run out, so a request that has already inserted its own
+        run can ask "is there **another**?" after taking the credit lock (plan §0.3)."""
         ...
 
     async def list_stale_running(
@@ -183,6 +188,18 @@ class TailoringRunRepository(Protocol):
         docstring records why the outcome is benign.
 
         Says nothing about transactions, exactly as `save` does not.
+        """
+        ...
+
+    async def list_lost_queued(
+        self, requested_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """`QUEUED` runs requested strictly before `requested_before`, for the sweep (slice 5.2, plan
+        §0.5): `TailoringRun.is_lost_in_queue` as a filter, the caller passing `now - after`.
+
+        `list_stale_running`'s contract otherwise, clause for clause: at most `limit` runs, oldest
+        `requested_at` first, ties broken by id; no lock, so the caller re-checks `is_lost_in_queue`
+        on each run it reaches; nothing about transactions.
         """
         ...
 

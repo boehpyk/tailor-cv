@@ -20,6 +20,7 @@ from tailorcraft.domain.scoring.value_objects import (
     PromptVersion,
     ScoredCvRef,
     ScoredPostingRef,
+    ScoredRunRef,
     ScorePercent,
     ScoringUsage,
 )
@@ -57,6 +58,7 @@ class FitScore(RecordsEvents):
     _llm_duration_ms: int
     _cost: MicroUsd
     _scored_at: datetime
+    _draft_of: ScoredRunRef | None
 
     def __init__(self) -> None:
         """Takes nothing and does nothing. Build a `FitScore` with `from_assessment`.
@@ -80,9 +82,12 @@ class FitScore(RecordsEvents):
         assessed: AssessedFit,
         cost: MicroUsd,
         at: datetime,
+        draft_of: ScoredRunRef | None = None,
     ) -> FitScore:
         """The only constructor, recording exactly one `FitScoreRecorded`. A naive or sub-second `at`
         is `InvariantViolated`.
+
+        `draft_of` (slice 5.2) names the run whose draft CV was judged; `None` for a base CV.
 
         Not `record`, the plan's name: that is `RecordsEvents.record(event)`, which this class needs,
         and a classmethod of the same name would replace it.
@@ -110,6 +115,7 @@ class FitScore(RecordsEvents):
         score._llm_duration_ms = assessed.usage.duration_ms
         score._cost = cost
         score._scored_at = at
+        score._draft_of = None  # Skeleton (slice 5.2 T9): `draft_of` is not kept until T11.
         score.record(
             FitScoreRecorded(
                 occurred_at=at,
@@ -191,3 +197,8 @@ class FitScore(RecordsEvents):
     @property
     def scored_at(self) -> datetime:
         return self._scored_at
+
+    @property
+    def draft_of(self) -> ScoredRunRef | None:
+        """The run whose draft this judged, or `None` when it judged a base CV."""
+        return self._draft_of

@@ -324,7 +324,9 @@ class SqlAlchemyTailoringRunRepository:
         )
         return result.scalar_one()
 
-    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
+    async def find_active_for_owner(
+        self, owner: Owner, excluding: TailoringRunId | None = None
+    ) -> TailoringRun | None:
         """The owner's newest run in flight — `queued` or `running` — or `None`.
 
         `find_active_for_session`'s contract and shape, either variant: `LIMIT 1` over the newest-
@@ -332,7 +334,11 @@ class SqlAlchemyTailoringRunRepository:
         by decision (ADR-0014 §4) and two active rows are an accepted race, not an error. For a
         user the owner column's index plus a status filter reads at most 500 entries; the note on
         the missing partial index applies unchanged.
+
+        **Skeleton (slice 5.2 T9):** `excluding` is not filtered yet, so it refuses one.
         """
+        if excluding is not None:
+            raise NotImplementedError
         result = await self._session.execute(
             select(TailoringRun)
             .where(_owned_by(owner))
@@ -382,6 +388,12 @@ class SqlAlchemyTailoringRunRepository:
             .limit(limit)
         )
         return result.scalars().all()
+
+    async def list_lost_queued(
+        self, requested_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """Skeleton (slice 5.2 T9); the contract is `TailoringRunRepository.list_lost_queued`'s."""
+        raise NotImplementedError
 
 
 if TYPE_CHECKING:
