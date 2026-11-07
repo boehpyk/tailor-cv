@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
 
+_MAX_GRANT = 100
+
 
 @dataclass(frozen=True, slots=True)
 class CreditEntryId:
@@ -52,7 +54,11 @@ class GrantAmount:
     value: int
 
     def __post_init__(self) -> None:
-        """Skeleton (T5): validates nothing yet."""
+        from tailorcraft.domain.billing.errors import InvalidGrantAmount
+
+        # `type`, not `isinstance`: a `bool` is an `int` to Python.
+        if type(self.value) is not int or not 1 <= self.value <= _MAX_GRANT:
+            raise InvalidGrantAmount(f"a grant must be a whole number from 1 to {_MAX_GRANT}")
 
 
 class Pack(StrEnum):
@@ -64,12 +70,16 @@ class Pack(StrEnum):
     @property
     def credits(self) -> int:
         """3 for `pack_3`, 10 for `pack_10`."""
-        raise NotImplementedError
+        return _PACK_TERMS[self][0]
 
     @property
     def price_cents(self) -> int:
         """500 for `pack_3`, 1200 for `pack_10`."""
-        raise NotImplementedError
+        return _PACK_TERMS[self][1]
+
+
+# (credits, price in cents). A dict beside the enum, not on it: a `StrEnum` member's value is its string.
+_PACK_TERMS: dict[Pack, tuple[int, int]] = {Pack.PACK_3: (3, 500), Pack.PACK_10: (10, 1200)}
 
 
 class CreditNotice(StrEnum):
