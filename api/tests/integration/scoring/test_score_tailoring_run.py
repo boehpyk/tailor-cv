@@ -41,14 +41,15 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import FakeDraftText
 from tests.integration.owners import queued_run, running_run
 from tests.integration.scoring.comparison_support import (
+    BEFORE_TEXT,
     DRAFT_MARKDOWN,
     REVISION_MARKDOWN,
     ComparisonWorld,
+    reserved_for,
 )
 from tests.integration.scoring.support import (
     MAX_CV_CHARACTERS,
     MAX_PER_USER,
-    RESERVED,
     USUAL_COST,
     assessed,
 )
@@ -209,7 +210,9 @@ async def test_a_side_scored_costs_what_a_check_costs_and_settles(clock: FixedCl
 
     await w.score_run()(_cmd(w.owner, run, ComparisonSide.BEFORE))
 
-    assert w.ledger.settlements == [(w.day, MicroUsd(RESERVED), MicroUsd(USUAL_COST))]
+    assert w.ledger.settlements == [
+        (w.day, MicroUsd(reserved_for(BEFORE_TEXT)), MicroUsd(USUAL_COST))
+    ]
 
 
 async def test_a_failed_assessment_is_the_scorers_failure_for_that_side(
@@ -357,7 +360,10 @@ async def test_a_store_refused_because_the_run_went_during_the_call_settles_and_
 
     assert info.value is gone
     assert w.scores.all() == []
-    assert w.ledger.settlements == [(w.day, MicroUsd(RESERVED), MicroUsd(USUAL_COST))]
+    after_text = await FakeDraftText().to_plain_text(DRAFT_MARKDOWN)
+    assert w.ledger.settlements == [
+        (w.day, MicroUsd(reserved_for(after_text)), MicroUsd(USUAL_COST))
+    ]
 
 
 async def test_two_tabs_comparing_at_once_share_one_row(clock: FixedClock) -> None:

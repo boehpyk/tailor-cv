@@ -40,6 +40,8 @@ from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import FakeDraftText, FakeTailoringRunRepository
 from tests.integration.owners import a_draft, queued_run
 from tests.integration.scoring.support import (
+    MAX_ATTEMPTS,
+    OVERHEAD,
     USUAL_COST,
     World,
     assessed,
@@ -52,6 +54,17 @@ DRAFT_MARKDOWN = "# Delta Person\n\n" + "- delta delta delta delta delta delta d
 REVISION_MARKDOWN = (
     "# Epsilon Person\n\n" + "- epsilon epsilon epsilon epsilon epsilon epsilon\n" * 12
 )
+
+
+POSTING_CHARS = len("post " * 40) - 1  # `pasted_posting`'s text, whitespace-collapsed
+
+
+def reserved_for(cv_text: str) -> int:
+    """The reservation for this CV text against `inputs()`' posting, worked from the formula by hand
+    (integer ceilings, not `ScoringPrices`): MAX_ATTEMPTS * (ceil(in * 0.1) + 205)."""
+    cv_chars = len(" ".join(cv_text.split()))
+    input_tokens = cv_chars + POSTING_CHARS + OVERHEAD
+    return MAX_ATTEMPTS * (-(-input_tokens // 10) + 205)
 
 
 class ComparisonWorld(World):
