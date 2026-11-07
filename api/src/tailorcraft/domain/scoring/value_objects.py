@@ -113,6 +113,20 @@ class ComparisonVerdict(StrEnum):
     LOWER = "lower"
 
 
+class ComparisonSide(StrEnum):
+    """Which side of a run's comparison: its base CV (`before`) or its draft CV (`after`)."""
+
+    BEFORE = "before"
+    AFTER = "after"
+
+
+class ComparisonUnavailableReason(StrEnum):
+    """Why a run can have no comparison at all (plan §4's `unavailable`)."""
+
+    BASE_CV_DELETED = "base_cv_deleted"
+    NOT_SUCCEEDED = "not_succeeded"
+
+
 class FitScoreFailureReason(StrEnum):
     """Why an assessment failed. Closed, and **an error vocabulary only: never persisted**, because
     only a success is a row (ADR-0040 decision 2)."""

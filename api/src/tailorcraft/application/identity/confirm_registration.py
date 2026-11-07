@@ -18,11 +18,13 @@ refusal's `reason` from `ConfirmationTokenInvalid`.
 
 from __future__ import annotations
 
+from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
 from tailorcraft.domain.identity.errors import ConfirmationTokenInvalid, EmailAlreadyRegistered
 from tailorcraft.domain.identity.ports import PendingRegistrationRepository, UserRepository
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import TokenHash, TokenRefusal, UserId
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.counters import DailyCounterPort
 from tailorcraft.domain.shared.events import EventPublisherPort
 
 
@@ -49,7 +51,14 @@ class ConfirmRegistration:
         users: UserRepository,
         clock: Clock,
         events: EventPublisherPort,
+        *,
+        open_account: OpenCreditAccount,
+        counters: DailyCounterPort,
     ) -> None:
+        # Skeleton (slice 5.2 T12): held, not yet called. T16 opens the `welcome` account and counts
+        # `sign_ups` after `users.add`, in this same transaction (plan §0.6).
+        self._open_account = open_account
+        self._counters = counters
         self._pending = pending
         self._users = users
         self._clock = clock

@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import timedelta
 
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
@@ -51,6 +52,8 @@ class AbandonStaleTailoringRunsResult:
     abandoned: int
     skipped: int
     conflicts: int
+    # Slice 5.2 (plan §0.5): queued runs past `queued_lost_after_seconds`, recorded `not_queued`.
+    lost_queued: int
 
 
 class AbandonStaleTailoringRuns:
@@ -153,7 +156,14 @@ class AbandonStaleTailoringRuns:
         clock: Clock,
         stale_after_seconds: int = 300,
         batch_size: int = 100,
+        *,
+        record_failure: RecordRunFailure,
+        queued_lost_after_seconds: int = 1800,
     ) -> None:
+        # Skeleton (slice 5.2 T12): held, not yet used. T17 lists ids first, sweeps both lists and
+        # records through `record_failure`.
+        self._record_failure = record_failure
+        self._queued_lost_after_seconds = queued_lost_after_seconds
         self._runs = runs
         self._events = events
         self._clock = clock
@@ -195,5 +205,5 @@ class AbandonStaleTailoringRuns:
             abandoned += 1
 
         return AbandonStaleTailoringRunsResult(
-            abandoned=abandoned, skipped=skipped, conflicts=conflicts
+            abandoned=abandoned, skipped=skipped, conflicts=conflicts, lost_queued=0
         )

@@ -61,6 +61,7 @@ from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
     FakeUserRepository,
+    RecordingDailyCounter,
     RecordingEventPublisher,
     RecordingSpendLedger,
     create_active_session,
@@ -273,6 +274,7 @@ class World:
             max_cv_characters=max_cv_characters,
             model=ModelName("gemini-test"),
             prompt_version=PromptVersion("1"),
+            counters=RecordingDailyCounter(),
         )
 
     async def ask(self, owner: Owner, pair: ScoringPair, **config: object) -> RequestOutcome:

@@ -93,6 +93,9 @@ from datetime import UTC, date, datetime, timedelta
 from typing import NamedTuple, Protocol
 from uuid import UUID, uuid4
 
+from tailorcraft.domain.billing.credit_account import CreditAccount
+from tailorcraft.domain.billing.errors import CreditAccountNotFound
+from tailorcraft.domain.billing.value_objects import CreditEntryId
 from tailorcraft.domain.export.errors import (
     DocumentRenderFailed,
     ExportJobConcurrentlyModified,
@@ -166,6 +169,7 @@ from tailorcraft.domain.scoring.value_objects import (
     PostingFingerprint,
     PostingForScoring,
 )
+from tailorcraft.domain.shared.counters import DemandCounter
 from tailorcraft.domain.shared.events import DomainEvent
 from tailorcraft.domain.shared.files import FileRef, FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
@@ -198,6 +202,8 @@ from tailorcraft.domain.tracking.errors import (
 from tailorcraft.domain.tracking.tracked_application import TrackedApplication
 from tailorcraft.domain.tracking.value_objects import TrackedApplicationId, TrackedRunRef
 from tailorcraft.infrastructure.clock import FixedClock
+from tailorcraft.infrastructure.export.plain_text import render_plain_text
+from tailorcraft.infrastructure.export.tokens import normalize_to_grammar, parse_document
 
 # A `NULL`-`started_at` stand-in for `FakeTailoringRunRepository.list_stale_running`'s sort key:
 # older than any real instant, so a `None` sorts first exactly as `NULLS FIRST` would in SQL.
@@ -2167,3 +2173,103 @@ class RecordingSpendLedger:
             # settle on the wrong day (T20).
             return
         self.spent[day] = max(self.spent[day] + actual.value - reserved.value, 0)
+
+
+class FakeCreditAccountRepository:
+    """In-memory `CreditAccountRepository` (slice 5.2), faithful where the real adapter is.
+
+    - `add` and `save` store the account and then `mark_entries_saved()`, as the adapter does after
+      its flush, so `pending_entries()` is empty after either.
+    - `lock_for_charge` raises `CreditAccountNotFound` for a user with none; `find` returns `None`.
+      It takes no lock: a test of the lock (F-2) needs the real adapter and `concurrent_app`.
+    - `lock_calls` / `find_calls` count each read, so a test can tell the refund's unlocked read from
+      a charge's locked one.
+
+    `seed` stores an account without counting, and clears its pending entries and events, so
+    arrangement never shows up as the use case's behaviour.
+    """
+
+    def __init__(self) -> None:
+        self._accounts: dict[UserId, CreditAccount] = {}
+        self.lock_calls = 0
+        self.find_calls = 0
+        self.save_calls = 0
+
+    def seed(self, account: CreditAccount) -> None:
+        account.mark_entries_saved()
+        account.release_events()
+        self._accounts[account.user_id] = account
+
+    def next_entry_identity(self) -> CreditEntryId:
+        return CreditEntryId(value=uuid4())
+
+    async def add(self, account: CreditAccount) -> None:
+        self._accounts[account.user_id] = account
+        account.mark_entries_saved()
+
+    async def find(self, user_id: UserId) -> CreditAccount | None:
+        self.find_calls += 1
+        return self._accounts.get(user_id)
+
+    async def lock_for_charge(self, user_id: UserId) -> CreditAccount:
+        self.lock_calls += 1
+        account = self._accounts.get(user_id)
+        if account is None:
+            raise CreditAccountNotFound(user_id)
+        return account
+
+    async def save(self, account: CreditAccount) -> None:
+        self.save_calls += 1
+        self._accounts[account.user_id] = account
+        account.mark_entries_saved()
+
+
+class RecordingDailyCounter:
+    """`DailyCounterPort` (slice 5.2). The adapter is one upsert on the caller's session and **never
+    commits**; this fake commits nothing either, because it has no transaction at all. A test that
+    asserts a count rolled back with its fact needs the real adapter on a real session.
+
+    `counts` is the running total per `(day, counter)`; `calls` is every increment in order, including
+    one that then raised. `journal` (shared with other fakes) records `"count:<counter>"`.
+    `increment_raises` is the database failing at that point.
+    """
+
+    def __init__(
+        self,
+        *,
+        journal: list[str] | None = None,
+        increment_raises: Exception | None = None,
+    ) -> None:
+        self._journal = journal
+        self._increment_raises = increment_raises
+        self.counts: dict[tuple[date, DemandCounter], int] = {}
+        self.calls: list[tuple[DemandCounter, date]] = []
+
+    async def increment(self, counter: DemandCounter, day: date) -> None:
+        if self._journal is not None:
+            self._journal.append(f"count:{counter.value}")
+        self.calls.append((counter, day))
+        if self._increment_raises is not None:
+            raise self._increment_raises
+        self.counts[(day, counter)] = self.counts.get((day, counter), 0) + 1
+
+    def count(self, counter: DemandCounter, day: date) -> int:
+        return self.counts.get((day, counter), 0)
+
+
+class FakeDraftText:
+    """`DraftTextPort` (slice 5.2) with the real adapter's output: the TXT export's walk
+    (`render_plain_text` over the normalized grammar), run in a thread as the adapter runs it.
+    `calls` is every markdown it was given; `raises` is the conversion failing."""
+
+    def __init__(self, *, raises: Exception | None = None) -> None:
+        self._raises = raises
+        self.calls: list[str] = []
+
+    async def to_plain_text(self, markdown: str) -> str:
+        self.calls.append(markdown)
+        if self._raises is not None:
+            raise self._raises
+        return await asyncio.to_thread(
+            lambda: render_plain_text(normalize_to_grammar(parse_document(markdown)))
+        )

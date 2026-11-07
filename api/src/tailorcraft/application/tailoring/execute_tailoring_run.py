@@ -12,11 +12,13 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.intake.errors import BaseCvNotFound
 from tailorcraft.domain.intake.ports import BaseCvRepository
 from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.posting.ports import JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.counters import DailyCounterPort
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.errors import TailoringFailed, TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
@@ -210,7 +212,14 @@ class ExecuteTailoringRun:
         events: EventPublisherPort,
         clock: Clock,
         stale_after_seconds: int = 300,
+        *,
+        record_failure: RecordRunFailure,
+        counters: DailyCounterPort,
     ) -> None:
+        # Skeleton (slice 5.2 T12): held, not yet called. T17 routes every failure through
+        # `record_failure` and counts `runs_succeeded` before the success save.
+        self._record_failure_with_refund = record_failure
+        self._counters = counters
         self._runs = runs
         self._base_cvs = base_cvs
         self._job_postings = job_postings

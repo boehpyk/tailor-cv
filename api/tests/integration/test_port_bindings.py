@@ -54,9 +54,9 @@ from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 _BOUND_ELSEWHERE: dict[str, str] = {
     # Not bound anywhere yet: slice 5.2 in progress. T22 writes the adapters and T26 binds them in
     # the API root, which turns this into a "stale exemption" failure until these lines go.
-    "DailyCounterPort": "unbound until slice 5.2's T26 (ADR-0043)",
+    # `DailyCounterPort` and `CreditAccountRepository` left this list at T12, bound to the
+    # placeholders in `infrastructure/unwired.py` until T26.
     "DemandCounterQuery": "unbound until slice 5.2's T26 (ADR-0043)",
-    "CreditAccountRepository": "unbound until slice 5.2's T26 (ADR-0042)",
     "DraftTextPort": "unbound until slice 5.2's T26 (plan §0.8)",
 }
 

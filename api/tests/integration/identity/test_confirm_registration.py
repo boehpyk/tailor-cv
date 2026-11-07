@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
 from tailorcraft.application.identity.confirm_registration import ConfirmRegistration
 from tailorcraft.domain.identity.errors import ConfirmationTokenInvalid, EmailAlreadyRegistered
 from tailorcraft.domain.identity.events import UserRegistered
@@ -30,9 +31,11 @@ from tailorcraft.domain.identity.value_objects import (
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     CountingClock,
+    FakeCreditAccountRepository,
     FakePendingRegistrationRepository,
     LoggingEventPublisher,
     LoggingUserRepository,
+    RecordingDailyCounter,
 )
 from tests.integration.identity.structure import constructor_dependency_names, module_references
 
@@ -50,7 +53,14 @@ class _Rig:
         self.users = LoggingUserRepository(self.log)
         self.events = LoggingEventPublisher(self.log)
         self.clock = CountingClock(clock)
-        self.use_case = ConfirmRegistration(self.pending, self.users, self.clock, self.events)
+        self.use_case = ConfirmRegistration(
+            self.pending,
+            self.users,
+            self.clock,
+            self.events,
+            open_account=OpenCreditAccount(FakeCreditAccountRepository(), self.events),
+            counters=RecordingDailyCounter(),
+        )
 
     def seed_issued(self, requested_at: datetime) -> PendingRegistration:
         p = PendingRegistration.request(

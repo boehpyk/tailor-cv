@@ -50,6 +50,7 @@ from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.export.abandon_stale_export_jobs import AbandonStaleExportJobs
 from tailorcraft.application.export.render_export_job import RenderExportJob
 from tailorcraft.application.identity.deliver_password_reset_mail import DeliverPasswordResetMail
@@ -60,6 +61,7 @@ from tailorcraft.application.retention.purge_expired_identity_tokens import (
 )
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
@@ -89,6 +91,7 @@ from tailorcraft.infrastructure.retention.data_access import (
     OverdueBacklog,
 )
 from tailorcraft.infrastructure.settings import Settings, get_settings
+from tailorcraft.infrastructure.unwired import UnwiredCreditAccountRepository, UnwiredDailyCounter
 
 
 class CommittingTailoringRunRepository:
@@ -389,10 +392,12 @@ def _build_use_case(
         SqlAlchemyTailoringRunRepository,
     )
 
+    runs = CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session)
+    events = LoggingEventPublisher()
     return ExecuteTailoringRun(
         # `TailoringRunRepository` -> the committing wrapper. The API binds the bare
         # `SqlAlchemyTailoringRunRepository` for the same port; the difference *is* the boundary.
-        runs=CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session),
+        runs=runs,
         # `BaseCvRepository` and `JobPostingRepository` -> read-only here, so the bare adapters.
         base_cvs=SqlAlchemyBaseCvRepository(session),
         job_postings=SqlAlchemyJobPostingRepository(session),
@@ -405,10 +410,23 @@ def _build_use_case(
         llm=llm if llm is not None else GeminiLlm(settings),
         # `EventPublisherPort` -> `LoggingEventPublisher`, the same binding `deps.py` makes, and the
         # enforcement point for "an event carries no document body" (AC-22).
-        events=LoggingEventPublisher(),
+        events=events,
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007).
         clock=SystemClock(),
         stale_after_seconds=settings.tailoring_stale_after_seconds,
+        # Slice 5.2: placeholders (`infrastructure/unwired.py`) until T26 binds the real adapters on
+        # this session.
+        record_failure=_record_failure(runs, events),
+        counters=UnwiredDailyCounter(),
+    )
+
+
+def _record_failure(
+    runs: CommittingTailoringRunRepository, events: LoggingEventPublisher
+) -> RecordRunFailure:
+    """The failure collaborator both tailoring use cases share, on the same `runs` and `events`."""
+    return RecordRunFailure(
+        runs, RefundCreditForRun(UnwiredCreditAccountRepository()), UnwiredDailyCounter(), events
     )
 
 
@@ -455,16 +473,18 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         SqlAlchemyTailoringRunRepository,
     )
 
+    runs = CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session)
+    events = LoggingEventPublisher()
     return AbandonStaleTailoringRuns(
         # `TailoringRunRepository` -> the committing wrapper, **one commit per abandoned run**, and
         # both halves of the failure contract depend on it. A database failure part-way through a
         # batch keeps every run already recorded (G-35), so the next tick lists only the rest. And a
         # run another process decided first (G-36) is skipped without taking the batch's earlier
         # writes back with it. One transaction per tick would make one bad row cost the whole batch.
-        runs=CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session),
+        runs=runs,
         # `EventPublisherPort` -> `LoggingEventPublisher`: each abandonment's `TailoringRunFailed`
         # is the per-run log line G-25' asks for (`tailoring_run_id`, `reason=abandoned`).
-        events=LoggingEventPublisher(),
+        events=events,
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007). Read once per batch by the
         # use case, so every `completed_at` written in one tick is the same instant.
         clock=SystemClock(),
@@ -476,6 +496,10 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         # `--concurrency` runs (2 in production). A backlog of 100 would take fifty lost workers
         # inside a single five-minute window, and even then the next tick takes the rest a minute
         # later. A knob nobody has a reason to turn is a knob somebody will turn wrongly.
+        #
+        # Slice 5.2: placeholders until T26; `queued_lost_after_seconds` keeps the use case's
+        # default until T19's setting exists.
+        record_failure=_record_failure(runs, events),
     )
 
 

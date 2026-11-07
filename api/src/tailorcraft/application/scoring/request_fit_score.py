@@ -20,10 +20,13 @@ from tailorcraft.domain.scoring.value_objects import (
     MicroUsd,
     ModelName,
     PromptVersion,
+    ScoredRunRef,
     ScoringPrices,
+    ScoringPurpose,
     ScoringUsage,
 )
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.counters import DailyCounterPort
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -32,10 +35,17 @@ _USER_LIMIT_WINDOW = timedelta(hours=24)
 
 @dataclass(frozen=True, slots=True)
 class RequestFitScoreCommand:
-    """Who is asking, and the pair `ResolveScoringPair` already authorized against that owner."""
+    """Who is asking, and the pair `ResolveScoringPair` already authorized against that owner.
+
+    `purpose` (slice 5.2): a `CHECK` is limited per owner and counts `fit_scores` when it creates a
+    row; a `COMPARISON` skips both (plan §0.8). `draft_of` names the run whose draft `pair.cv` is,
+    and is stored on the score.
+    """
 
     owner: Owner
     pair: ScoringPair
+    purpose: ScoringPurpose = ScoringPurpose.CHECK
+    draft_of: ScoredRunRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +114,11 @@ class RequestFitScore:
         max_cv_characters: int,
         model: ModelName,
         prompt_version: PromptVersion,
+        counters: DailyCounterPort,
     ) -> None:
+        # Skeleton (slice 5.2 T12): held, not yet called; `purpose` and `draft_of` are not yet read.
+        # T18 counts `fit_scores` / `fit_scores_busy` and applies the purpose rules.
+        self._counters = counters
         self._scores = scores
         self._scorer = scorer
         self._ledger = ledger

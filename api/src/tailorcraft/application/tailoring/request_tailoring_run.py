@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import assert_never
 
+from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
@@ -141,7 +142,11 @@ class RequestTailoringRun:
         clock: Clock,
         max_per_session: int = 20,
         max_per_user: int = 500,
+        *,
+        charge: ChargeCreditForRun,
     ) -> None:
+        # Skeleton (slice 5.2 T12): `charge` is held, not yet called; T17 adds plan §0.3's steps 5-6.
+        self._charge = charge
         self._runs = runs
         self._get_base_cv = get_base_cv
         self._get_job_posting = get_job_posting

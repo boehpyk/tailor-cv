@@ -11,6 +11,8 @@ from datetime import date
 from enum import StrEnum
 from typing import Protocol
 
+from tailorcraft.domain.shared.errors import DomainError
+
 
 class DemandCounter(StrEnum):
     """A closed set, checked in the database. A new counter is a deliberate change to this enum, the
@@ -41,3 +43,7 @@ class DemandCounterQuery(Protocol):
         """The stored counts for days in `[from_day, to_day]`, both inclusive. A pair with no row is
         absent, never zero: filling zeros is the use case's job."""
         ...
+
+
+class InvalidCounterRange(DomainError):
+    """A counter range that ends before it starts, or spans more days than `/admin/demand` reads."""

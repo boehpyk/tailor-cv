@@ -31,6 +31,8 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
+from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
 from tailorcraft.application.export.download_export_file import DownloadExportFile
 from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
@@ -83,6 +85,7 @@ from tailorcraft.application.tracking.retitle_tracked_application import Retitle
 from tailorcraft.application.tracking.show_application_board import ShowApplicationBoard
 from tailorcraft.application.tracking.track_application import TrackApplication
 from tailorcraft.application.tracking.untrack_application import UntrackApplication
+from tailorcraft.domain.billing.ports import CreditAccountRepository
 from tailorcraft.domain.export.ports import (
     DocumentRendererPort,
     ExportJobRepository,
@@ -128,6 +131,7 @@ from tailorcraft.domain.scoring.value_objects import (
     ScoringPrices,
 )
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.counters import DailyCounterPort
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
 from tailorcraft.domain.tailoring.ports import (
@@ -192,6 +196,7 @@ from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 # The purge task's own TTL (ADR-0018 decision 7): one key, one TTL, every holder. `main.py` already
 # imports `tasks.app` for the Celery app, so this costs the API no new import.
 from tailorcraft.infrastructure.tasks.app import PURGE_LOCK_TTL_SECONDS
+from tailorcraft.infrastructure.unwired import UnwiredCreditAccountRepository, UnwiredDailyCounter
 
 log = structlog.get_logger(__name__)
 
@@ -292,6 +297,40 @@ def get_event_publisher() -> EventPublisherPort:
 
 
 EventPublisherDep = Annotated[EventPublisherPort, Depends(get_event_publisher)]
+
+
+def get_credit_account_repository() -> CreditAccountRepository:
+    """A placeholder until slice 5.2's T26 binds the SQLAlchemy adapter (`infrastructure/unwired.py`)."""
+    return UnwiredCreditAccountRepository()
+
+
+CreditAccountRepositoryDep = Annotated[
+    CreditAccountRepository, Depends(get_credit_account_repository)
+]
+
+
+def get_daily_counter() -> DailyCounterPort:
+    """A placeholder until slice 5.2's T26 binds the upsert adapter (`infrastructure/unwired.py`)."""
+    return UnwiredDailyCounter()
+
+
+DailyCounterDep = Annotated[DailyCounterPort, Depends(get_daily_counter)]
+
+
+def get_charge_credit_for_run(credits: CreditAccountRepositoryDep) -> ChargeCreditForRun:
+    return ChargeCreditForRun(credits)
+
+
+ChargeCreditForRunDep = Annotated[ChargeCreditForRun, Depends(get_charge_credit_for_run)]
+
+
+def get_open_credit_account(
+    credits: CreditAccountRepositoryDep, events: EventPublisherDep
+) -> OpenCreditAccount:
+    return OpenCreditAccount(credits, events)
+
+
+OpenCreditAccountDep = Annotated[OpenCreditAccount, Depends(get_open_credit_account)]
 
 
 def get_base_cv_repository(session: SessionDep) -> BaseCvRepository:
@@ -780,6 +819,7 @@ def get_request_fit_score(
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
+    counters: DailyCounterDep,
 ) -> RequestFitScore:
     """The composition root's conversion point: settings become domain values here, once."""
     return RequestFitScore(
@@ -798,6 +838,7 @@ def get_request_fit_score(
         max_cv_characters=settings.llm_max_cv_characters,
         model=ModelName(settings.fit_score_model),
         prompt_version=PromptVersion(FIT_SCORE_PROMPT_VERSION),
+        counters=counters,
     )
 
 
@@ -836,6 +877,7 @@ def get_request_tailoring_run(
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
+    charge: ChargeCreditForRunDep,
 ) -> RequestTailoringRun:
     """Note what the second and third arguments are: the two *use cases*, not their repositories.
 
@@ -855,6 +897,7 @@ def get_request_tailoring_run(
         clock,
         max_per_session=settings.max_tailoring_runs_per_session,
         max_per_user=settings.max_tailoring_runs_per_user,
+        charge=charge,
     )
 
 
@@ -1887,10 +1930,14 @@ def get_confirm_registration(
     users: UserRepositoryDep,
     clock: ClockDep,
     events: EventPublisherDep,
+    open_account: OpenCreditAccountDep,
+    counters: DailyCounterDep,
 ) -> ConfirmRegistration:
     """Creates the `User` and no `Login` (OQ-3: confirming does not sign in). Its handler commits
     nothing — every writing path ends in the committing `remove` (the note above)."""
-    return ConfirmRegistration(pending, users, clock, events)
+    return ConfirmRegistration(
+        pending, users, clock, events, open_account=open_account, counters=counters
+    )
 
 
 ConfirmRegistrationDep = Annotated[ConfirmRegistration, Depends(get_confirm_registration)]

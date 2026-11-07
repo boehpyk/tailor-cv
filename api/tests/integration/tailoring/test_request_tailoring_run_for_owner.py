@@ -27,6 +27,7 @@ from uuid import uuid4
 
 import pytest
 
+from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.tailoring.request_tailoring_run import (
@@ -52,6 +53,7 @@ from tailorcraft.domain.tailoring.value_objects import TailoringRunStatus
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeBaseCvRepository,
+    FakeCreditAccountRepository,
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
     FakeTailoringRunRepository,
@@ -91,6 +93,7 @@ class _World:
             GetJobPosting(self.postings, self.sessions, self.users, self.clock),
             self.events,
             self.clock,
+            charge=ChargeCreditForRun(FakeCreditAccountRepository()),
         )
 
     async def user(self, email: str = "alex@example.com") -> UserOwner:

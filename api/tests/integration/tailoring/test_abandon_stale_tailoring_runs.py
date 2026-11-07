@@ -44,10 +44,12 @@ from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import uuid4
 
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import (
     AbandonStaleTailoringRuns,
     AbandonStaleTailoringRunsResult,
 )
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.value_objects import BaseCvId
@@ -68,7 +70,12 @@ from tailorcraft.domain.tailoring.value_objects import (
     TailoringRunStatus,
 )
 from tailorcraft.infrastructure.clock import FixedClock
-from tests.integration.fakes import FakeTailoringRunRepository, RecordingEventPublisher
+from tests.integration.fakes import (
+    FakeCreditAccountRepository,
+    FakeTailoringRunRepository,
+    RecordingDailyCounter,
+    RecordingEventPublisher,
+)
 
 # --- Test helpers ----------------------------------------------------------------------------------
 
@@ -121,7 +128,14 @@ def _use_case(
     batch_size: int = 100,
 ) -> AbandonStaleTailoringRuns:
     return AbandonStaleTailoringRuns(
-        runs, events, clock, stale_after_seconds=stale_after_seconds, batch_size=batch_size
+        runs,
+        events,
+        clock,
+        stale_after_seconds=stale_after_seconds,
+        batch_size=batch_size,
+        record_failure=RecordRunFailure(
+            runs, RefundCreditForRun(FakeCreditAccountRepository()), RecordingDailyCounter(), events
+        ),
     )
 
 
@@ -211,7 +225,9 @@ async def test_a_stale_running_run_is_recorded_failed_abandoned_with_the_event_p
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=1, skipped=0, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=0, conflicts=0, lost_queued=0
+    )
     stored = await runs.get(run.id)
     assert stored.status is TailoringRunStatus.FAILED
     assert stored.failure_reason is TailoringFailureReason.ABANDONED
@@ -247,7 +263,9 @@ async def test_a_fresh_running_run_is_untouched_while_a_stale_one_is_abandoned(
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=1, skipped=0, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=0, conflicts=0, lost_queued=0
+    )
     unchanged = await runs.get(fresh_run.id)
     assert unchanged.status is TailoringRunStatus.RUNNING
     assert unchanged.failure_reason is None
@@ -292,7 +310,9 @@ async def test_queued_and_terminal_runs_are_untouched_while_a_stale_run_is_aband
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=1, skipped=0, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=0, conflicts=0, lost_queued=0
+    )
     assert (await runs.get(queued_run.id)).status is TailoringRunStatus.QUEUED
     assert (await runs.get(succeeded_run.id)).status is TailoringRunStatus.SUCCEEDED
     unchanged_failed = await runs.get(failed_run.id)
@@ -336,7 +356,9 @@ async def test_batch_bound_abandons_the_oldest_and_leaves_the_rest_for_the_next_
 
     first = await use_case()
 
-    assert first == AbandonStaleTailoringRunsResult(abandoned=2, skipped=0, conflicts=0)
+    assert first == AbandonStaleTailoringRunsResult(
+        abandoned=2, skipped=0, conflicts=0, lost_queued=0
+    )
     assert (await runs.get(oldest.id)).status is TailoringRunStatus.FAILED
     assert (await runs.get(middle.id)).status is TailoringRunStatus.FAILED
     # the third-oldest, still genuinely stale, waits for the next tick — the batch bound, not staleness
@@ -344,7 +366,9 @@ async def test_batch_bound_abandons_the_oldest_and_leaves_the_rest_for_the_next_
 
     second = await use_case()
 
-    assert second == AbandonStaleTailoringRunsResult(abandoned=1, skipped=0, conflicts=0)
+    assert second == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=0, conflicts=0, lost_queued=0
+    )
     assert (await runs.get(newest_stale.id)).status is TailoringRunStatus.FAILED
 
 
@@ -370,7 +394,9 @@ async def test_a_run_exactly_at_the_stale_window_is_untouched(clock: FixedClock)
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=1, skipped=0, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=0, conflicts=0, lost_queued=0
+    )
     unchanged = await runs.get(boundary_run.id)
     assert unchanged.status is TailoringRunStatus.RUNNING
     assert unchanged.failure_reason is None
@@ -410,7 +436,9 @@ async def test_a_run_already_decided_between_load_and_mark_is_skipped_without_ra
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=1, skipped=1, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=1, conflicts=0, lost_queued=0
+    )
     unchanged = await runs.get(decided_run.id)
     assert unchanged.status is TailoringRunStatus.SUCCEEDED
     assert unchanged.completed_at == clock.now() - timedelta(seconds=350)  # untouched
@@ -449,7 +477,9 @@ async def test_a_wrongly_returned_fresh_running_run_is_left_untouched_by_the_re_
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=1, skipped=1, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=1, skipped=1, conflicts=0, lost_queued=0
+    )
     unchanged = await runs.get(fresh_run.id)
     assert unchanged.status is TailoringRunStatus.RUNNING
     assert unchanged.failure_reason is None
@@ -486,7 +516,9 @@ async def test_every_run_abandoned_in_one_batch_shares_the_same_completed_at(
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=2, skipped=0, conflicts=0)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=2, skipped=0, conflicts=0, lost_queued=0
+    )
     completed_first = (await runs.get(first_stale.id)).completed_at
     completed_second = (await runs.get(second_stale.id)).completed_at
     assert completed_first == completed_second == clock.now()
@@ -531,7 +563,9 @@ async def test_a_conflicting_save_is_counted_and_the_batch_continues_to_the_next
 
     result = await use_case()
 
-    assert result == AbandonStaleTailoringRunsResult(abandoned=2, skipped=0, conflicts=1)
+    assert result == AbandonStaleTailoringRunsResult(
+        abandoned=2, skipped=0, conflicts=1, lost_queued=0
+    )
 
     assert (await runs.get(oldest.id)).status is TailoringRunStatus.FAILED
     # The conflicting write never landed. Asserted on `saved`, not on `get(middle.id).status`: the
