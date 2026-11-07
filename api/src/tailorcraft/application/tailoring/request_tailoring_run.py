@@ -8,15 +8,20 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import assert_never
 
-from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
+from tailorcraft.application.billing.charge_credit_for_run import (
+    ChargeCreditCommand,
+    ChargeCreditForRun,
+)
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
+from tailorcraft.domain.billing.value_objects import ChargedRunRef
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.intake.value_objects import BaseCvId, BaseCvStatus
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.errors import (
+    AccountRequired,
     BaseCvNotReadyForTailoring,
     TailoringAlreadyRunning,
     TooManyTailoringRuns,
@@ -94,41 +99,26 @@ class RequestTailoringRun:
     router's (`get_session` opens one `AsyncSession` per request and the handler commits inside its
     own error boundary), and a use case that cannot see that boundary must not straddle it.
 
-    Flow (technical-plan.md, "Application layer"):
+    Flow (slice 5.2, plan §0.3; a `GuestOwner` is refused `AccountRequired` before step 1):
 
-    1. ``cv = await get_base_cv(cmd.base_cv_id, cmd.owner)`` — resolves the session and
-       raises `GuestSessionNotFound` / `GuestSessionExpired` / `BaseCvNotFound` (G-5, G-6).
-    2. ``posting = await get_job_posting(cmd.job_posting_id, cmd.owner)`` —
-       `JobPostingNotFound` (G-7).
-    3. ``if cv.status is not BaseCvStatus.EXTRACTED: raise BaseCvNotReadyForTailoring(...)`` (G-8).
-       The check reads the **aggregate's own status**, not `extracted_text is not None`: I-2 makes
-       the two equivalent, and the status is the one that says what it *means*.
-    4. ``if await runs.find_active_for_owner(owner) is not None: raise TailoringAlreadyRunning(id)``
-       (G-9). Cross-aggregate, therefore here. The error carries the active run's id so the router
-       can hand the client something to attach to instead of paying for a second call.
-    5. ``if await runs.count_for_owner(owner) >= cap: raise TooManyTailoringRuns(...)`` (G-10),
-       the cap chosen by variant.
-    6. ``run_id = runs.next_identity()``; ``run = TailoringRun.request(...)``; ``await runs.add(run)``.
-    7. ``await events.publish(*run.release_events())`` — after the aggregate is saved, never before.
-    8. Return `RequestTailoringRunResult` built from the saved aggregate.
+    1. ``get_base_cv`` / ``get_job_posting`` (404s, ownership); ``EXTRACTED`` (409, G-8).
+    2. The **soft** active-run check (G-9), then the per-user cap (G-10). Both before any lock.
+    3. ``run = TailoringRun.request(...)``; ``await runs.add(run)``.
+    4. ``await charge(...)``: takes the account lock, writes the pending charge (`NoCreditsLeft`,
+       `RunAlreadyCharged`).
+    5. The **hard** re-check, ``find_active_for_owner(owner, excluding=run.id)``, under that lock.
+    6. Publish the run's events, then the charge's.
 
-    **Both caps at steps 4 and 5 are cross-aggregate policy and both are soft**, and neither belongs
-    on `TailoringRun`:
+    **The soft checks are soft; the re-check is not.** Two concurrent requests can both pass step
+    2, as 1.1's F-23 accepted. Before credits that bought a double-click two paid calls; now it would
+    also charge twice, so step 5 closes it: the second request waits on the first's account lock and
+    then sees the first's committed run (F-2). The rule stays here, in tailoring; billing never sees it.
 
-    - *Why not on the aggregate.* Each rule spans **every run a session owns** — the set of a
-      session's runs is a fact no single `TailoringRun` instance has access to. Reaching for it from
-      inside `request` would mean a repository call in a constructor, which is the road to a domain
-      layer that cannot be tested without a database (ADR-0014 §4). `TooManyBaseCvs` (1.1) and
-      `TooManyJobPostings` (1.2) live in their use cases for the identical reason.
-    - *Why soft.* Two genuinely concurrent requests may both pass either check and both create a
-      run. That is **accepted**, exactly as 1.1's F-23 and 1.2's P-32 accepted the same shape. The
-      alternative is a unique partial index or a lock, which buys correctness against a double-click
-      that the disabled button already prevents, at the cost of a lock on the hot path. The rule's
-      job is to stop a double-click from buying two paid calls and to make "reattach after a
-      refresh" trivial — it was never a mutual exclusion.
+    **Every refusal after step 3 rolls back with the handler's session**, so the run and the charge
+    vanish together (F-1): nothing commits until the handler does.
 
-    **No row exists before the enqueue on any rejection path** (ADR-0014 §2, AC/OQ-2). Every raise
-    above happens before step 6, so a 401, a 404, a 409 or a 429 creates nothing to own and nothing
+    **No row survives a rejection** (ADR-0014 §2, AC/OQ-2). Every raise before step 3 writes
+    nothing, and every one after it is rolled back, so a 401, a 404, a 409 or a 429 creates nothing to own and nothing
     to purge: *was anything spent, and is there an artifact to own?* is the one question, and before
     the enqueue the answer is no.
     """
@@ -145,82 +135,77 @@ class RequestTailoringRun:
         *,
         charge: ChargeCreditForRun,
     ) -> None:
-        # Skeleton (slice 5.2 T12): `charge` is held, not yet called; T17 adds plan §0.3's steps 5-6.
+        # `max_per_session` is unused since guests stopped requesting runs (plan §2); it goes when
+        # the composition root stops passing it.
         self._charge = charge
         self._runs = runs
         self._get_base_cv = get_base_cv
         self._get_job_posting = get_job_posting
         self._events = events
         self._clock = clock
-        self._max_per_session = max_per_session
         self._max_per_user = max_per_user
 
     async def __call__(self, cmd: RequestTailoringRunCommand) -> RequestTailoringRunResult:
-        # Both reads go through the composed *use cases* rather than the two repositories, so the
-        # "what authorizes access is the link" rule (ADR-0008) is inherited rather than written a
-        # third time. Each resolves the guest session itself — that is the pair of extra
-        # primary-key lookups this class's docstring puts a price on, paid deliberately.
-        cv = await self._get_base_cv(cmd.base_cv_id, cmd.owner)
-        posting = await self._get_job_posting(cmd.job_posting_id, cmd.owner)
-
-        # G-8 reads the **aggregate's own status**, not `cv.extracted_text is not None`. I-2 makes
-        # the two equivalent, so this is not a correctness choice — it is a meaning one: the status
-        # is the attribute that says *why* the CV cannot be tailored, and it is what the error
-        # carries to the caller. A `None` check would also leave a reader wondering which of the two
-        # is authoritative the first time they disagree.
-        if cv.status is not BaseCvStatus.EXTRACTED:
-            raise BaseCvNotReadyForTailoring(cv.id, cv.status)
-
-        # The next two checks are **cross-aggregate policy, and neither belongs on `TailoringRun`**:
-        # each spans every run the session owns, which is a fact no single aggregate instance has
-        # any way to know. Reaching for it from inside `TailoringRun.request` would mean a
-        # repository call in a constructor — the road to a domain layer that cannot be tested
-        # without a database (ADR-0014 §4). `TooManyBaseCvs` (1.1) and `TooManyJobPostings` (1.2)
-        # live in their use cases for the identical reason.
-        #
-        # Both are also **soft**. Two genuinely concurrent requests can pass either check and both
-        # create a run; that is accepted, exactly as 1.1's F-23 and 1.2's P-32 accept the same
-        # shape. The alternative is a unique partial index or a lock on the hot path, bought to beat
-        # a double-click that the disabled button already prevents.
-        #
-        # Their **order is load-bearing**: the active-run rule is checked first, so a visitor who
-        # already has a run in flight is told *that*, and handed its id to attach a poller to,
-        # rather than being told they are at the cap — which would also be true, and useless.
-        #
-        # The two queries are owner-keyed; only the cap is chosen by variant (`max_per_session` /
-        # `max_per_user`).
+        # Tailoring costs a credit and a credit is a user's (slice 5.2). The guest route no longer
+        # reaches here, so this arm is the last line of defence, kept so the `match` stays total;
+        # it raises before anything is read, so a guest request writes and locks nothing.
         match cmd.owner:
             case GuestOwner():
-                max_runs = self._max_per_session
-            case UserOwner():
-                max_runs = self._max_per_user
+                raise AccountRequired()
+            case UserOwner(user_id=user_id):
+                pass
             case _:
                 assert_never(cmd.owner)
 
+        # Both reads go through the composed *use cases* rather than the two repositories, so the
+        # "what authorizes access is the link" rule (ADR-0008) is inherited rather than written a
+        # third time.
+        cv = await self._get_base_cv(cmd.base_cv_id, cmd.owner)
+        posting = await self._get_job_posting(cmd.job_posting_id, cmd.owner)
+
+        # G-8 reads the **aggregate's own status**, not `cv.extracted_text is not None`: I-2 makes
+        # the two equivalent, and the status is the attribute that says *why*.
+        if cv.status is not BaseCvStatus.EXTRACTED:
+            raise BaseCvNotReadyForTailoring(cv.id, cv.status)
+
+        # The soft checks: cross-aggregate policy, so here and not on `TailoringRun`. The active-run
+        # rule goes first so a visitor with a run in flight is handed its id rather than told they
+        # are at the cap. Both run before the lock, so a refusal here never waits on it.
         active_run = await self._runs.find_active_for_owner(cmd.owner)
         if active_run is not None:
             raise TailoringAlreadyRunning(active_run.id)
 
         run_count = await self._runs.count_for_owner(cmd.owner)
-        if run_count >= max_runs:
-            raise TooManyTailoringRuns(run_count, max_runs)
+        if run_count >= self._max_per_user:
+            raise TooManyTailoringRuns(run_count, self._max_per_user)
 
-        # Identity is application-assigned (ADR-0007): the aggregate is valid before it ever meets
-        # the database. The two ids come off the aggregates just loaded rather than off `cmd` —
-        # same values, but these two are the ones ownership was actually checked on.
+        # Plan §0.3 step 4: the run is inserted **before** the account lock is taken, so the lock
+        # is held for as little as possible and a request waiting on it finds this run on waking.
+        now = self._clock.now()
         run = TailoringRun.request(
             id=self._runs.next_identity(),
             owner=cmd.owner,
             base_cv_id=cv.id,
             job_posting_id=posting.id,
-            requested_at=self._clock.now(),
+            requested_at=now,
         )
         await self._runs.add(run)
 
-        # Released and published only after the aggregate is saved — never before, so a publish
-        # never announces a fact a failed save is about to un-happen. The enqueue that follows is
-        # the router's, after the commit; see this class's docstring for why it is not on this line.
-        await self._events.publish(*run.release_events())
+        # Step 5: one credit, under the account lock held until the handler's transaction ends.
+        # `NoCreditsLeft` / `RunAlreadyCharged` propagate; the handler's rollback takes the run too.
+        charge_events = await self._charge(
+            ChargeCreditCommand(user_id, ChargedRunRef(value=run.id.value), now)
+        )
+
+        # Step 6, the **hard** re-check (F-2): still under the lock, so a rival request that held it
+        # first has committed its run by now and READ COMMITTED's per-statement snapshot sees it.
+        # The soft check above could not. `excluding` keeps this request from refusing itself.
+        rival = await self._runs.find_active_for_owner(cmd.owner, excluding=run.id)
+        if rival is not None:
+            raise TailoringAlreadyRunning(rival.id)
+
+        # Published only after both writes, the run's events first, then the account's.
+        await self._events.publish(*run.release_events(), *charge_events)
 
         return RequestTailoringRunResult(
             tailoring_run_id=run.id,

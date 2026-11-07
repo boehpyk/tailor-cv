@@ -67,31 +67,20 @@ class AbandonStaleTailoringRuns:
     its two bounds — the window and the batch size — are configuration fixed at construction. A
     zero-field command would be a contract with nothing in it.
 
-    Flow:
+    Flow (slice 5.2, plan §0.4, §0.5):
 
-    1. ``now = clock.now()``; ``stale_after = timedelta(seconds=stale_after_seconds)``. **One instant
-       for the whole batch**, so the listing, the re-check and every `completed_at` written this tick
-       agree about when "now" was.
-    2. ``candidates = await runs.list_stale_running(started_before=now - stale_after,
-       limit=batch_size)`` — which runs, in what order and with what guarantees is that port
-       method's docstring (`TailoringRunRepository.list_stale_running`).
-    3. For each candidate, in order:
-
-       - ``if not run.is_stale(now, stale_after)``: count it `skipped` and move on — no mark, no
-         save, no publish. This is the guard against adapter drift: the query and the rule are two
-         expressions of one judgement, and the aggregate's is the one that decides.
-       - ``run.mark_failed(TailoringFailureReason.ABANDONED, now)``; ``await runs.save(run)``;
-         ``await events.publish(*run.release_events())``; count it `abandoned`. **Save strictly
-         before publish**: a publish that ran first would announce a fact a failed save is about to
-         un-happen. `ExecuteTailoringRun._record_failure` performs the same three steps in the same
-         order.
-       - ``except TailoringRunConcurrentlyModified``: count it `conflicts` and move on (E-20;
-         ADR-0015 §3). A worker or a redelivery decided this run between the sweep's read and its
-         write; whichever wrote first stands, and that is the correct outcome. The sweep neither
-         overwrites it nor aborts the batch over it: the next run in the batch is still stale and
-         still waiting for its answer.
-
-    4. Return ``AbandonStaleTailoringRunsResult(abandoned=..., skipped=..., conflicts=...)``.
+    1. ``now = clock.now()``. **One instant for the whole batch**, so the listings, the re-checks and
+       every `completed_at` written this tick agree about when "now" was.
+    2. List **ids**, from both lists, each bounded by `batch_size`: stale `RUNNING` runs
+       (`list_stale_running`) and `QUEUED` runs whose task was lost (`list_lost_queued`, past
+       `queued_lost_after_seconds`). Ids, not instances: a conflicting save now rolls back the
+       worker's whole transaction (so the loser's refund goes with it), which expires every instance
+       still held, and an async session refuses the lazy refresh a stale instance would need.
+    3. Per id: ``find`` it again and re-check it on the aggregate (`is_stale` / `is_lost_in_queue`).
+       Gone or no longer due → `skipped`. Otherwise `RecordRunFailure` with `ABANDONED` /
+       `NOT_QUEUED` (mark, refund, count, save, publish) → `abandoned` / `lost_queued`.
+       ``except TailoringRunConcurrentlyModified`` → `conflicts`, and on to the next id (E-20,
+       F-14): whichever side wrote first stands.
 
     **Why there is no `except TailoringAlreadyDecided` around `mark_failed` (G-36).** A run decided
     between the listing and the mark is the case that exception names, and the `is_stale` re-check
@@ -129,24 +118,21 @@ class AbandonStaleTailoringRuns:
 
     **Transactions and failure (G-35).** This use case does not commit, exactly as
     `ExecuteTailoringRun` does not: the beat task's composition root decides the transaction
-    boundary, and its committing repository contains a refused save in a SAVEPOINT so the other
-    candidates this loop still holds keep their loaded state (a whole-session rollback would expire
-    them, and the next `is_stale` would lazy-load outside the loop — measured at /verify). Any failure other than the skip and the conflict above propagates
-    — a database that is down makes `list_stale_running` or `save` raise, the task raises, nothing
-    further is recorded this tick, and the next tick tries again. That retry is safe because the sweep is idempotent by the aggregate's
-    own rules: an abandoned run is no longer `RUNNING`, so it is never listed twice.
+    boundary, one commit per recorded run, and since 5.2 a refused save rolls the whole transaction
+    back so the loser's refund and count go with it (plan §0.4). That is why the loop holds ids, not
+    instances. Any failure other than the skip and the conflict above propagates: a database that
+    is down makes a listing or a save raise, the task raises, and the next tick tries again. That
+    retry is safe because the sweep is idempotent by the aggregate's own rules: a failed run is no
+    longer `RUNNING` or `QUEUED`, so it is never listed twice.
 
     **This layer does not log** (see `execute_tailoring_run.py`'s module comment). The per-run line
     is the published `TailoringRunFailed`; the per-tick line — `swept_count`, `duration_ms` — is the
     task's, built from the result.
 
-    **Why the save-then-publish sequence is not extracted into a helper shared with
-    `ExecuteTailoringRun._record_failure`.** The rule is not those three lines. Every use case in this
-    codebase that saves an aggregate publishes after the save, `ExecuteTailoringRun` steps 4 and 7
-    and `RequestTailoringRun` included, and the rule's one home is `EventPublisherPort`'s own
-    docstring ("called by a use case **after** a successful save"). A helper covering one of those
-    sequences would be one home for one copy of a rule that has many, bought with keyword-argument
-    noise at four call sites. Each site points at the other instead.
+    **Why the recording goes through `RecordRunFailure` (slice 5.2).** Until 5.2 this loop wrote
+    *mark, save, publish* itself and said why a helper over three lines was not worth it. A failure
+    now also refunds and counts, and a money rule written at every failure site drifts, so the one
+    copy is `RecordRunFailure`'s; its docstring has the order and why.
     """
 
     def __init__(
@@ -160,50 +146,63 @@ class AbandonStaleTailoringRuns:
         record_failure: RecordRunFailure,
         queued_lost_after_seconds: int = 1800,
     ) -> None:
-        # Skeleton (slice 5.2 T12): held, not yet used. T17 lists ids first, sweeps both lists and
-        # records through `record_failure`.
+        # `events` is no longer called here: `RecordRunFailure` publishes. Held (the port-binding test
+        # reads it) until the composition root and the older tests stop passing it positionally.
+        self._events = events
         self._record_failure = record_failure
         self._queued_lost_after_seconds = queued_lost_after_seconds
         self._runs = runs
-        self._events = events
         self._clock = clock
         self._stale_after_seconds = stale_after_seconds
         self._batch_size = batch_size
 
     async def __call__(self) -> AbandonStaleTailoringRunsResult:
-        # Step 1. Read once: the listing, every re-check and every `completed_at` share this instant.
         now = self._clock.now()
         stale_after = timedelta(seconds=self._stale_after_seconds)
+        lost_after = timedelta(seconds=self._queued_lost_after_seconds)
 
-        # Step 2. Bounded and oldest first, by the port's contract; the next tick takes the rest.
-        candidates = await self._runs.list_stale_running(
-            started_before=now - stale_after, limit=self._batch_size
-        )
+        # Ids first, both lists, before any write: see the class docstring's step 2.
+        stale_ids = [
+            run.id
+            for run in await self._runs.list_stale_running(
+                started_before=now - stale_after, limit=self._batch_size
+            )
+        ]
+        lost_ids = [
+            run.id
+            for run in await self._runs.list_lost_queued(
+                requested_before=now - lost_after, limit=self._batch_size
+            )
+        ]
 
-        abandoned = 0
-        skipped = 0
-        conflicts = 0
-        for run in candidates:
-            # Step 3. The aggregate decides, not the query. `is_stale` is `False` for a decided run
-            # too, and nothing is awaited between this check and `mark_failed`, which is why there
-            # is no `except TailoringAlreadyDecided` below (see the class docstring, G-36).
-            if not run.is_stale(now, stale_after):
+        abandoned = lost_queued = skipped = conflicts = 0
+        for run_id in stale_ids:
+            run = await self._runs.find(run_id)
+            # The aggregate decides, not the query. Nothing is awaited between this re-check and
+            # `mark_failed` inside `RecordRunFailure`, which is why there is no
+            # `except TailoringAlreadyDecided` (G-36).
+            if run is None or not run.is_stale(now, stale_after):
                 skipped += 1
                 continue
-            run.mark_failed(TailoringFailureReason.ABANDONED, now)
-            # Save strictly before publish, as in `ExecuteTailoringRun._record_failure`.
             try:
-                await self._runs.save(run)
+                await self._record_failure(run, TailoringFailureReason.ABANDONED, now)
             except TailoringRunConcurrentlyModified:
-                # A worker or a redelivery decided this run between the read and this write (E-20).
-                # Whichever wrote first stands: neither overwrite it nor abort the batch over it.
-                # Nothing is published — the save never landed, so there is no fact to announce —
-                # and the in-memory copy, `mark_failed` and all, is dropped with the loop variable.
                 conflicts += 1
                 continue
-            await self._events.publish(*run.release_events())
             abandoned += 1
 
+        for run_id in lost_ids:
+            run = await self._runs.find(run_id)
+            if run is None or not run.is_lost_in_queue(now, lost_after):
+                skipped += 1
+                continue
+            try:
+                await self._record_failure(run, TailoringFailureReason.NOT_QUEUED, now)
+            except TailoringRunConcurrentlyModified:
+                conflicts += 1
+                continue
+            lost_queued += 1
+
         return AbandonStaleTailoringRunsResult(
-            abandoned=abandoned, skipped=skipped, conflicts=conflicts, lost_queued=0
+            abandoned=abandoned, skipped=skipped, conflicts=conflicts, lost_queued=lost_queued
         )

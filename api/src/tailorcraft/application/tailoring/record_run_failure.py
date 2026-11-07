@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
-from tailorcraft.domain.shared.counters import DailyCounterPort
+from tailorcraft.application.billing.refund_credit_for_run import (
+    RefundCreditCommand,
+    RefundCreditForRun,
+)
+from tailorcraft.domain.billing.errors import RunAlreadyRefunded
+from tailorcraft.domain.billing.value_objects import ChargedRunRef
+from tailorcraft.domain.shared.counters import DailyCounterPort, DemandCounter
 from tailorcraft.domain.shared.events import EventPublisherPort
+from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason
@@ -34,6 +40,12 @@ class RecordRunFailure:
        (`CommittingTailoringRunRepository`), refund included (F-14), and the error propagates
        (`TailoringRunConcurrentlyModified` for a lost race).
     5. `events.publish(*run.release_events(), *refund_events)`: after the save, never before.
+
+    **A lost race can surface at step 2 instead of step 4.** When the sweep and a redelivery both fail
+    one charged run, the loser's refund insert hits `uq_billing_credit_entry_refund_run` before its
+    run save reaches the version check. The repository raises `RunAlreadyRefunded`; it is re-raised
+    here as `TailoringRunConcurrentlyModified`, the one conflict every caller already contains as
+    "the other side won", so the sweep counts it and moves on rather than learning a billing error.
     """
 
     def __init__(
@@ -51,4 +63,13 @@ class RecordRunFailure:
     async def __call__(
         self, run: TailoringRun, reason: TailoringFailureReason, at: datetime
     ) -> None:
-        raise NotImplementedError
+        run.mark_failed(reason, at)
+        try:
+            refund_events = await self._refund(
+                RefundCreditCommand(run.owner, ChargedRunRef(value=run.id.value), at)
+            )
+        except RunAlreadyRefunded:
+            raise TailoringRunConcurrentlyModified(run.id) from None
+        await self._counters.increment(DemandCounter.RUNS_FAILED, at.date())
+        await self._runs.save(run)
+        await self._events.publish(*run.release_events(), *refund_events)

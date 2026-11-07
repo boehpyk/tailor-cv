@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
-from tailorcraft.domain.tailoring.value_objects import TailoringRunId
+from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason, TailoringRunId
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,4 +34,7 @@ class RecordRunNotQueued:
         self._clock = clock
 
     async def __call__(self, cmd: RecordRunNotQueuedCommand) -> None:
-        raise NotImplementedError
+        run = await self._runs.find(cmd.tailoring_run_id)
+        if run is None:
+            return
+        await self._record_failure(run, TailoringFailureReason.NOT_QUEUED, self._clock.now())

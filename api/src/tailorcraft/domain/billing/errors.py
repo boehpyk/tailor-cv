@@ -23,6 +23,20 @@ class RunAlreadyCharged(DomainError):
         self.run = run
 
 
+class RunAlreadyRefunded(DomainError):
+    """A refund lost the race for `uq_billing_credit_entry_refund_run` to another refund of the same
+    run, committed after this one loaded the account (F-14: the sweep against a redelivery).
+
+    CR-4 cannot see it: each side loaded an account with no refund yet. The repository's `save`
+    translates the unique-index violation into this, and `RecordRunFailure` re-raises it as the run's
+    own conflict, because it is the same fact (the other side decided this run first) reached one
+    write earlier."""
+
+    def __init__(self, run: ChargedRunRef) -> None:
+        super().__init__(f"run {run.value} is already refunded")
+        self.run = run
+
+
 class CreditAccountNotFound(DomainError):
     """The user has no credit account. Eager opening means this should never happen (AC-2)."""
 

@@ -9,7 +9,7 @@ pointing at the other; either one read alone looks like an inconsistency worth "
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from enum import StrEnum
 
 from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
@@ -18,11 +18,10 @@ from tailorcraft.domain.intake.ports import BaseCvRepository
 from tailorcraft.domain.posting.errors import JobPostingNotFound
 from tailorcraft.domain.posting.ports import JobPostingRepository
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.counters import DailyCounterPort
+from tailorcraft.domain.shared.counters import DailyCounterPort, DemandCounter
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.errors import TailoringFailed, TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import LlmPort, TailoringRunRepository
-from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import (
     TailoringFailureReason,
     TailoringRunId,
@@ -216,9 +215,9 @@ class ExecuteTailoringRun:
         record_failure: RecordRunFailure,
         counters: DailyCounterPort,
     ) -> None:
-        # Skeleton (slice 5.2 T12): held, not yet called. T17 routes every failure through
-        # `record_failure` and counts `runs_succeeded` before the success save.
-        self._record_failure_with_refund = record_failure
+        # Every failure site goes through `RecordRunFailure` (slice 5.2, plan §0.4): mark, refund,
+        # count, save, publish, written once for the five sites in three use cases.
+        self._record_failure = record_failure
         self._counters = counters
         self._runs = runs
         self._base_cvs = base_cvs
@@ -359,28 +358,11 @@ class ExecuteTailoringRun:
 
         # Step 7. The second transaction. `clock.now()` is read again rather than reused from step 4
         # — the whole point of two timestamps is that the gap between them is the call.
-        run.mark_succeeded(draft.documents, draft.metrics, self._clock.now())
+        completed_at = self._clock.now()
+        run.mark_succeeded(draft.documents, draft.metrics, completed_at)
+        # Counted before the save so the worker's one commit carries it (ADR-0043): a rolled-back
+        # success counts nothing. The charge stands; a success refunds nothing.
+        await self._counters.increment(DemandCounter.RUNS_SUCCEEDED, completed_at.date())
         await self._runs.save(run)
         await self._events.publish(*run.release_events())
         return ExecuteTailoringRunOutcome.SUCCEEDED
-
-    async def _record_failure(
-        self, run: TailoringRun, reason: TailoringFailureReason, at: datetime
-    ) -> None:
-        """Record a decided-as-failed run: `mark_failed`, save, then publish — in that order.
-
-        The failure paths above (`ABANDONED`, `BASE_CV_DELETED`, `cv_text_missing`, and every
-        `TailoringFailed`)
-        differ only in the reason and in the instant, so the save/publish ordering is written once.
-        Publishing strictly **after** the save is the rule `RequestTailoringRun` step 7 states: a
-        publish that ran first would announce a fact a failed save is about to un-happen.
-        `AbandonStaleTailoringRuns` performs the same three steps per run, in the same order, and
-        its docstring says why the two do not share a helper.
-
-        The five metric scalars are deliberately not touched. `mark_failed` already guarantees they
-        stay `None` on every path, and a partially-filled metrics row would show up in a token-spend
-        total as a real number nothing was paid for.
-        """
-        run.mark_failed(reason, at)
-        await self._runs.save(run)
-        await self._events.publish(*run.release_events())
