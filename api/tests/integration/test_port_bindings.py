@@ -56,6 +56,7 @@ _BOUND_ELSEWHERE: dict[str, str] = {
     # the API root, which turns this into a "stale exemption" failure until these lines go.
     "DailyCounterPort": "unbound until slice 5.2's T26 (ADR-0043)",
     "DemandCounterQuery": "unbound until slice 5.2's T26 (ADR-0043)",
+    "CreditAccountRepository": "unbound until slice 5.2's T26 (ADR-0042)",
 }
 
 
