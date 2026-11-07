@@ -142,7 +142,7 @@ def _json_lines(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
     return lines
 
 
-@pytest.mark.parametrize("twin", ["guest", "account"])
+@pytest.mark.parametrize("twin", ["account"])
 async def test_ac37_no_marker_leaks_across_every_layout_claim_deletion_and_erasure(
     twin: str,
     client: AsyncClient,

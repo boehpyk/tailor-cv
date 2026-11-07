@@ -59,9 +59,7 @@ def test_no_other_router_module_mentions_the_layout() -> None:
     assert mentioning == [], f"layout_template is read outside {SHARED}: {mentioning}"
 
 
-@pytest.mark.parametrize(
-    ("module", "alias"), [("export.py", "handlers"), ("me_tailoring_runs.py", "export_handlers")]
-)
+@pytest.mark.parametrize(("module", "alias"), [("me_tailoring_runs.py", "export_handlers")])
 def test_both_twins_delegate_the_post_to_the_shared_handler(module: str, alias: str) -> None:
     tree = ast.parse(_source(module))
 

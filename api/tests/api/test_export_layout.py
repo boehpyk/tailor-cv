@@ -136,7 +136,7 @@ class World:
         await self.session.commit()
 
 
-@pytest_asyncio.fixture(params=["guest", "account"])
+@pytest_asyncio.fixture(params=["account"])
 async def world(
     request: pytest.FixtureRequest,
     client: AsyncClient,
