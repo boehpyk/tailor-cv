@@ -173,3 +173,44 @@ no score outlives its CV. The savepoint is why tx B still settles after a refuse
 - **The next slice to store a re-score** needs an expand migration, since a re-score has no `base_cv_id`.
   It compares `(model, prompt_version)` and re-scores the "before" if they differ. Markdown markers stay
   in a tailored CV's text, and that slice must measure whether they move the score.
+
+## Amendment: 2026-11-07, from the plan of slice 5.2 (`credits-and-demand-test`)
+
+Slice 5.2 re-scores a tailored CV, as the last consequence above foresaw. Decisions 1 to 8 stand; the
+re-score goes through the same port, prompt, model, parser and ledger, inline, as decision 4 says. Five
+things are added.
+
+- **A draft score.** A run's tailored CV is scored **as the model drafted it** (`run.documents.cv`, never
+  the user's revision: ADR-0015 keeps the draft), converted to **plain text** by a new port,
+  `DraftTextPort`, whose adapter is the existing TXT renderer in a thread. Plain text and not Markdown,
+  because the "before" is flat extracted text and *judged the same way* includes the shape of the input:
+  stripping the markers is deterministic and removes the question the consequence above asked this slice
+  to measure. It is stored as an ordinary `FitScore` with `base_cv_id` set to the run's base CV (so
+  deleting the CV takes it, and the store's CV lock applies) and a new nullable `tailoring_run_id`
+  (`draft_of`). Identity stays content: a draft's fingerprint differs from the CV's, so the two never
+  collide. The store also takes `FOR KEY SHARE` on the run row and refuses if the run went during the
+  call. An edited CV is not scored.
+- **The comparison is domain.** `ScoreComparison.between(before, after)` gives `delta = after − before`
+  and a verdict: `higher` above +5, `lower` below −5, else `about_the_same`. Five is decision 5's
+  stability bar. It never promises a gain, and the copy never says *boost*, *raise*, *improve your score*
+  or *guarantee*. The draft is measured for the same stability before release: five scorings of each eval
+  draft vary by at most 5 points.
+- **Comparisons skip the per-user and per-IP limits.** The credit paid for them. A
+  `RequestFitScoreCommand.purpose` of `comparison` skips the owner limit and the `fit_scores` counter, and
+  its handler skips the IP limiter. The daily cap and the ledger (ADR-0041) apply as before, so the answer
+  at the cap is still 503 `scoring_busy`. Two pairs per run at most, both stored hits after the first call.
+- **No re-score of an old "before".** The consequence above said this slice would re-score the "before"
+  when `(model, prompt_version)` differ. It cannot without a second row per pair, which decision 3's
+  uniqueness forbids, and rows never change. So two scores from different scorers are shown side by side
+  as `comparable: false`, with no comparison. Rare until a prompt changes. This is a stated deviation.
+- **Prompt injection, re-read as the paragraph above asks.** The draft score now sits beside something
+  paid for. Its blast radius stays bounded: **it moves no credit**, refunds nothing, unlocks nothing,
+  reaches no third party, and is labelled an estimate, with *about the same* covering a ±5 band. A CV or a
+  posting can still steer it. Whether different shapes of the same content score alike is not measured,
+  because there is no ground truth for it.
+
+A history entry's deletion now also deletes its run's draft scores, as a separate statement after the
+run's `DELETE` (decision 8's pattern), whether or not its posting goes too. That is one more trigger
+beside ADR-0006 (h)'s table; erasure and the CV's deletion reach draft scores unchanged, since they
+carry the same owner and `base_cv_id`. Draft scores are account data only: the comparison routes are
+under `/api/me`.
