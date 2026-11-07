@@ -285,7 +285,9 @@ async def test_queued_and_terminal_runs_are_untouched_while_a_stale_run_is_aband
     clock: FixedClock,
 ) -> None:
     old_requested_at = clock.now() - timedelta(days=1)
-    queued_run = _requested_run(at=old_requested_at)
+    # 5.2: a `queued` run older than `queued_lost_after_seconds` (1800) is now recovered, so this
+    # one is requested 10 minutes ago: young enough to be left alone, the point of this test.
+    queued_run = _requested_run(at=clock.now() - timedelta(minutes=10))
     succeeded_run = _running_run(
         requested_at=old_requested_at, started_at=old_requested_at + timedelta(seconds=1)
     )

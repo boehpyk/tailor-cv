@@ -7,10 +7,6 @@ error. The refund takes no lock (plan §0.4), so it reads through `find`.
 
 from __future__ import annotations
 
-from tailorcraft.application.billing.charge_credit_for_run import (
-    ChargeCreditCommand,
-    ChargeCreditForRun,
-)
 from tailorcraft.application.billing.refund_credit_for_run import (
     RefundCreditCommand,
     RefundCreditForRun,
@@ -20,7 +16,12 @@ from tailorcraft.domain.billing.value_objects import ChargedRunRef, CreditEntryK
 from tailorcraft.domain.identity.ownership import GuestOwner, UserOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId, UserId
 from tailorcraft.infrastructure.clock import FixedClock
-from tests.integration.billing.support import a_run_ref, a_user_id, seed_account
+from tests.integration.billing.support import (
+    a_run_ref,
+    a_user_id,
+    charge_directly,
+    seed_account,
+)
 from tests.integration.fakes import FakeCreditAccountRepository
 
 
@@ -29,7 +30,7 @@ async def _charged(
 ) -> ChargedRunRef:
     run = a_run_ref()
     seed_account(credits, uid, clock.now(), extra=extra)
-    await ChargeCreditForRun(credits)(ChargeCreditCommand(user_id=uid, run=run, at=clock.now()))
+    await charge_directly(credits, uid, run, clock.now())
     return run
 
 

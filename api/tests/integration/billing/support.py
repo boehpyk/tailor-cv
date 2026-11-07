@@ -42,3 +42,14 @@ def seed_account(
         account.grant(GrantAmount(extra), entry_id=CreditEntryId(value=uuid4()), at=at)
     credits.seed(account)
     return account
+
+
+async def charge_directly(
+    credits: FakeCreditAccountRepository, user_id: UserId, run: ChargedRunRef, at: datetime
+) -> None:
+    """Arrange a charge through the aggregate, never through `ChargeCreditForRun`: a test of the
+    refund must not fail in its arrangement because the use case it is not testing is a skeleton."""
+    account = await credits.find(user_id)
+    assert account is not None
+    account.charge(run, entry_id=CreditEntryId(value=uuid4()), at=at)
+    credits.seed(account)  # clears the pending entry and event: arrangement, not behaviour
