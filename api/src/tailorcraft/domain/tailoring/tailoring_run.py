@@ -675,7 +675,7 @@ class TailoringRun(RecordsEvents):
         `after` is configuration (`tailoring_queued_lost_after_seconds`), held above the broker's
         visibility timeout at startup so a redelivery always gets its chance first.
         """
-        raise NotImplementedError
+        return self._status is TailoringRunStatus.QUEUED and now - self._requested_at > after
 
     @property
     def id(self) -> TailoringRunId:

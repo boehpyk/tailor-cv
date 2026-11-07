@@ -115,7 +115,7 @@ class FitScore(RecordsEvents):
         score._llm_duration_ms = assessed.usage.duration_ms
         score._cost = cost
         score._scored_at = at
-        score._draft_of = None  # Skeleton (slice 5.2 T9): `draft_of` is not kept until T11.
+        score._draft_of = draft_of
         score.record(
             FitScoreRecorded(
                 occurred_at=at,

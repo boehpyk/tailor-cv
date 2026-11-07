@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tailorcraft.domain.scoring.fit_score import FitScore
-from tailorcraft.domain.scoring.value_objects import ComparisonVerdict
+from tailorcraft.domain.scoring.value_objects import SAME_JUDGEMENT_BAND, ComparisonVerdict
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,4 +20,17 @@ class ScoreComparison:
         """`None` when the two were not judged the same way: a different model or prompt version
         (OQ-4). Otherwise `delta = after - before`, and the verdict is `ABOUT_THE_SAME` within the
         band either side, inclusive, `HIGHER` or `LOWER` beyond it."""
-        raise NotImplementedError
+        before_usage, after_usage = before.usage, after.usage
+        if (before_usage.model, before_usage.prompt_version) != (
+            after_usage.model,
+            after_usage.prompt_version,
+        ):
+            return None
+        delta = after.assessment.score.value - before.assessment.score.value
+        if delta > SAME_JUDGEMENT_BAND:
+            verdict = ComparisonVerdict.HIGHER
+        elif delta < -SAME_JUDGEMENT_BAND:
+            verdict = ComparisonVerdict.LOWER
+        else:
+            verdict = ComparisonVerdict.ABOUT_THE_SAME
+        return cls(delta=delta, verdict=verdict)
