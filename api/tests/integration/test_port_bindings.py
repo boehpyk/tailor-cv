@@ -51,7 +51,12 @@ from tailorcraft.infrastructure.tasks import container
 from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 
 # Ports bound by a composition root other than the two checked here. Each entry names that root.
-_BOUND_ELSEWHERE: dict[str, str] = {}
+_BOUND_ELSEWHERE: dict[str, str] = {
+    # Not bound anywhere yet: slice 5.2 in progress. T22 writes the adapters and T26 binds them in
+    # the API root, which turns this into a "stale exemption" failure until these lines go.
+    "DailyCounterPort": "unbound until slice 5.2's T26 (ADR-0043)",
+    "DemandCounterQuery": "unbound until slice 5.2's T26 (ADR-0043)",
+}
 
 
 def _domain_protocols() -> dict[str, type]:
