@@ -26,7 +26,7 @@ from tailorcraft.domain.scoring.value_objects import (
     ScoringUsage,
 )
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.counters import DailyCounterPort
+from tailorcraft.domain.shared.counters import DailyCounterPort, DemandCounter
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.events import EventPublisherPort
 
@@ -66,7 +66,7 @@ class RequestFitScore:
 
     1. Read the clock once, into locals: `at`, and `day = at.date()`. A call across midnight settles
        the day it reserved, and the row's `scored_at` is this `at`.
-    2. `scored_at_since(owner, since)`: `None` for a guest, `at` minus 24 hours for a user. At the
+    2. (`CHECK` only; a `COMPARISON` skips it.) `scored_at_since(owner, since)`: `None` for a guest, `at` minus 24 hours for a user. At the
        limit, `TooManyFitScores(count, limit, retry_not_before)`, with no reservation and no call
        (AC-8, AC-12). `retry_not_before` is `None` for a guest. For a user it is
        `scored[count - limit] + 24 h`, `scored` being oldest first: the moment the count drops below
@@ -76,14 +76,14 @@ class RequestFitScore:
        reservation, no call, no row (S-9).
     4. `worst = prices.worst_case_attempt(cv chars, posting chars, overhead, max output tokens)`,
        and `try_reserve(day, worst * max_attempts, daily_cap)`. `False` is
-       `FitScoreSpendCapReached`, no call. `True` has committed: **nothing is held from here until
+       `FitScoreSpendCapReached`, no call, after counting `fit_scores_busy`. `True` has committed: **nothing is held from here until
        step 6.**
     5. `scorer.assess(pair.cv, pair.posting)`. `CancelledError` passes through with no settle and no
        row: the reservation stands (AC-17, AC-21). `FitScoringFailed` settles to
        `prices.cost_of(failed.usage, worst)` and re-raises.
     6. `FitScore.from_assessment(...)`, then `scores.store(score)`. A `DomainError` from `store`
        (S-25 to S-27: paid for, nothing stored) settles to the actual cost and re-raises.
-    7. `settle(day, reserved, cost)`: this commits the row and its cost together (AC-14).
+    7. A created `CHECK` counts `fit_scores` on `day`. Then `settle(day, reserved, cost)`: this commits the row and its cost together (AC-14).
     8. Only if `stored` is this `score`: publish its events. The loser publishes nothing.
 
     **If a settle fails while another error is on its way out (S-16)**, that error still wins: it is
@@ -116,8 +116,6 @@ class RequestFitScore:
         prompt_version: PromptVersion,
         counters: DailyCounterPort,
     ) -> None:
-        # Skeleton (slice 5.2 T12): held, not yet called; `purpose` and `draft_of` are not yet read.
-        # T18 counts `fit_scores` / `fit_scores_busy` and applies the purpose rules.
         self._counters = counters
         self._scores = scores
         self._scorer = scorer
@@ -140,7 +138,9 @@ class RequestFitScore:
         at = self._clock.now()
         day = at.date()
 
-        await self._refuse_at_the_limit(owner, at)
+        # A comparison is bounded by credits, not by the free check's limit (plan §0.8).
+        if cmd.purpose is ScoringPurpose.CHECK:
+            await self._refuse_at_the_limit(owner, at)
 
         # Refuse what the user can fix before what they can't: a full cap must not hide a too-long
         # CV. The adapter's own check stays as the backstop.
@@ -165,6 +165,8 @@ class RequestFitScore:
         )
         reserved = worst * self._max_attempts
         if not await self._ledger.try_reserve(day, reserved, self._daily_cap):
+            # Counted for either purpose; the handler commits this before answering 503 (plan §0.9).
+            await self._counters.increment(DemandCounter.FIT_SCORES_BUSY, day)
             raise FitScoreSpendCapReached(
                 f"the day's ledger cannot take {reserved.value} micro-USD", day
             )
@@ -187,6 +189,7 @@ class RequestFitScore:
             assessed=assessed,
             cost=cost,
             at=at,
+            draft_of=cmd.draft_of,
         )
         # `DomainError` only. Anything else means the transaction is gone, so a settle would be
         # written into nothing: the reservation stands (S-15).
@@ -195,9 +198,13 @@ class RequestFitScore:
         except DomainError as refused:
             await self._settle_then_raise(day, reserved, cost, refused)
 
+        created = stored.id == score.id
+        # Before the settle, which commits transaction B: the count shares the row's fate.
+        if created and cmd.purpose is ScoringPurpose.CHECK:
+            await self._counters.increment(DemandCounter.FIT_SCORES, day)
+
         await self._ledger.settle(day, reserved, cost)
 
-        created = stored.id == score.id
         if created:
             await self._events.publish(*score.release_events())
         return RequestOutcome(stored=stored, created=created)

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 
-from tailorcraft.domain.shared.counters import DemandCounter, DemandCounterQuery
+from tailorcraft.domain.shared.counters import (
+    DemandCounter,
+    DemandCounterQuery,
+    InvalidCounterRange,
+)
 
 MAX_RANGE_DAYS = 92
 
@@ -42,4 +46,15 @@ class ReadDemandCounters:
         self._counts = counts
 
     async def __call__(self, query: ReadDemandCountersQuery) -> DemandCounters:
-        raise NotImplementedError
+        days_in_range = (query.to_day - query.from_day).days + 1
+        if not 1 <= days_in_range <= MAX_RANGE_DAYS:
+            raise InvalidCounterRange(
+                f"a range must run forwards and hold at most {MAX_RANGE_DAYS} days"
+            )
+        stored = await self._counts.between(query.from_day, query.to_day)
+        days = tuple(
+            DemandDay(day=day, counts={c: stored.get((day, c), 0) for c in DemandCounter})
+            for day in (query.from_day + timedelta(days=n) for n in range(days_in_range))
+        )
+        totals = {c: sum(d.counts[c] for d in days) for c in DemandCounter}
+        return DemandCounters(days=days, totals=totals)
