@@ -15,8 +15,10 @@
 
 A job seeker drops in a base CV and a job posting, and gets back a CV and cover letter tailored to
 that posting — editable in the browser, downloadable as PDF, DOCX, Markdown or plain text, in under
-two minutes. Guests can do this without an account; registered users keep their base CV and their
-application history.
+two minutes. Guests can upload a CV and get a free fit score without an account; tailoring takes an
+account, which spends one credit per run and starts with one free
+([ADR-0042](./adr/0042-a-credit-is-a-users-an-append-only-history-whose-sum-is-the-balance-charged-with-the-runs-request-and-refunded-with-its-failure-in-the-same-transaction.md)).
+Registered users keep their base CV and their application history.
 
 The single sentence to keep in your head: **one base CV in, one tailored application out, fast enough
 that a person applies to ten jobs in an evening.**
@@ -116,7 +118,9 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    `typing.Protocol` (or ABC): `LlmPort`, `FitScorerPort`, `CvTextExtractorPort`,
    `JobPostingFetcherPort`, `DocumentRendererPort`, `FileStorePort`, `AccountMailPort`, a queue port per
    context (`TailoringQueuePort`, `ExportQueuePort`, `AccountMailQueuePort`), `Clock`, the
-   `SpendLedgerPort`, plus one repository port per aggregate. The concrete adapter lives in `infrastructure/` and is wired in one composition root.
+   `SpendLedgerPort`, `DraftTextPort`, the shared `DailyCounterPort`
+([ADR-0043](./adr/0043-demand-is-counted-anonymously-per-utc-day-in-the-transaction-of-the-fact.md)),
+plus one repository port per aggregate (billing's is `CreditAccountRepository`). The concrete adapter lives in `infrastructure/` and is wired in one composition root.
    This is *why* swapping Gemini for another model is a binding change and not a rewrite (ADR-0004).
 
 3. **Bounded contexts** (initial map — refine as the model sharpens):
@@ -130,6 +134,7 @@ These are decided. Changing any row requires a new ADR that supersedes the relev
    | `identity` | accounts, pending registrations, password resets, sessions, tokens, the account mail that proves an address ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)), and the guest → user claim (a policy and a port, no aggregate — [ADR-0025](./adr/0025-a-guests-work-becomes-a-users-by-an-explicit-claim.md)) | `GuestSession`, `User`, `Login` — two principals, no shared base ([ADR-0010](./adr/0010-guest-session-cookie-is-an-opaque-hashed-token.md), [ADR-0020](./adr/0020-a-login-is-a-refresh-token-family-revocation-is-deletion.md)); `PendingRegistration` — not an account: a `User` exists only once its address is proven ([ADR-0027](./adr/0027-an-account-that-has-not-proven-its-address-does-not-exist.md)); `PasswordReset` — addressed, then issued, then deleted ([ADR-0028](./adr/0028-a-password-reset-proves-the-address-and-revokes-every-login.md)) |
    | `tracking` | a registered user's tracked applications — one card per succeeded run they tailored, moved through six stages on a board read through a cross-context query port; registered users only, never guest data; its domain imports no sibling context ([ADR-0029](./adr/0029-application-tracking-is-its-own-context-a-user-only-card-on-one-succeeded-run.md), [ADR-0024 amendment (a)](./adr/0024-a-read-model-that-joins-contexts-is-a-query-port-keyset-paginated.md)) | `TrackedApplication`; `ApplicationBoard` is a read model, not an aggregate |
    | `scoring` | one owner's estimated fit score for one CV and job posting: computed inside the request by a cheap model behind its own port, stored only on success, identified by content per owner and never changed; every call's cost is reserved in a daily ledger first; its domain imports only `shared` and `identity`'s `Owner` ([ADR-0040](./adr/0040-a-fit-score-is-its-own-context-one-stored-assessment-per-owner-and-content-pair-computed-inside-the-request.md), [ADR-0041](./adr/0041-spend-is-reserved-in-postgres-before-the-call-and-settled-after-it-and-fails-closed.md)) | `FitScore`; the spend ledger is one row per day behind a port, not an aggregate |
+   | `billing` | a registered user's credits: an append-only history whose sum is the balance, charged with a tailoring run's request and refunded with its failure in the same transaction; the packs shown and the one payment-notice consent; registered users only, never guest data; its domain imports only `shared` and `identity`'s `UserId` ([ADR-0042](./adr/0042-a-credit-is-a-users-an-append-only-history-whose-sum-is-the-balance-charged-with-the-runs-request-and-refunded-with-its-failure-in-the-same-transaction.md)) | `CreditAccount`, with `CreditEntry` inside it; the anonymous demand counters are a shared port, not an aggregate ([ADR-0043](./adr/0043-demand-is-counted-anonymously-per-utc-day-in-the-transaction-of-the-fact.md)) |
    | `retention` | deleting everything an owner has, rows committed then files: the guest 1-day purge on a timer, and account erasure and history-entry deletion on request (each also takes the tracked applications it covers — ADR-0029) (no aggregate — a policy, use cases and ports that *return* their failures) ([ADR-0006](./adr/0006-guest-retention-and-local-file-storage.md), [ADR-0018](./adr/0018-the-guest-purge-is-a-policy-with-no-aggregate.md), [ADR-0023](./adr/0023-a-signed-in-users-tailoring-is-account-data-and-the-workspace-follows-the-credential.md)) | — |
 
    Ubiquitous language: keep a glossary in each context's spec. A **base CV** is never a "resume" in
@@ -208,7 +213,9 @@ phase that depends on it closes.
 - **The mail provider sees the address and the account mail.** That is the price of proving an
   address, and it is *stated to the user* where the address is typed. The mail carries a one-time
   link and nothing else — no name, no CV content, no account id — as plain text with tracking off.
-  Nothing else is ever mailed: no marketing, no notifications ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md)).
+  Nothing else is ever mailed: no marketing, no notifications, with **one** exception: an account
+  that opts in gets a single plain-text payment notice when payments open, under the same rules, and
+  its consent is cleared once it is sent ([ADR-0026](./adr/0026-account-mail-is-a-port-delivered-by-the-worker-over-smtp-submission.md) and its 2026-11-07 amendment).
 - **The operator can read stored data, and the user is told so.** An admin can read CVs, job
   postings and tailored documents to operate and support the service. Users are told in one
   sentence where they hand data over: *"The person who runs FixCV can read what is stored
