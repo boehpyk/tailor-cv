@@ -84,6 +84,7 @@ from tailorcraft.infrastructure.identity.token_access import (
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.mail.smtp import SmtpAccountMailer
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
+from tailorcraft.infrastructure.persistence.demand.daily_counter import SqlAlchemyDailyCounter
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.retention.data_access import (
     CommittingExpiredGuestDataAdapter,
@@ -91,7 +92,6 @@ from tailorcraft.infrastructure.retention.data_access import (
     OverdueBacklog,
 )
 from tailorcraft.infrastructure.settings import Settings, get_settings
-from tailorcraft.infrastructure.unwired import UnwiredCreditAccountRepository, UnwiredDailyCounter
 
 
 class CommittingTailoringRunRepository:
@@ -414,19 +414,28 @@ def _build_use_case(
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007).
         clock=SystemClock(),
         stale_after_seconds=settings.tailoring_stale_after_seconds,
-        # Slice 5.2: placeholders (`infrastructure/unwired.py`) until T26 binds the real adapters on
-        # this session.
-        record_failure=_record_failure(runs, events),
-        counters=UnwiredDailyCounter(),
+        # Slice 5.2: the refund and the counters on this task's session, committed by the
+        # committing `runs.save` with the outcome they belong to (plan §0.4).
+        record_failure=_record_failure(runs, events, session),
+        counters=SqlAlchemyDailyCounter(session),
     )
 
 
 def _record_failure(
-    runs: CommittingTailoringRunRepository, events: LoggingEventPublisher
+    runs: CommittingTailoringRunRepository, events: LoggingEventPublisher, session: AsyncSession
 ) -> RecordRunFailure:
-    """The failure collaborator both tailoring use cases share, on the same `runs` and `events`."""
+    """The failure collaborator both tailoring use cases share, on the same `runs`, `events` and
+    session: the refund and the `runs_failed` count are written before `runs.save`, whose commit
+    covers all three (plan §0.4). The bare credit repository: it never commits on its own."""
+    from tailorcraft.infrastructure.persistence.repositories.billing.credit_account import (
+        SqlAlchemyCreditAccountRepository,
+    )
+
     return RecordRunFailure(
-        runs, RefundCreditForRun(UnwiredCreditAccountRepository()), UnwiredDailyCounter(), events
+        runs,
+        RefundCreditForRun(SqlAlchemyCreditAccountRepository(session)),
+        SqlAlchemyDailyCounter(session),
+        events,
     )
 
 
@@ -497,9 +506,10 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         # inside a single five-minute window, and even then the next tick takes the rest a minute
         # later. A knob nobody has a reason to turn is a knob somebody will turn wrongly.
         #
-        # Slice 5.2: placeholders until T26; `queued_lost_after_seconds` keeps the use case's
-        # default until T19's setting exists.
-        record_failure=_record_failure(runs, events),
+        # Slice 5.2: the lost-queued list (plan §0.5), its window refused at startup unless above the
+        # broker's visibility timeout (`tasks/limits.py`), and the shared failure collaborator.
+        record_failure=_record_failure(runs, events, session),
+        queued_lost_after_seconds=settings.tailoring_queued_lost_after_seconds,
     )
 
 

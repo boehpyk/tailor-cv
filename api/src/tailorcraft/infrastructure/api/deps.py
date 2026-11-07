@@ -131,7 +131,7 @@ from tailorcraft.domain.scoring.value_objects import (
     ScoringPrices,
 )
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.counters import DailyCounterPort
+from tailorcraft.domain.shared.counters import DailyCounterPort, DemandCounterQuery
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
 from tailorcraft.domain.tailoring.ports import (
@@ -174,6 +174,10 @@ from tailorcraft.infrastructure.llm.fit_score_prompt import FIT_SCORE_PROMPT_VER
 from tailorcraft.infrastructure.llm.fit_scorer import PROMPT_OVERHEAD_CHARACTERS
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.mail.queue import CeleryAccountMailQueue
+from tailorcraft.infrastructure.persistence.demand.daily_counter import (
+    SqlAlchemyDailyCounter,
+    SqlAlchemyDemandCounterQuery,
+)
 from tailorcraft.infrastructure.persistence.scoring.spend_ledger import (
     CommittingSpendLedger,
     SqlSpendLedger,
@@ -196,7 +200,6 @@ from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 # The purge task's own TTL (ADR-0018 decision 7): one key, one TTL, every holder. `main.py` already
 # imports `tasks.app` for the Celery app, so this costs the API no new import.
 from tailorcraft.infrastructure.tasks.app import PURGE_LOCK_TTL_SECONDS
-from tailorcraft.infrastructure.unwired import UnwiredCreditAccountRepository, UnwiredDailyCounter
 
 log = structlog.get_logger(__name__)
 
@@ -299,9 +302,18 @@ def get_event_publisher() -> EventPublisherPort:
 EventPublisherDep = Annotated[EventPublisherPort, Depends(get_event_publisher)]
 
 
-def get_credit_account_repository() -> CreditAccountRepository:
-    """A placeholder until slice 5.2's T26 binds the SQLAlchemy adapter (`infrastructure/unwired.py`)."""
-    return UnwiredCreditAccountRepository()
+def get_credit_account_repository(session: SessionDep) -> CreditAccountRepository:
+    """Binds `CreditAccountRepository` -> `SqlAlchemyCreditAccountRepository` (ADR-0042).
+
+    The **bare** adapter on the request's session: a charge commits with the run's `queued` row when
+    the handler commits, never on its own (plan §0.3). Deferred import, `get_tailoring_run_repository`'s
+    mapper-configuration reason.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.billing.credit_account import (
+        SqlAlchemyCreditAccountRepository,
+    )
+
+    return SqlAlchemyCreditAccountRepository(session)
 
 
 CreditAccountRepositoryDep = Annotated[
@@ -309,12 +321,21 @@ CreditAccountRepositoryDep = Annotated[
 ]
 
 
-def get_daily_counter() -> DailyCounterPort:
-    """A placeholder until slice 5.2's T26 binds the upsert adapter (`infrastructure/unwired.py`)."""
-    return UnwiredDailyCounter()
+def get_daily_counter(session: SessionDep) -> DailyCounterPort:
+    """Binds `DailyCounterPort` -> `SqlAlchemyDailyCounter` (ADR-0043): one upsert on the request's
+    session, committed with the fact or rolled back with it."""
+    return SqlAlchemyDailyCounter(session)
 
 
 DailyCounterDep = Annotated[DailyCounterPort, Depends(get_daily_counter)]
+
+
+def get_demand_counter_query(session: SessionDep) -> DemandCounterQuery:
+    """Binds `DemandCounterQuery` -> `SqlAlchemyDemandCounterQuery` (ADR-0043), for `/admin/demand`."""
+    return SqlAlchemyDemandCounterQuery(session)
+
+
+DemandCounterQueryDep = Annotated[DemandCounterQuery, Depends(get_demand_counter_query)]
 
 
 def get_charge_credit_for_run(credits: CreditAccountRepositoryDep) -> ChargeCreditForRun:

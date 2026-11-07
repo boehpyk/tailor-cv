@@ -335,16 +335,19 @@ class SqlAlchemyTailoringRunRepository:
         user the owner column's index plus a status filter reads at most 500 entries; the note on
         the missing partial index applies unchanged.
 
-        **Skeleton (slice 5.2 T9):** `excluding` is not filtered yet, so it refuses one.
+        `excluding` (slice 5.2) is the charge's hard re-check, run under the credit lock: a plain
+        `id <> :excluding`, a fresh READ COMMITTED snapshot that sees a run another request committed
+        while this one waited on the lock (plan §0.3).
         """
-        if excluding is not None:
-            raise NotImplementedError
-        result = await self._session.execute(
+        query = (
             select(TailoringRun)
             .where(_owned_by(owner))
             .where(_TAILORING_RUN_STATUS.in_(_ACTIVE_STATUSES))
-            .order_by(_TAILORING_RUN_REQUESTED_AT.desc(), _TAILORING_RUN_ID.desc())
-            .limit(1)
+        )
+        if excluding is not None:
+            query = query.where(_TAILORING_RUN_ID != excluding)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+        result = await self._session.execute(
+            query.order_by(_TAILORING_RUN_REQUESTED_AT.desc(), _TAILORING_RUN_ID.desc()).limit(1)
         )
         return result.scalars().first()
 
@@ -392,8 +395,22 @@ class SqlAlchemyTailoringRunRepository:
     async def list_lost_queued(
         self, requested_before: datetime, limit: int
     ) -> Sequence[TailoringRun]:
-        """Skeleton (slice 5.2 T9); the contract is `TailoringRunRepository.list_lost_queued`'s."""
-        raise NotImplementedError
+        """The contract is `TailoringRunRepository.list_lost_queued`'s. The status is a literal for
+        `list_stale_running`'s reason.
+
+        No index of its own: the sweep reads the handful of `queued` rows once a minute.
+        """
+        # ponytail: no partial index on queued runs; add `ix_tailoring_run_queued_requested_at` if
+        # EXPLAIN shows this seq-scanning a large table.
+        queued = literal(TailoringRunStatus.QUEUED, TailoringRunStatusType(), literal_execute=True)
+        result = await self._session.execute(
+            select(TailoringRun)
+            .where(_TAILORING_RUN_STATUS == queued)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+            .where(_TAILORING_RUN_REQUESTED_AT < requested_before)  # noqa: SIM300 -- keep the InstrumentedAttribute on the left
+            .order_by(_TAILORING_RUN_REQUESTED_AT.asc(), _TAILORING_RUN_ID.asc())
+            .limit(limit)
+        )
+        return result.scalars().all()
 
 
 if TYPE_CHECKING:

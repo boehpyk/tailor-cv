@@ -52,12 +52,11 @@ from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 
 # Ports bound by a composition root other than the two checked here. Each entry names that root.
 _BOUND_ELSEWHERE: dict[str, str] = {
-    # Not bound anywhere yet: slice 5.2 in progress. T22 writes the adapters and T26 binds them in
-    # the API root, which turns this into a "stale exemption" failure until these lines go.
-    # `DailyCounterPort` and `CreditAccountRepository` left this list at T12, bound to the
-    # placeholders in `infrastructure/unwired.py` until T26.
-    "DemandCounterQuery": "unbound until slice 5.2's T26 (ADR-0043)",
-    "DraftTextPort": "unbound until slice 5.2's T26 (plan §0.8)",
+    # Slice 5.2 in progress. `deps.get_demand_counter_query` binds `DemandCounterQuery` (T26), but
+    # no route reaches it until T27's `/admin/demand`; the walker then sees it and this line goes.
+    # `DraftTextPort`'s adapter is T24's.
+    "DemandCounterQuery": "provided by deps.get_demand_counter_query; no route until T27 (ADR-0043)",
+    "DraftTextPort": "unbound until slice 5.2's T24/T26 (plan §0.8)",
 }
 
 
