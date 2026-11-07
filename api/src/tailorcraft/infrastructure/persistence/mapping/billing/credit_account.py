@@ -1,4 +1,6 @@
-"""The `billing_credit_account` and `billing_credit_entry` tables (ADR-0007, ADR-0042, plan §3).
+"""The `billing_credit_account` and `billing_credit_entry` tables, and the imperative mapping of
+`CreditAccount` and its `CreditEntry`s onto them (ADR-0007, ADR-0042, plan §3). **Never
+`class CreditAccount(Base)`.**
 
 **The balance is not a column.** It is `SUM(credits)` over the account's entries (plan §0.2), so the
 database holds the history and the aggregate derives the rest. The concurrency half of the money rules
@@ -12,6 +14,16 @@ lives here, beside the aggregate's in-memory checks:
 **`tailoring_run_id` has no foreign key** (ADR-0014's cross-context rule): billing names a run, it never
 owns one, and a history entry's deletion must not take the money record with it.
 
+**The mapping.** `properties=` targets the private attributes the named constructors write (each column
+would collide with a read-only `@property` of the same short name). `_entries` is a `selectin`
+relationship ordered oldest first, so the aggregate's `_entries[0]` is the opening entry (CR-1). Its
+cascade is the default `save-update, merge`, **no `delete-orphan`**: the aggregate never removes an entry
+(CR-6), and `passive_deletes=True` leaves erasure to the database's `ON DELETE CASCADE`. An entry's
+`user_id` is mapped as `_user_id` and filled by the relationship on flush; the domain never reads it.
+`_pending` and `_recorded_events` are absent: in-memory buffers, not facts. Both classes keep their
+explicit empty `__init__` (CLAUDE.md: the default one `map_imperatively` installs would accept the mapped
+names and skip every invariant).
+
 The authoritative migration is `alembic/versions/…_add_billing_and_demand_tables.py`; the
 autogenerate-against-head tests prove these `Table`s match it.
 """
@@ -20,10 +32,12 @@ from __future__ import annotations
 
 from sqlalchemy import CheckConstraint, Column, ForeignKey, Index, SmallInteger, Table, text
 from sqlalchemy.dialects.postgresql import TIMESTAMP
+from sqlalchemy.orm import relationship
 
+from tailorcraft.domain.billing.credit_account import CreditAccount, CreditEntry
 from tailorcraft.domain.billing.value_objects import CreditEntryKind
 from tailorcraft.infrastructure.persistence.mapping.identity.user import user_table
-from tailorcraft.infrastructure.persistence.registry import metadata
+from tailorcraft.infrastructure.persistence.registry import mapper_registry, metadata
 from tailorcraft.infrastructure.persistence.types.billing import (
     ChargedRunRefType,
     CreditEntryIdType,
@@ -104,4 +118,34 @@ credit_entry_table = Table(
         unique=True,
         postgresql_where=text(f"kind IN ({_OPENING})"),
     ),
+)
+
+mapper_registry.map_imperatively(
+    CreditEntry,
+    credit_entry_table,
+    properties={
+        "_id": credit_entry_table.c.id,
+        "_user_id": credit_entry_table.c.user_id,
+        "_kind": credit_entry_table.c.kind,
+        "_credits": credit_entry_table.c.credits,
+        "_run": credit_entry_table.c.tailoring_run_id,
+        "_at": credit_entry_table.c.created_at,
+    },
+)
+
+mapper_registry.map_imperatively(
+    CreditAccount,
+    credit_account_table,
+    properties={
+        "_user_id": credit_account_table.c.user_id,
+        "_opened_at": credit_account_table.c.opened_at,
+        "_first_pack_click_at": credit_account_table.c.first_pack_click_at,
+        "_payment_notice_opted_in_at": credit_account_table.c.payment_notice_opted_in_at,
+        "_entries": relationship(
+            CreditEntry,
+            lazy="selectin",
+            order_by=(credit_entry_table.c.created_at, credit_entry_table.c.id),
+            passive_deletes=True,
+        ),
+    },
 )
