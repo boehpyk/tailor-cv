@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tailorcraft.domain.billing.credit_account import CreditAccount
+from tailorcraft.domain.billing.errors import CreditAccountNotFound
 from tailorcraft.domain.billing.ports import CreditAccountRepository
 from tailorcraft.domain.identity.value_objects import UserId
 
@@ -22,4 +23,7 @@ class GetCredits:
         self._credits = credits
 
     async def __call__(self, query: GetCreditsQuery) -> CreditAccount:
-        raise NotImplementedError
+        account = await self._credits.find(query.user_id)
+        if account is None:
+            raise CreditAccountNotFound(query.user_id)
+        return account

@@ -26,4 +26,7 @@ class ChoosePaymentNotice:
         self._events = events
 
     async def __call__(self, cmd: ChoosePaymentNoticeCommand) -> None:
-        raise NotImplementedError
+        account = await self._credits.lock_for_charge(cmd.user_id)
+        account.choose_payment_notice(cmd.opted_in, at=cmd.at)
+        await self._credits.save(account)
+        await self._events.publish(*account.release_events())

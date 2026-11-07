@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from typing import assert_never
 
 from tailorcraft.domain.billing.ports import CreditAccountRepository
 from tailorcraft.domain.billing.value_objects import ChargedRunRef
-from tailorcraft.domain.identity.ownership import Owner
+from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
 from tailorcraft.domain.shared.events import DomainEvent
 
 
@@ -38,4 +39,17 @@ class RefundCreditForRun:
         self._credits = credits
 
     async def __call__(self, cmd: RefundCreditCommand) -> Sequence[DomainEvent]:
-        raise NotImplementedError
+        match cmd.owner:
+            case GuestOwner():
+                return ()
+            case UserOwner(user_id=user_id):
+                pass
+            case _:
+                assert_never(cmd.owner)
+        account = await self._credits.find(user_id)
+        if account is None:
+            return ()
+        if not account.refund(cmd.run, entry_id=self._credits.next_entry_identity(), at=cmd.at):
+            return ()
+        await self._credits.save(account)
+        return account.release_events()

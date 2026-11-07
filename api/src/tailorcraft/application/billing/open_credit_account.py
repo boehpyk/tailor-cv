@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from tailorcraft.domain.billing.credit_account import CreditAccount
 from tailorcraft.domain.billing.ports import CreditAccountRepository
 from tailorcraft.domain.billing.value_objects import OpeningGrant
 from tailorcraft.domain.identity.value_objects import UserId
@@ -30,4 +31,11 @@ class OpenCreditAccount:
         self._events = events
 
     async def __call__(self, cmd: OpenCreditAccountCommand) -> None:
-        raise NotImplementedError
+        account = CreditAccount.open(
+            user_id=cmd.user_id,
+            opening=cmd.opening,
+            entry_id=self._credits.next_entry_identity(),
+            at=cmd.at,
+        )
+        await self._credits.add(account)
+        await self._events.publish(*account.release_events())

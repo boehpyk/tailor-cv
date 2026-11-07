@@ -32,4 +32,7 @@ class ChargeCreditForRun:
         self._credits = credits
 
     async def __call__(self, cmd: ChargeCreditCommand) -> Sequence[DomainEvent]:
-        raise NotImplementedError
+        account = await self._credits.lock_for_charge(cmd.user_id)
+        account.charge(cmd.run, entry_id=self._credits.next_entry_identity(), at=cmd.at)
+        await self._credits.save(account)
+        return account.release_events()

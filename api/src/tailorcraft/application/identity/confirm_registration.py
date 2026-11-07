@@ -18,13 +18,17 @@ refusal's `reason` from `ConfirmationTokenInvalid`.
 
 from __future__ import annotations
 
-from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
+from tailorcraft.application.billing.open_credit_account import (
+    OpenCreditAccount,
+    OpenCreditAccountCommand,
+)
+from tailorcraft.domain.billing.value_objects import OpeningGrant
 from tailorcraft.domain.identity.errors import ConfirmationTokenInvalid, EmailAlreadyRegistered
 from tailorcraft.domain.identity.ports import PendingRegistrationRepository, UserRepository
 from tailorcraft.domain.identity.user import User
 from tailorcraft.domain.identity.value_objects import TokenHash, TokenRefusal, UserId
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.counters import DailyCounterPort
+from tailorcraft.domain.shared.counters import DailyCounterPort, DemandCounter
 from tailorcraft.domain.shared.events import EventPublisherPort
 
 
@@ -41,6 +45,8 @@ class ConfirmRegistration:
     3. `email, password_hash = p.confirm(now)`.
     4. `user = User.register_with_password(users.next_identity(), email, password_hash, now)`;
        `await users.add(user)` — `EmailAlreadyRegistered` → `await pending.remove(p.id)`, re-raised.
+       Then `open_account(user.id, WELCOME, now)` (publishes `CreditAccountOpened`) and `sign_ups`
+       +1 on `now.date()`, all on this session (slice 5.2, plan §0.6).
     5. `await pending.remove(p.id)`.
     6. `await events.publish(*user.release_events())`; return `user.id`.
     """
@@ -55,8 +61,6 @@ class ConfirmRegistration:
         open_account: OpenCreditAccount,
         counters: DailyCounterPort,
     ) -> None:
-        # Skeleton (slice 5.2 T12): held, not yet called. T16 opens the `welcome` account and counts
-        # `sign_ups` after `users.add`, in this same transaction (plan §0.6).
         self._open_account = open_account
         self._counters = counters
         self._pending = pending
@@ -83,6 +87,11 @@ class ConfirmRegistration:
         except EmailAlreadyRegistered:
             await self._pending.remove(pending.id)
             raise
+        # Same session, so the user, the `welcome` entry and the count commit or vanish together.
+        await self._open_account(
+            OpenCreditAccountCommand(user_id=user.id, opening=OpeningGrant.WELCOME, at=now)
+        )
+        await self._counters.increment(DemandCounter.SIGN_UPS, now.date())
         await self._pending.remove(pending.id)
 
         await self._events.publish(*user.release_events())

@@ -39,4 +39,14 @@ class GrantCredits:
         self._events = events
 
     async def __call__(self, cmd: GrantCreditsCommand) -> GrantCreditsResult:
-        raise NotImplementedError
+        account = await self._credits.lock_for_charge(cmd.user_id)
+        before = account.balance
+        if cmd.dry_run:
+            # The account is left untouched: no entry appended, so nothing could leak into a save.
+            return GrantCreditsResult(before=before, after=before + cmd.amount.value)
+        account.grant(
+            cmd.amount, entry_id=self._credits.next_entry_identity(), at=self._clock.now()
+        )
+        await self._credits.save(account)
+        await self._events.publish(*account.release_events())
+        return GrantCreditsResult(before=before, after=account.balance)
