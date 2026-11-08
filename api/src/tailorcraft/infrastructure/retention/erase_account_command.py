@@ -170,20 +170,24 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
             export_jobs=counts.export_jobs,
             tracked_applications=counts.tracked_applications,
             fit_scores=counts.fit_scores,
+            credits_left=counts.credits_left,
+            credit_entries=counts.credit_entries,
             duration_ms=_elapsed_ms(started_at),
         )
         # Slice 2.3 (AC-36): the account's history, appended to the same one line so the 2.2 prefix
         # an operator (or a script) already reads is unchanged. `files` has counted the history's
         # derived export files beside the saved CVs' since 2.3 (`count_account`). Slice 3.1 (AC-28)
         # appends the board the same way, after the history segment, so 2.2's and 2.3's prefix is
-        # byte-identical, and slice 5.1 (AC-36) the scores after that.
+        # byte-identical, and slice 5.1 (AC-36) the scores after that,
+        # and slice 5.2 (AC-31) the billing segment after those.
         print(
             f"would erase account {user_id.value}: {counts.base_cvs} saved CV(s), "
             f"{counts.files} file(s), {counts.logins} login(s) (dry run); history: "
             f"{counts.tailoring_runs} tailoring run(s), {counts.job_postings} job posting(s), "
             f"{counts.export_jobs} export job(s); tracking: "
             f"{counts.tracked_applications} tracked application(s); scoring: "
-            f"{counts.fit_scores} fit score(s)"
+            f"{counts.fit_scores} fit score(s); billing: {counts.credits_left} credit(s) left, "
+            f"{counts.credit_entries} credit entr(y/ies)"
         )
         return EXIT_OK
 
@@ -201,6 +205,8 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
         files_failed=len(report.unlink_failures),
         tracked_applications=report.tracked_applications,
         fit_scores=report.fit_scores,
+        credits_left=report.credits_left,
+        credit_entries=report.credit_entries,
         duration_ms=_elapsed_ms(started_at),
     )
     for error_type in report.unlink_failures:
@@ -217,7 +223,9 @@ async def erase_account(settings: Settings, *, user_id: UserId, dry_run: bool) -
         f"history: {report.tailoring_runs} tailoring run(s), {report.job_postings} job "
         f"posting(s), {report.export_jobs} export job(s), {report.files} file(s) in all; "
         f"tracking: {report.tracked_applications} tracked application(s); "
-        f"scoring: {report.fit_scores} fit score(s)"
+        f"scoring: {report.fit_scores} fit score(s); "
+        f"billing: {report.credits_left} credit(s) left, "
+        f"{report.credit_entries} credit entr(y/ies)"
     )
     if report.unlink_failures:
         print(

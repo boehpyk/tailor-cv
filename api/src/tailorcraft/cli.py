@@ -28,6 +28,11 @@ implemented (slice 4.1, `identity-user-roles`, T12): the only way a role changes
 `ChangeUserRole`. Exit 0 changed / already held / dry run, 1 no such account / a foreign database /
 a database failure, 2 usage. Their code lives in `infrastructure/identity/role_command.py`.
 
+`grant-credits --user-id <uuid> --credits N [--dry-run]` is implemented (slice 5.2,
+`credits-and-demand-test`, T25, AC-30): the operator's grant, through `GrantCredits`. Exit 0 granted /
+dry run, 1 no such account / a foreign database / a database failure, 2 usage (N outside 1..100
+included). Its code lives in `infrastructure/billing/grant_credits_command.py`.
+
 `check-settings` is implemented (slice 2.1, T46, OQ-2): it runs every startup refusal the API
 process has — the `Settings` validators and the Celery stale-window checks — without starting
 anything, and exits 1 printing the refusal's sentence (never a value) or 0 printing `settings ok`.
@@ -58,6 +63,14 @@ def _positive_int(raw: str) -> int:
     value = int(raw)
     if value <= 0:
         raise argparse.ArgumentTypeError(f"must be a positive integer, not {value}")
+    return value
+
+
+def _grant_amount(raw: str) -> int:
+    """`--credits`: 1..100 (`GrantAmount`'s range), else a usage error, exit 2 (P-4)."""
+    value = int(raw)
+    if not 1 <= value <= 100:
+        raise argparse.ArgumentTypeError(f"must be a whole number from 1 to 100, not {value}")
     return value
 
 
@@ -149,6 +162,17 @@ def main(argv: list[str] | None = None) -> int:
         role.add_argument(
             "--dry-run", action="store_true", help="print what would change; change nothing"
         )
+
+    # AC-30: the operator's grant (slice 5.2). By id, like the role commands; N is a usage error
+    # outside 1..100, before any database is touched.
+    grant = sub.add_parser("grant-credits", help="add 1..100 credits to one account")
+    grant.add_argument(
+        "--user-id", type=UUID, required=True, help="the account's id (identity_user.id)"
+    )
+    grant.add_argument("--credits", type=_grant_amount, required=True, help="1..100")
+    grant.add_argument(
+        "--dry-run", action="store_true", help="print what would change; change nothing"
+    )
 
     # T46 / OQ-2: every startup refusal the API has, asked once in one process before uvicorn is
     # exec'd — so a refusal exits the container instead of respawning under `--workers N`.
@@ -252,6 +276,13 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
             command=args.command,
         )
+    if args.command == "grant-credits":
+        # Imported here: it builds a database engine, which no other command's path needs.
+        from tailorcraft.infrastructure.billing.grant_credits_command import (
+            run_from_cli as run_grant,
+        )
+
+        return run_grant(user_id=args.user_id, credits=args.credits, dry_run=args.dry_run)
     if args.command == "check-settings":
         # Imported here: it must build nothing but `Settings`, and loading the other commands'
         # modules would import a database driver it has no use for.
