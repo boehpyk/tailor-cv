@@ -203,7 +203,7 @@ class TailoringRunSummary(BaseModel):
     """One `TailoringRun` as it appears in a list: everything above **except the two documents**.
 
     The character counts stay, the bodies do not, and that is a privacy decision with a number behind
-    it rather than a tidiness one. A session may own 20 runs (`max_tailoring_runs_per_session`) and a
+    it rather than a tidiness one. A session could own 20 runs (the per-session cap before slice 5.2) and a
     tailored CV may reach 20,000 characters with a cover letter behind it — over half a megabyte of a
     stranger's rewritten employment history in a single response, and in whatever caches, proxies or
     browser stores touch it. The detail endpoint exists for the one run the user actually opened.

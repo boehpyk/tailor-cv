@@ -61,6 +61,8 @@ class AdminAccountCounts(BaseModel):
     export_jobs: int
     tracked_applications: int
     fit_scores: int
+    credits_left: int
+    credit_entries: int
 
 
 class AdminUserDetailResponse(BaseModel):

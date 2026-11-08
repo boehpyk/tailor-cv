@@ -12,14 +12,23 @@ gets a 404 byte-identical to an unmatched path, and documenting it would describ
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from tailorcraft.application.shared.read_demand_counters import ReadDemandCountersQuery
+from tailorcraft.domain.shared.counters import DemandCounter
+from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.infrastructure.api.deps import ReadDemandCountersDep, require_admin
+from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.api.routers._me_responses import NOT_SIGNED_IN, SERVICE_UNAVAILABLE
-from tailorcraft.infrastructure.api.schemas.admin import DemandCountersResponse
+from tailorcraft.infrastructure.api.schemas.admin import (
+    DemandCountersResponse,
+    DemandCountsResponse,
+    DemandDayResponse,
+)
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -56,4 +65,24 @@ async def read_demand_counters(
     read_counters: ReadDemandCountersDep,
 ) -> DemandCountersResponse:
     """Slice 5.2 (ADR-0043): every day in `[from, to]` with zeros filled, and the totals."""
-    raise NotImplementedError
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        counters = await read_counters(ReadDemandCountersQuery(from_day=from_day, to_day=to_day))
+    except DomainError as exc:
+        refused = domain_error_to_http_exception(exc)
+        refused.headers = {**(refused.headers or {}), "Cache-Control": "no-store"}
+        raise refused from None
+    # By alias: `from` is a Python keyword, so the fields are `from_day` / `to_day` on the model.
+    return DemandCountersResponse.model_validate(
+        {
+            "from": from_day,
+            "to": to_day,
+            "days": [DemandDayResponse(day=d.day, counts=_counts(d.counts)) for d in counters.days],
+            "totals": _counts(counters.totals),
+        }
+    )
+
+
+def _counts(counts: Mapping[DemandCounter, int]) -> DemandCountsResponse:
+    """Every member, zero when absent: the response's keys are the enum's values."""
+    return DemandCountsResponse.model_validate({c.value: counts.get(c, 0) for c in DemandCounter})

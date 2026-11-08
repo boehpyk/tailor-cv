@@ -171,6 +171,8 @@ async def get_user(
             export_jobs=counts.export_jobs,
             tracked_applications=counts.tracked_applications,
             fit_scores=counts.fit_scores,
+            credits_left=counts.credits_left,
+            credit_entries=counts.credit_entries,
         ),
     )
     await db.commit()

@@ -485,9 +485,6 @@ class Settings(BaseSettings):
     # measured (OQ-7). No per-IP scope on purpose — a save is always bound to a session that already
     # owns the run, so a fresh session buys nothing.
     tailoring_revise_rate_limit_per_hour: int = 600
-    # A cross-aggregate cap enforced in `RequestTailoringRun`, not on `TailoringRun` — the rule spans
-    # every run a session owns, which no single run can know.
-    max_tailoring_runs_per_session: int = 20
     # The per-user cap on tailoring runs — the length of a history (slice 2.3, OQ-6). Every run is a
     # paid call already made, so this bounds storage, not spend; the per-principal rate limit bounds
     # spend. Bounded both ways, as `max_saved_base_cvs_per_user` is.

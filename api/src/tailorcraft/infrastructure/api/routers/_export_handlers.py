@@ -4,9 +4,9 @@
 handler lives here, taking an already resolved `requester: Owner`, the `expires_at` its responses
 carry, the rate-limit principal — the `(scope, identifier)` pair a per-principal budget is keyed on
 (`"session"` and the session id for a guest) — and `jobs_prefix`, the job collection's URL, from
-which both `Location` and `file_url` are built (`/api/export-jobs` for a guest). The guest router
-(`routers/export.py`) is then only its decorators, its credential and a call. The contract each body
-implements is documented on the guest route.
+which both `Location` and `file_url` are built. Since slice 5.2 the callers are the account routes
+and the admin reads (which serve a guest's existing exports to an admin); the guest router
+(`routers/export.py`) refuses every request with 403 `account_required` and calls nothing here.
 
 **Nothing here reads a credential**, so this module adds nothing to the AST scan's transfer-route
 set, which is exactly `{POST /api/me/guest-work/claim}` since 2.4 (AC-25).

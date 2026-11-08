@@ -12,69 +12,45 @@ red-first at all.
 Slice 1.4 (`workspace-progress-and-editor`, ADR-0015) added the fourth route the same way: **T12**
 the `PUT` skeleton and the three new response fields, **T13** `qa`'s red, **T14** the handler.
 
-**Two contract decisions live here rather than in a commit message.**
-
-**202, not 201.** The run resource *is* created and addressable the moment this handler returns, so
-201 is defensible and is the recorded alternative. 202 wins because its meaning — "accepted for
-processing, processing is not complete" — is exactly the contract the client must honour: the body it
-receives has `tailored_cv`, `cover_letter`, `model` and `completed_at` all `null` and stays that way
-until a worker finishes. Paired with `Location`, it tells a reader of the OpenAPI document to poll
-without reading any prose. A 201 would say "here is the thing you asked for", and the thing they
-asked for is not there yet.
-
-**`require_guest_session` on all four routes, and no session is minted anywhere** (OQ-3, G-4,
-AC-16). This is a **deliberate departure** from `routers/intake.py` and `routers/posting.py`, which
-both mint a fresh `GuestSession` on `POST` for a missing, unknown or expired cookie — so a reader
-arriving from either of those two will notice the inconsistency, and this paragraph is here so they
-find the reason instead of "fixing" it. The reason is that those two POSTs *start* a session's story:
-the user has an artifact in hand (a file, a pasted posting) and no prior state to lose, so minting is
-the friendliest possible answer. This one *continues* it. A tailoring run names a base CV and a job
-posting that a session must already own, so a request arriving without a valid session can only be
-one of two things: a reference to another session's objects, which must be 404, or a resumed tab
-whose session has expired, whose objects are gone with it. Minting there would hand back a brand-new
-empty session and then answer 404 for the ids the user is looking at — two confusing round trips to
-say "your session expired", when 401 `guest_session_expired` says it once and the client already
-knows how to react. It also means the expensive endpoint of this product cannot be driven by a
-cookieless caller who simply keeps asking.
+**Since slice 5.2 a guest cannot request a run** (plan §0.7, AC-15): the `POST` answers 403
+`account_required` from a handler with no parameters, and the account twin
+(`routers/me_tailoring_runs.py`) is the only way a run starts. The three remaining routes keep a run
+made before that release readable and editable until the purge, and claimable. They use
+`require_guest_session` and never mint: they continue a session's story, so a missing or expired cookie
+is 401 `guest_session_expired`, unlike the minting `POST`s of `routers/intake.py` and
+`routers/posting.py`, which start one.
 
 **What this module logs, and what it never logs** (AC-21, Constitution §8): ids, scopes, namespaces
-and exception *type names*. Never a CV, a posting or a tailored document — the write path never holds
-one in a local, and the two reads hand them straight to the response model. **Never a client IP**: it
-is computed once, handed to the limiter as an identifier, and goes nowhere else — in particular never
-into a line that also carries a `tailoring_run_id`, which would pair an identifiable address with a
-specific job application.
+and exception *type names*. Never a CV, a posting or a tailored document: the two reads hand them
+straight to the response model.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Request, Response, status
+from fastapi import APIRouter, Body, Response, status
 
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.tailoring.value_objects import TailoredDocumentKind, TailoringRunId
 from tailorcraft.infrastructure.api.deps import (
-    ClockDep,
-    EventPublisherDep,
     GetTailoringRunDep,
     ListTailoringRunsDep,
-    RequestTailoringRunDep,
     RequireGuestSessionDep,
     ReviseTailoredDocumentDep,
     SessionDep,
     SettingsDep,
-    TailoringQueueDep,
-    TailoringRateLimiterDep,
     TailoringReviseRateLimiterDep,
-    TailoringRunRepositoryDep,
 )
-from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
+from tailorcraft.infrastructure.api.errors import (
+    account_required_exception,
+    domain_error_to_http_exception,
+)
 from tailorcraft.infrastructure.api.routers import _tailoring_handlers as handlers
 from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 from tailorcraft.infrastructure.api.schemas.tailoring import (
-    CreateTailoringRunRequest,
     ReviseDocumentRequest,
     TailoringRunListResponse,
     TailoringRunResponse,
@@ -104,119 +80,23 @@ _GUEST_SESSION_EXPIRED: dict[int | str, dict[str, Any]] = {
 
 @router.post(
     "",
-    response_model=TailoringRunResponse,
-    status_code=status.HTTP_202_ACCEPTED,
+    response_model=None,
+    status_code=status.HTTP_403_FORBIDDEN,
     responses={
-        status.HTTP_202_ACCEPTED: {
-            "description": (
-                "Accepted for processing. The run is committed as `queued` and handed to a worker; "
-                "the body's `tailored_cv`, `cover_letter`, `model` and `completed_at` are all "
-                "`null` until it finishes (AC-1). Poll the `Location` URL."
-            ),
-            "headers": {
-                "Location": {
-                    "description": "`/api/tailoring-runs/{id}` — the run to poll.",
-                    "schema": {"type": "string"},
-                },
-            },
-        },
-        status.HTTP_404_NOT_FOUND: {
+        status.HTTP_403_FORBIDDEN: {
             "model": ErrorResponse,
             "description": (
-                "base_cv_not_found | job_posting_not_found — also returned when the object exists "
-                "but belongs to a different session (G-6, G-7, AC-14); never a 403, which would "
-                "confirm the id is real."
+                "account_required — always (slice 5.2, plan §0.7, AC-15): tailoring costs a credit "
+                "and a credit is a user's. The path stays so a stale bundle gets this, not a 405."
             ),
         },
-        status.HTTP_409_CONFLICT: {
-            "model": ErrorResponse,
-            "description": (
-                "base_cv_not_extracted (G-8) | tailoring_already_running (G-9 — the error body "
-                "carries `active_tailoring_run_id` so the client can attach its poller to the run "
-                "already paying for itself) | too_many_tailoring_runs (G-10)."
-            ),
-        },
-        status.HTTP_413_CONTENT_TOO_LARGE: {
-            "model": ErrorResponse,
-            "description": (
-                "request_too_large — the 256 KiB JSON body cap, refused on Content-Length before "
-                "the body is parsed (G-3, `MaxBodySizeMiddleware`, unchanged from 1.2)."
-            ),
-        },
-        status.HTTP_422_UNPROCESSABLE_CONTENT: {
-            "model": ErrorResponse,
-            "description": (
-                "validation_error — the body is not JSON, or an id is missing or not a UUID "
-                "(G-1, G-2)."
-            ),
-        },
-        status.HTTP_429_TOO_MANY_REQUESTS: {
-            "model": ErrorResponse,
-            "description": "rate_limited (G-11) — carries a Retry-After header.",
-            "headers": {
-                "Retry-After": {
-                    "description": "Seconds until the smaller of the two budgets refills.",
-                    "schema": {"type": "integer"},
-                },
-            },
-        },
-        status.HTTP_503_SERVICE_UNAVAILABLE: {
-            "model": ErrorResponse,
-            "description": (
-                "rate_limit_unavailable (G-12 — the tailoring limiter **fails closed**, because "
-                "this endpoint spends money) | queue_unavailable (G-14 — the row is committed and "
-                "recorded `failed`/`not_queued` before this answer) | service_unavailable (G-13)."
-            ),
-        },
-        **_GUEST_SESSION_EXPIRED,
     },
 )
-async def request_tailoring_run(
-    request: Request,
-    response: Response,
-    body: Annotated[CreateTailoringRunRequest, Body()],
-    session: RequireGuestSessionDep,
-    settings: SettingsDep,
-    clock: ClockDep,
-    rate_limiter: TailoringRateLimiterDep,
-    request_run: RequestTailoringRunDep,
-    runs: TailoringRunRepositoryDep,
-    queue: TailoringQueueDep,
-    events: EventPublisherDep,
-    db: SessionDep,
-) -> TailoringRunResponse:
-    """Request one tailoring run for the caller's guest session.
-
-    In this order, and each step's position is load-bearing: the fail-closed rate limiter in both
-    scopes; `RequestTailoringRun`, which authorizes the base CV and the job posting through their own
-    use cases and enforces the active-run and per-session caps; the explicit in-handler commit;
-    **then** the enqueue, with G-14's second transaction when the broker refuses; and finally the
-    `Location` header.
-
-    `session` is `RequireGuestSessionDep` rather than `resolve_or_start_guest_session`: see this
-    module's docstring for why this POST is the one that refuses instead of minting. It is also safe
-    as an ordinary `Depends()` here, unlike the minting variant in the other two routers, because it
-    never writes anything — so FastAPI resolving it for a request whose body then fails validation
-    costs nothing.
-    """
-    # The body is shared with the account twin (`_tailoring_handlers.py`, technical plan §0.2).
-    return await handlers.request_tailoring_run(
-        request=request,
-        response=response,
-        body=body,
-        requester=GuestOwner(session.id),
-        expires_at=session.expires_at,
-        principal=("session", str(session.id.value)),
-        location_prefix=router.prefix,
-        settings=settings,
-        clock=clock,
-        rate_limiter=rate_limiter,
-        request_run=request_run,
-        runs=runs,
-        queue=queue,
-        events=events,
-        db=db,
-    )
+async def request_tailoring_run() -> NoReturn:
+    """403 `account_required` to any request. **No parameters, on purpose**: FastAPI validates a body
+    and resolves dependencies before a handler runs, so a parameter here would read the cookie, mint,
+    touch a limiter or answer 422 first. A test pins the empty dependant."""
+    raise account_required_exception()
 
 
 @router.get(

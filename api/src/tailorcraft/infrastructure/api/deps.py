@@ -36,6 +36,7 @@ from tailorcraft.application.billing.choose_payment_notice import ChoosePaymentN
 from tailorcraft.application.billing.get_credits import GetCredits
 from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
 from tailorcraft.application.billing.record_pack_click import RecordPackClick
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.export.download_export_file import DownloadExportFile
 from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
@@ -84,6 +85,8 @@ from tailorcraft.application.shared.read_demand_counters import ReadDemandCounte
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
+from tailorcraft.application.tailoring.record_run_not_queued import RecordRunNotQueued
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
 from tailorcraft.application.tracking.move_tracked_application import MoveTrackedApplication
@@ -156,6 +159,7 @@ from tailorcraft.infrastructure.api.errors import (
     GUEST_SESSION_EXPIRED_DETAIL,
     ORIGIN_NOT_ALLOWED_DETAIL,
     account_disabled_exception,
+    account_required_exception,
     domain_error_to_http_exception,
     invalid_access_token_exception,
 )
@@ -522,9 +526,8 @@ RequireGuestSessionDep = Annotated[GuestSession, Depends(require_guest_session)]
 async def refuse_guest_export() -> None:
     """403 `account_required` for every route in `routers/export.py` (slice 5.2, plan §0.7, AC-16):
     a router-level dependency with no parameters, so it raises before path validation, the cookie or
-    a body is read. **Not attached yet**: T29 adds it to the router's `dependencies` with the GREEN,
-    so the guest export tests stay green until then."""
-    raise NotImplementedError
+    a body is read. Attached on that router's `dependencies`, which a test pins."""
+    raise account_required_exception()
 
 
 async def resolve_or_start_guest_session(
@@ -950,6 +953,23 @@ def get_request_tailoring_run(
 
 
 RequestTailoringRunDep = Annotated[RequestTailoringRun, Depends(get_request_tailoring_run)]
+
+
+def get_record_run_not_queued(
+    runs: TailoringRunRepositoryDep,
+    credits: CreditAccountRepositoryDep,
+    counters: DailyCounterDep,
+    events: EventPublisherDep,
+    clock: ClockDep,
+) -> RecordRunNotQueued:
+    """G-14's second transaction (F-10): fail the run, refund its credit, count `runs_failed`, on the
+    request's session. The handler commits; nothing here does."""
+    return RecordRunNotQueued(
+        runs, RecordRunFailure(runs, RefundCreditForRun(credits), counters, events), clock
+    )
+
+
+RecordRunNotQueuedDep = Annotated[RecordRunNotQueued, Depends(get_record_run_not_queued)]
 
 
 def get_get_tailoring_run(

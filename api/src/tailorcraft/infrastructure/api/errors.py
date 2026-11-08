@@ -227,6 +227,19 @@ def account_disabled_exception() -> HTTPException:
     )
 
 
+def account_required_exception() -> HTTPException:
+    """403 `account_required` (slice 5.2, plan §0.7): the guest tailoring `POST` and every guest export
+    route. One builder, so the three places that answer it cannot drift."""
+    return HTTPException(
+        status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": "account_required",
+            "message": "Create a free account to tailor your CV.",
+        },
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     """Map one `DomainError` to the `HTTPException` the API returns for it.
 
@@ -775,13 +788,7 @@ def _credits_error_to_http(exc: DomainError) -> HTTPException:
             detail={"code": "no_credits", "message": "You have no credits left."},
         )
     if isinstance(exc, AccountRequired):
-        return HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            detail={
-                "code": "account_required",
-                "message": "Create a free account to tailor your CV.",
-            },
-        )
+        return account_required_exception()
     if isinstance(exc, TailoringRunNotSucceeded):
         return HTTPException(
             status.HTTP_409_CONFLICT,
