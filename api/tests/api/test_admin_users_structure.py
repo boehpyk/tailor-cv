@@ -80,7 +80,7 @@ def _admin_routes(app: FastAPI) -> dict[tuple[str, str], object]:
 # --- (a) --------------------------------------------------------------------------------------
 
 
-def test_ac28a_the_admin_surface_is_exactly_thirty_one_routes_each_behind_require_admin(
+def test_ac28a_the_admin_surface_is_exactly_thirty_two_routes_each_behind_require_admin(
     app: FastAPI,
 ) -> None:
     routes = _admin_routes(app)

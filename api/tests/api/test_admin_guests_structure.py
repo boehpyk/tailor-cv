@@ -1,5 +1,5 @@
 """Slice 4.4, T16 (test-after): AC-27 (b)-(e), the structural guarantees of the admin guest and
-retention routers. (a) is `test_admin_users_structure`'s thirty-one-route walk (`_EXPECTED_ADMIN_ROUTES`
+retention routers. (a) is `test_admin_users_structure`'s thirty-two-route walk (`_EXPECTED_ADMIN_ROUTES`
 lists the fourteen new routes) and (f) its 429 scan over every `routers/admin*.py`; both already
 cover the new modules, and the (a) count is asserted again here so this slice owns the claim.
 
