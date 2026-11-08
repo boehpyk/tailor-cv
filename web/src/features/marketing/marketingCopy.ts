@@ -6,7 +6,11 @@
  * The mockups' lines are kept **except four that would state something false** (C-10): TXT is
  * accepted too; nothing is "kept ready for every application" (a guest's CV is deleted after a day);
  * the posting is not "pulled apart" into requirements on screen; a guest's work is deleted after
- * 24 hours, not "after a while". Pro is shown and not sold (OQ-3).
+ * 24 hours, not "after a while".
+ *
+ * **Slice 5.2 (AC-38): it sells what exists.** A guest gets a free fit score, not a tailoring; an
+ * account's first tailoring is free; packs are shown as *opening soon* and nothing is sold. The
+ * *Pro* plan and *Free to try, no account needed* are gone. No *token*, no promised gain (AC-37).
  *
  * The illustration's people and companies are **fictional** (AC-7, pinned to this folder by
  * `design.grep.test.ts`): an example, never a record.
@@ -18,16 +22,16 @@ export const WORDMARK = 'FixCV';
 export const NAV_HOW_IT_WORKS = 'How it works';
 export const NAV_PRICING = 'Pricing';
 export const NAV_LOG_IN = 'Log in';
-export const NAV_TAILOR = 'Tailor my CV';
+export const NAV_TAILOR = 'Check my CV';
 
 // --- Hero (1a, 1c) --------------------------------------------------------------------------------
 
-export const HERO_BADGE = 'Free to try, no account needed';
+export const HERO_BADGE = 'Free fit score, no account needed';
 /** The `h1`: the lead, then the highlighted word and its full stop — one sentence as its name. */
 export const HERO_HEADLINE_LEAD = 'Every job deserves its own';
 export const HERO_HEADLINE_MARK = 'CV';
 export const HERO_SUBLINE =
-  'Tailor your CV and cover letter to a job posting in under two minutes.';
+  'See how well your CV fits a job posting, free. Create an account and your first tailored CV and cover letter is free too.';
 export const HERO_UPLOAD = 'Upload my CV';
 export const HERO_EXAMPLE = 'See an example';
 export const HERO_DOWNLOAD_AS = 'Download as';
@@ -92,13 +96,13 @@ export const STEPS = [
   },
   {
     number: '02',
-    title: 'Add the job',
-    body: 'Paste the posting or drop in a link.',
+    title: 'Add the job and check your fit',
+    body: 'Paste the posting or drop in a link, and get a fit score for free.',
   },
   {
     number: '03',
-    title: 'Polish and download',
-    body: 'Edit both documents in place, pick a layout, and export when it feels right.',
+    title: 'Tailor, polish and download',
+    body: 'With an account: tailor both documents, edit them in place, pick a layout and export.',
   },
 ] as const;
 
@@ -106,15 +110,19 @@ export const STEPS = [
 
 export const PRICING_HEADING = 'Start free. Stay if it helps.';
 export const PRICING_SUBLINE =
-  'Try it as a guest today. Make an account when you want to keep your work.';
+  'Check your fit as a guest today. Make an account for your first tailoring, free, and to keep your work.';
 
 export const PLAN_GUEST = {
   name: 'Guest',
   price: '$0',
-  tagline: 'For a quick application, right now.',
-  features: ['Tailored CV and cover letter', 'Full editor', 'All four download formats'],
+  tagline: 'To see how well your CV fits a job.',
+  features: [
+    'A fit score for your CV and a job posting',
+    "What the job asks for that your CV doesn't show",
+    'No account needed',
+  ],
   caveat: 'Work is deleted after 24 hours',
-  cta: 'Try without signing up',
+  cta: 'Check my CV',
 } as const;
 
 export const PLAN_ACCOUNT = {
@@ -123,7 +131,8 @@ export const PLAN_ACCOUNT = {
   price: '$0',
   tagline: 'For a whole job search.',
   features: [
-    'Everything in Guest',
+    'Your first tailored CV and cover letter, free',
+    'Full editor and all four download formats',
     'Saved base CVs',
     'History of every tailoring',
     'Application board',
@@ -131,13 +140,17 @@ export const PLAN_ACCOUNT = {
   cta: 'Create free account',
 } as const;
 
-export const PLAN_PRO = {
-  name: 'Pro',
-  price: '$9',
-  period: '/ month',
+/** OQ-1: shown, not sold. The card links to `/register`; nothing on this page takes a payment. */
+export const PLAN_PACKS = {
+  name: 'Packs',
+  badge: 'Opening soon',
+  price: 'From $5',
   tagline: 'For applying often.',
-  features: ['Everything in Account', 'More tailorings per day', 'Priority queue'],
-  cta: 'Go Pro',
-  /** OQ-3: there is no billing, so the button is disabled and says why. */
-  note: 'Coming soon — nothing is charged.',
+  features: [
+    '3 credits for $5',
+    '10 credits for $12',
+    'One credit is one tailored CV and cover letter',
+  ],
+  note: 'Payments are opening soon. Nothing is charged.',
+  cta: 'Start with a free account',
 } as const;
