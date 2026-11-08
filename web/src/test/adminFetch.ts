@@ -37,7 +37,7 @@ export function summary(overrides: Partial<AdminUserSummary> = {}): AdminUserSum
   };
 }
 
-/** Eight different numbers, so a count wired to the wrong label fails. */
+/** Ten different numbers, so a count wired to the wrong label fails. */
 export const COUNTS: AccountCounts = {
   base_cvs: 1,
   files: 2,
@@ -47,6 +47,8 @@ export const COUNTS: AccountCounts = {
   export_jobs: 6,
   tracked_applications: 7,
   fit_scores: 8,
+  credits_left: 9,
+  credit_entries: 10,
 };
 
 export function detail(overrides: Partial<AdminUserDetail> = {}): AdminUserDetail {

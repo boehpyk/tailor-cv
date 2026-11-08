@@ -95,7 +95,7 @@ export function useExportJobs(runId: string): ReturnType<typeof useQuery<ExportJ
   const map = useScopeMap();
   return useQuery({
     queryKey: exportJobsQueryKey(runId, map),
-    queryFn: ({ signal }) => fetchExportJobs(map, runId, signal),
+    queryFn: ({ signal }) => fetchExportJobs(runId, signal),
     retry: (failureCount, error) => !isClientError(error) && failureCount < MAX_TRANSIENT_RETRIES,
     refetchInterval: (query) => {
       if (query.state.status === 'error') {

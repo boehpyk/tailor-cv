@@ -8,6 +8,7 @@ const LINKS: readonly (readonly [Area, string])[] = [
   ['users', '/admin'],
   ['guests', '/admin/guests'],
   ['storage', '/admin/storage'],
+  ['demand', '/admin/demand'],
 ];
 
 /** Which area a path is in: `/admin` and `/admin/users/…` are Users; anything else under `/admin`
@@ -17,11 +18,12 @@ function areaOf(pathname: string): Area | null {
   if (rest === '' || rest === 'users' || rest.startsWith('users/')) return 'users';
   if (rest === 'guests' || rest.startsWith('guests/')) return 'guests';
   if (rest === 'storage' || rest.startsWith('storage/')) return 'storage';
+  if (rest === 'demand') return 'demand';
   return null;
 }
 
 /**
- * *Users* · *Guests* · *Storage* (AC-31): above every `/admin` page, `aria-current="page"` on the
+ * *Users* · *Guests* · *Storage* · *Demand* (AC-31; slice 5.2): above every `/admin` page, `aria-current="page"` on the
  * current area. Not `NavLink`: `/admin` is a prefix of every area, and Users also owns
  * `/admin/users/…`, so the area is decided here, once.
  */

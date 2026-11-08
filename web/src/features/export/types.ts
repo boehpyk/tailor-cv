@@ -106,7 +106,7 @@ export interface NewExport {
 
 /**
  * One `ExportJob` as the client sees it — the body of the `POST` (202, or 200 when an identical
- * request already made this job), of `GET /api/export-jobs/{id}`, and of every row of the listing.
+ * request already made this job), of `GET /api/me/export-jobs/{id}`, and of every row of the listing.
  * One shape for all three, so there is one parser and one renderer.
  *
  * **This body carries no PII and no path** (ADR-0016 (e)): no `file_key`, no filesystem path and
@@ -153,7 +153,7 @@ export interface ExportJob {
   readonly render_duration_ms: number | null;
 
   /**
-   * **`null` until `ready`**, and a path rather than an absolute URL (`/api/export-jobs/{id}/file`):
+   * **`null` until `ready`**, and a path rather than an absolute URL (`/api/me/export-jobs/{id}/file`):
    * the client is same-origin and the typed client prepends nothing. Building this string in
    * TypeScript would put the URL grammar in two places.
    *

@@ -29,7 +29,7 @@ export function CreditsSection({ userId }: CreditsSectionProps): React.JSX.Eleme
   const { data } = credits;
   return (
     <section aria-labelledby="credits-heading" className="space-y-4">
-      <h2 id="credits-heading" className="font-display text-lg font-semibold text-slate-900">
+      <h2 id="credits-heading" className="font-display text-xl font-bold text-slate-900">
         {CREDITS_HEADING}
       </h2>
       {data === undefined ? (

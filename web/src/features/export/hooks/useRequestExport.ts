@@ -40,7 +40,7 @@ export function useRequestExport(
   const map = useScopeMap();
 
   return useMutation({
-    mutationFn: (input: NewExport) => requestExport(map, runId, input),
+    mutationFn: (input: NewExport) => requestExport(runId, input),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(runId, map) }),
   });
 }

@@ -4,6 +4,8 @@
  * `NotFoundPage`'s own copy (OQ-2): nothing here says "forbidden".
  */
 
+import { unusedCreditsWarning } from '@/features/billing/billingCopy';
+
 import type { AccountCounts, DemandCounts } from '@/api/admin';
 
 /** AC-31: the probe is pending (`role="status"`). */
@@ -84,6 +86,8 @@ export const COUNT_LABELS: Readonly<Record<keyof AccountCounts, string>> = {
   export_jobs: 'Exports',
   tracked_applications: 'Board cards',
   fit_scores: 'Fit scores',
+  credits_left: 'Credits left',
+  credit_entries: 'Credit entries',
 };
 
 // --- Slice 4.2: actions (AC-34, AC-35, OQ-12, OQ-18) ----------------------------------------------
@@ -114,7 +118,8 @@ export function eraseDialogMessage(
   const held = (Object.keys(COUNT_LABELS) as (keyof AccountCounts)[])
     .map((key) => `${COUNT_LABELS[key]}: ${String(counts[key])}`)
     .join(', ');
-  const message = `${email} and everything it holds will be erased (${held}). This cannot be undone.`;
+  const credits = counts.credits_left > 0 ? ` ${unusedCreditsWarning(counts.credits_left)}` : '';
+  const message = `${email} and everything it holds will be erased (${held}). This cannot be undone.${credits}`;
   return ownAccount ? `${message} ${OWN_ACCOUNT_NOTE}` : message;
 }
 
@@ -256,7 +261,12 @@ export const DELETE_FAILED = "Couldn't delete. Try again.";
 
 /** AC-31: the admin nav, *Users* · *Guests* · *Storage*. */
 export const ADMIN_NAV_LABEL = 'Admin';
-export const NAV_LABELS = { users: 'Users', guests: 'Guests', storage: 'Storage' } as const;
+export const NAV_LABELS = {
+  users: 'Users',
+  guests: 'Guests',
+  storage: 'Storage',
+  demand: 'Demand',
+} as const;
 
 // The guest list (AC-32)
 export const GUESTS_HEADING = 'Guest sessions';

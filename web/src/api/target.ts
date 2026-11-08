@@ -14,10 +14,8 @@
  * one is a 401 at best. One value holding both means a caller cannot pick one of each (AC-48).
  */
 export interface ApiTarget {
-  /** The run collection: `POST` to create, `/{id}` to read, `/{id}/documents/…`, `/{id}/exports`. */
+  /** The run collection: `POST` to create, `/{id}` to read, `/{id}/documents/…` (an account's exports hang here too). */
   readonly tailoringRunsPath: string;
-  /** The flat export-job resource: `/{id}` to poll, `/{id}/file` for the bytes. */
-  readonly exportJobsPath: string;
   /** The posting collection. */
   readonly jobPostingsPath: string;
   /**
@@ -38,7 +36,6 @@ export interface ApiTarget {
 /** Today's guest routes, exactly as 1.2–1.5 wrote them. */
 export const GUEST_API_TARGET: ApiTarget = {
   tailoringRunsPath: '/api/tailoring-runs',
-  exportJobsPath: '/api/export-jobs',
   jobPostingsPath: '/api/job-postings',
   latestJobPostingsPath: '/api/job-postings',
   fitScoresPath: '/api/fit-scores',
@@ -51,12 +48,18 @@ export const GUEST_API_TARGET: ApiTarget = {
  */
 export const ACCOUNT_API_TARGET: ApiTarget = {
   tailoringRunsPath: '/api/me/tailoring-runs',
-  exportJobsPath: '/api/me/export-jobs',
   jobPostingsPath: '/api/me/job-postings',
   latestJobPostingsPath: '/api/me/job-postings?limit=1',
   fitScoresPath: '/api/me/fit-scores',
   auth: 'required',
 };
+
+/**
+ * The flat export-job resource, an account's only: `/{id}` to poll, `/{id}/file` for the bytes.
+ * Since slice 5.2 exports need an account (AC-16), so the guest twin `/api/export-jobs` is gone
+ * and `api/exports.ts` takes no target.
+ */
+export const ACCOUNT_EXPORT_JOBS_PATH = '/api/me/export-jobs';
 
 /**
  * The `auth` field of `request`/`requestBlob`'s options for a target — spread into them, because

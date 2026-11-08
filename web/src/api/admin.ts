@@ -73,6 +73,9 @@ export interface AccountCounts {
   readonly tracked_applications: number;
   /** Slice 5.1 (OQ-5): how many, never a score, gap or fingerprint. */
   readonly fit_scores: number;
+  /** Slice 5.2 (AC-32): the balance, and how many ledger lines the erasure takes. */
+  readonly credits_left: number;
+  readonly credit_entries: number;
 }
 
 export interface AdminUserDetail extends AdminUserSummary {

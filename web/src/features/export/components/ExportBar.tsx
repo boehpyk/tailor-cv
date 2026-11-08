@@ -369,7 +369,7 @@ export function ExportBar({
           format,
           layoutTemplate: null,
           filename: downloadFilenameFor(document, format),
-          fetchBlob: () => downloadDocument(map, runId, document, format),
+          fetchBlob: () => downloadDocument(runId, document, format),
         });
       };
     }
@@ -396,7 +396,7 @@ export function ExportBar({
           format,
           layoutTemplate,
           filename: downloadFilenameFor(document, format),
-          fetchBlob: () => downloadExportFile(map, jobId),
+          fetchBlob: () => downloadExportFile(jobId),
         });
       };
     }
