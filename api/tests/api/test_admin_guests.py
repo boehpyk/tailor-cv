@@ -571,19 +571,26 @@ async def test_ac13_one_run_is_the_guests_own_response(world: World) -> None:
 
 
 @pytest.mark.parametrize("fmt", ["md", "txt"])
-async def test_ac13_a_document_download_is_the_guests_bytes_and_three_headers(
+async def test_ac13_a_document_download_is_the_same_bytes_and_headers_an_account_gets(
     world: World, fmt: str
 ) -> None:
     admin = await world.account(admin=True)
     guest = await world.guest()
     entry = await world.entry(guest.owner)
-    own = world.guest_client(guest)
-    tail = f"tailoring-runs/{entry.run_id.value}/documents/cover_letter/download"
+    # 5.2 AC-15: a guest can no longer download, so the reference is an account's identical run.
+    user = await world.account()
+    twin = await world.entry(user.owner)
 
     response = await world.http.get(
-        f"{GUESTS}/{guest.uuid}/{tail}", params={"format": fmt}, headers=admin.headers
+        f"{GUESTS}/{guest.uuid}/tailoring-runs/{entry.run_id.value}/documents/cover_letter/download",
+        params={"format": fmt},
+        headers=admin.headers,
     )
-    theirs = await own.get(f"/api/{tail}", params={"format": fmt})
+    theirs = await world.http.get(
+        f"/api/me/tailoring-runs/{twin.run_id.value}/documents/cover_letter/download",
+        params={"format": fmt},
+        headers=user.headers,
+    )
 
     assert response.status_code == 200, response.text
     assert theirs.status_code == 200, theirs.text
@@ -605,14 +612,19 @@ async def test_ac13_the_exports_list_is_the_guests_with_the_file_url_under_the_a
     admin = await world.account(admin=True)
     guest = await world.guest()
     entry = await world.entry(guest.owner)
-    own = world.guest_client(guest)
+    # 5.2 AC-15: guests cannot list exports; an account's twin run is the reference
+    user = await world.account()
+    twin = await world.entry(user.owner)
     job = entry.jobs[0].id.value
+    twin_job = twin.jobs[0].id.value
 
     response = await world.http.get(
         f"{GUESTS}/{guest.uuid}/tailoring-runs/{entry.run_id.value}/exports",
         headers=admin.headers,
     )
-    theirs = await own.get(f"/api/tailoring-runs/{entry.run_id.value}/exports")
+    theirs = await world.http.get(
+        f"/api/me/tailoring-runs/{twin.run_id.value}/exports", headers=user.headers
+    )
 
     assert response.status_code == 200, response.text
     assert theirs.status_code == 200, theirs.text
@@ -620,25 +632,33 @@ async def test_ac13_the_exports_list_is_the_guests_with_the_file_url_under_the_a
     items, their_items = response.json()["items"], theirs.json()["items"]
     assert len(items) == len(their_items) == 1
     assert items[0]["file_url"] == f"{GUESTS}/{guest.uuid}/export-jobs/{job}/file"
-    assert their_items[0]["file_url"] == f"/api/export-jobs/{job}/file"
-    assert {**items[0], "file_url": None} == {**their_items[0], "file_url": None}
+    assert their_items[0]["file_url"] == f"/api/me/export-jobs/{twin_job}/file"
+    assert set(items[0]) == set(their_items[0])
+    assert items[0]["format"] == their_items[0]["format"]
+    assert items[0]["status"] == their_items[0]["status"]
 
 
-async def test_ac13_an_export_file_is_the_guests_bytes_and_three_headers(world: World) -> None:
+async def test_ac13_an_export_file_is_the_stored_bytes_and_the_three_headers_an_account_gets(
+    world: World,
+) -> None:
     admin = await world.account(admin=True)
     guest = await world.guest()
     entry = await world.entry(guest.owner)
-    own = world.guest_client(guest)
+    # 5.2 AC-15: a guest cannot download; compare with an account's file
+    user = await world.account()
+    twin = await world.entry(user.owner)
     job = entry.jobs[0].id
 
     response = await world.http.get(
         f"{GUESTS}/{guest.uuid}/export-jobs/{job.value}/file", headers=admin.headers
     )
-    theirs = await own.get(f"/api/export-jobs/{job.value}/file")
+    theirs = await world.http.get(
+        f"/api/me/export-jobs/{twin.jobs[0].id.value}/file", headers=user.headers
+    )
 
     assert response.status_code == 200, response.text
     assert theirs.status_code == 200, theirs.text
-    assert response.content == export_bytes(job) == theirs.content
+    assert response.content == export_bytes(job)  # the stored bytes, read from the seed's truth
     for header in (
         "cache-control",
         "x-content-type-options",

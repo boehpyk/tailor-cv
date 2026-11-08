@@ -325,7 +325,7 @@ async def test_ac26_the_guest_list_never_lists_a_users_run(
 # --- AC-22 (HTTP half): a user-owned id on every guest route ----------------------------------
 
 
-async def test_ac22_a_user_owned_id_on_every_guest_route_is_404_and_creates_nothing(
+async def test_ac22_a_user_owned_id_on_every_guest_route_is_404_or_account_required_and_creates_nothing(
     client: AsyncClient, settings: Settings, session: AsyncSession, clock: FixedClock
 ) -> None:
     account = await register(client, settings)
@@ -339,9 +339,9 @@ async def test_ac22_a_user_owned_id_on_every_guest_route_is_404_and_creates_noth
     runs_before = await count_rows(session, "tailoring_run")
     jobs_before = await count_rows(session, "export_job")
 
-    responses = {
-        "get run": await client.get(f"/api/tailoring-runs/{run}"),
-        "put doc": await client.put(f"/api/tailoring-runs/{run}/documents/cv", json=_REVISION),
+    # 5.2 AC-15: every guest export route is 403 `account_required`, before any ownership lookup; the
+    # rest of the table keeps its 404. Nothing here ever answers 200 or creates a row.
+    retired = {
         "inline": await client.get(f"/api/tailoring-runs/{run}/documents/cv/download?format=md"),
         "export": await client.post(
             f"/api/tailoring-runs/{run}/exports", json={"document": "cv", "format": "docx"}
@@ -349,12 +349,18 @@ async def test_ac22_a_user_owned_id_on_every_guest_route_is_404_and_creates_noth
         "exports": await client.get(f"/api/tailoring-runs/{run}/exports"),
         "job": await client.get(f"/api/export-jobs/{job}"),
         "file": await client.get(f"/api/export-jobs/{job}/file"),
+    }
+    responses = {
+        "get run": await client.get(f"/api/tailoring-runs/{run}"),
+        "put doc": await client.put(f"/api/tailoring-runs/{run}/documents/cv", json=_REVISION),
         # No "run with a saved cv" row: slice 5.2 retires the guest POST (403 `account_required`),
         # so a guest request naming a user-owned CV no longer reaches the 404 this table asserts.
         "posting": await client.get(f"/api/job-postings/{posting_id}"),
     }
 
     assert {name: r.status_code for name, r in responses.items()} == dict.fromkeys(responses, 404)
+    assert {name: r.status_code for name, r in retired.items()} == dict.fromkeys(retired, 403)
+    assert {r.json()["error"]["code"] for r in retired.values()} == {"account_required"}
     assert await count_rows(session, "tailoring_run") == runs_before
     assert await count_rows(session, "export_job") == jobs_before
 

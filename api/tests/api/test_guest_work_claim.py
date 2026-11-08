@@ -656,9 +656,14 @@ async def test_ac31_claimed_ids_are_served_on_the_me_routes_with_null_expiry_and
     guest_urls = [
         f"{GUEST_POSTINGS}/{entry.posting_id.value}",
         f"{GUEST_RUNS}/{entry.run_id.value}",
-        f"{GUEST_EXPORT_JOBS}/{job.id.value}",
     ]
+    # 5.2 AC-15: the guest export routes are 403 `account_required` before any lookup, for every cookie,
+    # so the export job leaves the 401/404 table; it must still never answer 200 on the guest route.
+    export_url = f"{GUEST_EXPORT_JOBS}/{job.id.value}"
     client.cookies.set(COOKIE_NAME, old_token)
+    retired = await client.get(export_url)
+    assert retired.status_code == 403, retired.text
+    assert retired.json()["error"]["code"] == "account_required"
     for url in guest_urls:
         dead = await client.get(url)
         assert dead.status_code == 401, (url, dead.text)
@@ -667,6 +672,8 @@ async def test_ac31_claimed_ids_are_served_on_the_me_routes_with_null_expiry_and
         for url in guest_urls:
             foreign = await other_guest.get(url)
             assert foreign.status_code == 404, (url, foreign.text)
+        foreign_export = await other_guest.get(export_url)
+        assert foreign_export.status_code == 403, foreign_export.text
         listed = await other_guest.get(GUEST_BASE_CVS)
         assert listed.status_code == 200, listed.text
         assert str(entry.cv_id.value) not in {item["id"] for item in listed.json()["items"]}

@@ -49,13 +49,19 @@ from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRunCommand,
     ExecuteTailoringRunOutcome,
 )
-from tailorcraft.domain.export.value_objects import ExportJobStatus
+from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobStatus
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.errors import LlmTimedOut
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 from tailorcraft.infrastructure.api.deps import get_job_posting_fetcher
 from tailorcraft.infrastructure.clock import SystemClock
 from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
+from tailorcraft.infrastructure.persistence.repositories.export.export_job import (
+    SqlAlchemyExportJobRepository,
+)
+from tailorcraft.infrastructure.persistence.repositories.tailoring.tailoring_run import (
+    SqlAlchemyTailoringRunRepository,
+)
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tasks import container as tailoring_container
@@ -82,6 +88,7 @@ from tests.integration.claim_race_support import (
     session_exists,
 )
 from tests.integration.fakes import FakeDocumentRenderer, FakeLlm
+from tests.integration.owners import queued_export
 
 CLAIM_URL = "/api/me/guest-work/claim"
 GUEST_POSTINGS = "/api/job-postings"
@@ -137,14 +144,18 @@ async def _run_worker(world: World, run_id: str, llm: FakeLlm) -> ExecuteTailori
 async def _export(
     world: World, browser: AsyncClient, run_id: str, fmt: str, payload: bytes
 ) -> tuple[str, bytes]:
-    """Request an export as the guest, render it with the worker's own use case onto the real
-    volume, and download it as the guest. Returns the job id and the downloaded bytes."""
-    requested = await browser.post(
-        f"{GUEST_RUNS}/{run_id}/exports", json={"document": "cv", "format": fmt}
-    )
-    assert requested.status_code == 202, requested.text
-    job_id = str(requested.json()["id"])
-    async with async_sessionmaker(world.engine, expire_on_commit=False)() as session:
+    """Seed a guest-owned export job (slice 5.2 retires the guest export routes: 403 `account_required`,
+    so a pre-release request is seeded the way `seed_guest_queued_run` seeds a run), render it with the
+    worker's own use case onto the real volume, and read the file back from the volume. Returns the job
+    id and the stored bytes."""
+    factory = async_sessionmaker(world.engine, expire_on_commit=False)
+    async with factory() as session:
+        run = await SqlAlchemyTailoringRunRepository(session).get(TailoringRunId(UUID(run_id)))
+        job = queued_export(run.owner, run, SystemClock().now(), format=ExportFormat(fmt))
+        await SqlAlchemyExportJobRepository(session).add(job)
+        await session.commit()
+    job_id = str(job.id.value)
+    async with factory() as session:
         await _run_export_worker(
             session,
             world.settings,
@@ -152,13 +163,12 @@ async def _export(
             renderer=FakeDocumentRenderer(payload),
             files=LocalFileStore(world.root),  # type: ignore[arg-type]
         )
-    polled = await browser.get(f"/api/export-jobs/{job_id}")
-    assert polled.status_code == 200, polled.text
-    assert polled.json()["status"] == ExportJobStatus.READY.value
-    downloaded = await browser.get(f"/api/export-jobs/{job_id}/file")
-    assert downloaded.status_code == 200, downloaded.text
-    assert downloaded.content == payload
-    return job_id, downloaded.content
+    async with factory() as session:
+        stored = await SqlAlchemyExportJobRepository(session).get(job.id)
+    assert stored.status is ExportJobStatus.READY
+    stored_bytes = (world.root / stored.storage_ref.key).read_bytes()
+    assert stored_bytes == payload
+    return job_id, stored_bytes
 
 
 async def _everything_is_reachable_as_the_user(
