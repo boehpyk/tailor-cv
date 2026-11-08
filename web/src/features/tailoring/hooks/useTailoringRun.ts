@@ -1,9 +1,10 @@
-import { queryOptions, useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError } from '@/api/client';
 import { fetchTailoringRun } from '@/api/tailoringRuns';
+import { creditsQueryKey } from '@/features/billing/hooks/billingKeys';
 import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
-import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
 
 import { isActiveTailoringRunStatus } from '../types';
 
@@ -102,6 +103,12 @@ export function isClientError(error: Error): boolean {
  * Note that an option set here **overrides** the `QueryClient`'s default: a client configured with
  * `retry: false` (the test helper is) still gets this function for this query.
  *
+ * **Credits (slice 5.2).** In an account's scope, the poll that **first** sees a terminal status
+ * invalidates the credits read: a failure refunded the credit, and the balance on screen must say
+ * so. It happens in the query function's success path, comparing the answer with the cached status
+ * (no `useEffect`): cached `queued`/`running` (or nothing cached) and now `succeeded`/`failed`.
+ * Every later read of a terminal run finds a terminal status cached and invalidates nothing.
+ *
  * **No `!` on the id.** `enabled: runId !== null` means `queryFn` will not *normally* run with a
  * null id, and that is precisely what makes `runId!` tempting. But `enabled` is not a type guard —
  * the compiler cannot see it — and it is not a runtime guarantee either: `refetch()` ignores
@@ -110,15 +117,26 @@ export function isClientError(error: Error): boolean {
  */
 export function useTailoringRun(runId: string | null): ReturnType<typeof useQuery<TailoringRun>> {
   const map = useScopeMap();
+  const scope = useWorkspaceScope();
+  const queryClient = useQueryClient();
+  const queryKey = tailoringRunQueryKey(runId, map);
+  const creditsKey = scope.kind === 'account' ? creditsQueryKey(scope.userId) : null;
   return useQuery({
-    queryKey: tailoringRunQueryKey(runId, map),
-    queryFn: ({ signal }) => {
+    queryKey,
+    queryFn: async ({ signal }) => {
       if (runId === null) {
         // Reached only through `refetch()` on the disabled query. Rejecting puts the query in its
         // error state rather than issuing a request to `/api/tailoring-runs/null`.
-        return Promise.reject(new Error('useTailoringRun: there is no run to fetch.'));
+        throw new Error('useTailoringRun: there is no run to fetch.');
       }
-      return fetchTailoringRun(map, runId, signal);
+      const run = await fetchTailoringRun(map, runId, signal);
+      if (creditsKey !== null && !isActiveTailoringRunStatus(run.status)) {
+        const cached = queryClient.getQueryData<TailoringRun>(queryKey)?.status;
+        if (cached === undefined || isActiveTailoringRunStatus(cached)) {
+          void queryClient.invalidateQueries({ queryKey: creditsKey });
+        }
+      }
+      return run;
     },
     enabled: runId !== null,
     retry: (failureCount, error) => !isClientError(error) && failureCount < MAX_TRANSIENT_RETRIES,

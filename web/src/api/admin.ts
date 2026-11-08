@@ -475,3 +475,42 @@ export function runSweep(): Promise<SweepReport> {
     body: {},
   });
 }
+
+// --- Demand counters (slice 5.2, ADR-0043, plan §4) -----------------------------------------------
+
+/** One day's (or the range's) counts: every counter, zero when nothing was counted. Never who. */
+export interface DemandCounts {
+  readonly fit_scores: number;
+  readonly fit_scores_busy: number;
+  readonly sign_ups: number;
+  readonly pack_clicks: number;
+  readonly pack_clickers: number;
+  readonly runs_failed: number;
+  readonly runs_succeeded: number;
+}
+
+/** One UTC day. `day` is an ISO date (`2026-11-08`). */
+export interface DemandDay {
+  readonly day: string;
+  readonly counts: DemandCounts;
+}
+
+/** Every day in `[from, to]`, oldest first, zeros filled, and the totals. */
+export interface DemandCounters {
+  readonly from: string;
+  readonly to: string;
+  readonly days: readonly DemandDay[];
+  readonly totals: DemandCounts;
+}
+
+/**
+ * The daily counters for an inclusive range of ISO dates. 422 `invalid_counter_range` (`to` before
+ * `from`, or more than 92 days) or `validation_error` (not a date).
+ */
+export function fetchDemandCounters(
+  from: string,
+  to: string,
+  signal?: AbortSignal,
+): Promise<DemandCounters> {
+  return read(`/api/admin/demand-counters?${new URLSearchParams({ from, to }).toString()}`, signal);
+}

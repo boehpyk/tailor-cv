@@ -1,8 +1,10 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
+import { ApiError } from '@/api/client';
 import { createTailoringRun } from '@/api/tailoringRuns';
+import { creditsQueryKey } from '@/features/billing/hooks/billingKeys';
 import { GUEST_SCOPE_MAP } from '@/features/scope/scopeMap';
-import { useScopeMap } from '@/features/scope/useWorkspaceScope';
+import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
 
 import type { NewTailoringRun, TailoringRun } from '../types';
 import type { ScopeMap } from '@/features/scope/scopeMap';
@@ -37,6 +39,10 @@ export function createTailoringRunMutationKey(
  * A rejection (401, 404, 409, 413, 422, 429, 503) surfaces as the mutation's `error` — an `ApiError`
  * the component branches on by `code` — and invalidates nothing, because nothing was created.
  *
+ * **Credits (slice 5.2):** in an account's scope, a 202 (one credit charged) and a 409 `no_credits`
+ * (the read was stale) both invalidate the credits read, so the line and the out-of-credits swap
+ * follow the server. Neither invalidation is returned: the mutation settles at once.
+ *
  * `useMutation` has no built-in `AbortSignal` plumbing in this TanStack Query version, so
  * `createTailoringRun`'s optional `signal` is unused here — it exists for callers that have one.
  */
@@ -47,10 +53,22 @@ export function useCreateTailoringRun(): ReturnType<
   // The scope's run list: 1.3's guest list (`tailoringRunsQueryKey`), or the account's history —
   // every page and the workspace's latest-run card (slice 2.3).
   const map = useScopeMap();
+  const scope = useWorkspaceScope();
+  const creditsKey = scope.kind === 'account' ? creditsQueryKey(scope.userId) : null;
 
   return useMutation({
     mutationKey: createTailoringRunMutationKey(map),
     mutationFn: (input: NewTailoringRun) => createTailoringRun(map, input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: map.runListKey }),
+    onSuccess: () => {
+      if (creditsKey !== null) {
+        void queryClient.invalidateQueries({ queryKey: creditsKey });
+      }
+      return queryClient.invalidateQueries({ queryKey: map.runListKey });
+    },
+    onError: (error) => {
+      if (creditsKey !== null && error instanceof ApiError && error.code === 'no_credits') {
+        void queryClient.invalidateQueries({ queryKey: creditsKey });
+      }
+    },
   });
 }
