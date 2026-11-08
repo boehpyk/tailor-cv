@@ -4,7 +4,7 @@
  * `NotFoundPage`'s own copy (OQ-2): nothing here says "forbidden".
  */
 
-import type { AccountCounts } from '@/api/admin';
+import type { AccountCounts, DemandCounts } from '@/api/admin';
 
 /** AC-31: the probe is pending (`role="status"`). */
 export const ADMIN_CHECKING = 'Checking access…';
@@ -425,3 +425,30 @@ export const DEPENDENCY_UNHEALTHY = 'Not healthy';
 export const IDENTITY_SWEEP_LABEL = 'Identity token sweep';
 export const NOT_REPORTED = 'Not reported by this API.';
 export const READINESS_ERROR = "Couldn't read the job health.";
+
+// --- Slice 5.2: demand counters (AC-39, ADR-0043) -------------------------------------------------
+
+/** The page's `<h1>`. */
+export const DEMAND_HEADING = 'Demand';
+/** The table's `<caption>`: anonymous counts, one row per UTC day. */
+export const DEMAND_CAPTION = 'Daily counts, UTC, oldest first';
+export const DEMAND_LOADING = 'Loading counters…';
+export const DEMAND_ERROR = "Couldn't load the counters.";
+/** Pinned (AC-39): every count in the range is zero. */
+export const DEMAND_EMPTY = 'Nothing counted in this range.';
+export const DEMAND_FROM_LABEL = 'From';
+export const DEMAND_TO_LABEL = 'To';
+export const DEMAND_DAY_COLUMN = 'Day (UTC)';
+export const DEMAND_TOTALS_ROW = 'Total';
+/** A 422 `invalid_counter_range`. */
+export const DEMAND_BAD_RANGE = 'Choose a range of at most 92 days, with From on or before To.';
+/** The seven counters, in display order. */
+export const DEMAND_COUNTER_LABELS: Readonly<Record<keyof DemandCounts, string>> = {
+  fit_scores: 'Fit scores',
+  fit_scores_busy: 'Fit scores refused (busy)',
+  sign_ups: 'Sign-ups',
+  pack_clicks: 'Pack clicks',
+  pack_clickers: 'Accounts that clicked a pack',
+  runs_succeeded: 'Runs succeeded',
+  runs_failed: 'Runs failed',
+};

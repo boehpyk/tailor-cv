@@ -121,3 +121,61 @@ export const GUEST_BUSY = 'Scoring is busy right now. Signing up still works.';
 
 /** `busy`, account: AC-15. */
 export const ACCOUNT_BUSY = 'Scoring is busy right now.';
+
+// --- The comparison (slice 5.2, AC-37) ------------------------------------------------------------
+//
+// A comparison is an honest before/after, never a promise: the server's verdict (`higher`,
+// `about_the_same`, `lower`) worded as *above*, *about the same* and *below*, because 5.1's AC-49
+// scan, which these sentences join, refuses the comparative words as well as the gain words.
+
+/** The section's heading, on an account's succeeded run. */
+export const COMPARE_HEADING = 'Fit before and after tailoring';
+
+/** The button, pinned (AC-37). A click, never a render, reaches Gemini. */
+export const COMPARE_BUTTON = 'Compare scores';
+
+/** The Gemini notice beside the button (AC-37), read before the click that sends anything. */
+export const COMPARE_NOTICE =
+  'Comparing sends your original CV, the tailored CV and this job posting to Google Gemini. Nothing else is sent.';
+
+/** The two sides' labels. */
+export const SIDE_LABELS: Readonly<Record<'before' | 'after', string>> = {
+  before: 'Your original CV',
+  after: 'Tailored CV',
+};
+
+/** What the *after* score is of: the draft, not the edits (the draft score's definition). */
+export const DRAFT_NOTE = 'The tailored score is for the CV as it was drafted, before your edits.';
+
+/** One side in flight. */
+export const SIDE_SCORING = 'Scoring…';
+
+/** One side failed (S-1), pinned, with `TRY_AGAIN`. The other side is unaffected. */
+export const SIDE_FAILED = "Couldn't score this right now.";
+
+/** `scoring_busy` (S-4), pinned. */
+export const COMPARE_BUSY = 'Scoring is busy. Your documents are ready; try the comparison later.';
+
+/** `unavailable` (S-5, S-6): nothing to click. */
+export const COMPARE_UNAVAILABLE: Readonly<Record<'base_cv_deleted' | 'not_succeeded', string>> = {
+  base_cv_deleted: 'The original CV was deleted, so there is nothing to compare with.',
+  not_succeeded: 'Scores can be compared once tailoring has finished.',
+};
+
+/** `comparable: false` (AC-23, S-9): different scorer versions, nothing re-scored. */
+export const NOT_COMPARABLE =
+  "These two scores came from different versions of the scorer, so they can't be compared.";
+
+/** The verdicts. *About the same* is a change of at most 5 points (the 5.1 stability band). */
+export const VERDICTS: Readonly<Record<'higher' | 'about_the_same' | 'lower', string>> = {
+  higher: "The tailored CV's score is above your original CV's for this job.",
+  about_the_same: 'The two scores are about the same: within 5 points of each other.',
+  lower:
+    "The tailored CV's score is below your original CV's for this job. Check that nothing important was left out.",
+};
+
+/** The delta beside the verdict: *"+8 points"*, *"−3 points"*, *"0 points"*. */
+export function deltaPoints(delta: number): string {
+  const sign = delta > 0 ? '+' : delta < 0 ? '−' : '';
+  return `${sign}${String(Math.abs(delta))} ${Math.abs(delta) === 1 ? 'point' : 'points'}`;
+}
