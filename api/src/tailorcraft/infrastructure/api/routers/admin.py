@@ -12,10 +12,15 @@ gets a 404 byte-identical to an unmatched path, and documenting it would describ
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response, status
+from datetime import date
+from typing import Annotated
 
-from tailorcraft.infrastructure.api.deps import require_admin
+from fastapi import APIRouter, Depends, Query, Response, status
+
+from tailorcraft.infrastructure.api.deps import ReadDemandCountersDep, require_admin
 from tailorcraft.infrastructure.api.routers._me_responses import NOT_SIGNED_IN, SERVICE_UNAVAILABLE
+from tailorcraft.infrastructure.api.schemas.admin import DemandCountersResponse
+from tailorcraft.infrastructure.api.schemas.intake import ErrorResponse
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
 
@@ -29,3 +34,26 @@ router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(re
 async def access(response: Response) -> None:
     """204, empty, `Cache-Control: no-store`: the signed-in user may enter the admin area."""
     response.headers["Cache-Control"] = "no-store"
+
+
+@router.get(
+    "/demand-counters",
+    response_model=DemandCountersResponse,
+    responses={
+        **NOT_SIGNED_IN,
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "model": ErrorResponse,
+            "description": "validation_error (not an ISO date) | invalid_counter_range "
+            "(`to` before `from`, or more than 92 days).",
+        },
+        **SERVICE_UNAVAILABLE,
+    },
+)
+async def read_demand_counters(
+    response: Response,
+    from_day: Annotated[date, Query(alias="from")],
+    to_day: Annotated[date, Query(alias="to")],
+    read_counters: ReadDemandCountersDep,
+) -> DemandCountersResponse:
+    """Slice 5.2 (ADR-0043): every day in `[from, to]` with zeros filled, and the totals."""
+    raise NotImplementedError

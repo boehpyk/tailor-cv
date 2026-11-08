@@ -31,10 +31,12 @@ from tailorcraft.infrastructure.api.routers import (
     fit_scores,
     health,
     intake,
+    me_credits,
     me_export_jobs,
     me_fit_scores,
     me_guest_work,
     me_job_postings,
+    me_run_fit_scores,
     me_tailoring_runs,
     me_tracked_applications,
     posting,
@@ -284,6 +286,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # `/api/fit-scores` and `/api/me/fit-scores` (slice 5.1) share no prefix with any other router.
     app.include_router(fit_scores.router)
     app.include_router(me_fit_scores.router)
+    # Slice 5.2: `/api/me/credits|pack-clicks|payment-notice` share no path with any `/api/me` router,
+    # and `/api/me/tailoring-runs/{id}/fit-scores…` matches nothing in `me_tailoring_runs`.
+    app.include_router(me_credits.router)
+    app.include_router(me_run_fit_scores.router)
     app.include_router(posting.router)
     app.include_router(tailoring.router)
     # `export` last, and the order is not arbitrary: its router declares `prefix="/api"` and

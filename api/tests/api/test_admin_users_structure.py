@@ -64,6 +64,7 @@ _EXPECTED_ADMIN_ROUTES = {
     ("POST", "/api/admin/guest-purge"),
     ("GET", "/api/admin/orphan-sweep"),
     ("POST", "/api/admin/orphan-sweep"),
+    ("GET", "/api/admin/demand-counters"),  # slice 5.2
 }
 
 

@@ -51,13 +51,7 @@ from tailorcraft.infrastructure.tasks import container
 from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 
 # Ports bound by a composition root other than the two checked here. Each entry names that root.
-_BOUND_ELSEWHERE: dict[str, str] = {
-    # Slice 5.2 in progress. `deps.get_demand_counter_query` binds `DemandCounterQuery` (T26), but
-    # no route reaches it until T27's `/admin/demand`; the walker then sees it and this line goes.
-    # `DraftTextPort` likewise: `deps.get_draft_text` (T24), reached by T27's comparison routes.
-    "DemandCounterQuery": "provided by deps.get_demand_counter_query; no route until T27 (ADR-0043)",
-    "DraftTextPort": "provided by deps.get_draft_text; no route until T27 (plan §0.8)",
-}
+_BOUND_ELSEWHERE: dict[str, str] = {}
 
 
 def _domain_protocols() -> dict[str, type]:

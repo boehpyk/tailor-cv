@@ -32,7 +32,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
+from tailorcraft.application.billing.choose_payment_notice import ChoosePaymentNotice
+from tailorcraft.application.billing.get_credits import GetCredits
 from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
+from tailorcraft.application.billing.record_pack_click import RecordPackClick
 from tailorcraft.application.export.download_export_file import DownloadExportFile
 from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
@@ -73,8 +76,11 @@ from tailorcraft.application.retention.purge_expired_guest_sessions import Purge
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
 from tailorcraft.application.retention.summarize_storage import SummarizeStorage
 from tailorcraft.application.scoring.find_fit_score_for_pair import FindFitScoreForPair
+from tailorcraft.application.scoring.get_tailoring_run_fit_scores import GetTailoringRunFitScores
 from tailorcraft.application.scoring.request_fit_score import RequestFitScore
 from tailorcraft.application.scoring.resolve_scoring_pair import ResolveScoringPair
+from tailorcraft.application.scoring.score_tailoring_run import ScoreTailoringRun
+from tailorcraft.application.shared.read_demand_counters import ReadDemandCounters
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
@@ -513,6 +519,14 @@ async def require_guest_session(
 RequireGuestSessionDep = Annotated[GuestSession, Depends(require_guest_session)]
 
 
+async def refuse_guest_export() -> None:
+    """403 `account_required` for every route in `routers/export.py` (slice 5.2, plan §0.7, AC-16):
+    a router-level dependency with no parameters, so it raises before path validation, the cookie or
+    a body is read. **Not attached yet**: T29 adds it to the router's `dependencies` with the GREEN,
+    so the guest export tests stay green until then."""
+    raise NotImplementedError
+
+
 async def resolve_or_start_guest_session(
     request: Request,
     response: Response,
@@ -948,6 +962,72 @@ def get_get_tailoring_run(
 
 
 GetTailoringRunDep = Annotated[GetTailoringRun, Depends(get_get_tailoring_run)]
+
+
+# -- slice 5.2: the run comparison, credits and demand counters ----------------------------------
+
+
+def get_score_tailoring_run(
+    get_run: GetTailoringRunDep,
+    get_base_cv: GetBaseCvDep,
+    resolve_pair: ResolveScoringPairDep,
+    find_for_pair: FindFitScoreForPairDep,
+    request_fit_score: RequestFitScoreDep,
+    draft_text: DraftTextDep,
+) -> ScoreTailoringRun:
+    return ScoreTailoringRun(
+        get_run, get_base_cv, resolve_pair, find_for_pair, request_fit_score, draft_text
+    )
+
+
+ScoreTailoringRunDep = Annotated[ScoreTailoringRun, Depends(get_score_tailoring_run)]
+
+
+def get_get_tailoring_run_fit_scores(
+    get_run: GetTailoringRunDep,
+    get_base_cv: GetBaseCvDep,
+    resolve_pair: ResolveScoringPairDep,
+    find_for_pair: FindFitScoreForPairDep,
+    draft_text: DraftTextDep,
+) -> GetTailoringRunFitScores:
+    return GetTailoringRunFitScores(get_run, get_base_cv, resolve_pair, find_for_pair, draft_text)
+
+
+GetTailoringRunFitScoresDep = Annotated[
+    GetTailoringRunFitScores, Depends(get_get_tailoring_run_fit_scores)
+]
+
+
+def get_get_credits(credits: CreditAccountRepositoryDep) -> GetCredits:
+    return GetCredits(credits)
+
+
+GetCreditsDep = Annotated[GetCredits, Depends(get_get_credits)]
+
+
+def get_record_pack_click(
+    credits: CreditAccountRepositoryDep, counters: DailyCounterDep, events: EventPublisherDep
+) -> RecordPackClick:
+    return RecordPackClick(credits, counters, events)
+
+
+RecordPackClickDep = Annotated[RecordPackClick, Depends(get_record_pack_click)]
+
+
+def get_choose_payment_notice(
+    credits: CreditAccountRepositoryDep, events: EventPublisherDep
+) -> ChoosePaymentNotice:
+    return ChoosePaymentNotice(credits, events)
+
+
+ChoosePaymentNoticeDep = Annotated[ChoosePaymentNotice, Depends(get_choose_payment_notice)]
+
+
+def get_read_demand_counters(counts: DemandCounterQueryDep) -> ReadDemandCounters:
+    return ReadDemandCounters(counts)
+
+
+ReadDemandCountersDep = Annotated[ReadDemandCounters, Depends(get_read_demand_counters)]
 
 
 def get_list_tailoring_runs(

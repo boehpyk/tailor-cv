@@ -22,6 +22,7 @@ from typing import Final, assert_never
 
 from fastapi import HTTPException, status
 
+from tailorcraft.domain.billing.errors import NoCreditsLeft
 from tailorcraft.domain.export.errors import (
     DocumentRenderFailed,
     DocumentRenderTimedOut,
@@ -79,6 +80,7 @@ from tailorcraft.domain.retention.errors import (
 )
 from tailorcraft.domain.scoring.errors import (
     BaseCvNotReadyForScoring,
+    ComparisonUnavailable,
     FitScoreSpendCapReached,
     FitScoringFailed,
     InvalidFingerprint,
@@ -94,9 +96,11 @@ from tailorcraft.domain.scoring.errors import (
     TooManyFitScores,
 )
 from tailorcraft.domain.scoring.value_objects import FitScoreFailureReason
+from tailorcraft.domain.shared.counters import InvalidCounterRange
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.shared.files import FileStoreUnavailable, StoredFileMissing
 from tailorcraft.domain.tailoring.errors import (
+    AccountRequired,
     BaseCvNotReadyForTailoring,
     EmptyTailoredDocument,
     InvalidHistoryCursor,
@@ -109,6 +113,7 @@ from tailorcraft.domain.tailoring.errors import (
     TailoringRunConcurrentlyModified,
     TailoringRunNotEditable,
     TailoringRunNotFound,
+    TailoringRunNotSucceeded,
     TooManyTailoringRuns,
 )
 from tailorcraft.domain.tracking.errors import (
@@ -436,6 +441,17 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     ):
         return _scoring_error_to_http(exc)
 
+    # -- billing, the comparison and the demand counters (slice 5.2, technical plan §4) ----------
+    if isinstance(
+        exc,
+        NoCreditsLeft
+        | AccountRequired
+        | TailoringRunNotSucceeded
+        | ComparisonUnavailable
+        | InvalidCounterRange,
+    ):
+        return _credits_error_to_http(exc)
+
     if isinstance(exc, TailoringRunNotFound):
         # G-29: also what `GetTailoringRun` raises (`from TailoringRunNotOwnedBySession`)
         # for a run that exists but belongs to someone else. The two are indistinguishable on the
@@ -745,6 +761,53 @@ def account_error_to_http_exception(
             },
         )
     return domain_error_to_http_exception(exc)
+
+
+def _credits_error_to_http(exc: DomainError) -> HTTPException:
+    """Slice 5.2's refusals. Fixed sentences; a client branches on `code`.
+
+    `account_required` is deliberately **not** `not_signed_in`: the auth machine answers that code with
+    a refresh, and a guest has nothing to refresh (plan §4). `no_credits` holds nothing (ADR-0031).
+    """
+    if isinstance(exc, NoCreditsLeft):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={"code": "no_credits", "message": "You have no credits left."},
+        )
+    if isinstance(exc, AccountRequired):
+        return HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail={
+                "code": "account_required",
+                "message": "Create a free account to tailor your CV.",
+            },
+        )
+    if isinstance(exc, TailoringRunNotSucceeded):
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "tailoring_run_not_succeeded",
+                "message": "This tailoring run has no tailored CV to compare.",
+            },
+        )
+    if isinstance(exc, ComparisonUnavailable):
+        # One reason reaches here: `NOT_SUCCEEDED` is the read's `unavailable`, never raised.
+        return HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "code": "base_cv_deleted",
+                "message": "The CV this run was tailored from has been deleted.",
+            },
+        )
+    if isinstance(exc, InvalidCounterRange):
+        return HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "code": "invalid_counter_range",
+                "message": "Pick a range that runs forwards and spans at most 92 days.",
+            },
+        )
+    raise exc
 
 
 def _scoring_error_to_http(exc: DomainError) -> HTTPException:
