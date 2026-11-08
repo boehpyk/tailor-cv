@@ -7238,3 +7238,215 @@ rows, straight after a successful CV tailoring. It looked like the spend trackin
 tailoring and scoring are separate paths, and only **Check my score** touches that ledger. One click on
 the right button, and the row read 773 microdollars, close to the 846 we'd predicted. Lesson: before you
 debug a surprising result, ask whether your test exercised the thing you're measuring.
+
+# Slice 5.2 — credits-and-demand-test: the shop opens its till, and nobody can pay yet
+
+*Implemented 2026-11-07 to 2026-11-09 (T1–T40). Not yet verified or released: the docs, `/verify` and
+the release are next.*
+
+## What changed for a person using it
+
+5.1 gave everyone a free sample. 5.2 puts a price on the main course, without taking any money.
+
+- **A guest** can still upload, paste a posting and check a score. Where the *Tailor* button used to
+  be, there's an offer: create an account, and your first tailoring is free.
+- **An account** gets **one credit**, existing accounts included. One credit buys one tailoring run,
+  cover letter and all. Editing and exporting stay free forever, even at zero.
+- **A run that fails gives its credit back.** Not "eventually, if support notices": in the same database
+  transaction that writes the failure.
+- **A finished run can show its score before and after**, both judged by the same model and prompt,
+  with a verdict that refuses to promise anything: *above*, *about the same* (within 5 points, the
+  wobble 5.1 measured) or *below*.
+- **Packs are on the shelf**: 3 credits for $5, 10 for $12. Clicking one charges nothing. It says
+  payments are opening soon and offers one plain-text email when they do.
+- **The owner** gets `/admin/demand`, seven numbers per day that say whether anyone wants this, and a
+  CLI command, `grant-credits`, for the day a run succeeds but the result is still bad.
+
+Why sell something you can't sell yet? Because the expensive mistake isn't building payments badly,
+it's building them for nobody. The packs are a **smoke test**, the shop with a "coming soon" sign that
+counts how many people try the door. Phase 5's gate is written in those counters: 100 scores, 20
+sign-ups and 5 strangers clicking a pack, within 8 weeks of the first post. Below that, billing stops
+growing.
+
+## The pattern: a ledger is an aggregate
+
+The tempting design is one column: `identity_user.credits INTEGER`. Charge: `credits = credits - 1`.
+Refund: `+ 1`. Done in ten minutes.
+
+Then the questions arrive. A user says they were charged twice. Were they? The column says 0. That's
+all it says. Did the refund happen? It says 0 either way. A number with no history can't answer a
+single question about how it got there, and in a month 6.1 adds real money to it.
+
+So `billing` keeps what your bank keeps: **a statement, not a number.** `CreditAccount` holds a list of
+`CreditEntry`s: an opening grant (+1), a charge (−1, naming the run), a refund (+1, naming the same
+run), an operator's grant (+N). The balance is **the sum**. Nothing stores it, so nothing can drift from
+it. Entries are never updated and never deleted (except when the whole account is erased). A mistake
+is fixed by a new line, the way an accountant never uses an eraser.
+
+What makes it an *aggregate* rather than a table is that the rules live in memory, in plain Python:
+
+- *never below zero*: `charge` sums the entries and raises `NoCreditsLeft` at 0;
+- *one charge per run*: it looks for an existing charge naming the run (`RunAlreadyCharged`);
+- *a refund needs a charge, and happens once*: `refund` looks for both, and returns `False`, not an
+  error, when there was no charge. That last choice matters more than it looks. Runs made before this
+  release, and runs the old API creates during the deploy's few seconds, were never charged. Their
+  failure is ordinary, not a bug, so it writes nothing and complains about nothing.
+
+Loading every entry to charge one credit sounds wasteful. It isn't, yet: a user's history is capped
+around a thousand lines, and T38 measured the whole charge at about 6 ms. The plan carries a
+`ponytail:` note naming the day that stops being true (about 5,000 entries) and what to do then (a
+stored balance checked against `SUM`). That's the honest version of "premature optimization": know
+where the ceiling is, write it down, and don't build for it today.
+
+The database adds what memory can't: **partial unique indexes**. One opening entry per account, one
+charge per run, one refund per run. The aggregate checks the rule; the index makes it true even when
+two processes each checked it in their own memory at the same instant. Which brings us to the races.
+
+## War stories
+
+### The double click, and the check that has to happen twice
+
+ADR-0014 made "one active run per person" a *soft* rule: check, then insert, and if two requests slip
+through together, fine, a duplicate run cost us a cent. Now it costs the user a credit, so soft isn't
+good enough.
+
+Picture two tabs pressing *Tailor* at the same moment. Both ask "is a run active?" Both hear "no",
+because neither has committed. Both insert a run. Both go to charge.
+
+The fix is a lock and a second look. The charge takes `FOR NO KEY UPDATE` on the person's credit
+account row, so the second request **waits** at the door while the first finishes and commits. Then,
+still holding the lock, each request asks again: *is any other run active?* Postgres's READ COMMITTED
+takes a fresh snapshot for every statement, so the second request's second look **sees the first
+request's committed run** and refuses. Its run and its charge vanish together in one rollback. One
+run, one charge, one 409.
+
+The order is the whole trick. The test proves it with a mutation: move the re-check **before** the
+lock, and the two requests both pass, both charge, both get 202. A second mutation (giving the user a
+balance of 2 so the money rule can't hide the bug) turns `[202, 409]` into `[202, 202]`. Red, as it
+should be.
+
+It's the ticket counter with one seat left: everybody may look at the screen, but only the person at
+the counter, holding the pen, gets to decide.
+
+### F-14: two refunds for one failure
+
+The stale-run sweep on beat fails runs that have been "running" too long. Meanwhile, a late redelivery
+of the run's task may reach the worker and decide that very run itself. Two parties, one failure, two refunds?
+
+The refund index says no: the second `INSERT` of a refund for that run violates
+`uq_billing_credit_entry_refund_run`. The first fix (`1652bc4`) catches that violation, reads the
+constraint's name (never parsing the message), and turns it into `RunAlreadyRefunded`, which the sweep
+treats like any other "someone else got there first" and moves on to the next run.
+
+The interesting decision was *how far to roll back*. A SAVEPOINT would undo only the failed insert, and
+that sounds tidy. But the losing transaction also holds the run it just marked failed, a change it
+hasn't flushed. Keep that around and the sweep's next save flushes it and fails all over again, on a
+different run's watch. So the repository rolls back **the whole transaction**. Losing the race means
+losing everything you did in it.
+
+Then T28's held spec ran the real thing and it still crashed, with a different exception:
+`StaleDataError`, raw, from somewhere unexpected. The culprit was **autoflush**. The refund's very first
+step is a *read* (load the credit account), and SQLAlchemy, trying to be helpful, flushes pending
+changes before any query so the query sees them. The pending change was the run marked failed. Its
+version was stale. So the version conflict blew up inside a read in the billing repository, before it
+ever reached `runs.save`, the one place that knows how to translate it. The fix (`a19282d`) is two
+words: the credit repository's reads run under `session.no_autoflush`. The conflict now surfaces where
+the code expects it.
+
+Lesson: autoflush means **any read can be a write**. When you translate errors at one specific
+boundary, make sure the error can't leave through a side door first.
+
+### The rollback that broke a test it didn't touch
+
+The worker's repository commits on every save. With refunds in the picture, a failed save in the worker
+now rolls back the whole transaction (otherwise a refund written before the save would ride along with
+the next run's commit, refunding a run that never failed). Correct. And the moment it went in, an
+unrelated sweep test went red with `MissingGreenlet`.
+
+Why: the sweep loaded a list of runs, then worked through them. A full rollback **expires** every loaded
+object, and an async session refuses to quietly reload one. The next run in the list was a ghost. The
+fix belongs to the sweep, not the rollback: list **ids** first, then `find` each run fresh. One extra
+primary-key read per stale run, on a job that touches a handful.
+
+The plan said the rollback (T23) should land before the tailoring GREEN (T17). It couldn't: the
+rollback is only safe once the ids-first loop exists, so it landed right after (`1b55fd0` →
+`210179f`). That's an orchestrator's call the owner hasn't reviewed yet, and HISTORY.md says so.
+
+### The GREENs that had to wait for the real adapters
+
+A related ordering surprise. The application layer was skeletoned (T12) with placeholder adapters, and
+the plan had the application GREENs land before the real database adapters. In practice the GREENs,
+run against those placeholders, broke 49 other tests. And the pre-commit hook runs the **full** suite
+on the working tree, so a GREEN can't be committed while any RED anywhere still fails. The answer was to
+land the real mapping and repositories (T21, T22) first, then the GREENs. The hook is strict on purpose;
+the plan just had to learn its shape.
+
+### The sweep that said it did nothing
+
+During the manual pass (T40), a refund was forced by stopping the worker and letting the lost-queued
+sweep find the stranded run. The refund worked. The log line said `swept_count=0`. The line only counted the old kind of stuck run, not the new lost-in-the-queue kind.
+A one-field fix (`54bfaf4`, `lost_queued_count`), but think about the 3 a.m. version: an operator
+reading "0" while refunds happen, and concluding the sweep is broken. **A log line that undercounts is
+worse than no log line**, because people believe it.
+
+### Counters that can't lie about a rollback
+
+A counter incremented in its own little transaction is easy and wrong: the fact rolls back, the count
+stays. So every counter is an upsert on the **caller's** session that never commits by itself. A failed
+run counts `runs_failed` in the same transaction as the refund and the failure; if that transaction
+dies, all three vanish together. The tests prove it the hard way: they inject a fault on the database
+connection *after* the counter's upsert and check that neither the refund nor the count survived.
+
+And the counters hold no ids at all, just a day, a name and a number. That's not modesty: the guest
+purge deletes guest rows after 24 hours, so a demand test that counts guests by their rows would count
+nothing by morning. A number with no identity can outlive the purge without breaking its promise.
+
+## Small decisions worth stealing
+
+- **Keep a retired path, change its answer.** `POST /api/tailoring-runs` still exists and answers 403
+  `account_required` to anything, before parsing a body. A deleted route would answer 405 to a browser
+  still running yesterday's bundle, which reads like a bug. A 403 with a reason reads like a decision.
+- **A distinct error code for "you need an account".** Not `not_signed_in`, because the auth machinery
+  reacts to that one by trying to refresh a session the guest never had.
+- **Plain text for the "after" score.** The "before" CV is flat text pulled out of a PDF. Scoring the
+  tailored draft as Markdown would compare a suit to a photo of a suit. Converting it with the existing
+  TXT renderer makes "judged the same way" true.
+- **The verdict is domain code**, `ScoreComparison.between`, and it returns `None` when the model or
+  prompt differ. Comparing scores from two different judges isn't a comparison.
+- **Grants are CLI only, by id, dry run first**, and take the same lock as a charge, so they queue
+  behind an in-flight request instead of racing it.
+- **A new startup refusal, not a comment.** A queued run is declared lost after 30 minutes, which must
+  stay longer than the broker's 10-minute redelivery window, or the sweep would refund a run the broker
+  was about to retry. `create_celery` refuses to start otherwise: `check-settings` now has twelve.
+
+## The numbers
+
+- **Tailoring `POST` with 200 credit entries:** p95 29–33 ms (budget 300). Against `main` the charge
+  adds about 10 ms p95 (budget 30). Mutation: a 40 ms sleep in the lock pushed the charge to 46.8 ms
+  p95, and the test went red.
+- **Credits page read (100 entries):** p95 7.3 ms. **92 days of counters:** p95 9.0 ms.
+- **Before/after stability (T39, real calls, owner-approved):** 9 drafts scored 5 times each, every
+  range 0, $0.033 in all. Draft 09 is missing because its tailoring timed out in `make eval` (1 in 10),
+  a pre-existing latency problem, not this slice.
+
+## What a good engineer takes from this one
+
+Money code is where "it works on my machine" goes to die, because the bugs are all about **two things
+happening at once** and **things half-happening**. Every interesting story above is one of those: two
+tabs, two refunds, a rollback that expires a list, a read that secretly writes, a counter that would
+outlive its fact. The defences are old and boring: a statement instead of a balance, a lock and a
+second look, unique indexes as the last word, one transaction per fact, and a mutation test for every
+claim that a race is closed.
+
+The other lesson is about plans. This slice's plan was good, and it was still wrong about commit order
+twice. Both times the reality was recorded, the reason written down, and the owner asked to review it,
+rather than the record bent to match the plan.
+
+## What's next
+
+`/verify`, then the release, which brings a migration that backfills a credit for every existing
+account and a deploy window where the old API can briefly create uncharged runs (they fail free, by
+design). A short list waits for the owner: a constitution line about per-session tailoring limits that
+no longer has a session to limit, the verdict wording (*above / below* instead of *higher / lower*,
+because 5.1's no-gain scan bans "higher"), a guest run page that shows two offers at once, and tailoring
+output that arrives without line breaks, which predates this slice.

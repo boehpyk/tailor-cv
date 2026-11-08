@@ -972,6 +972,85 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   flaked once (p50 7.49 ms against 5). `ops-nightly-backups` must add `scoring_fit_score` to its scrub
 >   at its T1.
 >
+> - **`credits-and-demand-test`** (slice **5.2**, Phase 5's second; approved 2026-11-07 as written, every
+>   OQ on its recommendation; implemented 2026-11-07 to 2026-11-09, T1–T40 on
+>   `feature/credits-and-demand-test`; **not yet verified or released**) — an account spends **one
+>   credit per tailoring run** (cover letter and before/after score included; edits and exports free), a
+>   failed run gives it back, every account gets **one free credit** (existing accounts by backfill), and
+>   **guest tailoring and guest export close**: `POST /api/tailoring-runs` and every route in
+>   `routers/export.py` answer **403 `account_required`** before any validation (paths kept so a stale
+>   bundle reads a 403, not a 405). A guest stops at the free score with an offer to register. A succeeded
+>   run shows its **before and after fit scores**, the draft converted to plain text and scored the same
+>   way, with a verdict band of 5 points. Packs (3 for $5, 10 for $12) charge nothing: a click is counted
+>   and offers an opt-in to one plain-text mail (sent by 6.1, not here). **ADR-0042**: a new context,
+>   `billing`, aggregate `CreditAccount` holding an **append-only** history of `CreditEntry`s whose sum is
+>   the balance (never stored); charged inside `RequestTailoringRun` after the run's insert, under
+>   `FOR NO KEY UPDATE` on the account row, followed by a **hard re-check** of the one-active-run rule
+>   under that lock (ADR-0014's soft rule became hard); refunded by one collaborator, `RecordRunFailure`
+>   (mark, refund, count, save, publish), at all **five** failure sites, the fifth new: the stale sweep now
+>   fails a `queued` run older than `TAILORING_QUEUED_LOST_AFTER_SECONDS` (1800, refused at startup unless
+>   above the 600 s visibility timeout: `check-settings`' **twelfth** refusal). A refund needs a charge, so
+>   pre-release and deploy-window runs fail with no entry. **ADR-0043**: seven anonymous counters per UTC
+>   day (`fit_scores`, `fit_scores_busy`, `sign_ups`, `pack_clicks`, `pack_clickers`, `runs_failed`,
+>   `runs_succeeded`), one upsert on the caller's session, committed only by the fact's transaction, read
+>   at `/admin/demand` (≤ 92 days). **Amendments** (`51c85a0`, `6240b12`): ADR-0014 (f), ADR-0040 (draft
+>   score, comparison, limits), ADR-0026 (the one opt-in payment notice), ADR-0006 (i), ADR-0023 (guest
+>   boundary); Constitution §1, §4.2 (three ports), §4.3 (`billing`), §8. **Migration `9d2cb5b8ec5f`**
+>   (`down_revision 8ddd7ee1ca93`, `2192c33`): `billing_credit_account`, `billing_credit_entry` (partial
+>   unique indexes: one opening entry per account, one charge and one refund per run), `demand_daily_counter`,
+>   nullable `scoring_fit_score.tailoring_run_id` + partial index; a backfill of one `existing_account`
+>   entry per user under a `SHARE` lock on `identity_user`, idempotent, entry ids from a frozen local
+>   UUIDv7 copy; offline `--sql` refuses; the downgrade refuses while any charge, refund, grant or draft
+>   score exists. **CLI** (`3f5dd4f`): `grant-credits --user-id <uuid> --credits N [--dry-run]` prints
+>   `would grant user <id>: 2 credit(s), balance 1 → 3 (dry run)` / `granted user <id>: 3 credit(s),
+>   balance 1 → 4`; exit 0 ok · 1 unknown id, db failure, foreign database · 2 usage (`--credits` outside
+>   1..100). `erase-account` appends `; billing: N credit(s) left, N credit entr(y/ies)` to both lines
+>   (5.1's pins loosened to a prefix first, `f7bcbbc`). `max_tailoring_runs_per_session` is deleted
+>   (settings, `.env.example`; `96a9e5e` dropped the parameter). **RED cycles** (each failure recorded in
+>   its commit and in the task list): billing domain (`27aef2a` → `a75aef3`, 49 red), tailoring + scoring
+>   domain (`ee11bbc` → `1e64467`, 14), billing + identity application (`13eecf1` → `15a4dff`, 51),
+>   tailoring application (`fbd47b3` → `1b55fd0`, 58), scoring application (`f4b3d14` → `6b0a771`, 55),
+>   HTTP (`0ee6150` → `9ba041b`, 126), components (`4015417` → `e674ea9`, 52 of 64). **Commit order
+>   differs from the plan twice — orchestrator decisions, not yet reviewed by the owner:** **(1)** T23,
+>   the worker's full rollback, landed **after** T17 (`1b55fd0` → `210179f`), because the rollback expires
+>   the sweep's loaded batch and turned the version-conflict sweep test red (`MissingGreenlet`) until
+>   T17's ids-first loop existed. **(2)** The application GREENs (T16 `15a4dff`, T18 `6b0a771`, T17
+>   `1b55fd0`) landed **after** the real adapters (T21 `d39479f`, T22 `0cf94d7`): against T12's
+>   placeholders they broke 49 tests, and the pre-commit hook runs the full suite on the working tree, so
+>   no GREEN can commit while any RED file fails. **F-14, a refund race, fixed twice:** `1652bc4`
+>   translates a `uq_billing_credit_entry_refund_run` violation to `RunAlreadyRefunded` →
+>   `TailoringRunConcurrentlyModified` by rolling back the **whole** transaction in `save` (a SAVEPOINT
+>   would leave the losing run dirty for the next save); T28's held spec then found `StaleDataError`
+>   escaping from autoflush in the credit repository's reads, fixed in `a19282d` (`find` and
+>   `lock_for_charge` under `session.no_autoflush`, so the conflict surfaces at `runs.save`).
+>   **Test-only corrections, each in its own commit:** `7c41459` and `b369f48` retire guest tailoring and
+>   export tests the spec closed; `6d8b447` fixes T15's reservation constant (`RESERVED` 1210 → 1022 /
+>   1074, the fixtures' real lengths); `e39fe7f` seeds each user a credit account (+1 opening, +100 grant)
+>   and seeds guest runs directly; `c9c01ba` holds the 5.1 fit-score budget test until 20 `GET`s overlap
+>   (it flaked at 16); `f7bcbbc` (above); `4d3ec85` and `8fabb87` move older guest expectations to the
+>   403 / account scope. **Measured (T38, `5f4190b`, `docker build --target production`, 100 sequential
+>   requests):** tailoring `POST` with a 200-entry history p95 **29–33 ms** over four runs (budget 300),
+>   `main` 20–21 ms, so the charge adds about **+10 ms** p95 (budget 30), the charge alone p95 6.1–6.8 ms;
+>   credits `GET` (100 entries) p95 **7.3 ms**; demand counters (92 days × 7) p95 **9.0 ms**. Mutation:
+>   `sleep(0.04)` in `lock_for_charge` → charge p95 **46.8 ms**, red. **T39** (`f0b3208`,
+>   owner-approved spend, 2026-11-08): AC-24 **PASS**, 9 drafts × 5 scores, every range 0, **$0.033**
+>   total (max $0.0009 a score); draft 09 is missing because `make eval`'s pair 09 timed out (1 of 10),
+>   and the eval's AC-20(b) budget flag is pre-existing tailoring latency, not this slice. **T40**
+>   (2026-11-08, Chromium, production bundle, 3 Gemini calls): every step PASS, a refund forced by a
+>   stopped worker and the lost-queued sweep; D1, the sweep's log line showed `swept_count=0` for a
+>   recovered run, fixed with `lost_queued_count` (`54bfaf4`); the guest rail's stale *Tailor* step and
+>   stepper removed (`13d233a`); D2 (an id logged as a dict) is app-wide; D3, tailoring output without
+>   newlines, is pre-existing (owner to look). Not exercised by hand: the guest run-page offer (no guest
+>   run can be made), a real 409 / busy / fallback (tests cover them). **Carried to the owner:**
+>   Constitution §8's "rate-limit tailoring per session" no longer has a session to limit; ADR-0026's
+>   "sending the notice clears consent" to confirm for 6.1; the verdict copy reads *above / about the
+>   same / below* where the spec says *higher / lower*, because 5.1's no-gain scan bans "higher"; a
+>   signed-out guest's run page shows both `RegistrationCta` and the new offer; spec S-1's wording
+>   (503 `scoring_failed`) against 5.1's 429/422; 5.1's AC-41 `GET` p95 ≤ 300 ms failed once in three
+>   full runs under load (not weakened); `GET /api/me/credits` answers 500 if a user's account row is
+>   missing (no translation); the
+>   `not_queued` path publishes the run's events before the commit.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,

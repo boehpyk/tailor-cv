@@ -20,7 +20,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-Twenty-three slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, `__Host-tc_guest`,
+**Slice 5.2 `credits-and-demand-test` is implemented (T1–T40) on `feature/credits-and-demand-test`,
+not yet verified or released** (ADR-0042/0043, migration `9d2cb5b8ec5f`; HISTORY.md). Twenty-three slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, `__Host-tc_guest`,
 `web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is **`fit-score`** (slice 5.1, a free
 Gemini fit score, one additive migration, PR #45, `468b127`), released 2026-11-05 (run 42106143344).
 Before it, **`brand-fixcv`** (the product is renamed FixCV, brand only, PR #42, `cf54c71`) was released 2026-10-28 (run 40608951576).
@@ -71,7 +72,7 @@ strictly ordered dependencies:
 Enforced by **import-linter** in CI and by a **PreToolUse hook that blocks the write** before you get
 that far (`.claude/hooks/domain-purity-guard.sh`). Ports are `typing.Protocol`s in
 `domain/<context>/ports.py`; adapters live in `infrastructure/`. Bounded contexts: `intake`,
-`posting`, `tailoring`, `export`, `identity`, `retention`, `tracking` (3.1), `scoring` (5.1) — see Constitution §4.
+`posting`, `tailoring`, `export`, `identity`, `retention`, `tracking` (3.1), `scoring` (5.1), `billing` (5.2) — see Constitution §4.
 
 Canonical order to add a feature: **domain** (value objects → aggregate → events → port) →
 **application** (use case) → **infrastructure** (mapping, repository, migration, adapter, router,
@@ -242,9 +243,9 @@ python -m tailorcraft.cli erase-account --user-id <uuid> --dry-run   # counts; d
 python -m tailorcraft.cli erase-account --user-id <uuid>
 # Since 2.3 the account's history goes too, and each line appends it after 2.2's unchanged prefix;
 # since 3.1 the board's cards are appended after that (no files, so N file(s) is unchanged), and
-# since 5.1 the fit scores after those (no files either):
-#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s); tracking: N tracked application(s); scoring: N fit score(s)
-#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all; tracking: N tracked application(s); scoring: N fit score(s)
+# since 5.1 the fit scores after those (no files either), and since 5.2 the credits after those:
+#   would erase account <id>: N saved CV(s), N file(s), N login(s) (dry run); history: N tailoring run(s), N job posting(s), N export job(s); tracking: N tracked application(s); scoring: N fit score(s); billing: N credit(s) left, N credit entr(y/ies)
+#   erased account <id>: N saved CV(s), N file(s) unlinked, N failed; history: N tailoring run(s), N job posting(s), N export job(s), N file(s) in all; tracking: N tracked application(s); scoring: N fit score(s); billing: N credit(s) left, N credit entr(y/ies)
 # The dry run's file count includes derived export files. A history entry a user deletes in the UI
 # goes the same way (rows committed, then files); an unlink that fails leaves an orphan for the sweep.
 # Exit: 0 erased (incl. with unlink failures — stderr names the orphan sweep) · 1 no such account,
@@ -257,6 +258,13 @@ python -m tailorcraft.cli grant-role  --user-id <uuid> --dry-run   # would chang
 python -m tailorcraft.cli grant-role  --user-id <uuid>             # user <id>: role user → admin
 python -m tailorcraft.cli revoke-role --user-id <uuid>             # the last admin may be revoked; recovery is grant-role
 # Exit: 0 changed or already held (no event) · 1 no such account / db failure / foreign database · 2 usage.
+
+# Credits (slice 5.2, ADR-0042) — the ONLY way to add credits (no HTTP writer, no make target). The
+# remedy for a run that succeeded and was still wrong. By id, dry run first. Logs id and counts only.
+python -m tailorcraft.cli grant-credits --user-id <uuid> --credits 2 --dry-run   # would grant user <id>: 2 credit(s), balance 1 → 3 (dry run)
+python -m tailorcraft.cli grant-credits --user-id <uuid> --credits 3             # granted user <id>: 3 credit(s), balance 1 → 4
+# Exit: 0 ok · 1 unknown id / db failure / foreign database · 2 usage (incl. --credits outside 1..100).
+# Demand counters (ADR-0043): /admin/demand, admins only. Anonymous per UTC day; docs/infrastructure.md.
 
 # Disable / enable an account (slice 4.2, ADR-0033) — BROWSER ONLY, in /admin/users/<id>. There is
 # no CLI for either (OQ-19). Disable deletes the account's logins; its open tabs are refused 403
@@ -433,6 +441,8 @@ a hurry. Constitution §8 applies to every slice:
 - **Guest work moves into an account only by an explicit offer that names it.** On a shared
   computer, the previous visitor's CV is in the browser for up to 24 hours; an automatic claim on
   login would file a stranger's CV in this account, kept until deleted.
+- **A demand counter is a number per UTC day and name, never an id** (ADR-0043): incremented on the
+  caller's session, committed by the fact's own transaction, never by the counter.
 - **A fit score's gaps are CV-derived PII** (5.1, ADR-0040): never logged; deleted by the purge, erasure, deleting its CV, and deleting a history entry that takes its posting.
 
 ## Infrastructure footguns (baked-in guards)
@@ -469,7 +479,10 @@ Full stories in [LESSONS.md](./LESSONS.md) and [docs/infrastructure.md](./docs/i
 
 **Celery / Redis**
 - **`/health/ready` probes Postgres, Redis and Celery**; beat is invisible to it.
-- `task_acks_late` does not bring a lost task back. The stale-run sweep on beat recovers stuck runs.
+- `task_acks_late` does not bring a lost task back. The stale-run sweep on beat recovers stuck runs,
+  and since 5.2 `queued` runs older than `TAILORING_QUEUED_LOST_AFTER_SECONDS` (1800, > 600), refunded.
+- **A failed `save` in the worker rolls back the whole transaction** (5.2): a SAVEPOINT would leave a
+  refund pending for the next run's commit, so loops over runs re-`find` by id, never reuse instances.
 - **kombu never removes a queue binding.** The healthy state is four members in
   `_kombu.binding.celery` (broker db `/1`). A fifth is stale, so `SREM` it. A local mutation of
   `task_queues` re-poisons the dev broker.
@@ -477,7 +490,7 @@ Full stories in [LESSONS.md](./LESSONS.md) and [docs/infrastructure.md](./docs/i
   loop.
 
 **Startup and secrets**
-- The production `CMD` pre-flights `check-settings` (eleven refusals) before `exec uvicorn`. Run
+- The production `CMD` pre-flights `check-settings` (twelve refusals) before `exec uvicorn`. Run
   directly, uvicorn respawns a refusing import forever. The box's `.env` must carry `MAIL_*`.
 - `JWT_SIGNING_KEY`'s placeholder is 33 bytes and is refused by name. Never use
   `Field(min_length)`: it echoes the value.
