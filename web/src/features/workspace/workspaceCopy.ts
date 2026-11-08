@@ -30,9 +30,13 @@ export const RETRY_LABEL = 'Retry';
  */
 export const STEP_RAIL_BASE_CV_CAPTION = 'PDF, DOCX or TXT';
 export const STEP_RAIL_JOB_POSTING_CAPTION = 'Text or a link';
-/** OQ-21: the rail's third item — a list item, not a tab (tailoring is a section, not a panel). */
+/**
+ * OQ-21: the rail's third item — a list item, not a tab (tailoring is a section, not a panel).
+ * Slice 5.2 (AC-36): the rail is the guest's, and a guest cannot tailor, so the caption says what
+ * it takes: the offer under the fit score.
+ */
 export const STEP_RAIL_TAILOR_LABEL = 'Tailor';
-export const STEP_RAIL_TAILOR_CAPTION = 'Under two minutes';
+export const STEP_RAIL_TAILOR_CAPTION = 'First one free with an account';
 /** C-4, below `sm`: where the visitor is, derived from the open tab. */
 export function stepOfThree(step: 1 | 2): string {
   return `Step ${String(step)} of 3`;

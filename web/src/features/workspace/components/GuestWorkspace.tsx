@@ -1,12 +1,8 @@
-import { useIsMutating } from '@tanstack/react-query';
-
 import { GuestTailorOffer } from '@/features/billing/components/GuestTailorOffer';
 import { BaseCvUploadPanel } from '@/features/intake/components/BaseCvUploadPanel';
 import { useBaseCvs } from '@/features/intake/hooks/useBaseCvs';
-import { uploadBaseCvMutationKey } from '@/features/intake/hooks/useUploadBaseCv';
 import { latestBaseCv } from '@/features/intake/latestBaseCv';
 import { JobPostingPanel } from '@/features/posting/components/JobPostingPanel';
-import { createJobPostingMutationKey } from '@/features/posting/hooks/useCreateJobPosting';
 import { useJobPostings } from '@/features/posting/hooks/useJobPostings';
 import { latestPosting } from '@/features/posting/latestPosting';
 import { useTailoringRuns } from '@/features/tailoring/hooks/useTailoringRuns';
@@ -17,9 +13,7 @@ import { checkBaseCv, checkJobPosting, launchInput } from '@/features/tailoring/
 
 import { InputTabs } from './InputTabs';
 import { LatestRunCard } from './LatestRunCard';
-import { ProgressStepper } from './ProgressStepper';
 import { useWorkspaceTab } from '../hooks/useWorkspaceTab';
-import { deriveProgress } from '../progress';
 import { BASE_CV_INTRO, OPERATOR_ACCESS_NOTE } from '../workspaceCopy';
 
 import type { WorkspaceTab } from '../hooks/useWorkspaceTab';
@@ -112,7 +106,7 @@ function Shell({
  * itself, still true.
  *
  * A **container**. It owns the three list queries (`useBaseCvs`, `useJobPostings`,
- * `useTailoringRuns`) and reads the two panel mutations' in-flight state from the mutation cache.
+ * `useTailoringRuns`).
  *
  * **No launch since slice 5.2** (AC-15, AC-36): a guest scores for free and is offered an account
  * (`GuestTailorOffer`) for the tailoring. The latest-run card stays for a run made before release.
@@ -121,15 +115,9 @@ function Shell({
  * so one cache and one request per list. Which tab is open is the URL (`useWorkspaceTab`). There
  * is no `useState` here at all.
  *
- * **The panels' pending flags** come from `useIsMutating({ mutationKey })`: each panel owns its
- * mutation and keeps its internals, and the workspace observes the shared mutation cache instead
- * of threading an `onPendingChange` callback down and a boolean back up. The flag is a fact about
- * a request on the wire, which the cache already knows.
- *
- * **Stage 3 is not live here.** The stepper's `run` is `none`: the workspace does not poll the
- * run — the run page does, and the latest-run card is the way there. A stage-3 body drawn from the
- * list's snapshot would show a clock that never ticks over a status that never changes, which is
- * worse than a card that says *In progress → View*.
+ * **No progress stepper** (slice 5.2): it drew *Extracting CV → Fetching job → Tailoring* for a
+ * run a guest can no longer start. The workspace does not poll a run either — the run page does,
+ * and the latest-run card (*In progress → View*) is the way there.
  *
  * **Loading** keeps the three landmarks and shows no tabs (`tab={null}`): the derived default needs
  * the CV list, and a tab strip that switched its own selection when the data landed would read as
@@ -140,8 +128,6 @@ export function GuestWorkspace(): React.JSX.Element {
   const baseCvs = useBaseCvs();
   const jobPostings = useJobPostings();
   const runs = useTailoringRuns();
-  const isUploadingBaseCv = useIsMutating({ mutationKey: uploadBaseCvMutationKey }) > 0;
-  const isSubmittingJobPosting = useIsMutating({ mutationKey: createJobPostingMutationKey }) > 0;
 
   // Derived before the early returns so the hook order is fixed; `missing` while the list loads.
   const baseCv = checkBaseCv(baseCvs.data === undefined ? null : latestBaseCv(baseCvs.data.items));
@@ -175,13 +161,6 @@ export function GuestWorkspace(): React.JSX.Element {
   const jobPosting = checkJobPosting(latestPosting(jobPostings.data.items));
   const input = launchInput(baseCv, jobPosting);
   const latestRun = latestTailoringRun(runs.data.items);
-  const progress = deriveProgress({
-    baseCv,
-    isUploadingBaseCv,
-    jobPosting,
-    isSubmittingJobPosting,
-    run: { kind: 'none' },
-  });
 
   return (
     <Shell
@@ -193,19 +172,9 @@ export function GuestWorkspace(): React.JSX.Element {
       // its own: only its button sends the `POST`.
       fitScore={<FitScorePanel pair={input} />}
       tailoring={
-        // 2e's progress card: the stepper, the latest run, the launch and its refusal. No summary of
-        // the two inputs here — the tabs above already show them (technical-plan §3).
+        // No progress stepper since slice 5.2: a guest starts no run, so its *Tailoring* stage
+        // would only advertise what a guest cannot do. The latest-run card covers an older run.
         <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
-          <ProgressStepper
-            progress={progress}
-            run={{ kind: 'none' }}
-            canStart={false}
-            isStarting={false}
-            // Unreachable: with no watched run the stepper renders no retry (slice 5.2: guests
-            // cannot start a run, AC-15).
-            onRetry={() => undefined}
-          />
-
           {/* Was TailorLaunch's line (4.x AC-37): a guest's data is still stored, so it is still said. */}
           <p className="text-sm text-slate-600">{OPERATOR_ACCESS_NOTE}</p>
 
