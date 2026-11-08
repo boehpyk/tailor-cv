@@ -11,7 +11,7 @@ all ack their message, so nothing comes back to finish the run. Without this tas
 leaves a run `running` for ever, behind a UI that says "still working. Don't refresh."
 
 **Nothing here handles a document.** The runs this task touches are `running`, so their document
-columns are `NULL` by the table's own CHECK, and what it logs is two counts and a duration.
+columns are `NULL` by the table's own CHECK, and what it logs is counts and a duration.
 """
 
 from __future__ import annotations
@@ -80,9 +80,13 @@ def abandon_stale_tailoring_runs() -> None:
     # read and its write. Whichever wrote first stands, so a conflict is neither an error nor an
     # abandonment — but a steady non-zero count says the sweep and the workers are racing, which is
     # worth a look at `TAILORING_STALE_AFTER_SECONDS` against the hard time limit.
+    # `lost_queued_count` is the fifth (5.2): `queued` runs whose task never reached a worker,
+    # recorded `not_queued` and refunded. `swept_count` counts only stale `running` runs, so without
+    # this field a tick that recovered and refunded a run logged `swept_count=0` (D1).
     log.info(
         _EVENT_SWEPT,
         swept_count=result.abandoned,
+        lost_queued_count=result.lost_queued,
         skipped_count=result.skipped,
         conflicts=result.conflicts,
         duration_ms=_elapsed_ms(started_at),

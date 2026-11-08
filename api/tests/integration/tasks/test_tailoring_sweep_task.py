@@ -551,7 +551,7 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     """
     monkeypatch.setattr(sweep_container, "get_settings", lambda: settings)
 
-    async def _seed_a_stale_run() -> tuple[GuestSessionId, TailoringRunId]:
+    async def _seed_a_stale_run() -> tuple[GuestSessionId, TailoringRunId, TailoringRunId]:
         seeding_engine = create_async_engine(settings.test_database_url, poolclass=None)
         try:
             async with AsyncSession(seeding_engine, expire_on_commit=False) as seeding_session:
@@ -566,8 +566,18 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
                     now=_real_now(),
                 )
                 await runs.add(stale)
+                # 5.2 (D1): a `queued` run past `tailoring_queued_lost_after_seconds` (1800), so
+                # the same tick recovers it as `not_queued` and must log `lost_queued_count`.
+                lost = TailoringRun.request(
+                    id=runs.next_identity(),
+                    owner=GuestOwner(owner.id),
+                    base_cv_id=BaseCvId(value=uuid4()),
+                    job_posting_id=stale.job_posting_id,
+                    requested_at=_real_now() - timedelta(seconds=3_600),
+                )
+                await runs.add(lost)
                 await seeding_session.commit()
-                return owner.id, stale.id
+                return owner.id, stale.id, lost.id
         finally:
             await seeding_engine.dispose()
 
@@ -590,11 +600,12 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
         finally:
             await cleanup_engine.dispose()
 
-    owner_id, stale_run_id = asyncio.run(_seed_a_stale_run())
+    owner_id, stale_run_id, lost_run_id = asyncio.run(_seed_a_stale_run())
     try:
         with caplog.at_level(logging.INFO):
             result = abandon_stale_tailoring_runs()
         reloaded_stale = asyncio.run(_reread_status(stale_run_id))
+        reloaded_lost = asyncio.run(_reread_status(lost_run_id))
     finally:
         asyncio.run(_forget(owner_id))
 
@@ -603,6 +614,8 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     # stale run must actually be the one the sweep recorded, not merely "some count went up".
     assert reloaded_stale.status is TailoringRunStatus.FAILED
     assert reloaded_stale.failure_reason is TailoringFailureReason.ABANDONED
+    assert reloaded_lost.status is TailoringRunStatus.FAILED
+    assert reloaded_lost.failure_reason is TailoringFailureReason.NOT_QUEUED
 
     assert "tailoring.stale_runs_swept" in caplog.text
     # structlog's renderer here is process-wide and picked once by whichever test configures it
@@ -621,6 +634,12 @@ def test_invoking_the_real_task_logs_swept_and_skipped_counts_and_a_duration_onl
     assert swept_match, caplog.text
     assert int(swept_match.group(1)) >= 1, caplog.text
     assert re.search(r'"?skipped_count"?\s*[:=]\s*0\b', caplog.text), caplog.text
+    # D1 (5.2's manual pass): a tick that recovered and refunded a lost `queued` run used to log
+    # only `swept_count`, so the recovery was invisible. `>= 1` for the same leftover reason as
+    # `swept_count`; the reread above proves this test's own run is the one counted.
+    lost_match = re.search(r'"?lost_queued_count"?\s*[:=]\s*(\d+)', caplog.text)
+    assert lost_match, caplog.text
+    assert int(lost_match.group(1)) >= 1, caplog.text
     # T16: `conflicts` is the log line's fourth field (E-20; ADR-0015 §3) — this tick has no
     # concurrent writer, so it must be logged as 0 rather than merely present.
     assert re.search(r'"?conflicts"?\s*[:=]\s*0\b', caplog.text), caplog.text
