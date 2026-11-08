@@ -459,7 +459,8 @@ describe('The retention sentence follows the scope (AC-49)', () => {
 
     renderWithRouter('/runs/guest-run/cv');
     await screen.findByText('guest tailored cv text');
-    await screen.findByRole('button', { name: 'PDF' });
+    // Slice 5.2: the guest page has no export bar; its offer is the loaded signal.
+    await screen.findByRole('heading', { name: 'Want this CV tailored to the job?' });
 
     expect(document.body.textContent).toContain('24 hours');
   });

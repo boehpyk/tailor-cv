@@ -1,24 +1,18 @@
 import { act, fireEvent, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { __resetForTests, authStore } from '@/features/auth/authStore';
+import { __resetForTests } from '@/features/auth/authStore';
 import {
   USER_A,
   callsTo,
+  makeAccountRun,
+  makeHistoryEntry,
   ok,
   signInAs,
   signedInRoutes,
   stubAccountFetch,
 } from '@/test/accountFetch';
-import {
-  countCallsTo,
-  jsonResponse,
-  makeExtractedCv,
-  makePostingSummary,
-  makeRun,
-  makeRunSummary,
-  stubWorkspaceFetch,
-} from '@/test/fixtures';
+import { jsonResponse, makeExtractedCv, makePostingSummary, makeRun } from '@/test/fixtures';
 import { renderWithRouter } from '@/test/render';
 
 /**
@@ -97,71 +91,7 @@ afterEach(() => {
   __resetForTests();
 });
 
-// --- AC-9: TailorLaunch, guest workspace ------------------------------------------------------------
-
-function stubGuestWorkspace(createRun: () => Promise<Response>) {
-  return stubWorkspaceFetch({
-    baseCvs: () => Promise.resolve(jsonResponse(200, { items: [BASE_CV] })),
-    jobPostings: () => Promise.resolve(jsonResponse(200, { items: [POSTING] })),
-    runsList: () => Promise.resolve(jsonResponse(200, { items: [] })),
-    createRun,
-  });
-}
-
-describe('AC-9 — Tailor my CV in the guest workspace', () => {
-  beforeEach(() => {
-    __resetForTests();
-    authStore.signOut('expired');
-  });
-
-  it('a 429 with Retry-After: 120 disables it, sends nothing on click, and releases at +120 s', async () => {
-    const fetchMock = stubGuestWorkspace(() => Promise.resolve(tooMany(120)));
-    renderWithRouter('/');
-    await settle();
-    expect(launchButton()).toBeEnabled(); // positive control: it was usable before the 429
-
-    fireEvent.click(launchButton());
-    await settle();
-
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(1);
-    expect(launchButton()).toBeDisabled();
-    expect(screen.getByRole('alert')).toHaveTextContent(/\d{2}:\d{2}/); // names when it returns
-    fireEvent.click(launchButton());
-    await settle();
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(1);
-
-    const focused = document.activeElement;
-    await advance(119_999);
-    expect(launchButton()).toBeDisabled();
-    await advance(1);
-    expect(launchButton()).toBeEnabled();
-    expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
-    expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
-    expect(document.activeElement).toBe(focused);
-
-    await advance(5000); // deadline + 5 s: nothing is sent on the user's behalf (AC-22)
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(1);
-  });
-
-  it('a 503 holds nothing: the same control can be pressed again', async () => {
-    const fetchMock = stubGuestWorkspace(() =>
-      Promise.resolve(
-        jsonResponse(503, { error: { code: 'rate_limit_unavailable', message: 'Unavailable.' } }),
-      ),
-    );
-    renderWithRouter('/');
-    await settle();
-
-    fireEvent.click(launchButton());
-    await settle();
-
-    expect(screen.getByRole('alert')).toBeInTheDocument(); // positive control: the refusal landed
-    expect(launchButton()).toBeEnabled();
-    fireEvent.click(launchButton());
-    await settle();
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(2);
-  });
-});
+// Slice 5.2 (AC-15, AC-36): a guest has no Tailor button, so AC-9's hold is an account property only.
 
 // --- AC-9: TailorLaunch, account workspace ----------------------------------------------------------
 
@@ -248,70 +178,85 @@ describe('AC-9 — Tailor in the account workspace', () => {
 
 const RUN_ID = 'run-page-fixture';
 
+// Slice 5.2 (AC-15): a guest's failed run offers no Try again, so the cooldown is proved on the
+// account run page (/history/:id) and the account workspace.
+const ACCOUNT_ROUTES = {
+  ...signedInRoutes(USER_A),
+  'GET /api/me/base-cvs': ok({ items: [] }),
+  'GET /api/me/job-postings': ok({ items: [] }),
+  'GET /api/me/tailoring-runs': ok({ items: [], next_cursor: null }),
+};
+
 function stubFailedRun(overrides: Parameters<typeof makeRun>[0]) {
-  return stubWorkspaceFetch({
-    runDetail: {
-      [RUN_ID]: () =>
-        Promise.resolve(
-          jsonResponse(
-            200,
-            makeRun({
-              id: RUN_ID,
-              status: 'failed',
-              failure_reason: 'llm_rate_limited',
-              retryable: true,
-              ...overrides,
-            }),
-          ),
-        ),
-    },
+  return stubAccountFetch({
+    ...ACCOUNT_ROUTES,
+    'GET /api/me/tailoring-runs/:id': () =>
+      jsonResponse(
+        200,
+        makeAccountRun({
+          id: RUN_ID,
+          status: 'failed',
+          failure_reason: 'llm_rate_limited',
+          retryable: true,
+          ...overrides,
+        }),
+      ),
   });
+}
+
+function posts(fetch: ReturnType<typeof stubAccountFetch>): number {
+  return callsTo(fetch, 'POST', '/api/me/tailoring-runs').length;
 }
 
 function tryAgain(): HTMLElement {
   return screen.getByRole('button', { name: /try again/i });
 }
 
-describe('AC-10 — Try again on a provider-busy run (RunPage)', () => {
+describe('AC-10 — Try again on a provider-busy run (account RunPage)', () => {
+  beforeEach(() => {
+    signInAs(USER_A);
+  });
+
   it('retry_not_before 45 s ahead disables Try again with the wait named, and enables it at the deadline', async () => {
     const fetchMock = stubFailedRun({
       completed_at: isoWhole(NOW - 15 * SECOND),
       retry_not_before: isoWhole(NOW + 45 * SECOND),
     });
-    renderWithRouter(`/runs/${RUN_ID}/cv`);
-    await settle();
+    renderWithRouter(`/history/${RUN_ID}/cv`);
+    await settle(10); // the account boot needs fake time to load
 
     expect(tryAgain()).toBeDisabled();
     expect(screen.getByRole('alert')).toHaveTextContent(/You can try again in 45 seconds/);
     fireEvent.click(tryAgain());
     await settle();
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
+    expect(posts(fetchMock)).toBe(0);
 
     const focused = document.activeElement;
-    await advance(44_999);
+    // The account boot spent fake time before the deadline was derived: measure from the clock.
+    await advanceToward(NOW + 45 * SECOND, -1);
     expect(tryAgain()).toBeDisabled();
-    await advance(1);
+    await advanceToward(NOW + 45 * SECOND, 0);
     expect(tryAgain()).toBeEnabled();
     expect(screen.getByText('You can try again now.').closest('[role="status"]')).not.toBeNull();
     expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
     expect(document.activeElement).toBe(focused);
 
     await advance(5000); // deadline + 5 s: no retry unless the user clicks (AC-22)
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
+    expect(posts(fetchMock)).toBe(0);
   });
 
   it('retry_not_before: null is unaffected: enabled at once (the control for the holds above)', async () => {
     stubFailedRun({ failure_reason: 'llm_rate_limited', retry_not_before: null });
-    renderWithRouter(`/runs/${RUN_ID}/cv`);
-    await settle();
+    renderWithRouter(`/history/${RUN_ID}/cv`);
+    await settle(10); // the account boot needs fake time to load
 
     expect(tryAgain()).toBeEnabled();
   });
 
   it('another reason (llm_timed_out) is enabled at once', async () => {
     stubFailedRun({ failure_reason: 'llm_timed_out', retry_not_before: null });
-    renderWithRouter(`/runs/${RUN_ID}/cv`);
-    await settle();
+    renderWithRouter(`/history/${RUN_ID}/cv`);
+    await settle(10); // the account boot needs fake time to load
 
     expect(tryAgain()).toBeEnabled();
   });
@@ -322,13 +267,14 @@ describe('AC-10 — Try again on a provider-busy run (RunPage)', () => {
       completed_at: isoWhole(completed),
       retry_not_before: isoWhole(completed + 60 * SECOND),
     });
-    renderWithRouter(`/runs/${RUN_ID}/cv`);
-    await settle();
+    renderWithRouter(`/history/${RUN_ID}/cv`);
+    await settle(10); // the account boot needs fake time to load
     expect(tryAgain()).toBeDisabled();
+    const loadedBy = Date.now(); // the hold started at receipt, at or before now (the boot took fake time)
 
-    await advance(59_999);
+    await advance(30 * SECOND);
     expect(tryAgain()).toBeDisabled();
-    await advance(1);
+    await advanceToward(loadedBy, 60 * SECOND); // 60 s granted, not 11 minutes
     expect(tryAgain()).toBeEnabled();
   });
 
@@ -338,59 +284,62 @@ describe('AC-10 — Try again on a provider-busy run (RunPage)', () => {
       completed_at: isoWhole(completed),
       retry_not_before: isoWhole(completed + 60 * SECOND),
     });
-    renderWithRouter(`/runs/${RUN_ID}/cv`);
-    await settle();
+    renderWithRouter(`/history/${RUN_ID}/cv`);
+    await settle(10); // the account boot needs fake time to load
 
     expect(tryAgain()).toBeEnabled();
   });
 });
 
-describe('AC-10 — Tailor again in the guest workspace after a provider-busy run', () => {
+describe('AC-10 — Tailor again in the account workspace after a provider-busy run', () => {
   beforeEach(() => {
-    __resetForTests();
-    authStore.signOut('expired');
+    signInAs(USER_A);
   });
 
   function workspaceWithLatest(retryNotBefore: string | null) {
-    const summary = makeRunSummary({
-      id: RUN_ID,
-      status: 'failed',
-      failure_reason: 'llm_rate_limited',
-      retryable: true,
-      completed_at: isoWhole(NOW - 15 * SECOND),
-      retry_not_before: retryNotBefore,
-    });
-    return stubWorkspaceFetch({
-      baseCvs: () => Promise.resolve(jsonResponse(200, { items: [BASE_CV] })),
-      jobPostings: () => Promise.resolve(jsonResponse(200, { items: [POSTING] })),
-      runsList: () => Promise.resolve(jsonResponse(200, { items: [summary] })),
-      runDetail: {
-        [RUN_ID]: () => Promise.resolve(jsonResponse(200, { ...summary, tailored_cv: null })),
-      },
+    return stubAccountFetch({
+      ...ACCOUNT_ROUTES,
+      'GET /api/me/base-cvs': ok({
+        items: [{ ...BASE_CV, uploaded_at: '2026-09-20T10:00:00Z', expires_at: null }],
+      }),
+      'GET /api/me/job-postings': ok({ items: [{ ...POSTING, expires_at: null }] }),
+      'GET /api/me/tailoring-runs': ok({
+        items: [
+          makeHistoryEntry({
+            id: RUN_ID,
+            status: 'failed',
+            failure_reason: 'llm_rate_limited',
+            retryable: true,
+            completed_at: isoWhole(NOW - 15 * SECOND),
+            retry_not_before: retryNotBefore,
+          }),
+        ],
+        next_cursor: null,
+      }),
     });
   }
 
   it('is disabled with the wait named until retry_not_before, then enabled', async () => {
     const fetchMock = workspaceWithLatest(isoWhole(NOW + 45 * SECOND));
     renderWithRouter('/');
-    await settle();
+    await settle(10); // the account boot needs fake time to load
 
     expect(launchButton()).toBeDisabled();
     expect(launchButton()).toHaveAccessibleDescription(/You can try again in 45 seconds/);
     fireEvent.click(launchButton());
     await settle();
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
+    expect(posts(fetchMock)).toBe(0);
 
     await advance(45_000);
     expect(launchButton()).toBeEnabled();
     await advance(5000);
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(0);
+    expect(posts(fetchMock)).toBe(0);
   });
 
   it('retry_not_before: null leaves it enabled (control)', async () => {
     workspaceWithLatest(null);
     renderWithRouter('/');
-    await settle();
+    await settle(10);
 
     expect(launchButton()).toBeEnabled();
   });

@@ -1,20 +1,29 @@
 import { fireEvent, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { makeExportJob } from '@/features/export/test/fixtures';
-import { jsonResponse, makeRun, stubWorkspaceFetch } from '@/test/fixtures';
+import { __resetForTests } from '@/features/auth/authStore';
+import {
+  USER_A,
+  makeAccountRun,
+  ok,
+  signInAs,
+  signedInRoutes,
+  stubAccountFetch,
+} from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 
 /**
  * T24 RED — slice 3.2, AC-30: the layout choice is shared by the CV and cover-letter tabs
  * (plan §0.10: it lives in `RunPage`, which survives the tab switch). Mounted through the real
- * route table, as `RunPage.test.tsx` does.
+ * route table, as `RunPage.test.tsx` does. Slice 5.2 (AC-36): the export bar is an account's, so
+ * the page is the account run page (`/history/:id`).
  */
 
 const RUN_ID = 'run-page-layout-fixture';
 
-function succeededRun(): ReturnType<typeof makeRun> {
-  return makeRun({
+function succeededRun(): ReturnType<typeof makeAccountRun> {
+  return makeAccountRun({
     id: RUN_ID,
     status: 'succeeded',
     tailored_cv: 'my tailored cv text',
@@ -25,16 +34,26 @@ function succeededRun(): ReturnType<typeof makeRun> {
 }
 
 function stubRun(exportItems: unknown[] = []): void {
-  stubWorkspaceFetch({
-    runDetail: { [RUN_ID]: () => Promise.resolve(jsonResponse(200, succeededRun())) },
-    exports: { [RUN_ID]: () => Promise.resolve(jsonResponse(200, { items: exportItems })) },
+  stubAccountFetch({
+    ...signedInRoutes(USER_A),
+    'GET /api/me/tailoring-runs/:id': ok(succeededRun()),
+    'GET /api/me/tailoring-runs/:id/exports': ok({ items: exportItems }),
   });
 }
+
+beforeEach(() => {
+  signInAs(USER_A);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  __resetForTests();
+});
 
 describe('RunPage — the PDF layout choice', () => {
   it('survives a switch from the CV tab to the cover-letter tab', async () => {
     stubRun();
-    const { router } = renderWithRouter(`/runs/${RUN_ID}/cv`);
+    const { router } = renderWithRouter(`/history/${RUN_ID}/cv`);
 
     const formal = await screen.findByRole('radio', { name: /Formal/ });
     fireEvent.click(formal);
@@ -46,7 +65,7 @@ describe('RunPage — the PDF layout choice', () => {
 
     // Positive control: we really are on the other document now.
     await waitFor(() => {
-      expect(router.state.location.pathname).toBe(`/runs/${RUN_ID}/cover_letter`);
+      expect(router.state.location.pathname).toBe(`/history/${RUN_ID}/cover_letter`);
     });
     expect(await screen.findByRole('radio', { name: /Formal/ })).toBeChecked();
     expect(screen.getByRole('radio', { name: /Classic/ })).not.toBeChecked();
@@ -64,7 +83,7 @@ describe('RunPage — the PDF layout choice', () => {
         byte_size: 1,
       }),
     ]);
-    renderWithRouter(`/runs/${RUN_ID}/cv`);
+    renderWithRouter(`/history/${RUN_ID}/cv`);
 
     await waitFor(() => {
       expect(screen.getByRole('radio', { name: /Modern/ })).toBeChecked();

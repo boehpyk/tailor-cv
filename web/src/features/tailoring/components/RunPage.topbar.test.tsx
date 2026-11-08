@@ -71,10 +71,26 @@ afterEach(() => {
   __resetForTests();
 });
 
-const cases = [
-  ['guest', '/runs/g1/cv', stubGuestRun, 'Back to the workspace'],
-  ['account', '/history/a1/cv', stubAccountRun, 'Back to your history'],
-] as const;
+const cases = [['account', '/history/a1/cv', stubAccountRun, 'Back to your history']] as const;
+
+// Slice 5.2 (AC-36): exports need an account, so a guest's run page shows the offer where the
+// export bar was: no export region, no Download toggle, and the offer sits above the tabs.
+describe('succeeded guest run page', () => {
+  it('shows the offer where the export bar was, and no export region or Download toggle', async () => {
+    stubGuestRun();
+    renderWithRouter('/runs/g1/cv');
+
+    const tablist = await screen.findByRole('tablist', { name: 'Your documents' });
+    const offer = screen.getByRole('heading', { name: 'Want this CV tailored to the job?' });
+    expect(precedes(offer, tablist)).toBe(true);
+    expect(screen.getByRole('link', { name: 'Create free account' })).toHaveAttribute(
+      'href',
+      '/register',
+    );
+    expect(screen.queryByRole('region', REGION)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Download' })).not.toBeInTheDocument();
+  });
+});
 
 describe.each(cases)('succeeded %s run page', (_scope, path, stub, backName) => {
   it('has exactly one export region, with the sheet closed and open', async () => {

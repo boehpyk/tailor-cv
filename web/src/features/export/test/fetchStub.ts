@@ -6,11 +6,13 @@ import { vi } from 'vitest';
  * `features/editor/test/fetchStub.ts` did for the document `PUT`. Kept local for the same reason:
  * `qa` does not modify shared test infrastructure it did not write for this slice.
  *
+ * Slice 5.2: the paths are the **account's** (`/api/me/…`); a guest has no export routes (AC-16).
+ *
  * Routes covered, all scoped to one run id (the export bar never reads another run's jobs):
- * - `GET /api/tailoring-runs/{runId}/exports` — the poller (`exportJobs`, call-numbered).
- * - `POST /api/tailoring-runs/{runId}/exports` — a request (`requestExport`).
- * - `GET /api/export-jobs/{jobId}/file` — a queued download, keyed by job id (`exportFile`).
- * - `GET /api/tailoring-runs/{runId}/documents/{kind}/download?format=...` — an inline download,
+ * - `GET /api/me/tailoring-runs/{runId}/exports` — the poller (`exportJobs`, call-numbered).
+ * - `POST /api/me/tailoring-runs/{runId}/exports` — a request (`requestExport`).
+ * - `GET /api/me/export-jobs/{jobId}/file` — a queued download, keyed by job id (`exportFile`).
+ * - `GET /api/me/tailoring-runs/{runId}/documents/{kind}/download?format=...` — an inline download,
  *   keyed by `${kind}:${format}` (`downloadDocument`).
  *
  * An unhandled call rejects loudly rather than hanging, as `stubWorkspaceFetch` does.
@@ -31,7 +33,7 @@ export function stubExportFetch(runId: string, stubs: ExportFetchStubs): ReturnT
   const fetchMock = vi.fn((input: string | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === 'string' ? input : input.toString();
     const method = init?.method ?? 'GET';
-    const exportsPath = `/api/tailoring-runs/${runId}/exports`;
+    const exportsPath = `/api/me/tailoring-runs/${runId}/exports`;
 
     if (url === exportsPath && method === 'GET') {
       if (stubs.exportJobs === undefined) {
@@ -48,7 +50,7 @@ export function stubExportFetch(runId: string, stubs: ExportFetchStubs): ReturnT
       return stubs.requestExport(requestExportCalls);
     }
 
-    const fileMatch = /^\/api\/export-jobs\/([^/]+)\/file$/.exec(url);
+    const fileMatch = /^\/api\/me\/export-jobs\/([^/]+)\/file$/.exec(url);
     if (fileMatch && method === 'GET') {
       const jobId = decodeURIComponent(fileMatch[1] ?? '');
       const handler = stubs.exportFile?.[jobId];
@@ -61,7 +63,7 @@ export function stubExportFetch(runId: string, stubs: ExportFetchStubs): ReturnT
     }
 
     const downloadMatch =
-      /^\/api\/tailoring-runs\/[^/]+\/documents\/([^/]+)\/download\?format=([^&]+)$/.exec(url);
+      /^\/api\/me\/tailoring-runs\/[^/]+\/documents\/([^/]+)\/download\?format=([^&]+)$/.exec(url);
     if (downloadMatch && method === 'GET') {
       const kind = decodeURIComponent(downloadMatch[1] ?? '');
       const format = decodeURIComponent(downloadMatch[2] ?? '');

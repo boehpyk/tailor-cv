@@ -3,6 +3,14 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { __resetForTests, authStore } from '@/features/auth/authStore';
+import {
+  USER_A,
+  makeHistoryEntry,
+  ok,
+  signInAs,
+  signedInRoutes,
+  stubAccountFetch,
+} from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 import {
   countCallsTo,
@@ -135,29 +143,6 @@ describe('WorkspacePage — tab selection (AC-23)', () => {
 });
 
 describe('WorkspacePage — launch and reattachment (AC-25)', () => {
-  it('clicking the launch control creates a run and navigates to /runs/{id}/cv', async () => {
-    const user = userEvent.setup();
-    const newRunId = 'run-just-created';
-    const fetchMock = stubReadyWorkspace({
-      createRun: () =>
-        Promise.resolve(jsonResponse(202, makeRun({ id: newRunId, status: 'queued' }))),
-      runDetail: {
-        [newRunId]: () =>
-          Promise.resolve(jsonResponse(200, makeRun({ id: newRunId, status: 'queued' }))),
-      },
-    });
-
-    const { router } = renderWithRouter('/');
-
-    const launchButton = await screen.findByRole('button', { name: /tailor/i });
-    await user.click(launchButton);
-
-    await waitFor(() => {
-      expect(router.state.location.pathname).toBe(`/runs/${newRunId}/cv`);
-    });
-    expect(countCallsTo(fetchMock, '/api/tailoring-runs', 'POST')).toBe(1);
-  });
-
   it('loading /runs/{id}/cv directly (a reattach/refresh) issues no POST', async () => {
     const runId = 'run-being-reattached-to';
     const fetchMock = stubWorkspaceFetch({
@@ -174,13 +159,22 @@ describe('WorkspacePage — launch and reattachment (AC-25)', () => {
 });
 
 describe('WorkspacePage — the latest-run card (AC-25)', () => {
-  it('an active latest run disables the launch and shows "In progress"', async () => {
-    stubReadyWorkspace({
-      runsList: () =>
-        Promise.resolve(
-          jsonResponse(200, { items: [makeRunSummary({ id: 'run-active', status: 'running' })] }),
-        ),
+  // Slice 5.2 (AC-15, AC-36): a guest has no launch, so these two hold in account scope only.
+  // The launch-and-navigate flow itself is AccountWorkspace.test.tsx's AC-41.
+  function accountWithLatest(entry: ReturnType<typeof makeHistoryEntry>) {
+    signInAs(USER_A);
+    return stubAccountFetch({
+      ...signedInRoutes(USER_A),
+      'GET /api/me/base-cvs': ok({
+        items: [{ ...BASE_CV, uploaded_at: '2026-09-20T10:00:00Z', expires_at: null }],
+      }),
+      'GET /api/me/job-postings': ok({ items: [{ ...JOB_POSTING, expires_at: null }] }),
+      'GET /api/me/tailoring-runs': ok({ items: [entry], next_cursor: null }),
     });
+  }
+
+  it('an active latest run disables the launch and shows "In progress"', async () => {
+    accountWithLatest(makeHistoryEntry({ id: 'run-active', status: 'running' }));
 
     renderWithRouter('/');
 
@@ -190,26 +184,12 @@ describe('WorkspacePage — the latest-run card (AC-25)', () => {
   });
 
   it('a succeeded latest run offers "Open your tailored documents" and enables "Tailor again"', async () => {
-    stubReadyWorkspace({
-      runsList: () =>
-        Promise.resolve(
-          jsonResponse(200, {
-            items: [
-              makeRunSummary({
-                id: 'run-succeeded',
-                status: 'succeeded',
-                tailored_cv_character_count: 10,
-                cover_letter_character_count: 10,
-              }),
-            ],
-          }),
-        ),
-    });
+    accountWithLatest(makeHistoryEntry({ id: 'run-succeeded', status: 'succeeded' }));
 
     renderWithRouter('/');
 
     expect(await screen.findByText(/open your tailored documents/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /tailor again/i })).toBeEnabled();
+    expect(await screen.findByRole('button', { name: /tailor again/i })).toBeEnabled();
   });
 
   it("a failed latest run shows 1.3's failure copy", async () => {

@@ -3,9 +3,12 @@ import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { jsonResponse, makeRun, stubWorkspaceFetch } from '@/test/fixtures';
+import { __resetForTests } from '@/features/auth/authStore';
+import { USER_A, signInAs } from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 
 import { ExportBar } from '../export/components/ExportBar';
+import { InAccountScope } from '../export/test/accountScope';
 import { stubExportFetch } from '../export/test/fetchStub';
 import { EXPORT_RUN_ID, makeExportJob } from '../export/test/fixtures';
 
@@ -60,6 +63,7 @@ beforeEach(() => {
 
 afterEach(() => {
   onlineManager.setOnline(true);
+  __resetForTests();
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -220,6 +224,11 @@ describe('AC-19 — one message at a time', () => {
 // --- ExportBar ---------------------------------------------------------------------------------------
 
 describe('AC-20 — the export bar, a PDF job rendering', () => {
+  // Slice 5.2 (AC-16): exports are an account's, so the bar is in account scope with a bearer.
+  beforeEach(() => {
+    signInAs(USER_A);
+  });
+
   const renderingJob = makeExportJob({
     format: 'pdf',
     status: 'rendering',
@@ -232,7 +241,11 @@ describe('AC-20 — the export bar, a PDF job rendering', () => {
       defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
     });
     function Wrapper({ children }: { children: ReactNode }): React.JSX.Element {
-      return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+      return (
+        <QueryClientProvider client={client}>
+          <InAccountScope>{children}</InAccountScope>
+        </QueryClientProvider>
+      );
     }
     render(
       <ExportBar

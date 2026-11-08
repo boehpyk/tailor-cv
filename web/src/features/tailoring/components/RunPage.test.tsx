@@ -1,6 +1,15 @@
 import { act, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetForTests } from '@/features/auth/authStore';
+import {
+  USER_A,
+  makeAccountRun,
+  ok,
+  signInAs,
+  signedInRoutes,
+  stubAccountFetch,
+} from '@/test/accountFetch';
 import { renderWithRouter } from '@/test/render';
 import { jsonResponse, makeRun, stubWorkspaceFetch } from '@/test/fixtures';
 
@@ -43,6 +52,7 @@ function renderRunPage(document: 'cv' | 'cover_letter' = 'cv') {
 describe('RunPage', () => {
   afterEach(() => {
     vi.useRealTimers();
+    __resetForTests();
   });
 
   it('shows the loading copy while the run has not answered yet', () => {
@@ -82,7 +92,29 @@ describe('RunPage', () => {
     expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
   });
 
-  it("a failed, retryable run shows 1.3's failure notice with Try again", async () => {
+  it("a failed, retryable account run shows 1.3's failure notice with Try again", async () => {
+    signInAs(USER_A);
+    stubAccountFetch({
+      ...signedInRoutes(USER_A),
+      'GET /api/me/tailoring-runs/:id': ok(
+        makeAccountRun({
+          id: RUN_ID,
+          status: 'failed',
+          failure_reason: 'llm_timed_out',
+          retryable: true,
+        }),
+      ),
+    });
+
+    renderWithRouter(`/history/${RUN_ID}/cv`);
+
+    expect(await screen.findByText('That took too long.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+  });
+
+  // Slice 5.2, AC-15: a guest cannot start a run, so a run of theirs that failed offers no retry
+  // (the failure notice itself still reads).
+  it("a failed, retryable guest run shows 1.3's failure notice and no Try again", async () => {
     stubWorkspaceFetch({
       runDetail: {
         [RUN_ID]: () =>
@@ -103,7 +135,7 @@ describe('RunPage', () => {
     renderRunPage();
 
     expect(await screen.findByText('That took too long.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /try again/i })).not.toBeInTheDocument();
   });
 
   it("a failed, non-retryable run shows 1.3's failure notice without Try again", async () => {

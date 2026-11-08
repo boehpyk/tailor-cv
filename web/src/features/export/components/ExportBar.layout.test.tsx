@@ -1,11 +1,14 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetForTests } from '@/features/auth/authStore';
+import { USER_A, signInAs } from '@/test/accountFetch';
 import { jsonResponse } from '@/test/fixtures';
 
 import { LAYOUT_TEMPLATES } from '../layouts';
+import { InAccountScope } from '../test/accountScope';
 import { blobResponse, stubExportFetch } from '../test/fetchStub';
 import { EXPORT_RUN_ID, makeExportJob } from '../test/fixtures';
 import { ExportBar } from './ExportBar';
@@ -45,7 +48,11 @@ function renderBar(
 ): ReturnType<typeof render> {
   const client = makeQueryClient();
   function Wrapper({ children }: { children: ReactNode }): React.JSX.Element {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <InAccountScope>{children}</InAccountScope>
+      </QueryClientProvider>
+    );
   }
   return render(
     <ExportBar
@@ -67,7 +74,9 @@ function StatefulBar(): React.JSX.Element {
   const [client] = useState(makeQueryClient);
   return (
     <QueryClientProvider client={client}>
-      <Harness />
+      <InAccountScope>
+        <Harness />
+      </InAccountScope>
     </QueryClientProvider>
   );
 }
@@ -128,7 +137,13 @@ function stubObjectUrl(): void {
   URL.revokeObjectURL = vi.fn();
 }
 
+// Slice 5.2 (AC-16): exports are an account's, so the bar is mounted in account scope.
+beforeEach(() => {
+  signInAs(USER_A);
+});
+
 afterEach(() => {
+  __resetForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -353,14 +368,20 @@ describe('AC-32 — loading, error, empty, success', () => {
 
   it('does not jump under the pointer: Classic shown while loading, then the derived layout once it arrives', async () => {
     let resolveJobs: (response: Response) => void = () => undefined;
+    let asked = false;
     stubExportFetch(EXPORT_RUN_ID, {
       exportJobs: () =>
         new Promise<Response>((resolve) => {
+          asked = true;
           resolveJobs = resolve;
         }),
     });
     renderBar();
     expect(radio(/Classic/)).toBeChecked();
+    // An account's request goes out after the bearer is read: resolve only once it is in flight.
+    await waitFor(() => {
+      expect(asked).toBe(true);
+    });
 
     resolveJobs(jsonResponse(200, { items: [pdfJob('f1', 'formal')] }));
 

@@ -11,6 +11,7 @@ import { jsonResponse, makePostingSummary } from '@/test/fixtures';
 import { renderWithQuery } from '@/test/render';
 
 import { ExportBar } from '../export/components/ExportBar';
+import { InAccountScope } from '../export/test/accountScope';
 import { stubExportFetch } from '../export/test/fetchStub';
 import { EXPORT_RUN_ID } from '../export/test/fixtures';
 
@@ -80,12 +81,21 @@ afterEach(() => {
 // --- AC-11: export ----------------------------------------------------------------------------------
 
 describe('AC-11 — a refused PDF request holds the PDF control only', () => {
+  // Slice 5.2 (AC-16): exports are an account's, so the bar is in account scope with a bearer.
+  beforeEach(() => {
+    signInAs(USER_A);
+  });
+
   function renderBar(): void {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, gcTime: 0 }, mutations: { retry: false } },
     });
     function Wrapper({ children }: { children: ReactNode }): React.JSX.Element {
-      return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+      return (
+        <QueryClientProvider client={client}>
+          <InAccountScope>{children}</InAccountScope>
+        </QueryClientProvider>
+      );
     }
     render(
       <ExportBar
@@ -124,7 +134,7 @@ describe('AC-11 — a refused PDF request holds the PDF control only', () => {
     fireEvent.click(button('PDF'));
     await flush();
 
-    expect(postsTo(fetchMock, `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(1);
+    expect(postsTo(fetchMock, `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(1);
     // The PDF control's region: its button and the "Export again" action beside the message.
     const region = button('PDF').parentElement as HTMLElement;
     expect(within(region).getByText(CLOCK_TIME)).toBeInTheDocument();
@@ -133,7 +143,7 @@ describe('AC-11 — a refused PDF request holds the PDF control only', () => {
     }
     fireEvent.click(exportAgain());
     await flush();
-    expect(postsTo(fetchMock, `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(1);
+    expect(postsTo(fetchMock, `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(1);
 
     // The other formats are untouched: Word is still sendable (a second POST goes out).
     expect(button('Markdown')).toBeEnabled();
@@ -141,7 +151,7 @@ describe('AC-11 — a refused PDF request holds the PDF control only', () => {
     expect(button('Word')).toBeEnabled();
     fireEvent.click(button('Word'));
     await flush();
-    expect(postsTo(fetchMock, `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(2);
+    expect(postsTo(fetchMock, `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(2);
 
     await advanceToward(clickedAt + WINDOW_MS, -1);
     expect(exportAgain()).toBeDisabled();
@@ -151,7 +161,7 @@ describe('AC-11 — a refused PDF request holds the PDF control only', () => {
     expect(screen.queryAllByText(WAIT_NAMED)).toHaveLength(0);
 
     await advance(5000); // deadline + 5 s: nothing is re-sent on the user's behalf (AC-22)
-    expect(postsTo(fetchMock, `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(2);
+    expect(postsTo(fetchMock, `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`)).toBe(2);
   });
 
   it('a 503 on the same control holds nothing', async () => {

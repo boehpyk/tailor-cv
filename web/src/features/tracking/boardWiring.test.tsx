@@ -322,7 +322,8 @@ describe('The run page (AC-38)', () => {
     renderWithRouter('/runs/guest-run/cv');
 
     expect(await screen.findByText('my guest cv text')).toBeInTheDocument();
-    await screen.findByRole('button', { name: 'PDF' });
+    // Slice 5.2: the guest page has no export bar; its offer is the loaded signal.
+    await screen.findByRole('heading', { name: 'Want this CV tailored to the job?' });
     expect(screen.queryByRole('button', { name: 'Add to board' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /on your board/i })).not.toBeInTheDocument();
     expect(callsTo(fetch, 'GET', BOARD_PATH)).toHaveLength(0);
