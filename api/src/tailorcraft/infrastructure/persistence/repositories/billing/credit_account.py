@@ -15,6 +15,14 @@ previous holder committed, never a copy loaded before the wait.
 `save-update` cascade inserts the appended entries; nothing here issues an `UPDATE` or `DELETE` on
 `billing_credit_entry`. The account row's own `UPDATE` (a pack click, an opt-in) is the only update.
 
+**Reads never autoflush** (F-14). A read here must not write what the caller dirtied: in the worker
+that is the run `RecordRunFailure` has just marked failed, and an autoflush on the refund's `find`
+would raise its version conflict as a raw `StaleDataError` from inside this repository, outside the
+run repository's translation. Under `no_autoflush` the conflict surfaces at `runs.save`, where it is
+translated to `TailoringRunConcurrentlyModified` and the worker rolls the whole transaction back,
+refund and count included. `save` restricts its flush to this aggregate for the same reason. Nothing
+this repository reads can be pending in the session: every `save` flushes.
+
 Nothing commits: the caller's transaction does (the request's, or the failure's in the worker).
 The one exception is F-14's refund race, below, which rolls back.
 """
@@ -71,16 +79,18 @@ class SqlAlchemyCreditAccountRepository:
         await self.save(account)
 
     async def find(self, user_id: UserId) -> CreditAccount | None:
-        return (
-            await self._session.execute(
-                select(CreditAccount).where(credit_account_table.c.user_id == user_id)
-            )
-        ).scalar_one_or_none()
+        with self._session.no_autoflush:
+            return (
+                await self._session.execute(
+                    select(CreditAccount).where(credit_account_table.c.user_id == user_id)
+                )
+            ).scalar_one_or_none()
 
     async def lock_for_charge(self, user_id: UserId) -> CreditAccount:
-        account = (
-            await self._session.execute(lock_for_charge_statement(user_id))
-        ).scalar_one_or_none()
+        with self._session.no_autoflush:
+            account = (
+                await self._session.execute(lock_for_charge_statement(user_id))
+            ).scalar_one_or_none()
         if account is None:
             raise CreditAccountNotFound(user_id)
         return account

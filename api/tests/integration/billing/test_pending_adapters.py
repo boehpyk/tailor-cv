@@ -414,16 +414,6 @@ async def test_control_the_sweep_without_the_fault_fails_refunds_and_counts_each
 # ------------------------------------------------------------------------------------ F-14
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PRODUCTION DEFECT (qa, T28): the loser's version conflict surfaces as a raw StaleDataError from "
-        "the ORM autoflush inside SqlAlchemyCreditAccountRepository.find (the refund's first read), "
-        "because RecordRunFailure marks the run before it refunds; the repository's save never gets to "
-        "translate it to TailoringRunConcurrentlyModified, so AbandonStaleTailoringRuns does not contain "
-        "it and the whole sweep aborts. The fix's commit removes this marker."
-    ),
-)
 async def test_the_loser_of_a_sweep_against_redelivery_race_loses_its_refund_and_count_too(
     engine: AsyncEngine,
     settings: Settings,
