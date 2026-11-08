@@ -123,7 +123,12 @@ from tailorcraft.domain.retention.ports import (
     OrphanFileScannerPort,
 )
 from tailorcraft.domain.retention.value_objects import RetentionWindow
-from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
+from tailorcraft.domain.scoring.ports import (
+    DraftTextPort,
+    FitScoreRepository,
+    FitScorerPort,
+    SpendLedgerPort,
+)
 from tailorcraft.domain.scoring.value_objects import (
     MicroUsd,
     ModelName,
@@ -194,6 +199,7 @@ from tailorcraft.infrastructure.retention.data_access import (
 )
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import RedisPurgeLock
+from tailorcraft.infrastructure.scoring.draft_text import DraftTextAdapter
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 
@@ -336,6 +342,14 @@ def get_demand_counter_query(session: SessionDep) -> DemandCounterQuery:
 
 
 DemandCounterQueryDep = Annotated[DemandCounterQuery, Depends(get_demand_counter_query)]
+
+
+def get_draft_text() -> DraftTextPort:
+    """Binds `DraftTextPort` -> `DraftTextAdapter` (plan §0.8), for the run comparison routes (T27)."""
+    return DraftTextAdapter()
+
+
+DraftTextDep = Annotated[DraftTextPort, Depends(get_draft_text)]
 
 
 def get_charge_credit_for_run(credits: CreditAccountRepositoryDep) -> ChargeCreditForRun:

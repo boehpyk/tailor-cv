@@ -87,4 +87,7 @@ class EraseAccount:
             tracked_applications=counts.tracked_applications,
             # The account's fit scores, gone by the cascade (slice 5.1, AC-36).
             fit_scores=counts.fit_scores,
+            # The balance and ledger, gone by the cascade (slice 5.2, AC-31).
+            credits_left=counts.credits_left,
+            credit_entries=counts.credit_entries,
         )

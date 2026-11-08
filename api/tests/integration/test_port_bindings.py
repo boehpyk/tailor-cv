@@ -54,9 +54,9 @@ from tests.api.test_auth_route_dependency_boundary import _iter_api_routes
 _BOUND_ELSEWHERE: dict[str, str] = {
     # Slice 5.2 in progress. `deps.get_demand_counter_query` binds `DemandCounterQuery` (T26), but
     # no route reaches it until T27's `/admin/demand`; the walker then sees it and this line goes.
-    # `DraftTextPort`'s adapter is T24's.
+    # `DraftTextPort` likewise: `deps.get_draft_text` (T24), reached by T27's comparison routes.
     "DemandCounterQuery": "provided by deps.get_demand_counter_query; no route until T27 (ADR-0043)",
-    "DraftTextPort": "unbound until slice 5.2's T24/T26 (plan §0.8)",
+    "DraftTextPort": "provided by deps.get_draft_text; no route until T27 (plan §0.8)",
 }
 
 
