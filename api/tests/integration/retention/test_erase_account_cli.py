@@ -811,3 +811,109 @@ async def test_ac36_a_real_run_erases_the_history_and_its_files_and_spares_a_gue
             await conn.execute(
                 guest_session_table.delete().where(guest_session_table.c.id == guest_session_id)
             )
+
+
+# --- slice 5.2 (T30, AC-31): the billing segment ----------------------------------------------------
+
+
+async def _seed_ledger(engine: AsyncEngine, user_id: UserId) -> None:
+    """A welcome (+1), a grant (+4) and a charge (-1): three entries, 4 credits left."""
+    when = _now()
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("INSERT INTO billing_credit_account (user_id, opened_at) VALUES (:u, :t)"),
+            {"u": user_id.value, "t": when},
+        )
+        for kind, credits, run in (
+            ("welcome", 1, None),
+            ("grant", 4, None),
+            ("charge", -1, uuid4()),
+        ):
+            await conn.execute(
+                text(
+                    "INSERT INTO billing_credit_entry (id, user_id, kind, credits, "
+                    "tailoring_run_id, created_at) VALUES (:i, :u, :k, :c, :r, :t)"
+                ),
+                {"i": uuid4(), "u": user_id.value, "k": kind, "c": credits, "r": run, "t": when},
+            )
+
+
+async def _ledger_rows(engine: AsyncEngine, user_id: UserId) -> tuple[int, int]:
+    async with engine.connect() as conn:
+        accounts = await conn.execute(
+            text("SELECT count(*) FROM billing_credit_account WHERE user_id = :u"),
+            {"u": user_id.value},
+        )
+        entries = await conn.execute(
+            text("SELECT count(*) FROM billing_credit_entry WHERE user_id = :u"),
+            {"u": user_id.value},
+        )
+        return int(accounts.scalar_one()), int(entries.scalar_one())
+
+
+_SCORING_THEN_BILLING = "; scoring: 0 fit score(s); billing: 4 credit(s) left, 3 credit entr(y/ies)"
+
+
+async def test_ac31_a_dry_run_appends_the_billing_segment_after_the_scoring_one_and_erases_nothing(
+    settings: Settings,
+    engine: AsyncEngine,
+    account_rig: _AccountRig,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _assert_test_database(settings)
+    seeded = await account_rig.seed_account(
+        email=f"billing-dry-{uuid4().hex}@example.com", saved_cv_specs=[("a.txt", None, None)]
+    )
+    await _seed_ledger(engine, seeded.user_id)
+
+    exit_code = await erase_account_command.erase_account(
+        settings, user_id=seeded.user_id, dry_run=True
+    )
+
+    assert exit_code == erase_account_command.EXIT_OK
+    line = capsys.readouterr().out.strip()
+    assert line.endswith(_SCORING_THEN_BILLING)
+    assert line.startswith(f"would erase account {seeded.user_id.value}: 1 saved CV(s), ")
+    assert await _ledger_rows(engine, seeded.user_id) == (1, 3)
+
+
+async def test_ac31_a_real_run_appends_the_billing_segment_and_the_cascade_removes_the_ledger(
+    settings: Settings,
+    engine: AsyncEngine,
+    account_rig: _AccountRig,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _assert_test_database(settings)
+    seeded = await account_rig.seed_account(
+        email=f"billing-real-{uuid4().hex}@example.com", saved_cv_specs=[("a.txt", None, None)]
+    )
+    await _seed_ledger(engine, seeded.user_id)
+
+    exit_code = await erase_account_command.erase_account(
+        settings, user_id=seeded.user_id, dry_run=False
+    )
+
+    assert exit_code == erase_account_command.EXIT_OK
+    line = capsys.readouterr().out.strip()
+    assert line.endswith(_SCORING_THEN_BILLING)
+    assert line.startswith(f"erased account {seeded.user_id.value}: 1 saved CV(s), ")
+    assert await _ledger_rows(engine, seeded.user_id) == (0, 0)
+
+
+async def test_ac31_an_account_with_no_ledger_reports_zero_credits_and_zero_entries(
+    settings: Settings,
+    account_rig: _AccountRig,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _assert_test_database(settings)
+    seeded = await account_rig.seed_account(
+        email=f"billing-none-{uuid4().hex}@example.com", saved_cv_specs=[]
+    )
+
+    await erase_account_command.erase_account(settings, user_id=seeded.user_id, dry_run=True)
+
+    assert (
+        capsys.readouterr()
+        .out.strip()
+        .endswith("; scoring: 0 fit score(s); billing: 0 credit(s) left, 0 credit entr(y/ies)")
+    )
