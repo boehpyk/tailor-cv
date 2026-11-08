@@ -10,6 +10,12 @@ can (AC-50 to AC-54):
 - **Injection (AC-29, OQ-14):** two synthetic postings that try to steer the scorer. Reported only.
 - **Cost (AC-53), thinking and refusals (AC-54):** reported, with the thresholds flagged.
 
+**Drafts (5.2's AC-24, `--drafts`):** instead of the corpus run, each base pair's last `make eval`
+draft CV (`eval/drafts/<pair id>.md`), turned into plain text by `DraftTextAdapter` exactly as the
+comparison's after-score does, is scored `--repeat` times against its posting; `max - min <= 5`. The
+scorer has no purpose argument: `COMPARISON` differs from `CHECK` only in the use case (no daily cap,
+the ledger row), and this measurement bypasses the use case and the spend ledger as 5.1's run does.
+
 **Without `--confirm-spend` it makes no call**: it prints the plan and the upper bound at the
 settings' prices, then exits 0. With it, exit 0 means AC-51 and AC-52 held, 1 that one did not, and 2
 that it could not start.
@@ -31,7 +37,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Final, TextIO
 
-from tailorcraft.domain.scoring.errors import FitScoringFailed, FitScoringOutputInvalid
+from tailorcraft.domain.scoring.errors import (
+    FitScoringFailed,
+    FitScoringOutputInvalid,
+    InvalidScoringText,
+)
 from tailorcraft.domain.scoring.value_objects import (
     CvForScoring,
     MicroUsd,
@@ -62,11 +72,13 @@ from tailorcraft.infrastructure.llm.fit_scorer import (
 )
 from tailorcraft.infrastructure.llm.gemini import GenerateFn, RawCompletion
 from tailorcraft.infrastructure.observability import configure_logging
+from tailorcraft.infrastructure.scoring.draft_text import DraftTextAdapter
 from tailorcraft.infrastructure.settings import Settings, get_settings
 
 KIND_STABILITY: Final = "stability"
 KIND_CROSS: Final = "cross"
 KIND_INJECTED: Final = "injected"
+KIND_DRAFT: Final = "draft"
 
 OUTCOME_SUCCEEDED: Final = "succeeded"
 VERDICT_PARSED: Final = "parsed"
@@ -143,6 +155,53 @@ def plan_jobs(corpus: FitScoreCorpus, repeat: int) -> tuple[ScoreJob, ...]:
         for injected in corpus.injected
     )
     return tuple(jobs)
+
+
+@dataclass(frozen=True, slots=True)
+class EvalDraft:
+    """A base pair's stored draft CV, as the after-score sees it, and the pair's posting."""
+
+    pair_id: str
+    cv: CvForScoring
+    posting: PostingForScoring
+
+
+async def load_drafts(
+    drafts_dir: Path, corpus: FitScoreCorpus
+) -> tuple[tuple[EvalDraft, ...], tuple[str, ...]]:
+    """Every base pair's `<pair id>.md` in `drafts_dir`, through `DraftTextAdapter` (the TXT export's
+    pipeline, as `draft_pair` uses it), and the ids of the pairs that have none.
+    A blank draft is a `CorpusError`: the product would never score it either."""
+    adapter = DraftTextAdapter()
+    stored = await asyncio.to_thread(_read_drafts, drafts_dir, [p.id for p in corpus.base.pairs])
+    drafts: list[EvalDraft] = []
+    missing: list[str] = []
+    for pair in corpus.base.pairs:
+        path = drafts_dir / f"{pair.id}.md"
+        if pair.id not in stored:
+            missing.append(pair.id)
+            continue
+        text = await adapter.to_plain_text(stored[pair.id])
+        try:
+            cv = CvForScoring(text)
+        except InvalidScoringText:
+            raise CorpusError(f"the draft {path} is blank as plain text") from None
+        drafts.append(EvalDraft(pair.id, cv, PostingForScoring(pair.posting.text.value)))
+    return tuple(drafts), tuple(missing)
+
+
+def _read_drafts(drafts_dir: Path, pair_ids: Sequence[str]) -> dict[str, str]:
+    paths = {pair_id: drafts_dir / f"{pair_id}.md" for pair_id in pair_ids}
+    return {k: p.read_text(encoding="utf-8") for k, p in paths.items() if p.is_file()}
+
+
+def plan_draft_jobs(drafts: Sequence[EvalDraft], repeat: int) -> tuple[ScoreJob, ...]:
+    """AC-24's run: every draft `repeat` times against its pair's posting."""
+    return tuple(
+        ScoreJob(KIND_DRAFT, d.pair_id, f"draft {d.pair_id} run {n}/{repeat}", d.cv, d.posting)
+        for d in drafts
+        for n in range(1, repeat + 1)
+    )
 
 
 def worst_attempt(job: ScoreJob, settings: Settings, prices: ScoringPrices) -> MicroUsd:
@@ -228,6 +287,7 @@ async def run_fit_score_eval(
     out: TextIO,
     repeat: int,
     generate: GenerateFn | None = None,
+    drafts: Sequence[EvalDraft] | None = None,
 ) -> int:
     """Take every planned score, print each line and the summary, return the exit code.
 
@@ -239,19 +299,29 @@ async def run_fit_score_eval(
     if generate is None:
         real = GeminiFitScorer(settings)
         generate = real.generate
+    jobs = plan_jobs(corpus, repeat) if drafts is None else plan_draft_jobs(drafts, repeat)
     results: list[ScoreResult] = []
     try:
-        for job in plan_jobs(corpus, repeat):
+        for job in jobs:
             result = await score_once(job, settings=settings, prices=prices, generate=generate)
             _print_result(out, result)
             results.append(result)
     finally:
         if real is not None:
             await real.aclose()
+    if drafts is not None:
+        return render_draft_summary(out, drafts, results, repeat=repeat)
     return render_summary(out, corpus, results, repeat=repeat)
 
 
-def run_from_cli(*, corpus_dir: Path, repeat: int, confirm_spend: bool, validate_only: bool) -> int:
+def run_from_cli(
+    *,
+    corpus_dir: Path,
+    repeat: int,
+    confirm_spend: bool,
+    validate_only: bool,
+    drafts_dir: Path | None = None,
+) -> int:
     """`tailorcraft.cli eval-fit-scores`. The corpus is validated and the plan printed before the key
     is looked at, so neither needs one, and nothing is spent unless `--confirm-spend` says so."""
     settings = get_settings()
@@ -271,10 +341,29 @@ def run_from_cli(*, corpus_dir: Path, repeat: int, confirm_spend: bool, validate
         f"{len(corpus.injected)} injected pairs ({len(corpus.base.cvs)} CVs)",
         file=out,
     )
+    drafts: tuple[EvalDraft, ...] | None = None
+    if drafts_dir is not None:
+        try:
+            drafts, missing = asyncio.run(load_drafts(drafts_dir, corpus))
+        except CorpusError as error:
+            print(f"eval-fit-scores: {error}", file=sys.stderr)
+            return EXIT_CANNOT_START
+        if not drafts:
+            print(
+                f"eval-fit-scores: no drafts in {drafts_dir.resolve()}. `make eval` keeps each "
+                "draft CV there as <pair id>.md; run it first (it spends tailoring calls).",
+                file=sys.stderr,
+            )
+            return EXIT_CANNOT_START
+        print(
+            f"drafts: {len(drafts)} from {drafts_dir}"
+            + (f"; no draft for {', '.join(missing)}" if missing else ""),
+            file=out,
+        )
     if validate_only:
         print("corpus is valid; no API call was made.", file=out)
         return EXIT_OK
-    jobs = plan_jobs(corpus, repeat)
+    jobs = plan_jobs(corpus, repeat) if drafts is None else plan_draft_jobs(drafts, repeat)
     render_plan(out, jobs, settings, repeat=repeat)
     if not confirm_spend:
         print("\nNo call was made. Re-run with --confirm-spend to spend it.", file=out)
@@ -286,7 +375,7 @@ def run_from_cli(*, corpus_dir: Path, repeat: int, confirm_spend: bool, validate
             file=sys.stderr,
         )
         return EXIT_CANNOT_START
-    return asyncio.run(run_fit_score_eval(corpus, settings, out=out, repeat=repeat))
+    return asyncio.run(run_fit_score_eval(corpus, settings, out=out, repeat=repeat, drafts=drafts))
 
 
 # -- report ----------------------------------------------------------------------------------------
@@ -295,11 +384,16 @@ def run_from_cli(*, corpus_dir: Path, repeat: int, confirm_spend: bool, validate
 def render_plan(out: TextIO, jobs: Sequence[ScoreJob], settings: Settings, *, repeat: int) -> None:
     counts = Counter(job.kind for job in jobs)
     attempts = settings.fit_score_max_attempts
+    shape = (
+        f"{counts[KIND_DRAFT] // repeat} drafts x {repeat} repeats"
+        if counts[KIND_DRAFT]
+        else f"{counts[KIND_STABILITY] // repeat} pairs x {repeat} repeats = "
+        f"{counts[KIND_STABILITY]}, {counts[KIND_CROSS]} cross pairs x 1, "
+        f"{counts[KIND_INJECTED]} injected pairs x 1"
+    )
     print(
         f"model {settings.fit_score_model}, prompt version {FIT_SCORE_PROMPT_VERSION}\n"
-        f"plan: {counts[KIND_STABILITY] // repeat} pairs x {repeat} repeats = "
-        f"{counts[KIND_STABILITY]}, {counts[KIND_CROSS]} cross pairs x 1, "
-        f"{counts[KIND_INJECTED]} injected pairs x 1: {len(jobs)} scores, "
+        f"plan: {shape}: {len(jobs)} scores, "
         f"at most {len(jobs) * attempts} calls ({attempts} attempts each)\n"
         f"upper bound: {_usd(upper_bound(jobs, settings, fit_score_prices(settings)))} at "
         f"${settings.fit_score_input_price_usd_per_million} in / "
@@ -346,13 +440,35 @@ def _scores(results: Sequence[ScoreResult], kind: str, key: str) -> list[int]:
     ]
 
 
+def render_draft_summary(
+    out: TextIO, drafts: Sequence[EvalDraft], results: Sequence[ScoreResult], *, repeat: int
+) -> int:
+    """AC-24's ranges, the cost and the calls; 0 when every draft held, else 1."""
+    print(
+        f"\nAC-24 draft stability (max - min <= {MAX_SCORE_RANGE} over {repeat} repeats)", file=out
+    )
+    stable = _render_ranges(out, KIND_DRAFT, [d.pair_id for d in drafts], results, repeat=repeat)
+    _render_cost(out, results)
+    _render_calls(out, results)
+    print(f"\nverdict: AC-24 {'PASS' if stable else 'FAIL'}", file=out)
+    return EXIT_OK if stable else EXIT_FAILED
+
+
 def _render_stability(
     out: TextIO, corpus: FitScoreCorpus, results: Sequence[ScoreResult], *, repeat: int
 ) -> bool:
     print(f"\nAC-51 stability (max - min <= {MAX_SCORE_RANGE} over {repeat} repeats)", file=out)
+    keys = [pair.id for pair in corpus.base.pairs]
+    return _render_ranges(out, KIND_STABILITY, keys, results, repeat=repeat)
+
+
+def _render_ranges(
+    out: TextIO, kind: str, keys: Sequence[str], results: Sequence[ScoreResult], *, repeat: int
+) -> bool:
+    label = "pair" if kind == KIND_STABILITY else kind
     passed = True
-    for pair in corpus.base.pairs:
-        scores = _scores(results, KIND_STABILITY, pair.id)
+    for key in keys:
+        scores = _scores(results, kind, key)
         if len(scores) < repeat:
             # A repeat that produced no score is not a stable answer, and its range is unmeasured.
             ok, detail = False, f"only {len(scores)} of {repeat} scored"
@@ -360,7 +476,7 @@ def _render_stability(
             spread = max(scores) - min(scores)
             ok, detail = spread <= MAX_SCORE_RANGE, f"range {spread}"
         passed = passed and ok
-        print(f"  pair {pair.id}: {scores} {detail} {'PASS' if ok else 'FAIL'}", file=out)
+        print(f"  {label} {key}: {scores} {detail} {'PASS' if ok else 'FAIL'}", file=out)
     return passed
 
 

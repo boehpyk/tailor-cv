@@ -50,6 +50,10 @@ import argparse
 from pathlib import Path
 from uuid import UUID
 
+# Where `make eval` keeps its draft CVs and `make eval.score drafts=1` reads them (5.2, AC-24),
+# relative to api/ (the container's working directory). Git-ignored: generated output.
+DEFAULT_EVAL_DRAFTS_DIR = Path("eval/drafts")
+
 
 def _positive_int(raw: str) -> int:
     """An argparse `type` that refuses zero and below, so a bad bound is a **usage** error.
@@ -208,6 +212,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="load and validate the corpus, print its sizes, and make no API call",
     )
+    evaluate.add_argument(
+        "--drafts-dir",
+        type=Path,
+        default=DEFAULT_EVAL_DRAFTS_DIR,
+        help=f"keep each draft CV here as <pair id>.md (default: {DEFAULT_EVAL_DRAFTS_DIR})",
+    )
 
     # Slice 5.1, T43: the fit-score measurement (AC-50 to AC-54). Without --confirm-spend it prints
     # the plan and the upper-bound cost and makes no call.
@@ -233,6 +243,18 @@ def main(argv: list[str] | None = None) -> int:
         "--validate-only",
         action="store_true",
         help="load and validate the corpus and make no API call",
+    )
+    # Slice 5.2, T39 (AC-24): score `make eval`'s stored drafts instead of the corpus run.
+    fit_eval.add_argument(
+        "--drafts",
+        action="store_true",
+        help="score each stored `make eval` draft CV --repeat times instead (AC-24)",
+    )
+    fit_eval.add_argument(
+        "--drafts-dir",
+        type=Path,
+        default=DEFAULT_EVAL_DRAFTS_DIR,
+        help=f"where `make eval` keeps its drafts (default: {DEFAULT_EVAL_DRAFTS_DIR})",
     )
 
     args = parser.parse_args(argv)
@@ -299,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             only=args.only,
             width=args.width,
             validate_only=args.validate_only,
+            drafts_dir=args.drafts_dir,
         )
 
     if args.command == "eval-fit-scores":
@@ -312,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
             repeat=args.repeat,
             confirm_spend=args.confirm_spend,
             validate_only=args.validate_only,
+            drafts_dir=args.drafts_dir if args.drafts else None,
         )
 
     parser.print_help()

@@ -21,12 +21,13 @@ import io
 import json
 import shutil
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 
 import pytest
 
+from tailorcraft.domain.scoring.value_objects import CvForScoring
 from tailorcraft.infrastructure.llm.evaluation import fit_score_runner
 from tailorcraft.infrastructure.llm.evaluation.corpus import (
     CorpusError,
@@ -42,6 +43,7 @@ from tailorcraft.infrastructure.llm.evaluation.fit_score_runner import (
 )
 from tailorcraft.infrastructure.llm.fit_scorer import PROMPT_OVERHEAD_CHARACTERS
 from tailorcraft.infrastructure.llm.gemini import RawCompletion
+from tailorcraft.infrastructure.scoring.draft_text import DraftTextAdapter
 from tailorcraft.infrastructure.settings import Settings
 
 API_DIR = Path(__file__).resolve().parents[3]
@@ -497,3 +499,138 @@ def test_the_loader_refuses_an_injected_posting_file_that_does_not_exist(corpus_
     (corpus_copy / "postings" / "injected-score-override.md").unlink()
     with pytest.raises(CorpusError, match="does not exist"):
         load_fit_score_corpus(corpus_copy, max_cv_characters=40_000)
+
+
+# -- AC-24 (5.2, T39): `--drafts` scores `make eval`'s stored drafts -------------------------------
+
+
+def _write_drafts(corpus: FitScoreCorpus, root: Path, count: int) -> list[str]:
+    """The first `count` base pairs get a draft: their CV's own Markdown stands in for one."""
+    root.mkdir(parents=True, exist_ok=True)
+    ids = [pair.id for pair in corpus.base.pairs[:count]]
+    for pair in corpus.base.pairs[:count]:
+        (root / f"{pair.id}.md").write_text(f"# Draft\n\n{pair.cv.raw_text}", encoding="utf-8")
+    return ids
+
+
+async def test_load_drafts_converts_each_through_draft_text_adapter_and_names_the_missing(
+    corpus: FitScoreCorpus, tmp_path: Path
+) -> None:
+    ids = _write_drafts(corpus, tmp_path, 2)
+    drafts, missing = await fit_score_runner.load_drafts(tmp_path, corpus)
+    assert [d.pair_id for d in drafts] == ids
+    assert list(missing) == [p.id for p in corpus.base.pairs[2:]]
+    expected = await DraftTextAdapter().to_plain_text((tmp_path / f"{ids[0]}.md").read_text())
+    assert drafts[0].cv.value == CvForScoring(expected).value
+    assert not drafts[0].cv.value.startswith("#"), "the TXT pipeline drops the heading marker"
+    assert drafts[0].posting.value == corpus.base.pairs[0].posting.text.value
+
+
+async def test_a_blank_draft_is_refused_as_a_corpus_error(
+    corpus: FitScoreCorpus, tmp_path: Path
+) -> None:
+    (tmp_path / f"{corpus.base.pairs[0].id}.md").write_text("   \n", encoding="utf-8")
+    with pytest.raises(CorpusError, match="blank as plain text"):
+        await fit_score_runner.load_drafts(tmp_path, corpus)
+
+
+@pytest.mark.parametrize(
+    ("spread", "exit_code"), [(5, EXIT_OK), (6, EXIT_FAILED)], ids=["range-5", "range-6"]
+)
+async def test_ac24_scores_each_draft_repeat_times_and_allows_a_range_of_five(
+    settings: Settings, corpus: FitScoreCorpus, tmp_path: Path, spread: int, exit_code: int
+) -> None:
+    _write_drafts(corpus, tmp_path, 2)
+    drafts, _ = await fit_score_runner.load_drafts(tmp_path, corpus)
+    calls = 0
+
+    async def generate(prompt: str) -> RawCompletion:
+        nonlocal calls
+        calls += 1
+        posting = next(d.posting.value for d in drafts if d.posting.value in prompt)
+        score = 70 + (spread if calls % REPEAT == 0 else 0)
+        quote = " ".join(posting.split()[:8])
+        text = json.dumps(
+            {"score": score, "gaps": [{"requirement": GAP_SENTINEL, "posting_quote": quote}]}
+        )
+        return RawCompletion(text=text, prompt_tokens=1_000, completion_tokens=100)
+
+    out = io.StringIO()
+    code = await run_fit_score_eval(
+        corpus, _cfg(settings), out=out, repeat=REPEAT, generate=generate, drafts=drafts
+    )
+    assert (code, calls) == (exit_code, 2 * REPEAT)
+    assert f"range {spread}" in out.getvalue()
+    assert f"verdict: AC-24 {'PASS' if exit_code == EXIT_OK else 'FAIL'}" in out.getvalue()
+    assert "AC-51" not in out.getvalue()
+
+
+@pytest.fixture
+def drafts_cli(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> Iterator[Callable[..., tuple[int, list[object]]]]:
+    """`run_from_cli` with `--drafts`. Loading the drafts is a real coroutine, so `asyncio.run` runs
+    on a private loop (never the session's), and the measurement is an async spy."""
+    loop = asyncio.new_event_loop()
+
+    def run(*, key: str = "placeholder-key", **kwargs: object) -> tuple[int, list[object]]:
+        seen: list[object] = []
+
+        async def spy(*args: object, drafts: object = None, **_: object) -> int:
+            seen.append(drafts)
+            return EXIT_OK
+
+        monkeypatch.setattr(
+            fit_score_runner, "get_settings", lambda: _cfg(settings, gemini_api_key=key)
+        )
+        monkeypatch.setattr(fit_score_runner, "configure_logging", lambda s: None)
+        monkeypatch.setattr(fit_score_runner, "route_logs_to_stderr", lambda: None)
+        monkeypatch.setattr(fit_score_runner, "run_fit_score_eval", spy)
+        monkeypatch.setattr(asyncio, "run", loop.run_until_complete)
+        options: dict[str, object] = {
+            "corpus_dir": CORPUS_DIR,
+            "repeat": REPEAT,
+            "confirm_spend": False,
+            "validate_only": False,
+            **kwargs,
+        }
+        return fit_score_runner.run_from_cli(**options), seen  # type: ignore[arg-type]
+
+    yield run
+    loop.close()
+
+
+def test_drafts_without_confirm_spend_print_the_plan_and_make_no_call(
+    drafts_cli: Callable[..., tuple[int, list[object]]],
+    corpus: FitScoreCorpus,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _write_drafts(corpus, tmp_path, 3)
+    code, seen = drafts_cli(drafts_dir=tmp_path, key="")
+    out = capsys.readouterr().out
+    assert (code, seen) == (EXIT_OK, [])
+    assert "drafts: 3 from" in out
+    assert "plan: 3 drafts x 5 repeats: 15 scores, at most 30 calls" in out
+    assert "upper bound: $" in out
+    assert "No call was made. Re-run with --confirm-spend" in out
+
+
+def test_drafts_with_no_draft_on_disk_exit_2_and_say_what_is_needed(
+    drafts_cli: Callable[..., tuple[int, list[object]]],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    code, seen = drafts_cli(drafts_dir=tmp_path / "nowhere", confirm_spend=True)
+    assert (code, seen) == (EXIT_CANNOT_START, [])
+    assert "no drafts in" in capsys.readouterr().err
+
+
+def test_drafts_with_confirm_spend_and_a_key_measure_once_with_the_drafts(
+    drafts_cli: Callable[..., tuple[int, list[object]]], corpus: FitScoreCorpus, tmp_path: Path
+) -> None:
+    ids = _write_drafts(corpus, tmp_path, 2)
+    code, seen = drafts_cli(drafts_dir=tmp_path, confirm_spend=True)
+    assert code == EXIT_OK
+    assert len(seen) == 1
+    assert [d.pair_id for d in seen[0]] == ids  # type: ignore[attr-defined]

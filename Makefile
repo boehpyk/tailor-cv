@@ -177,8 +177,8 @@ eval: ## Run the prompt eval set against the real Gemini API, by hand (ADR-0004)
 	@echo "This calls the real API and costs money. It is not part of 'make check'."
 	$(API) python -m tailorcraft.cli eval-prompts
 
-eval.score: ## Fit-score measurement: prints the plan and upper bound; confirm=1 spends it (AC-50)
-	$(API) python -m tailorcraft.cli eval-fit-scores $(if $(confirm),--confirm-spend)
+eval.score: ## Fit-score measurement: prints the plan and upper bound; confirm=1 spends it (AC-50); drafts=1 scores make eval's drafts (AC-24)
+	$(API) python -m tailorcraft.cli eval-fit-scores $(if $(drafts),--drafts) $(if $(confirm),--confirm-spend)
 
 #-----------------------------------------------------------
 # Git hooks
