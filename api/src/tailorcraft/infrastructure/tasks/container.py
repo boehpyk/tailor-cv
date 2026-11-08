@@ -176,11 +176,24 @@ class CommittingTailoringRunRepository:
         The failure this does *not* contain is a database failure that is not a conflict (G-35): it
         propagates, the sweep raises, the task's error boundary rolls the session back, and the runs
         already committed one-per-save stay committed — the SAVEPOINT changes nothing there.
+
+        **Since slice 5.2 a failed save also rolls back the whole transaction** (plan §0.4), then
+        re-raises. A failure is now written as *mark, refund, count, save*, and the refund and the
+        count sit in the outer transaction, outside the SAVEPOINT. Rolling back only the SAVEPOINT
+        would leave them pending, and the next save's commit (the sweep carries on after a conflict)
+        would commit a refund for a run whose failure never landed. The SAVEPOINT stays for the
+        success path: the flush must not expire the identity map. The rollback does expire every
+        loaded instance, which is why the sweep lists ids and re-reads each run by id rather than
+        holding the loaded batch.
         """
         if run in self._session:
             self._session.expunge(run)
-        async with self._session.begin_nested():
-            await self._inner.save(run)
+        try:
+            async with self._session.begin_nested():
+                await self._inner.save(run)
+        except Exception:
+            await self._session.rollback()
+            raise
         await self._session.commit()
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:
