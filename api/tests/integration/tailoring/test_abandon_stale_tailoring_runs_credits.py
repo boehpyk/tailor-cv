@@ -51,7 +51,6 @@ def _sweep(
 ) -> AbandonStaleTailoringRuns:
     return AbandonStaleTailoringRuns(
         rig.runs,
-        rig.events,
         clock,
         batch_size=batch_size,
         record_failure=rig.record_failure,
@@ -237,7 +236,6 @@ async def test_each_listed_run_is_re_read_by_id_and_a_decided_row_is_skipped(
     rig.journal.clear()
     sweep = AbandonStaleTailoringRuns(
         runs,
-        rig.events,
         clock,
         record_failure=RecordRunFailure(runs, rig.refund, rig.counters, rig.events),
     )
@@ -274,7 +272,6 @@ async def test_a_lost_race_is_counted_and_the_next_run_is_still_refunded(
         await runs.add(run)
     sweep = AbandonStaleTailoringRuns(
         runs,
-        rig.events,
         clock,
         record_failure=RecordRunFailure(runs, rig.refund, rig.counters, rig.events),
     )

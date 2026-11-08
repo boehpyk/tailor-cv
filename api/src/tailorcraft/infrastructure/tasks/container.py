@@ -504,9 +504,6 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         # run another process decided first (G-36) is skipped without taking the batch's earlier
         # writes back with it. One transaction per tick would make one bad row cost the whole batch.
         runs=runs,
-        # `EventPublisherPort` -> `LoggingEventPublisher`: each abandonment's `TailoringRunFailed`
-        # is the per-run log line G-25' asks for (`tailoring_run_id`, `reason=abandoned`).
-        events=events,
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007). Read once per batch by the
         # use case, so every `completed_at` written in one tick is the same instant.
         clock=SystemClock(),

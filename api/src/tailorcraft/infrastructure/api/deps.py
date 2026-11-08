@@ -894,7 +894,7 @@ def get_tailoring_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
     unreachable costs a user a retry; failing open costs an amount nobody has bounded.
 
     A rate limit bounds how *often* a run is requested, never whether one is: the per-session cap
-    (`max_tailoring_runs_per_session`), the single-active-run rule and the LLM's own total deadline
+    (`max_tailoring_runs_per_user`), the single-active-run rule and the LLM's own total deadline
     each bound a different quantity, and none of them substitutes for another.
     """
     return RedisFixedWindowRateLimiter(redis, namespace="tailoring:create", fail_open=False)
@@ -930,7 +930,6 @@ def get_request_tailoring_run(
         get_job_posting,
         events,
         clock,
-        max_per_session=settings.max_tailoring_runs_per_session,
         max_per_user=settings.max_tailoring_runs_per_user,
         charge=charge,
     )

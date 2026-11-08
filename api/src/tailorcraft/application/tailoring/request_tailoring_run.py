@@ -130,13 +130,10 @@ class RequestTailoringRun:
         get_job_posting: GetJobPosting,
         events: EventPublisherPort,
         clock: Clock,
-        max_per_session: int = 20,
         max_per_user: int = 500,
         *,
         charge: ChargeCreditForRun,
     ) -> None:
-        # `max_per_session` is unused since guests stopped requesting runs (plan §2); it goes when
-        # the composition root stops passing it.
         self._charge = charge
         self._runs = runs
         self._get_base_cv = get_base_cv

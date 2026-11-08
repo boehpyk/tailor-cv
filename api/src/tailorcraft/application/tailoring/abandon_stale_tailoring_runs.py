@@ -17,7 +17,6 @@ from datetime import timedelta
 
 from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.shared.clock import Clock
-from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.errors import TailoringRunConcurrentlyModified
 from tailorcraft.domain.tailoring.ports import TailoringRunRepository
 from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason
@@ -138,7 +137,6 @@ class AbandonStaleTailoringRuns:
     def __init__(
         self,
         runs: TailoringRunRepository,
-        events: EventPublisherPort,
         clock: Clock,
         stale_after_seconds: int = 300,
         batch_size: int = 100,
@@ -146,9 +144,6 @@ class AbandonStaleTailoringRuns:
         record_failure: RecordRunFailure,
         queued_lost_after_seconds: int = 1800,
     ) -> None:
-        # `events` is no longer called here: `RecordRunFailure` publishes. Held (the port-binding test
-        # reads it) until the composition root and the older tests stop passing it positionally.
-        self._events = events
         self._record_failure = record_failure
         self._queued_lost_after_seconds = queued_lost_after_seconds
         self._runs = runs

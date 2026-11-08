@@ -129,7 +129,6 @@ def _use_case(
 ) -> AbandonStaleTailoringRuns:
     return AbandonStaleTailoringRuns(
         runs,
-        events,
         clock,
         stale_after_seconds=stale_after_seconds,
         batch_size=batch_size,
