@@ -170,6 +170,7 @@ from tailorcraft.infrastructure.api.guest_session import (
     set_guest_cookie,
 )
 from tailorcraft.infrastructure.clock import SystemClock
+from tailorcraft.infrastructure.events.deferred_publisher import DeferredEventPublisher
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
 from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
@@ -966,15 +967,26 @@ def get_request_tailoring_run(
 RequestTailoringRunDep = Annotated[RequestTailoringRun, Depends(get_request_tailoring_run)]
 
 
+def get_not_queued_events(events: EventPublisherDep) -> DeferredEventPublisher:
+    """One per request (FastAPI caches a dependency per request), shared by `RecordRunNotQueued` and
+    the handler that commits its transaction and then releases the events."""
+    return DeferredEventPublisher(events)
+
+
+NotQueuedEventsDep = Annotated[DeferredEventPublisher, Depends(get_not_queued_events)]
+
+
 def get_record_run_not_queued(
     runs: TailoringRunRepositoryDep,
     credits: CreditAccountRepositoryDep,
     counters: DailyCounterDep,
-    events: EventPublisherDep,
+    events: NotQueuedEventsDep,
     clock: ClockDep,
 ) -> RecordRunNotQueued:
     """G-14's second transaction (F-10): fail the run, refund its credit, count `runs_failed`, on the
-    request's session. The handler commits; nothing here does."""
+    request's session. The handler commits; nothing here does. Its events are held until that commit
+    (`NotQueuedEventsDep`): `RecordRunFailure` publishes after `runs.save`, which is the worker's
+    commit but not a request's."""
     return RecordRunNotQueued(
         runs, RecordRunFailure(runs, RefundCreditForRun(credits), counters, events), clock
     )

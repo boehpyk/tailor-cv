@@ -51,6 +51,7 @@ from tailorcraft.infrastructure.api.deps import (
     GetTailoringRunDep,
     ListExportsForRunDep,
     ListTailoringHistoryDep,
+    NotQueuedEventsDep,
     RecordRunNotQueuedDep,
     RenderDocumentInlineDep,
     RequestExportDep,
@@ -183,6 +184,7 @@ async def request_my_tailoring_run(
     runs: TailoringRunRepositoryDep,
     queue: TailoringQueueDep,
     record_not_queued: RecordRunNotQueuedDep,
+    not_queued_events: NotQueuedEventsDep,
     db: SessionDep,
 ) -> TailoringRunResponse:
     """Request one tailoring run from the account's own saved CV and posting, spending one credit
@@ -201,6 +203,7 @@ async def request_my_tailoring_run(
         runs=runs,
         queue=queue,
         record_not_queued_run=record_not_queued,
+        not_queued_events=not_queued_events,
         db=db,
         translate=partial(
             account_error_to_http_exception,

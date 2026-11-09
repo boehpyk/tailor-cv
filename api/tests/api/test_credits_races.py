@@ -27,6 +27,8 @@ today's behaviour are green on arrival; they are here as the HTTP half of the mo
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from collections.abc import AsyncIterator
 from datetime import timedelta
 from pathlib import Path
@@ -282,6 +284,69 @@ async def test_f10_a_refused_enqueue_is_503_and_the_second_transaction_refunds_a
     assert {k.tailoring_run_id for k in kinds} == {run.id}, "the refund names the run it refunds"
     assert await balance_of(session, account.user_id.value) == 1, "the credit is back"
     assert await counter_total(session, "runs_failed") - failed_before == 1
+
+
+def logged(caplog: pytest.LogCaptureFixture) -> list[dict[str, Any]]:
+    """`caplog`, not `capture_logs()`: a cached module logger escapes the latter (test_intake.py)."""
+    lines = []
+    for record in caplog.records:
+        try:
+            lines.append(json.loads(record.getMessage()))
+        except ValueError:
+            continue
+    return lines
+
+
+def released(caplog: pytest.LogCaptureFixture) -> set[str]:
+    return {line["event_type"] for line in logged(caplog) if line.get("event") == "domain_event"}
+
+
+async def test_f10_the_second_transactions_events_are_published_after_its_commit(
+    client: AsyncClient,
+    app: FastAPI,
+    session: AsyncSession,
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    queue_on(app, refuse=True)
+    account, body = await funded(client, session, settings)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(ME_RUNS, json=body, headers=account.headers)
+
+    assert response.status_code == 503, response.text
+    assert {"TailoringRunFailed", "CreditRefunded"} <= released(caplog)
+
+
+async def test_f10_a_failed_second_commit_publishes_no_failure_or_refund_event(
+    client: AsyncClient,
+    app: FastAPI,
+    session: AsyncSession,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    queue_on(app, refuse=True)
+    account, body = await funded(client, session, settings)
+    real_commit = session.commit
+    commits = 0
+
+    async def _second_fails() -> None:
+        nonlocal commits
+        commits += 1
+        if commits == 2:
+            raise RuntimeError("simulated commit failure (F-11)")
+        await real_commit()
+
+    monkeypatch.setattr(session, "commit", _second_fails)
+
+    with caplog.at_level(logging.INFO):
+        response = await client.post(ME_RUNS, json=body, headers=account.headers)
+
+    assert response.status_code == 503, response.text
+    assert commits == 2
+    assert not {"TailoringRunFailed", "CreditRefunded"} & released(caplog)
+    assert "tailoring.not_queued_unrecorded" in [line.get("event") for line in logged(caplog)]
 
 
 # ===================================================================================== the races

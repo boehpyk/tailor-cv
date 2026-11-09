@@ -77,6 +77,7 @@ from tailorcraft.infrastructure.api.schemas.tailoring import (
     TailoringRunResponse,
     TailoringRunSummary,
 )
+from tailorcraft.infrastructure.events.deferred_publisher import DeferredEventPublisher
 from tailorcraft.infrastructure.rate_limit import (
     RateLimitDecision,
     RateLimiterUnavailable,
@@ -264,7 +265,10 @@ def no_store(response: Response) -> None:
 
 
 async def record_not_queued(
-    run_id: TailoringRunId, record: RecordRunNotQueued, db: AsyncSession
+    run_id: TailoringRunId,
+    record: RecordRunNotQueued,
+    events: DeferredEventPublisher,
+    db: AsyncSession,
 ) -> None:
     """G-14's **second transaction**: a committed run the broker refused is recorded `failed` /
     `not_queued`, its credit comes back and `runs_failed` counts, in one commit (F-10). The rule lives
@@ -280,17 +284,23 @@ async def record_not_queued(
     `DomainError`; a driver error outside SQLAlchemy's tree), never `BaseException`, so a cancelled
     request still cancels. The fully-qualified type only, never the message (a driver's can quote
     parameters), and no client IP.
+
+    **The events are published only after the commit** (`events` holds them until `release`), so a
+    log line never announces a `failed` run or a refund that a rollback is about to un-happen.
     """
     try:
         await record(RecordRunNotQueuedCommand(tailoring_run_id=run_id))
         await db.commit()
     except Exception as exc:
+        events.discard()
         await db.rollback()
         log.warning(
             "tailoring.not_queued_unrecorded",
             tailoring_run_id=str(run_id.value),
             error_type=f"{type(exc).__module__}.{type(exc).__qualname__}",
         )
+    else:
+        await events.release()
 
 
 def _owner_log_fields(requester: Owner) -> dict[str, str]:
@@ -323,6 +333,7 @@ async def request_tailoring_run(
     runs: TailoringRunRepository,
     queue: TailoringQueuePort,
     record_not_queued_run: RecordRunNotQueued,
+    not_queued_events: DeferredEventPublisher,
     db: AsyncSession,
     translate: Callable[[DomainError], HTTPException],
 ) -> TailoringRunResponse:
@@ -350,6 +361,7 @@ async def request_tailoring_run(
             runs=runs,
             queue=queue,
             record_not_queued_run=record_not_queued_run,
+            not_queued_events=not_queued_events,
             db=db,
             translate=translate,
         )
@@ -371,6 +383,7 @@ async def _request_tailoring_run(
     runs: TailoringRunRepository,
     queue: TailoringQueuePort,
     record_not_queued_run: RecordRunNotQueued,
+    not_queued_events: DeferredEventPublisher,
     db: AsyncSession,
     translate: Callable[[DomainError], HTTPException],
 ) -> TailoringRunResponse:
@@ -480,7 +493,7 @@ async def _request_tailoring_run(
         # G-14. The adapter has already logged `tailoring.not_queued` with the run id and the error
         # type. The row is committed; record the truth about it in a second transaction, then answer
         # 503 whichever way that write went (see `record_not_queued` for both branches).
-        await record_not_queued(run_id, record_not_queued_run, db)
+        await record_not_queued(run_id, record_not_queued_run, not_queued_events, db)
         raise domain_error_to_http_exception(exc) from exc
 
     # -- 5. Tell the client where to poll. --------------------------------------------------------
