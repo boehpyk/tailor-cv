@@ -20,10 +20,12 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-**Slice 5.2 `credits-and-demand-test` is implemented and verified (2026-11-09, round 2) on
-`feature/credits-and-demand-test`, not yet released** (ADR-0042/0043, migration `9d2cb5b8ec5f`; HISTORY.md). Twenty-three slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, `__Host-tc_guest`,
-`web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is **`fit-score`** (slice 5.1, a free
-Gemini fit score, one additive migration, PR #45, `468b127`), released 2026-11-05 (run 42106143344).
+Twenty-four slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, 5.2, `__Host-tc_guest`,
+`web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is
+**`credits-and-demand-test`** (slice 5.2: one credit per account, refund on failure, the pack demand
+test; ADR-0042/0043, migration `9d2cb5b8ec5f`, PR #47, `b45db12`), released 2026-11-09 (run 42698144865).
+Before it, **`fit-score`** (slice 5.1, a free Gemini fit score, one additive migration, PR #45,
+`468b127`) was released 2026-11-05 (run 42106143344).
 Before it, **`brand-fixcv`** (the product is renamed FixCV, brand only, PR #42, `cf54c71`) was released 2026-10-28 (run 40608951576).
 Before it, **`domain-fixcv-app`** (production moves to `fixcv.app`, config only, ADR-0038, PR #40,
 `8468b5f`) was released 2026-10-27 (run 40591221234). Before that, **`web-design-refresh`** (a frontend-only reskin plus the static `/welcome` page,

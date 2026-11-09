@@ -974,7 +974,8 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >
 > - **`credits-and-demand-test`** (slice **5.2**, Phase 5's second; approved 2026-11-07 as written, every
 >   OQ on its recommendation; implemented 2026-11-07 to 2026-11-09, T1–T40 on
->   `feature/credits-and-demand-test`; **verified 2026-11-09 (round 2), not yet released**) — an account spends **one
+>   `feature/credits-and-demand-test`; verified 2026-11-09 (round 2); **released 2026-11-09**; PR #47,
+>   `b45db12`, deploy run 42698144865, migration `9d2cb5b8ec5f` applied 21:02:56Z, `/health/ready` green) — an account spends **one
 >   credit per tailoring run** (cover letter and before/after score included; edits and exports free), a
 >   failed run gives it back, every account gets **one free credit** (existing accounts by backfill), and
 >   **guest tailoring and guest export close**: `POST /api/tailoring-runs` and every route in
