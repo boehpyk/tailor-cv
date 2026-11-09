@@ -7429,6 +7429,39 @@ nothing by morning. A number with no identity can outlive the purge without brea
   range 0, $0.033 in all. Draft 09 is missing because its tailoring timed out in `make eval` (1 in 10),
   a pre-existing latency problem, not this slice.
 
+## The verify round: "paid for" is not "bounded"
+
+The plan said the before/after comparison needed no rate limit: *the credit paid for it*. It sounds
+airtight. You can't compare a run you didn't pay for, so the credit caps the cost. The reviewer pulled
+on one thread and the whole sweater came off.
+
+A credit buys a **run**. It doesn't buy a number of **attempts**. Two holes:
+
+- **Fire ten requests at once.** Each one checks "is a score stored?", sees no, and calls Gemini. The
+  database keeps the first answer and politely throws nine away, after we've paid for all ten.
+- **Fail on purpose.** A failed score stores nothing, so the next request is a fresh miss. Forever.
+
+And the damage isn't to the attacker's wallet but to everyone else's day. 5.1's daily spend cap is
+*shared*: $2 a day across every user and guest. One script with one paid run could spend it by lunch,
+after which every visitor's free fit score answers "Scoring is busy" until midnight UTC. A cap that
+protects the bill but lets one user switch the product off for everyone else is a fuse with no
+breaker per room.
+
+The fix was boring on purpose: the Redis limiter that already guarded 5.1's per-IP route, keyed this
+time on *(user, run, side)*, 3 per hour, failing **closed** because the cost is money. Two small
+decisions are worth a second look:
+
+- **The limiter runs first, before "is this even your run?".** Normally you'd say a rate limiter
+  shouldn't leak whether something exists. Here it can't: the bucket is keyed on *your* user id, so a
+  429 tells you only about your own behaviour. A stranger who knows your run id burns their own
+  budget, not yours (and there's a test for exactly that).
+- **The key is `user_id.value`, not `user_id`.** The first version formatted the dataclass, so the Redis
+  key read `UserId(value=UUID('…'))`. That works until someone renames a field and silently resets every
+  bucket. A key is an external format: build it from the raw value, like every other limiter here.
+
+The lesson generalizes beyond credits: **"someone paid" answers *who may*, never *how often*.** Any
+route that spends money on a vendor needs its own limiter, even behind a paywall.
+
 ## What a good engineer takes from this one
 
 Money code is where "it works on my machine" goes to die, because the bugs are all about **two things
@@ -7444,7 +7477,7 @@ rather than the record bent to match the plan.
 
 ## What's next
 
-`/verify`, then the release, which brings a migration that backfills a credit for every existing
+`/verify` passed in round 2 (above); next is the release, which brings a migration that backfills a credit for every existing
 account and a deploy window where the old API can briefly create uncharged runs (they fail free, by
 design). A short list waits for the owner: a constitution line about per-session tailoring limits that
 no longer has a session to limit, the verdict wording (*above / below* instead of *higher / lower*,

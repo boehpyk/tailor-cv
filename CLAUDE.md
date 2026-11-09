@@ -20,8 +20,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-**Slice 5.2 `credits-and-demand-test` is implemented (T1–T40) on `feature/credits-and-demand-test`,
-not yet verified or released** (ADR-0042/0043, migration `9d2cb5b8ec5f`; HISTORY.md). Twenty-three slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, `__Host-tc_guest`,
+**Slice 5.2 `credits-and-demand-test` is implemented and verified (2026-11-09, round 2) on
+`feature/credits-and-demand-test`, not yet released** (ADR-0042/0043, migration `9d2cb5b8ec5f`; HISTORY.md). Twenty-three slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, `__Host-tc_guest`,
 `web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is **`fit-score`** (slice 5.1, a free
 Gemini fit score, one additive migration, PR #45, `468b127`), released 2026-11-05 (run 42106143344).
 Before it, **`brand-fixcv`** (the product is renamed FixCV, brand only, PR #42, `cf54c71`) was released 2026-10-28 (run 40608951576).
@@ -443,6 +443,7 @@ a hurry. Constitution §8 applies to every slice:
   login would file a stranger's CV in this account, kept until deleted.
 - **A demand counter is a number per UTC day and name, never an id** (ADR-0043): incremented on the
   caller's session, committed by the fact's own transaction, never by the counter.
+- **A credit bounds runs, not attempts** (5.2 /verify): a paid route that calls a vendor still needs its own limiter. The comparison spends 3/hour per (user, run, side), fail-closed, or one account drains the shared fit-score cap for everyone.
 - **A fit score's gaps are CV-derived PII** (5.1, ADR-0040): never logged; deleted by the purge, erasure, deleting its CV, and deleting a history entry that takes its posting.
 
 ## Infrastructure footguns (baked-in guards)

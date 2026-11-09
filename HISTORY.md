@@ -974,7 +974,7 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >
 > - **`credits-and-demand-test`** (slice **5.2**, Phase 5's second; approved 2026-11-07 as written, every
 >   OQ on its recommendation; implemented 2026-11-07 to 2026-11-09, T1–T40 on
->   `feature/credits-and-demand-test`; **not yet verified or released**) — an account spends **one
+>   `feature/credits-and-demand-test`; **verified 2026-11-09 (round 2), not yet released**) — an account spends **one
 >   credit per tailoring run** (cover letter and before/after score included; edits and exports free), a
 >   failed run gives it back, every account gets **one free credit** (existing accounts by backfill), and
 >   **guest tailoring and guest export close**: `POST /api/tailoring-runs` and every route in
@@ -1050,6 +1050,28 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   full runs under load (not weakened); `GET /api/me/credits` answers 500 if a user's account row is
 >   missing (no translation); the
 >   `not_queued` path publishes the run's events before the commit.
+>   **`/verify` (T42), 2026-11-09: PASS in round 2.** `make check` green at round 1 (6264 pytest, 1899
+>   vitest) and at `5e2781f` (6277, 1900); every RED carries an assertion failure and no GREEN edits
+>   its test. **Round 1, NEEDS CHANGES, one MAJOR:** the comparison `POST` had no limiter ("bounded by
+>   credits"), but a credit bounds runs, not attempts: parallel misses all call Gemini and a failure
+>   stores nothing, so one account could script requests until the shared $2/day fit-score cap was
+>   spent, and every guest's free score answered 503 until the next UTC day. **Owner: a per-run
+>   limit.** AC-19 amended + new row S-11: every comparison `POST` first spends one of
+>   `FIT_SCORE_COMPARISON_RATE_LIMIT_PER_RUN_PER_HOUR` (default 3) keyed on (user, run, side) in the
+>   existing fail-closed Redis limiter (namespace `scoring:compare`); 429 `rate_limited` over it, 503
+>   `rate_limit_unavailable` without Redis. Hourly because the limiter's window is (worst case 144
+>   calls a day per run, about 6% of the cap); first in the error order because the key is the
+>   caller's, so a stored hit spends one too (the UI reads stored scores by `GET`). RED `ae179d2` (10
+>   failed on assertions) → GREEN `675d04e` (5.1's 429/503 body is now one `spend_limit`), key on the
+>   bare UUID `5e2781f`. **MINORs fixed:** a missing account is a named 500 `credit_account_missing`
+>   (`46c9de1`); the port and repository docstrings say a refund conflict rolls back the caller's
+>   transaction and that the API refunds too (`38b08cc`); `not_queued` publishes after its commit again
+>   through a request-scoped `DeferredEventPublisher` (`ba4ae3c`, mutation-checked); the web client
+>   re-reads credits on 503 `queue_unavailable` (`fa80951`). **Left open (MINOR):** the
+>   `credit_account_missing` test has no recorded red and covers only `GET /api/me/credits`;
+>   `record_not_queued`'s `release()` sits outside its `try`. **Untested rows:** F-17 (erasure vs a
+>   worker refund), F-29 (stale bundle). The 15 s end-to-end budget was not re-measured; the slice's
+>   addition (+10 ms p95) was.
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
