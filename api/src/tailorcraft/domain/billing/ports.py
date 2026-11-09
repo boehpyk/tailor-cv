@@ -37,5 +37,9 @@ class CreditAccountRepository(Protocol):
         ...
 
     async def save(self, account: CreditAccount) -> None:
-        """Insert `pending_entries()`, update the account row, then `mark_entries_saved()`."""
+        """Insert `pending_entries()`, update the account row, then `mark_entries_saved()`.
+
+        **May roll back the caller's whole transaction.** A refund for a run already refunded (F-14)
+        rolls the transaction back, then raises `RunAlreadyRefunded`: everything else the caller
+        wrote in it is gone, and every loaded instance is expired, so re-read by id afterwards."""
         ...

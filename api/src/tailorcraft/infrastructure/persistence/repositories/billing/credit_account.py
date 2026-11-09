@@ -110,8 +110,10 @@ class SqlAlchemyCreditAccountRepository:
         entry) would write it, outside any SAVEPOINT, and fail on its version. The rollback discards
         both, which is what the worker does for any failed save (T23); it also expires every loaded
         instance, which the sweep survives because it re-reads each run by id. Only refunds can
-        reach this index, and only the worker refunds, so no request transaction is ever rolled back
-        here. Any other refusal propagates untranslated.
+        reach this index. The worker refunds, and so does `RecordRunNotQueued`, in the API's second
+        transaction (G-14): there the rollback takes that transaction's run update and count too,
+        which `record_not_queued`'s `except` already treats as "the run stays `queued`". Any other
+        refusal propagates untranslated.
         """
         pending = account.pending_entries()
         # Read before the flush: a failed flush expires what the session holds.
