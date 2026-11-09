@@ -20,6 +20,7 @@ from tailorcraft.application.billing.choose_payment_notice import ChoosePaymentN
 from tailorcraft.application.billing.get_credits import GetCreditsQuery
 from tailorcraft.application.billing.record_pack_click import RecordPackClickCommand
 from tailorcraft.domain.billing.credit_account import CreditAccount
+from tailorcraft.domain.billing.errors import CreditAccountNotFound
 from tailorcraft.domain.billing.value_objects import Pack
 from tailorcraft.infrastructure.api.deps import (
     ChoosePaymentNoticeDep,
@@ -29,6 +30,7 @@ from tailorcraft.infrastructure.api.deps import (
     RequireUserDep,
     SessionDep,
 )
+from tailorcraft.infrastructure.api.errors import domain_error_to_http_exception
 from tailorcraft.infrastructure.api.routers._me_responses import (
     NOT_SIGNED_IN,
     SERVICE_UNAVAILABLE,
@@ -108,6 +110,10 @@ async def read_my_credits(
     _no_store(response)
     try:
         account = await get_credits(GetCreditsQuery(user_id=user_id))
+    except CreditAccountNotFound as exc:
+        refused = domain_error_to_http_exception(exc)
+        refused.headers = {"Cache-Control": "no-store"}
+        raise refused from None
     except SQLAlchemyError as exc:
         raise _unavailable(exc) from None
     return _to_response(account)

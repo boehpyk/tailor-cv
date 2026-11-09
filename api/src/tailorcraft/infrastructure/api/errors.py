@@ -20,9 +20,10 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Final, assert_never
 
+import structlog
 from fastapi import HTTPException, status
 
-from tailorcraft.domain.billing.errors import NoCreditsLeft
+from tailorcraft.domain.billing.errors import CreditAccountNotFound, NoCreditsLeft
 from tailorcraft.domain.export.errors import (
     DocumentRenderFailed,
     DocumentRenderTimedOut,
@@ -125,6 +126,8 @@ from tailorcraft.domain.tracking.errors import (
     TrackedApplicationNotFound,
     TrackedApplicationVersionConflict,
 )
+
+_log = structlog.get_logger(__name__)
 
 # Shared by `deps.py::require_guest_session` (which never reaches a use case at all — it raises
 # straight from a missing/unknown cookie) and this module's own mapping for a `GuestSessionExpired`/
@@ -458,6 +461,7 @@ def domain_error_to_http_exception(exc: DomainError) -> HTTPException:
     if isinstance(
         exc,
         NoCreditsLeft
+        | CreditAccountNotFound
         | AccountRequired
         | TailoringRunNotSucceeded
         | ComparisonUnavailable
@@ -786,6 +790,17 @@ def _credits_error_to_http(exc: DomainError) -> HTTPException:
         return HTTPException(
             status.HTTP_409_CONFLICT,
             detail={"code": "no_credits", "message": "You have no credits left."},
+        )
+    if isinstance(exc, CreditAccountNotFound):
+        # Eager opening means this should never happen (AC-2): a named 500, so a missing row is
+        # findable rather than a bare one. The user id only.
+        _log.error("credits.account_missing", user_id=str(exc.user_id.value))
+        return HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "credit_account_missing",
+                "message": "Your credits could not be found. Please contact support.",
+            },
         )
     if isinstance(exc, AccountRequired):
         return account_required_exception()

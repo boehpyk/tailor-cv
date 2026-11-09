@@ -29,6 +29,7 @@ from httpx import AsyncClient, Response
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from tailorcraft.infrastructure.settings import Settings
 from tests.api.account_mail_support import install_recording_queue
@@ -278,6 +279,32 @@ async def test_f18_the_database_down_is_503_service_unavailable(
 
     assert response.status_code == 503, response.text
     assert error_code(response) == "service_unavailable"
+
+
+async def test_no_credit_account_is_a_named_500_with_no_store_logging_the_user_id_only(
+    client: AsyncClient, settings: Settings, session: AsyncSession
+) -> None:
+    """Eager opening makes this unreachable in practice (AC-2); if it happens, it is findable."""
+    account = await register(client, settings)
+    await session.execute(
+        text("DELETE FROM billing_credit_account WHERE user_id = :u"), {"u": account.user_id.value}
+    )
+    await session.commit()
+
+    with capture_logs() as logs:
+        response = await client.get(ME_CREDITS, headers=account.headers)
+
+    assert response.status_code == 500, response.text
+    assert error_code(response) == "credit_account_missing"
+    no_store(response)
+    missing = [line for line in logs if line["event"] == "credits.account_missing"]
+    assert missing == [
+        {
+            "event": "credits.account_missing",
+            "user_id": str(account.user_id.value),
+            "log_level": "error",
+        }
+    ]
 
 
 # ------------------------------------------------------------------ POST /pack-clicks (AC-25)
