@@ -60,6 +60,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 // --- Fixtures ----------------------------------------------------------------------------------
@@ -196,6 +197,23 @@ describe('the account workspace and credits (AC-33)', () => {
     await userEvent.setup().click(await tailorButton());
 
     // The re-read says balance 2: the server's own word wins over the earlier refusal.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('heading', { name: OUT_OF_CREDITS_HEADING }),
+      ).not.toBeInTheDocument();
+    });
+    expect(await tailorButton()).toBeEnabled();
+  });
+
+  it('a re-read in the same millisecond as the click still ends the swap', async () => {
+    // CI ran the click, the 409 and the re-read inside one millisecond: a strict `>` against
+    // `submittedAt` never counted that read, and the swap held forever. Freeze the clock to pin it.
+    vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    accountWorkspace(refusedWorld(credits(2)));
+    renderWithRouter('/', { queryClient: createAppQueryClient() });
+
+    await userEvent.setup().click(await tailorButton());
+
     await waitFor(() => {
       expect(
         screen.queryByRole('heading', { name: OUT_OF_CREDITS_HEADING }),

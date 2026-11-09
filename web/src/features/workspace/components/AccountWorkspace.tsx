@@ -135,7 +135,8 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
   // `no_credits` and no read has answered since. A failed or loading read swaps nothing: the
   // server decides, so Tailor stays enabled. Derived during render; nothing is stored.
   const refusedNoCredits = rejection instanceof ApiError && rejection.code === 'no_credits';
-  const readSinceRefusal = credits.data !== undefined && credits.dataUpdatedAt > create.submittedAt;
+  const readSinceRefusal =
+    credits.data !== undefined && credits.dataUpdatedAt >= create.submittedAt;
   const outOfCredits =
     refusedNoCredits && !readSinceRefusal ? true : credits.data?.out_of_credits === true;
 
