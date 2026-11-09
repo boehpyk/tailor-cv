@@ -117,7 +117,7 @@ async def score_my_tailoring_run(
     await spend_limit(
         rate_limiter,
         "user",
-        f"{user_id}:{tailoring_run_id}:{side.value}",
+        f"{user_id.value}:{tailoring_run_id}:{side.value}",
         settings.fit_score_comparison_rate_limit_per_run_per_hour,
     )
     try:
