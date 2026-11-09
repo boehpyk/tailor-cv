@@ -358,6 +358,127 @@ async def test_ac19_a_side_ignores_the_owner_limit_and_counts_no_fit_score(
     assert await counter_total(session, "fit_scores") == before
 
 
+# The per-(user, run, side) comparison limiter (amended AC-19, S-11). The setting does not exist yet
+# in RED, so the tests drive its default, 3 (spec: FIT_SCORE_COMPARISON_RATE_LIMIT_PER_RUN_PER_HOUR).
+COMPARISON_LIMIT = 3
+
+
+async def spend_budget(client: AsyncClient, r: Rig, side: str, run_id: object = None) -> None:
+    """Three hits that all pass the limiter (any answer but 429 spends one)."""
+    for _ in range(COMPARISON_LIMIT):
+        assert (await post(client, r, side, run_id)).status_code in (200, 201)
+
+
+@pytest.mark.parametrize("side", SIDES)
+async def test_s11_the_4th_post_per_user_run_and_side_is_429_with_retry_after_and_no_work(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings, side: str
+) -> None:
+    from tests.api.test_fit_scores import ledger_of
+
+    scorer = install(app)
+    ledger = ledger_of(app)
+    r = await rig(client, session, settings)
+    await spend_budget(client, r, side)
+    calls, reservations = len(scorer.calls), len(ledger.reservations)
+    rows = await stored_rows(session, r.account.user_id.value)
+
+    refused = answered(await post(client, r, side), 429, "rate_limited")
+
+    assert int(refused.headers["retry-after"]) > 0
+    assert len(scorer.calls) == calls
+    assert len(ledger.reservations) == reservations
+    assert await stored_rows(session, r.account.user_id.value) == rows
+
+
+async def test_s11_a_stored_hit_spends_one_so_the_4th_is_429_even_when_all_are_stored(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings
+) -> None:
+    install(app)
+    r = await rig(client, session, settings)
+    answered(await post(client, r, "before"), 201)
+    answered(await post(client, r, "before"), 200)
+    answered(await post(client, r, "before"), 200)
+
+    answered(await post(client, r, "before"), 429, "rate_limited")
+
+
+async def test_s11_sides_are_counted_separately(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings
+) -> None:
+    install(app)
+    r = await rig(client, session, settings)
+    await spend_budget(client, r, "before")
+
+    answered(await post(client, r, "before"), 429, "rate_limited")
+    assert (await post(client, r, "after")).status_code in (200, 201)
+
+
+async def test_s11_runs_are_counted_separately(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings
+) -> None:
+    install(app)
+    r = await rig(client, session, settings)
+    second = await seed_entry(
+        session,
+        settings,
+        r.account.owner,
+        at=SystemClock().now() - timedelta(minutes=8),
+        ready_formats=(),
+    )
+    await spend_budget(client, r, "before")
+
+    answered(await post(client, r, "before"), 429, "rate_limited")
+    assert (await post(client, r, "before", second.run_id.value)).status_code in (200, 201)
+
+
+async def test_s11_another_user_on_the_same_run_id_does_not_spend_the_owners_budget(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings
+) -> None:
+    install(app)
+    r = await rig(client, session, settings)
+    stranger = Rig(await register(client, settings), r.entry)
+    answered(await post(client, r, "before"), 201)
+    for _ in range(COMPARISON_LIMIT):
+        answered(await post(client, stranger, "before"), 404)
+    # The stranger's own key is spent, which is not the owner's.
+    answered(await post(client, stranger, "before"), 429, "rate_limited")
+
+    answered(await post(client, r, "before"), 200)
+    answered(await post(client, r, "before"), 200)
+
+
+@pytest.mark.parametrize("side", SIDES)
+async def test_s11_the_limiter_comes_before_ownership_status_and_the_stored_hit(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings, side: str
+) -> None:
+    install(app)
+    r = await rig(client, session, settings)
+    missing = uuid4()
+    for _ in range(COMPARISON_LIMIT):
+        answered(await post(client, r, side, missing), 404)
+
+    # A nonexistent run is a 404 until the budget is spent, then 429: the key is the caller's own.
+    answered(await post(client, r, side, missing), 429, "rate_limited")
+
+
+@pytest.mark.parametrize("side", SIDES)
+async def test_s11_redis_down_is_503_rate_limit_unavailable_with_no_call_or_reservation(
+    client: AsyncClient, app: FastAPI, session: AsyncSession, settings: Settings, side: str
+) -> None:
+    from tests.api.test_fit_scores import ledger_of
+
+    scorer = install(app)
+    ledger = ledger_of(app)
+    r = await rig(client, session, settings)
+    override_settings(app, settings, redis_url="redis://127.0.0.1:1/0")
+
+    answered(await post(client, r, side), 503, "rate_limit_unavailable")
+
+    assert scorer.calls == []
+    assert ledger.reservations == []
+    assert await stored_rows(session, r.account.user_id.value) == []
+
+
 @pytest.mark.parametrize("side", SIDES)
 async def test_s4_a_full_cap_is_503_scoring_busy_with_no_call_no_row_and_one_busy_count(
     client: AsyncClient,
