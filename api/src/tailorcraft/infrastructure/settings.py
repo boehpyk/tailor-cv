@@ -466,6 +466,8 @@ class Settings(BaseSettings):
     fit_score_max_per_user_per_day: int = Field(default=10, ge=1)
     # New attempts per client IP, guests and users alike. Fails closed: this spends money.
     fit_score_rate_limit_per_ip_per_hour: int = Field(default=10, ge=1)
+    # Comparison POSTs per (user, run, side), stored hits included. Fails closed (5.2, S-11).
+    fit_score_comparison_rate_limit_per_run_per_hour: int = Field(default=3, ge=1)
 
     # -- Tailoring rate limits, caps & queue (slice 1.3) ----------------------
     # This endpoint costs MONEY per call and is open to guests, so its limiter is constructed with

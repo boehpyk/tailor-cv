@@ -58,6 +58,7 @@ from tailorcraft.infrastructure.api.schemas.scoring import (
 from tailorcraft.infrastructure.llm.gemini import qualified_type
 from tailorcraft.infrastructure.rate_limit import (
     RateLimiterUnavailable,
+    RateLimitScope,
     RedisFixedWindowRateLimiter,
     client_ip,
 )
@@ -159,17 +160,14 @@ async def commit_busy_count(db: AsyncSession, exc: FitScoreSpendCapReached) -> N
         log.error("scoring.busy_count_not_committed", error_type=type(commit_failed).__name__)
 
 
-async def _spend_the_ip_limit(
-    request: Request, settings: Settings, rate_limiter: RedisFixedWindowRateLimiter
+async def spend_limit(
+    rate_limiter: RedisFixedWindowRateLimiter, scope: RateLimitScope, identifier: str, limit: int
 ) -> None:
-    """Fails closed (S-12). The address is computed in the call and kept in no local, so no frame or
-    log line can pair it with a score. `from None` for the same reason."""
+    """One hit on a fail-closed scoring limiter: 429 `rate_limited` over `limit`, 503
+    `rate_limit_unavailable` when Redis is down (S-12; 5.2's S-11). `from None`: the identifier may be
+    a client IP."""
     try:
-        decision = await rate_limiter.check(
-            "ip",
-            client_ip(request, settings.trusted_proxy_hops),
-            settings.fit_score_rate_limit_per_ip_per_hour,
-        )
+        decision = await rate_limiter.check(scope, identifier, limit)
     except RateLimiterUnavailable:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -180,7 +178,7 @@ async def _spend_the_ip_limit(
             headers={"Cache-Control": "no-store"},
         ) from None
     if not decision.allowed:
-        log.info("rate_limit.exceeded", scope="ip", namespace=rate_limiter.namespace)
+        log.info("rate_limit.exceeded", scope=scope, namespace=rate_limiter.namespace)
         retry_after = decision.retry_after_seconds
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -190,6 +188,19 @@ async def _spend_the_ip_limit(
             },
             headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
         )
+
+
+async def _spend_the_ip_limit(
+    request: Request, settings: Settings, rate_limiter: RedisFixedWindowRateLimiter
+) -> None:
+    """Fails closed (S-12). The address is computed in the call and kept in no local of this
+    frame, so no log line here can pair it with a score."""
+    await spend_limit(
+        rate_limiter,
+        "ip",
+        client_ip(request, settings.trusted_proxy_hops),
+        settings.fit_score_rate_limit_per_ip_per_hour,
+    )
 
 
 async def request_fit_score(

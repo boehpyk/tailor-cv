@@ -4,11 +4,12 @@ Built red-first (sdlc.md §2): **SKELETON** (T27, handlers raising `NotImplement
 (T28, `qa`), **GREEN** (T29).
 
 Bearer-only, not a transfer route. Inline through 5.1's machinery: two sides, two requests, fired in
-parallel by the client (one `AsyncSession` cannot run two operations at once). No fit-score limiter:
-the comparison is bounded by credits, and the ledger's cap applies. Every response carries
-`Cache-Control: no-store`.
+parallel by the client (one `AsyncSession` cannot run two operations at once). The ledger's cap
+applies, and a fail-closed limiter per (user, run, side) guards it from one account (amended AC-19,
+S-11). Every response carries `Cache-Control: no-store`.
 
-Error order on the `POST`: ownership (404) -> status (409 `tailoring_run_not_succeeded`) -> CV present
+Error order on the `POST`: the limiter (429 `rate_limited`, 503 `rate_limit_unavailable`; first, and
+keyed on the caller, so a 429 reveals nothing about the run) -> ownership (404) -> status (409 `tailoring_run_not_succeeded`) -> CV present
 (409 `base_cv_deleted`) -> stored hit (200) -> cap (503 `scoring_busy`) -> the call.
 
 Its own router rather than routes in `me_tailoring_runs.py`: the prefix is shared, the context is
@@ -34,14 +35,17 @@ from tailorcraft.domain.scoring.value_objects import ComparisonSide
 from tailorcraft.domain.shared.errors import DomainError
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 from tailorcraft.infrastructure.api.deps import (
+    FitScoreComparisonRateLimiterDep,
     GetTailoringRunFitScoresDep,
     RequireUserDep,
     ScoreTailoringRunDep,
     SessionDep,
+    SettingsDep,
 )
 from tailorcraft.infrastructure.api.routers._fit_score_handlers import (
     commit_busy_count,
     refusal,
+    spend_limit,
     to_response,
     unavailable,
 )
@@ -82,7 +86,10 @@ _POST_RESPONSES: dict[int | str, dict[str, Any]] = {
     **RATE_LIMITED,
     status.HTTP_503_SERVICE_UNAVAILABLE: {
         "model": ErrorResponse,
-        "description": "scoring_busy | scoring_failed | service_unavailable.",
+        "description": (
+            "scoring_busy | scoring_failed | rate_limit_unavailable (the limiter fails closed) | "
+            "service_unavailable."
+        ),
     },
 }
 
@@ -100,11 +107,19 @@ async def score_my_tailoring_run(
     user_id: RequireUserDep,
     score_run: ScoreTailoringRunDep,
     db: SessionDep,
+    settings: SettingsDep,
+    rate_limiter: FitScoreComparisonRateLimiterDep,
 ) -> FitScoreResponse:
     """Score one side of the run: 201 for a new score, 200 for the stored one. A full cap's
     `fit_scores_busy` count is committed before the 503 (plan §0.9). `from None` throughout: these
     frames hold the CV and the draft."""
     no_store(response)
+    await spend_limit(
+        rate_limiter,
+        "user",
+        f"{user_id}:{tailoring_run_id}:{side.value}",
+        settings.fit_score_comparison_rate_limit_per_run_per_hour,
+    )
     try:
         outcome = await score_run(
             ScoreTailoringRunCommand(

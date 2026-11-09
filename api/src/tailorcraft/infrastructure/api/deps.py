@@ -846,6 +846,17 @@ def get_fit_score_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
 FitScoreRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_fit_score_rate_limiter)]
 
 
+def get_fit_score_comparison_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Per (user, run, side) on the comparison `POST` (5.2, S-11). **Fails closed**: it guards the
+    shared daily spend cap from one account."""
+    return RedisFixedWindowRateLimiter(redis, namespace="scoring:compare", fail_open=False)
+
+
+FitScoreComparisonRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_fit_score_comparison_rate_limiter)
+]
+
+
 def get_resolve_scoring_pair(
     get_base_cv: GetBaseCvDep, get_job_posting: GetJobPostingDep
 ) -> ResolveScoringPair:
