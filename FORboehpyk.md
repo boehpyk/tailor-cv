@@ -7477,9 +7477,9 @@ rather than the record bent to match the plan.
 
 ## What's next
 
-`/verify` passed in round 2 (above); next is the release, which brings a migration that backfills a credit for every existing
-account and a deploy window where the old API can briefly create uncharged runs (they fail free, by
-design). A short list waits for the owner: a constitution line about per-session tailoring limits that
+`/verify` passed in round 2 (above), and the slice shipped on 2026-11-09 (PR #47). Its migration backfilled a credit for every existing
+account in under a second, and the deploy window where the old API could briefly create uncharged
+runs (they fail free, by design) lasted seconds: the smoke check found `/health/ready` green 4 s after it started. A short list waits for the owner: a constitution line about per-session tailoring limits that
 no longer has a session to limit, the verdict wording (*above / below* instead of *higher / lower*,
 because 5.1's no-gain scan bans "higher"), a guest run page that shows two offers at once, and tailoring
 output that arrives without line breaks, which predates this slice.
