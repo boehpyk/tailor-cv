@@ -66,7 +66,12 @@ export function useCreateTailoringRun(): ReturnType<
       return queryClient.invalidateQueries({ queryKey: map.runListKey });
     },
     onError: (error) => {
-      if (creditsKey !== null && error instanceof ApiError && error.code === 'no_credits') {
+      // `queue_unavailable` is the one refusal that charged: its refund may not have committed yet.
+      if (
+        creditsKey !== null &&
+        error instanceof ApiError &&
+        (error.code === 'no_credits' || error.code === 'queue_unavailable')
+      ) {
         void queryClient.invalidateQueries({ queryKey: creditsKey });
       }
     },

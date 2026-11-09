@@ -151,6 +151,18 @@ describe('credits invalidation', () => {
     expect(queryClient.getQueryState(creditsQueryKey(USER_A.id))?.isInvalidated).toBe(true);
   });
 
+  it('a 503 queue_unavailable on the launch invalidates the credits read', async () => {
+    stubAccountFetch({ 'POST /api/me/tailoring-runs': status(503, 'queue_unavailable') });
+    queryClient.setQueryData(creditsQueryKey(USER_A.id), CREDITS);
+    const { result } = renderHook(() => useCreateTailoringRun(), { wrapper });
+    await act(async () => {
+      await result.current
+        .mutateAsync({ base_cv_id: 'cv', job_posting_id: 'jp' })
+        .catch(() => undefined);
+    });
+    expect(queryClient.getQueryState(creditsQueryKey(USER_A.id))?.isInvalidated).toBe(true);
+  });
+
   it('a 409 for any other reason leaves the credits read alone', async () => {
     stubAccountFetch({ 'POST /api/me/tailoring-runs': status(409, 'run_in_progress') });
     queryClient.setQueryData(creditsQueryKey(USER_A.id), CREDITS);
