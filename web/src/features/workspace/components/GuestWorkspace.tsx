@@ -1,33 +1,20 @@
-import { useIsMutating } from '@tanstack/react-query';
-import { useNavigate } from 'react-router';
-
+import { GuestTailorOffer } from '@/features/billing/components/GuestTailorOffer';
 import { BaseCvUploadPanel } from '@/features/intake/components/BaseCvUploadPanel';
 import { useBaseCvs } from '@/features/intake/hooks/useBaseCvs';
-import { uploadBaseCvMutationKey } from '@/features/intake/hooks/useUploadBaseCv';
 import { latestBaseCv } from '@/features/intake/latestBaseCv';
 import { JobPostingPanel } from '@/features/posting/components/JobPostingPanel';
-import { createJobPostingMutationKey } from '@/features/posting/hooks/useCreateJobPosting';
 import { useJobPostings } from '@/features/posting/hooks/useJobPostings';
 import { latestPosting } from '@/features/posting/latestPosting';
-import { laterDeadline } from '@/features/retry/hold';
-import { useErrorHold, useRunHoldDeadline } from '@/features/retry/useHold';
-import { activeTailoringRunId, rejectionMessage } from '@/features/tailoring/apiErrorCopy';
-import { TailoringRejectionNotice } from '@/features/tailoring/components/TailoringRejectionNotice';
-import { TailorLaunch } from '@/features/tailoring/components/TailorLaunch';
-import { useCreateTailoringRun } from '@/features/tailoring/hooks/useCreateTailoringRun';
 import { useTailoringRuns } from '@/features/tailoring/hooks/useTailoringRuns';
 import { latestTailoringRun } from '@/features/tailoring/latestTailoringRun';
 import { FitScorePanel } from '@/features/scoring/components/FitScorePanel';
 import { FIT_SCORE_HEADING } from '@/features/scoring/fitScoreCopy';
 import { checkBaseCv, checkJobPosting, launchInput } from '@/features/tailoring/launchReadiness';
-import { isActiveTailoringRunStatus } from '@/features/tailoring/types';
 
 import { InputTabs } from './InputTabs';
 import { LatestRunCard } from './LatestRunCard';
-import { ProgressStepper } from './ProgressStepper';
 import { useWorkspaceTab } from '../hooks/useWorkspaceTab';
-import { deriveProgress } from '../progress';
-import { BASE_CV_INTRO } from '../workspaceCopy';
+import { BASE_CV_INTRO, OPERATOR_ACCESS_NOTE } from '../workspaceCopy';
 
 import type { WorkspaceTab } from '../hooks/useWorkspaceTab';
 import type { BaseCvCheck } from '@/features/tailoring/launchReadiness';
@@ -97,6 +84,11 @@ function Shell({
           {FIT_SCORE_HEADING}
         </h2>
         {fitScore}
+        {/* Slice 5.2 (AC-36): a guest scores for free and is offered an account for the tailoring.
+            Static, and a sibling of the panel, so the panel keeps its place as the data lands. */}
+        <div className="mt-6">
+          <GuestTailorOffer placement="workspace" />
+        </div>
       </section>
       <section aria-labelledby="tailoring-heading" className="mb-10">
         <h2 id="tailoring-heading" className={`mb-4 ${EYEBROW_CLASS}`}>
@@ -114,24 +106,18 @@ function Shell({
  * itself, still true.
  *
  * A **container**. It owns the three list queries (`useBaseCvs`, `useJobPostings`,
- * `useTailoringRuns`), reads the two panel mutations' in-flight state from the mutation cache,
- * owns the launch mutation, and navigates to `/runs/{id}` when a run is created (AC-25).
+ * `useTailoringRuns`).
+ *
+ * **No launch since slice 5.2** (AC-15, AC-36): a guest scores for free and is offered an account
+ * (`GuestTailorOffer`) for the tailoring. The latest-run card stays for a run made before release.
  *
  * **State.** Everything from the API stays in TanStack Query — the same query keys the panels use,
  * so one cache and one request per list. Which tab is open is the URL (`useWorkspaceTab`). There
- * is no `useState` here at all: the one piece of local state 1.3's `TailorPanel` kept, the
- * "chosen" run id, is now the route — a created run is *navigated to*, and a 409's active run is
- * navigated to as well. Nothing to remember means nothing to get out of sync.
+ * is no `useState` here at all.
  *
- * **The panels' pending flags** come from `useIsMutating({ mutationKey })`: each panel owns its
- * mutation and keeps its internals, and the workspace observes the shared mutation cache instead
- * of threading an `onPendingChange` callback down and a boolean back up. The flag is a fact about
- * a request on the wire, which the cache already knows.
- *
- * **Stage 3 is not live here.** The stepper's `run` is `none`: the workspace does not poll the
- * run — the run page does, and the latest-run card is the way there. A stage-3 body drawn from the
- * list's snapshot would show a clock that never ticks over a status that never changes, which is
- * worse than a card that says *In progress → View*.
+ * **No progress stepper** (slice 5.2): it drew *Extracting CV → Fetching job → Tailoring* for a
+ * run a guest can no longer start. The workspace does not poll a run either — the run page does,
+ * and the latest-run card (*In progress → View*) is the way there.
  *
  * **Loading** keeps the three landmarks and shows no tabs (`tab={null}`): the derived default needs
  * the CV list, and a tab strip that switched its own selection when the data landed would read as
@@ -142,22 +128,10 @@ export function GuestWorkspace(): React.JSX.Element {
   const baseCvs = useBaseCvs();
   const jobPostings = useJobPostings();
   const runs = useTailoringRuns();
-  const isUploadingBaseCv = useIsMutating({ mutationKey: uploadBaseCvMutationKey }) > 0;
-  const isSubmittingJobPosting = useIsMutating({ mutationKey: createJobPostingMutationKey }) > 0;
-  const create = useCreateTailoringRun();
-  const navigate = useNavigate();
 
   // Derived before the early returns so the hook order is fixed; `missing` while the list loads.
   const baseCv = checkBaseCv(baseCvs.data === undefined ? null : latestBaseCv(baseCvs.data.items));
   const { tab, setTab } = useWorkspaceTab(hasUsableBaseCv(baseCv));
-  // Slice 3.3: a 429 on the launch, and the provider cooldown after the latest run, each hold
-  // *Tailor again*; the later of the two wins. Derived here, before the early returns.
-  const createHold = useErrorHold(create.error);
-  const runHold = useRunHoldDeadline(
-    runs.data === undefined ? null : latestTailoringRun(runs.data.items),
-  );
-  const holdUntil = laterDeadline(createHold.deadlineMs, runHold);
-
   if (baseCvs.isError || jobPostings.isError || runs.isError) {
     return (
       <p role="alert" className="text-sm font-medium text-danger-600">
@@ -187,32 +161,6 @@ export function GuestWorkspace(): React.JSX.Element {
   const jobPosting = checkJobPosting(latestPosting(jobPostings.data.items));
   const input = launchInput(baseCv, jobPosting);
   const latestRun = latestTailoringRun(runs.data.items);
-  const runInProgress = latestRun !== null && isActiveTailoringRunStatus(latestRun.status);
-  const progress = deriveProgress({
-    baseCv,
-    isUploadingBaseCv,
-    jobPosting,
-    isSubmittingJobPosting,
-    run: { kind: 'none' },
-  });
-
-  function launch(): void {
-    if (input === null) {
-      // Error A. The control is already disabled; this guard makes "no request without both
-      // inputs" true even for a caller that forgets that.
-      return;
-    }
-    create.mutate(input, {
-      onSuccess: (created) => {
-        // The route table sends `/runs/{id}` on to `/runs/{id}/cv`; deciding the default document
-        // is its job, not this page's.
-        void navigate(`/runs/${created.id}`);
-      },
-    });
-  }
-
-  const rejection = create.error;
-  const activeRunId = rejection === null ? null : activeTailoringRunId(rejection);
 
   return (
     <Shell
@@ -224,43 +172,14 @@ export function GuestWorkspace(): React.JSX.Element {
       // its own: only its button sends the `POST`.
       fitScore={<FitScorePanel pair={input} />}
       tailoring={
-        // 2e's progress card: the stepper, the latest run, the launch and its refusal. No summary of
-        // the two inputs here — the tabs above already show them (technical-plan §3).
+        // No progress stepper since slice 5.2: a guest starts no run, so its *Tailoring* stage
+        // would only advertise what a guest cannot do. The latest-run card covers an older run.
         <div className="space-y-6 rounded-2xl border border-slate-200 bg-white p-5 sm:p-7">
-          <ProgressStepper
-            progress={progress}
-            run={{ kind: 'none' }}
-            canStart={input !== null}
-            isStarting={create.isPending}
-            onRetry={launch}
-          />
+          {/* Was TailorLaunch's line (4.x AC-37): a guest's data is still stored, so it is still said. */}
+          <p className="text-sm text-slate-600">{OPERATOR_ACCESS_NOTE}</p>
 
-          <LatestRunCard run={latestRun} />
-
-          <TailorLaunch
-            baseCv={baseCv}
-            jobPosting={jobPosting}
-            hasPreviousRun={latestRun !== null}
-            isStarting={create.isPending}
-            runInProgress={runInProgress}
-            holdUntil={holdUntil}
-            onLaunch={launch}
-          />
-
-          {rejection !== null && (
-            <TailoringRejectionNotice
-              message={rejectionMessage(rejection, createHold.phrase)}
-              onViewActiveRun={
-                activeRunId === null
-                  ? null
-                  : () => {
-                      // Go to the run the 409 named — not the list's newest, which may be an
-                      // older run entirely.
-                      void navigate(`/runs/${activeRunId}`);
-                    }
-              }
-            />
-          )}
+          {/* A run made before slice 5.2 stays readable and editable (AC-17). */}
+          {latestRun !== null && <LatestRunCard run={latestRun} />}
         </div>
       }
     />

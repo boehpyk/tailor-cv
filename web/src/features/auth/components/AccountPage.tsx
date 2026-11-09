@@ -6,6 +6,7 @@ import {
   LOGOUT_LABEL,
   LOGOUT_PENDING_LABEL,
 } from '../authCopy';
+import { CreditsSection } from '@/features/billing/components/CreditsSection';
 import { SavedBaseCvsSection } from '@/features/savedCvs/components/SavedBaseCvsSection';
 import { BOARD_RETENTION_NOTE } from '@/features/tracking/trackingCopy';
 
@@ -64,6 +65,12 @@ export function AccountPage() {
         </button>
       </div>
 
+      {/* Slice 5.2: the balance, the ledger and the packs, once `/me` says whose. */}
+      {currentUser.data !== undefined && (
+        <div className="mt-10">
+          <CreditsSection userId={currentUser.data.id} />
+        </div>
+      )}
       <SavedBaseCvsSection />
       <DeleteAccountSection />
     </section>

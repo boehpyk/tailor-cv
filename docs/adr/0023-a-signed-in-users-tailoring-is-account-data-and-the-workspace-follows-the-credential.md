@@ -197,3 +197,22 @@ card is deleted exactly as before. `tailoring_run` grows no columns, as decision
 Decision 1 ("the workspace follows the credential") holds for every user-facing route. The admin
 content routes (ADR-0034) are the named exception: they name the owner by path, and they create
 nothing — they read, and delete through the user's own use cases.
+
+## Amendment: 2026-11-07, from the plan of slice 5.2 (`credits-and-demand-test`)
+
+**Decision 1's "signed out" half no longer tailors or exports.** From slice 5.2 a guest stops at the
+free fit score, with an offer to register; the guest workspace has no Tailor button. Upload, posting,
+the score, the 24-hour purge and the claim are unchanged, and so is reading and editing a run made
+before release.
+
+- **Decision 2's guest twins answer 403 `account_required`.** The guest `POST /api/tailoring-runs` and
+  every route in the guest export router keep their paths (a cached bundle then gets a 403, not a 405)
+  and refuse before reading a cookie or a body (ADR-0042 decision 9, ADR-0014 amendment (f)). The
+  shared run-request body keeps only its account branch, and the guest export handler bodies are deleted.
+  The guest `GET` and `PUT` on runs stay, and every account twin is unchanged.
+- **A signed-in user's run costs one credit** (ADR-0042), charged with the request and refunded with a
+  failure, in the same transaction. Edits and exports stay free, and an account with no credits can still
+  read, edit and export everything it has made. The run's columns are unchanged: billing names the run
+  by id, as decision 8 asked of every later context.
+- **Decision 6's per-user caps stand.** The guest caps bind nothing new: a guest creates no run or export.
+- **No transfer route is added** and the claim moves no credit: billing rows are user-only.

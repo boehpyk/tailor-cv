@@ -209,21 +209,9 @@ async def _posting(client: AsyncClient, entry: Entry) -> Response:
     )
 
 
-async def _run(client: AsyncClient, entry: Entry) -> Response:
-    return await client.post(
-        "/api/tailoring-runs",
-        json={
-            "base_cv_id": str(entry.cv_id.value),
-            "job_posting_id": str(entry.posting_id.value),
-        },
-    )
-
-
-async def _export(client: AsyncClient, entry: Entry) -> Response:
-    return await client.post(
-        f"/api/tailoring-runs/{entry.run_id.value}/exports",
-        json={"document": "cv", "format": "docx"},
-    )
+# No `_run` or `_export` write: slice 5.2 retires the guest `POST /api/tailoring-runs` and the guest
+# export routes (403 `account_required`), so no guest write inserts a `tailoring_run` or `export_job`
+# row any more and there is no such race left to stage.
 
 
 @pytest.mark.parametrize(
@@ -231,10 +219,8 @@ async def _export(client: AsyncClient, entry: Entry) -> Response:
     [
         (_upload, "intake_base_cv", 1),
         (_posting, "posting_job_posting", 0),
-        (_run, "tailoring_run", 0),
-        (_export, "export_job", 0),
     ],
-    ids=["upload", "posting", "run", "export"],
+    ids=["upload", "posting"],
 )
 async def test_ac17_a_guest_write_waiting_on_the_session_row_is_401_after_the_claim_and_leaves_nothing(
     world: World,

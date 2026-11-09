@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
+from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
 from tailorcraft.application.identity.confirm_registration import ConfirmRegistration
 from tailorcraft.domain.identity.errors import ConfirmationTokenInvalid, EmailAlreadyRegistered
 from tailorcraft.domain.identity.events import UserRegistered
@@ -30,9 +31,11 @@ from tailorcraft.domain.identity.value_objects import (
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     CountingClock,
+    FakeCreditAccountRepository,
     FakePendingRegistrationRepository,
     LoggingEventPublisher,
     LoggingUserRepository,
+    RecordingDailyCounter,
 )
 from tests.integration.identity.structure import constructor_dependency_names, module_references
 
@@ -50,7 +53,14 @@ class _Rig:
         self.users = LoggingUserRepository(self.log)
         self.events = LoggingEventPublisher(self.log)
         self.clock = CountingClock(clock)
-        self.use_case = ConfirmRegistration(self.pending, self.users, self.clock, self.events)
+        self.use_case = ConfirmRegistration(
+            self.pending,
+            self.users,
+            self.clock,
+            self.events,
+            open_account=OpenCreditAccount(FakeCreditAccountRepository(), self.events),
+            counters=RecordingDailyCounter(),
+        )
 
     def seed_issued(self, requested_at: datetime) -> PendingRegistration:
         p = PendingRegistration.request(
@@ -91,7 +101,12 @@ async def test_a_valid_token_registers_the_user_from_the_row_removes_it_and_publ
     assert user.created_at == clock.now()
     assert user.password_updated_at == clock.now()
     assert rig.pending.all() == []
-    assert rig.events.published == [UserRegistered(user_id=user_id, occurred_at=clock.now())]
+    # 5.2: the account's own `CreditAccountOpened` is published beside it (T13 amended this line).
+    assert UserRegistered(user_id=user_id, occurred_at=clock.now()) in rig.events.published
+    assert sorted(type(e).__name__ for e in rig.events.published) == [
+        "CreditAccountOpened",
+        "UserRegistered",
+    ]
 
 
 async def test_the_user_is_inserted_before_the_row_is_removed_and_events_follow_the_writes(
@@ -103,12 +118,12 @@ async def test_the_user_is_inserted_before_the_row_is_removed_and_events_follow_
 
     await rig.use_case(_TOKEN_HASH)
 
-    assert rig.log == [
-        "pending.lock_by_token_hash",
-        "users.add",
-        "pending.remove",
-        "events.publish",
-    ]
+    writes = [entry for entry in rig.log if entry != "events.publish"]
+    assert writes == ["pending.lock_by_token_hash", "users.add", "pending.remove"]
+    # 5.2: the account's events are published too, so "publish" may appear more than once. The rule
+    # that survives is that no publish precedes the user's insert.
+    assert rig.log.index("events.publish") > rig.log.index("users.add")
+    assert rig.log[-1] == "events.publish"
 
 
 async def test_confirming_creates_no_login(clock: FixedClock) -> None:
@@ -121,7 +136,11 @@ async def test_confirming_creates_no_login(clock: FixedClock) -> None:
     await rig.use_case(_TOKEN_HASH)
 
     assert len(rig.users.all()) == 1
-    assert [type(e) for e in rig.events.published] == [UserRegistered]
+    # `CreditAccountOpened` is 5.2's; nothing of a sign-in is published.
+    assert sorted(type(e).__name__ for e in rig.events.published) == [
+        "CreditAccountOpened",
+        "UserRegistered",
+    ]
 
 
 async def test_an_unknown_token_is_refused_as_unknown_and_nothing_is_written(

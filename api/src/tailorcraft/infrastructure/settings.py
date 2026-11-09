@@ -466,6 +466,8 @@ class Settings(BaseSettings):
     fit_score_max_per_user_per_day: int = Field(default=10, ge=1)
     # New attempts per client IP, guests and users alike. Fails closed: this spends money.
     fit_score_rate_limit_per_ip_per_hour: int = Field(default=10, ge=1)
+    # Comparison POSTs per (user, run, side), stored hits included. Fails closed (5.2, S-11).
+    fit_score_comparison_rate_limit_per_run_per_hour: int = Field(default=3, ge=1)
 
     # -- Tailoring rate limits, caps & queue (slice 1.3) ----------------------
     # This endpoint costs MONEY per call and is open to guests, so its limiter is constructed with
@@ -485,9 +487,6 @@ class Settings(BaseSettings):
     # measured (OQ-7). No per-IP scope on purpose — a save is always bound to a session that already
     # owns the run, so a fresh session buys nothing.
     tailoring_revise_rate_limit_per_hour: int = 600
-    # A cross-aggregate cap enforced in `RequestTailoringRun`, not on `TailoringRun` — the rule spans
-    # every run a session owns, which no single run can know.
-    max_tailoring_runs_per_session: int = 20
     # The per-user cap on tailoring runs — the length of a history (slice 2.3, OQ-6). Every run is a
     # paid call already made, so this bounds storage, not spend; the per-principal rate limit bounds
     # spend. Bounded both ways, as `max_saved_base_cvs_per_user` is.
@@ -508,6 +507,12 @@ class Settings(BaseSettings):
     # and the run stays `running`. The sweep is what records it, at most this window plus one beat
     # interval later.
     tailoring_stale_after_seconds: int = 300
+    # How long a run may stay `queued` before the sweep records it `failed` / `not_queued` and refunds
+    # its credit (slice 5.2, plan §0.5): its task was lost. **Must stay above the broker's
+    # `visibility_timeout`** (600 s, `BROKER_VISIBILITY_TIMEOUT_SECONDS` in `tasks/limits.py`), and
+    # `create_celery` refuses to start otherwise, in every environment: a redelivered message gets its
+    # chance before the sweep decides the run.
+    tailoring_queued_lost_after_seconds: int = 1800
     # A named queue from the first slice so 1.5's export tasks can land on a second one without a
     # long render starving a tailoring run. One line now; expensive to retrofit.
     tailoring_queue_name: str = "tailoring"

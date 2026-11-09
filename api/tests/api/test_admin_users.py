@@ -72,6 +72,8 @@ _COUNT_KEYS = {
     "export_jobs",
     "tracked_applications",
     "fit_scores",
+    "credits_left",  # slice 5.2 (AC-32)
+    "credit_entries",
 }
 _ITEM_KEYS = {"id", "email", "role", "created_at", "disabled_at"}
 

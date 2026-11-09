@@ -50,6 +50,7 @@ from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.export.abandon_stale_export_jobs import AbandonStaleExportJobs
 from tailorcraft.application.export.render_export_job import RenderExportJob
 from tailorcraft.application.identity.deliver_password_reset_mail import DeliverPasswordResetMail
@@ -60,6 +61,7 @@ from tailorcraft.application.retention.purge_expired_identity_tokens import (
 )
 from tailorcraft.application.tailoring.abandon_stale_tailoring_runs import AbandonStaleTailoringRuns
 from tailorcraft.application.tailoring.execute_tailoring_run import ExecuteTailoringRun
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.export.export_job import ExportJob
 from tailorcraft.domain.export.ports import ExportJobRepository
 from tailorcraft.domain.export.value_objects import ExportFormat, ExportJobId, LayoutTemplate
@@ -82,6 +84,7 @@ from tailorcraft.infrastructure.identity.token_access import (
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.mail.smtp import SmtpAccountMailer
 from tailorcraft.infrastructure.persistence.database import create_engine, create_session_factory
+from tailorcraft.infrastructure.persistence.demand.daily_counter import SqlAlchemyDailyCounter
 from tailorcraft.infrastructure.persistence.registry import configure_mappings
 from tailorcraft.infrastructure.retention.data_access import (
     CommittingExpiredGuestDataAdapter,
@@ -173,11 +176,24 @@ class CommittingTailoringRunRepository:
         The failure this does *not* contain is a database failure that is not a conflict (G-35): it
         propagates, the sweep raises, the task's error boundary rolls the session back, and the runs
         already committed one-per-save stay committed — the SAVEPOINT changes nothing there.
+
+        **Since slice 5.2 a failed save also rolls back the whole transaction** (plan §0.4), then
+        re-raises. A failure is now written as *mark, refund, count, save*, and the refund and the
+        count sit in the outer transaction, outside the SAVEPOINT. Rolling back only the SAVEPOINT
+        would leave them pending, and the next save's commit (the sweep carries on after a conflict)
+        would commit a refund for a run whose failure never landed. The SAVEPOINT stays for the
+        success path: the flush must not expire the identity map. The rollback does expire every
+        loaded instance, which is why the sweep lists ids and re-reads each run by id rather than
+        holding the loaded batch.
         """
         if run in self._session:
             self._session.expunge(run)
-        async with self._session.begin_nested():
-            await self._inner.save(run)
+        try:
+            async with self._session.begin_nested():
+                await self._inner.save(run)
+        except Exception:
+            await self._session.rollback()
+            raise
         await self._session.commit()
 
     async def get(self, run_id: TailoringRunId) -> TailoringRun:
@@ -192,8 +208,10 @@ class CommittingTailoringRunRepository:
     async def count_for_owner(self, owner: Owner) -> int:
         return await self._inner.count_for_owner(owner)
 
-    async def find_active_for_owner(self, owner: Owner) -> TailoringRun | None:
-        return await self._inner.find_active_for_owner(owner)
+    async def find_active_for_owner(
+        self, owner: Owner, excluding: TailoringRunId | None = None
+    ) -> TailoringRun | None:
+        return await self._inner.find_active_for_owner(owner, excluding)
 
     async def list_stale_running(
         self, started_before: datetime, limit: int
@@ -202,6 +220,12 @@ class CommittingTailoringRunRepository:
         `save`, which commits one abandoned run at a time. A failure part-way through a batch then
         keeps every run already recorded, and the next tick lists only the rest."""
         return await self._inner.list_stale_running(started_before, limit)
+
+    async def list_lost_queued(
+        self, requested_before: datetime, limit: int
+    ) -> Sequence[TailoringRun]:
+        """A read, so no commit: `list_stale_running`'s reason."""
+        return await self._inner.list_lost_queued(requested_before, limit)
 
 
 class CommittingExportJobRepository:
@@ -381,10 +405,12 @@ def _build_use_case(
         SqlAlchemyTailoringRunRepository,
     )
 
+    runs = CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session)
+    events = LoggingEventPublisher()
     return ExecuteTailoringRun(
         # `TailoringRunRepository` -> the committing wrapper. The API binds the bare
         # `SqlAlchemyTailoringRunRepository` for the same port; the difference *is* the boundary.
-        runs=CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session),
+        runs=runs,
         # `BaseCvRepository` and `JobPostingRepository` -> read-only here, so the bare adapters.
         base_cvs=SqlAlchemyBaseCvRepository(session),
         job_postings=SqlAlchemyJobPostingRepository(session),
@@ -397,10 +423,32 @@ def _build_use_case(
         llm=llm if llm is not None else GeminiLlm(settings),
         # `EventPublisherPort` -> `LoggingEventPublisher`, the same binding `deps.py` makes, and the
         # enforcement point for "an event carries no document body" (AC-22).
-        events=LoggingEventPublisher(),
+        events=events,
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007).
         clock=SystemClock(),
         stale_after_seconds=settings.tailoring_stale_after_seconds,
+        # Slice 5.2: the refund and the counters on this task's session, committed by the
+        # committing `runs.save` with the outcome they belong to (plan §0.4).
+        record_failure=_record_failure(runs, events, session),
+        counters=SqlAlchemyDailyCounter(session),
+    )
+
+
+def _record_failure(
+    runs: CommittingTailoringRunRepository, events: LoggingEventPublisher, session: AsyncSession
+) -> RecordRunFailure:
+    """The failure collaborator both tailoring use cases share, on the same `runs`, `events` and
+    session: the refund and the `runs_failed` count are written before `runs.save`, whose commit
+    covers all three (plan §0.4). The bare credit repository: it never commits on its own."""
+    from tailorcraft.infrastructure.persistence.repositories.billing.credit_account import (
+        SqlAlchemyCreditAccountRepository,
+    )
+
+    return RecordRunFailure(
+        runs,
+        RefundCreditForRun(SqlAlchemyCreditAccountRepository(session)),
+        SqlAlchemyDailyCounter(session),
+        events,
     )
 
 
@@ -447,16 +495,15 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         SqlAlchemyTailoringRunRepository,
     )
 
+    runs = CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session)
+    events = LoggingEventPublisher()
     return AbandonStaleTailoringRuns(
         # `TailoringRunRepository` -> the committing wrapper, **one commit per abandoned run**, and
         # both halves of the failure contract depend on it. A database failure part-way through a
         # batch keeps every run already recorded (G-35), so the next tick lists only the rest. And a
         # run another process decided first (G-36) is skipped without taking the batch's earlier
         # writes back with it. One transaction per tick would make one bad row cost the whole batch.
-        runs=CommittingTailoringRunRepository(SqlAlchemyTailoringRunRepository(session), session),
-        # `EventPublisherPort` -> `LoggingEventPublisher`: each abandonment's `TailoringRunFailed`
-        # is the per-run log line G-25' asks for (`tailoring_run_id`, `reason=abandoned`).
-        events=LoggingEventPublisher(),
+        runs=runs,
         # `Clock` -> `SystemClock`, whole-second at the source (ADR-0007). Read once per batch by the
         # use case, so every `completed_at` written in one tick is the same instant.
         clock=SystemClock(),
@@ -468,6 +515,11 @@ def _build_sweep_use_case(settings: Settings, session: AsyncSession) -> AbandonS
         # `--concurrency` runs (2 in production). A backlog of 100 would take fifty lost workers
         # inside a single five-minute window, and even then the next tick takes the rest a minute
         # later. A knob nobody has a reason to turn is a knob somebody will turn wrongly.
+        #
+        # Slice 5.2: the lost-queued list (plan §0.5), its window refused at startup unless above the
+        # broker's visibility timeout (`tasks/limits.py`), and the shared failure collaborator.
+        record_failure=_record_failure(runs, events, session),
+        queued_lost_after_seconds=settings.tailoring_queued_lost_after_seconds,
     )
 
 

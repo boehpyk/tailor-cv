@@ -11,7 +11,7 @@ import { renderWithRouter } from '@/test/render';
  * Query contract for the page (GREEN must satisfy it):
  * - `#how-it-works` — the steps section; its steps are the `listitem`s of one list (exactly 3).
  * - `#pricing` — the pricing section; each card is an `li` or `article` whose heading
- *   (level 2–4) is named *Guest*, *Account* or *Pro*.
+ *   (level 2–4) is named *Guest*, *Account* or *Packs* (slice 5.2, AC-38; *Pro* is gone).
  * - CTAs are real links; a label may appear in several places (header and body), so every
  *   occurrence must point at the same place.
  */
@@ -103,13 +103,16 @@ describe('/welcome content — AC-28', () => {
     expect(screen.queryByText(/We pull out what the role is asking for/i)).not.toBeInTheDocument();
   });
 
-  it('shows three pricing cards: Guest $0, Account $0, Pro $9 / month', async () => {
+  it('shows three pricing cards: Guest $0, Account $0, Packs opening soon', async () => {
     const container = await renderWelcome();
     const pricing = section(container, 'pricing');
 
     expect(card(pricing, 'Guest')).toHaveTextContent('$0');
     expect(card(pricing, 'Account')).toHaveTextContent('$0');
-    expect(card(pricing, 'Pro')).toHaveTextContent(/\$9\s*\/\s*month/);
+    expect(card(pricing, 'Packs')).toHaveTextContent('Opening soon');
+    expect(card(pricing, 'Packs')).toHaveTextContent('3 credits for $5');
+    expect(card(pricing, 'Packs')).toHaveTextContent('10 credits for $12');
+    expect(card(pricing, 'Packs')).toHaveTextContent('Nothing is charged');
   });
 
   it('says the Guest card deletes work after 24 hours, never "after a while"', async () => {
@@ -123,32 +126,48 @@ describe('/welcome content — AC-28', () => {
 });
 
 describe('/welcome calls to action — AC-29', () => {
-  it('sends Upload my CV, Tailor my CV and Try without signing up to the workspace', async () => {
+  it('sends Upload my CV and Check my CV to the workspace', async () => {
     await renderWelcome();
 
     expectEveryLink('Upload my CV', '/');
-    expectEveryLink('Tailor my CV', '/');
-    expectEveryLink('Try without signing up', '/');
+    expectEveryLink('Check my CV', '/');
   });
 
   it('sends Create free account to /register and Log in to /login', async () => {
     await renderWelcome();
 
     expectEveryLink('Create free account', '/register');
+    expectEveryLink('Start with a free account', '/register');
     expectEveryLink('Log in', '/login');
   });
+});
 
-  it('makes Go Pro a disabled button described by "Coming soon — nothing is charged"', async () => {
+describe('/welcome sells what exists — slice 5.2, AC-38', () => {
+  it('offers a free fit score without an account and one free tailoring with one', async () => {
+    const container = await renderWelcome();
+    const pricing = section(container, 'pricing');
+
+    expect(card(pricing, 'Guest')).toHaveTextContent('A fit score for your CV and a job posting');
+    expect(card(pricing, 'Guest')).toHaveTextContent('No account needed');
+    expect(card(pricing, 'Guest')).not.toHaveTextContent(/tailored CV/i);
+    expect(card(pricing, 'Account')).toHaveTextContent(
+      'Your first tailored CV and cover letter, free',
+    );
+  });
+
+  it('has no Pro plan, no Go Pro button and no "Free to try, no account needed"', async () => {
     await renderWelcome();
 
-    const goPro = screen.getByRole('button', { name: 'Go Pro' });
-    const noteId = goPro.getAttribute('aria-describedby');
+    expect(screen.queryByRole('heading', { name: 'Pro' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Go Pro' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Free to try, no account needed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\/\s*month/)).not.toBeInTheDocument();
+  });
 
-    expect(goPro).toBeDisabled();
-    expect(noteId).not.toBeNull();
-    expect(document.getElementById(noteId ?? '')).toHaveTextContent(
-      'Coming soon — nothing is charged',
-    );
+  it('never calls a credit a token', async () => {
+    await renderWelcome();
+
+    expect(document.body.textContent).not.toMatch(/\btokens?\b/i);
   });
 });
 

@@ -2,6 +2,8 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useId, useState } from 'react';
 import { useNavigate } from 'react-router';
 
+import { UNUSED_CREDITS_FALLBACK, unusedCreditsWarning } from '@/features/billing/billingCopy';
+import { useCredits } from '@/features/billing/hooks/useCredits';
 import { useErrorHold } from '@/features/retry/useHold';
 
 import {
@@ -16,6 +18,7 @@ import {
   deleteAccountErrorCopy,
 } from '@/features/savedCvs/savedCvsCopy';
 
+import { useCurrentUser } from '../hooks/useCurrentUser';
 import { deleteAccountMutationKey, useDeleteAccount } from '../hooks/useDeleteAccount';
 import { homeNoticeState } from '../homeNotice';
 
@@ -47,6 +50,7 @@ export function DeleteAccountSection(): React.JSX.Element {
   const errorId = useId();
   // Copy only (AC-16): a 429's wait, worded once from when it arrived.
   const deletionHold = useErrorHold(deletion.error);
+  const userId = useCurrentUser().data?.id;
 
   function handleSubmit(event: React.SyntheticEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -71,6 +75,11 @@ export function DeleteAccountSection(): React.JSX.Element {
       <div className="mb-4 space-y-2 text-sm text-slate-600">
         <p>{DELETE_ACCOUNT_WHAT_GOES_NOTE}</p>
         <p>{DELETE_ACCOUNT_WHAT_STAYS_NOTE}</p>
+        {userId === undefined ? (
+          <p>{UNUSED_CREDITS_FALLBACK}</p>
+        ) : (
+          <UnusedCreditsWarning userId={userId} />
+        )}
       </div>
       <form onSubmit={handleSubmit} className="space-y-3">
         <div className="space-y-1">
@@ -118,4 +127,16 @@ export function DeleteAccountSection(): React.JSX.Element {
       </form>
     </section>
   );
+}
+
+/**
+ * Slice 5.2 (AC-32): how many unused credits go with the account, or the fallback sentence when the
+ * balance can't be read (yet). Nothing when the balance is 0. Erasure is never blocked by billing.
+ */
+function UnusedCreditsWarning({ userId }: { readonly userId: string }): React.JSX.Element | null {
+  const balance = useCredits(userId).data?.balance;
+  if (balance === undefined) {
+    return <p>{UNUSED_CREDITS_FALLBACK}</p>;
+  }
+  return balance > 0 ? <p>{unusedCreditsWarning(balance)}</p> : null;
 }

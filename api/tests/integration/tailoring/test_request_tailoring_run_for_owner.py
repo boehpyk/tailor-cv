@@ -15,8 +15,7 @@ cap **per owner**: guest 20 per session (1.3, unchanged), user `MAX_TAILORING_RU
 the thing a copy would leave behind — a second CV row, or a run naming a different CV id — and that
 is what `test_a_saved_cv_is_used_directly_without_a_copy` asserts.
 
-Green on arrival: the two tests whose requester is a guest (per-owner isolation seen from the guest
-side) — regression guards for the guest arm, which already keys on the session.
+(5.2: the two tests whose requester was a guest are retired: a guest no longer requests a run.)
 """
 
 from __future__ import annotations
@@ -27,6 +26,7 @@ from uuid import uuid4
 
 import pytest
 
+from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
 from tailorcraft.application.intake.get_base_cv import GetBaseCv
 from tailorcraft.application.posting.get_job_posting import GetJobPosting
 from tailorcraft.application.tailoring.request_tailoring_run import (
@@ -52,6 +52,7 @@ from tailorcraft.domain.tailoring.value_objects import TailoringRunStatus
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeBaseCvRepository,
+    FakeCreditAccountRepository,
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
     FakeTailoringRunRepository,
@@ -66,6 +67,7 @@ from tests.integration.owners import (
     pasted_posting,
     queued_run,
     running_run,
+    seed_credit_account,
     seed_user,
     uploaded_cv,
 )
@@ -81,6 +83,7 @@ class _World:
         self.cvs = FakeBaseCvRepository()
         self.postings = FakeJobPostingRepository()
         self.runs = FakeTailoringRunRepository()
+        self.credits = FakeCreditAccountRepository()
         self.events = RecordingEventPublisher(self.runs)
         self.earlier = clock.now() - timedelta(hours=1)
 
@@ -91,10 +94,13 @@ class _World:
             GetJobPosting(self.postings, self.sessions, self.users, self.clock),
             self.events,
             self.clock,
+            charge=ChargeCreditForRun(self.credits),
         )
 
     async def user(self, email: str = "alex@example.com") -> UserOwner:
-        return await seed_user(self.users, email, self.earlier)
+        owner = await seed_user(self.users, email, self.earlier)
+        seed_credit_account(self.credits, owner.user_id, self.earlier)
+        return owner
 
     async def guest(self, label: str = "guest") -> GuestOwner:
         session = await create_active_session(
@@ -294,19 +300,6 @@ async def test_someone_elses_active_run_does_not_block_a_user(
     assert (await w.runs.get(result.tailoring_run_id)).owner == user
 
 
-async def test_a_users_active_run_does_not_block_a_guest(clock: FixedClock) -> None:
-    """The same isolation seen from the guest side — green on arrival (the guest arm keys on the
-    session), kept as a regression guard for the switch to `find_active_for_owner`."""
-    w = _World(clock)
-    guest = await w.guest()
-    cv_id, posting_id = await w.inputs(guest)
-    await w.runs.add(running_run(await w.user(), w.earlier))
-
-    result = await w.use_case()(_command(guest, cv_id, posting_id))
-
-    assert (await w.runs.get(result.tailoring_run_id)).owner == guest
-
-
 # --- H-17: the per-owner cap -----------------------------------------------------------------------
 
 
@@ -345,16 +338,3 @@ async def test_another_users_runs_do_not_count_toward_a_users_cap(clock: FixedCl
     await w.use_case()(_command(user, cv_id, posting_id))
 
     assert w.runs_of(user) == 1
-
-
-async def test_a_users_runs_do_not_count_toward_a_guests_cap(clock: FixedClock) -> None:
-    """Green on arrival (the guest arm counts the session's runs); a regression guard for the
-    switch to `count_for_owner` — 500 user runs must not push a guest past 20."""
-    w = _World(clock)
-    guest = await w.guest()
-    cv_id, posting_id = await w.inputs(guest)
-    await w.fill_with_terminal_runs(await w.user(), 25)
-
-    await w.use_case()(_command(guest, cv_id, posting_id))
-
-    assert w.runs_of(guest) == 1

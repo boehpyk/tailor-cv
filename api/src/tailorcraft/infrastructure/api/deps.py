@@ -31,6 +31,12 @@ from fastapi import Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from tailorcraft.application.billing.charge_credit_for_run import ChargeCreditForRun
+from tailorcraft.application.billing.choose_payment_notice import ChoosePaymentNotice
+from tailorcraft.application.billing.get_credits import GetCredits
+from tailorcraft.application.billing.open_credit_account import OpenCreditAccount
+from tailorcraft.application.billing.record_pack_click import RecordPackClick
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.export.download_export_file import DownloadExportFile
 from tailorcraft.application.export.get_export_job import GetExportJob
 from tailorcraft.application.export.list_exports_for_run import ListExportsForRun
@@ -71,11 +77,16 @@ from tailorcraft.application.retention.purge_expired_guest_sessions import Purge
 from tailorcraft.application.retention.reclaim_orphaned_files import ReclaimOrphanedFiles
 from tailorcraft.application.retention.summarize_storage import SummarizeStorage
 from tailorcraft.application.scoring.find_fit_score_for_pair import FindFitScoreForPair
+from tailorcraft.application.scoring.get_tailoring_run_fit_scores import GetTailoringRunFitScores
 from tailorcraft.application.scoring.request_fit_score import RequestFitScore
 from tailorcraft.application.scoring.resolve_scoring_pair import ResolveScoringPair
+from tailorcraft.application.scoring.score_tailoring_run import ScoreTailoringRun
+from tailorcraft.application.shared.read_demand_counters import ReadDemandCounters
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
 from tailorcraft.application.tailoring.list_tailoring_history import ListTailoringHistory
 from tailorcraft.application.tailoring.list_tailoring_runs import ListTailoringRunsForSession
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
+from tailorcraft.application.tailoring.record_run_not_queued import RecordRunNotQueued
 from tailorcraft.application.tailoring.request_tailoring_run import RequestTailoringRun
 from tailorcraft.application.tailoring.revise_tailored_document import ReviseTailoredDocument
 from tailorcraft.application.tracking.move_tracked_application import MoveTrackedApplication
@@ -83,6 +94,7 @@ from tailorcraft.application.tracking.retitle_tracked_application import Retitle
 from tailorcraft.application.tracking.show_application_board import ShowApplicationBoard
 from tailorcraft.application.tracking.track_application import TrackApplication
 from tailorcraft.application.tracking.untrack_application import UntrackApplication
+from tailorcraft.domain.billing.ports import CreditAccountRepository
 from tailorcraft.domain.export.ports import (
     DocumentRendererPort,
     ExportJobRepository,
@@ -120,7 +132,12 @@ from tailorcraft.domain.retention.ports import (
     OrphanFileScannerPort,
 )
 from tailorcraft.domain.retention.value_objects import RetentionWindow
-from tailorcraft.domain.scoring.ports import FitScoreRepository, FitScorerPort, SpendLedgerPort
+from tailorcraft.domain.scoring.ports import (
+    DraftTextPort,
+    FitScoreRepository,
+    FitScorerPort,
+    SpendLedgerPort,
+)
 from tailorcraft.domain.scoring.value_objects import (
     MicroUsd,
     ModelName,
@@ -128,6 +145,7 @@ from tailorcraft.domain.scoring.value_objects import (
     ScoringPrices,
 )
 from tailorcraft.domain.shared.clock import Clock
+from tailorcraft.domain.shared.counters import DailyCounterPort, DemandCounterQuery
 from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.shared.files import FileStorePort
 from tailorcraft.domain.tailoring.ports import (
@@ -141,6 +159,7 @@ from tailorcraft.infrastructure.api.errors import (
     GUEST_SESSION_EXPIRED_DETAIL,
     ORIGIN_NOT_ALLOWED_DETAIL,
     account_disabled_exception,
+    account_required_exception,
     domain_error_to_http_exception,
     invalid_access_token_exception,
 )
@@ -151,6 +170,7 @@ from tailorcraft.infrastructure.api.guest_session import (
     set_guest_cookie,
 )
 from tailorcraft.infrastructure.clock import SystemClock
+from tailorcraft.infrastructure.events.deferred_publisher import DeferredEventPublisher
 from tailorcraft.infrastructure.events.logging_publisher import LoggingEventPublisher
 from tailorcraft.infrastructure.export.queue import CeleryExportQueue
 from tailorcraft.infrastructure.export.renderer import MarkdownDocumentRenderer
@@ -170,6 +190,10 @@ from tailorcraft.infrastructure.llm.fit_score_prompt import FIT_SCORE_PROMPT_VER
 from tailorcraft.infrastructure.llm.fit_scorer import PROMPT_OVERHEAD_CHARACTERS
 from tailorcraft.infrastructure.llm.gemini import GeminiLlm
 from tailorcraft.infrastructure.mail.queue import CeleryAccountMailQueue
+from tailorcraft.infrastructure.persistence.demand.daily_counter import (
+    SqlAlchemyDailyCounter,
+    SqlAlchemyDemandCounterQuery,
+)
 from tailorcraft.infrastructure.persistence.scoring.spend_ledger import (
     CommittingSpendLedger,
     SqlSpendLedger,
@@ -186,6 +210,7 @@ from tailorcraft.infrastructure.retention.data_access import (
 )
 from tailorcraft.infrastructure.retention.heartbeat import RedisPurgeHeartbeat
 from tailorcraft.infrastructure.retention.lock import RedisPurgeLock
+from tailorcraft.infrastructure.scoring.draft_text import DraftTextAdapter
 from tailorcraft.infrastructure.settings import Settings
 from tailorcraft.infrastructure.tailoring.queue import CeleryTailoringQueue
 
@@ -292,6 +317,66 @@ def get_event_publisher() -> EventPublisherPort:
 
 
 EventPublisherDep = Annotated[EventPublisherPort, Depends(get_event_publisher)]
+
+
+def get_credit_account_repository(session: SessionDep) -> CreditAccountRepository:
+    """Binds `CreditAccountRepository` -> `SqlAlchemyCreditAccountRepository` (ADR-0042).
+
+    The **bare** adapter on the request's session: a charge commits with the run's `queued` row when
+    the handler commits, never on its own (plan §0.3). Deferred import, `get_tailoring_run_repository`'s
+    mapper-configuration reason.
+    """
+    from tailorcraft.infrastructure.persistence.repositories.billing.credit_account import (
+        SqlAlchemyCreditAccountRepository,
+    )
+
+    return SqlAlchemyCreditAccountRepository(session)
+
+
+CreditAccountRepositoryDep = Annotated[
+    CreditAccountRepository, Depends(get_credit_account_repository)
+]
+
+
+def get_daily_counter(session: SessionDep) -> DailyCounterPort:
+    """Binds `DailyCounterPort` -> `SqlAlchemyDailyCounter` (ADR-0043): one upsert on the request's
+    session, committed with the fact or rolled back with it."""
+    return SqlAlchemyDailyCounter(session)
+
+
+DailyCounterDep = Annotated[DailyCounterPort, Depends(get_daily_counter)]
+
+
+def get_demand_counter_query(session: SessionDep) -> DemandCounterQuery:
+    """Binds `DemandCounterQuery` -> `SqlAlchemyDemandCounterQuery` (ADR-0043), for `/admin/demand`."""
+    return SqlAlchemyDemandCounterQuery(session)
+
+
+DemandCounterQueryDep = Annotated[DemandCounterQuery, Depends(get_demand_counter_query)]
+
+
+def get_draft_text() -> DraftTextPort:
+    """Binds `DraftTextPort` -> `DraftTextAdapter` (plan §0.8), for the run comparison routes (T27)."""
+    return DraftTextAdapter()
+
+
+DraftTextDep = Annotated[DraftTextPort, Depends(get_draft_text)]
+
+
+def get_charge_credit_for_run(credits: CreditAccountRepositoryDep) -> ChargeCreditForRun:
+    return ChargeCreditForRun(credits)
+
+
+ChargeCreditForRunDep = Annotated[ChargeCreditForRun, Depends(get_charge_credit_for_run)]
+
+
+def get_open_credit_account(
+    credits: CreditAccountRepositoryDep, events: EventPublisherDep
+) -> OpenCreditAccount:
+    return OpenCreditAccount(credits, events)
+
+
+OpenCreditAccountDep = Annotated[OpenCreditAccount, Depends(get_open_credit_account)]
 
 
 def get_base_cv_repository(session: SessionDep) -> BaseCvRepository:
@@ -437,6 +522,13 @@ async def require_guest_session(
 
 
 RequireGuestSessionDep = Annotated[GuestSession, Depends(require_guest_session)]
+
+
+async def refuse_guest_export() -> None:
+    """403 `account_required` for every route in `routers/export.py` (slice 5.2, plan §0.7, AC-16):
+    a router-level dependency with no parameters, so it raises before path validation, the cookie or
+    a body is read. Attached on that router's `dependencies`, which a test pins."""
+    raise account_required_exception()
 
 
 async def resolve_or_start_guest_session(
@@ -755,6 +847,17 @@ def get_fit_score_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
 FitScoreRateLimiterDep = Annotated[RedisFixedWindowRateLimiter, Depends(get_fit_score_rate_limiter)]
 
 
+def get_fit_score_comparison_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
+    """Per (user, run, side) on the comparison `POST` (5.2, S-11). **Fails closed**: it guards the
+    shared daily spend cap from one account."""
+    return RedisFixedWindowRateLimiter(redis, namespace="scoring:compare", fail_open=False)
+
+
+FitScoreComparisonRateLimiterDep = Annotated[
+    RedisFixedWindowRateLimiter, Depends(get_fit_score_comparison_rate_limiter)
+]
+
+
 def get_resolve_scoring_pair(
     get_base_cv: GetBaseCvDep, get_job_posting: GetJobPostingDep
 ) -> ResolveScoringPair:
@@ -780,6 +883,7 @@ def get_request_fit_score(
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
+    counters: DailyCounterDep,
 ) -> RequestFitScore:
     """The composition root's conversion point: settings become domain values here, once."""
     return RequestFitScore(
@@ -798,6 +902,7 @@ def get_request_fit_score(
         max_cv_characters=settings.llm_max_cv_characters,
         model=ModelName(settings.fit_score_model),
         prompt_version=PromptVersion(FIT_SCORE_PROMPT_VERSION),
+        counters=counters,
     )
 
 
@@ -818,7 +923,7 @@ def get_tailoring_rate_limiter(redis: RedisDep) -> RedisFixedWindowRateLimiter:
     unreachable costs a user a retry; failing open costs an amount nobody has bounded.
 
     A rate limit bounds how *often* a run is requested, never whether one is: the per-session cap
-    (`max_tailoring_runs_per_session`), the single-active-run rule and the LLM's own total deadline
+    (`max_tailoring_runs_per_user`), the single-active-run rule and the LLM's own total deadline
     each bound a different quantity, and none of them substitutes for another.
     """
     return RedisFixedWindowRateLimiter(redis, namespace="tailoring:create", fail_open=False)
@@ -836,6 +941,7 @@ def get_request_tailoring_run(
     events: EventPublisherDep,
     clock: ClockDep,
     settings: SettingsDep,
+    charge: ChargeCreditForRunDep,
 ) -> RequestTailoringRun:
     """Note what the second and third arguments are: the two *use cases*, not their repositories.
 
@@ -853,12 +959,40 @@ def get_request_tailoring_run(
         get_job_posting,
         events,
         clock,
-        max_per_session=settings.max_tailoring_runs_per_session,
         max_per_user=settings.max_tailoring_runs_per_user,
+        charge=charge,
     )
 
 
 RequestTailoringRunDep = Annotated[RequestTailoringRun, Depends(get_request_tailoring_run)]
+
+
+def get_not_queued_events(events: EventPublisherDep) -> DeferredEventPublisher:
+    """One per request (FastAPI caches a dependency per request), shared by `RecordRunNotQueued` and
+    the handler that commits its transaction and then releases the events."""
+    return DeferredEventPublisher(events)
+
+
+NotQueuedEventsDep = Annotated[DeferredEventPublisher, Depends(get_not_queued_events)]
+
+
+def get_record_run_not_queued(
+    runs: TailoringRunRepositoryDep,
+    credits: CreditAccountRepositoryDep,
+    counters: DailyCounterDep,
+    events: NotQueuedEventsDep,
+    clock: ClockDep,
+) -> RecordRunNotQueued:
+    """G-14's second transaction (F-10): fail the run, refund its credit, count `runs_failed`, on the
+    request's session. The handler commits; nothing here does. Its events are held until that commit
+    (`NotQueuedEventsDep`): `RecordRunFailure` publishes after `runs.save`, which is the worker's
+    commit but not a request's."""
+    return RecordRunNotQueued(
+        runs, RecordRunFailure(runs, RefundCreditForRun(credits), counters, events), clock
+    )
+
+
+RecordRunNotQueuedDep = Annotated[RecordRunNotQueued, Depends(get_record_run_not_queued)]
 
 
 def get_get_tailoring_run(
@@ -871,6 +1005,72 @@ def get_get_tailoring_run(
 
 
 GetTailoringRunDep = Annotated[GetTailoringRun, Depends(get_get_tailoring_run)]
+
+
+# -- slice 5.2: the run comparison, credits and demand counters ----------------------------------
+
+
+def get_score_tailoring_run(
+    get_run: GetTailoringRunDep,
+    get_base_cv: GetBaseCvDep,
+    resolve_pair: ResolveScoringPairDep,
+    find_for_pair: FindFitScoreForPairDep,
+    request_fit_score: RequestFitScoreDep,
+    draft_text: DraftTextDep,
+) -> ScoreTailoringRun:
+    return ScoreTailoringRun(
+        get_run, get_base_cv, resolve_pair, find_for_pair, request_fit_score, draft_text
+    )
+
+
+ScoreTailoringRunDep = Annotated[ScoreTailoringRun, Depends(get_score_tailoring_run)]
+
+
+def get_get_tailoring_run_fit_scores(
+    get_run: GetTailoringRunDep,
+    get_base_cv: GetBaseCvDep,
+    resolve_pair: ResolveScoringPairDep,
+    find_for_pair: FindFitScoreForPairDep,
+    draft_text: DraftTextDep,
+) -> GetTailoringRunFitScores:
+    return GetTailoringRunFitScores(get_run, get_base_cv, resolve_pair, find_for_pair, draft_text)
+
+
+GetTailoringRunFitScoresDep = Annotated[
+    GetTailoringRunFitScores, Depends(get_get_tailoring_run_fit_scores)
+]
+
+
+def get_get_credits(credits: CreditAccountRepositoryDep) -> GetCredits:
+    return GetCredits(credits)
+
+
+GetCreditsDep = Annotated[GetCredits, Depends(get_get_credits)]
+
+
+def get_record_pack_click(
+    credits: CreditAccountRepositoryDep, counters: DailyCounterDep, events: EventPublisherDep
+) -> RecordPackClick:
+    return RecordPackClick(credits, counters, events)
+
+
+RecordPackClickDep = Annotated[RecordPackClick, Depends(get_record_pack_click)]
+
+
+def get_choose_payment_notice(
+    credits: CreditAccountRepositoryDep, events: EventPublisherDep
+) -> ChoosePaymentNotice:
+    return ChoosePaymentNotice(credits, events)
+
+
+ChoosePaymentNoticeDep = Annotated[ChoosePaymentNotice, Depends(get_choose_payment_notice)]
+
+
+def get_read_demand_counters(counts: DemandCounterQueryDep) -> ReadDemandCounters:
+    return ReadDemandCounters(counts)
+
+
+ReadDemandCountersDep = Annotated[ReadDemandCounters, Depends(get_read_demand_counters)]
 
 
 def get_list_tailoring_runs(
@@ -1887,10 +2087,14 @@ def get_confirm_registration(
     users: UserRepositoryDep,
     clock: ClockDep,
     events: EventPublisherDep,
+    open_account: OpenCreditAccountDep,
+    counters: DailyCounterDep,
 ) -> ConfirmRegistration:
     """Creates the `User` and no `Login` (OQ-3: confirming does not sign in). Its handler commits
     nothing — every writing path ends in the committing `remove` (the note above)."""
-    return ConfirmRegistration(pending, users, clock, events)
+    return ConfirmRegistration(
+        pending, users, clock, events, open_account=open_account, counters=counters
+    )
 
 
 ConfirmRegistrationDep = Annotated[ConfirmRegistration, Depends(get_confirm_registration)]

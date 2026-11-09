@@ -52,11 +52,13 @@ from uuid import uuid4
 
 import pytest
 
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRun,
     ExecuteTailoringRunCommand,
     ExecuteTailoringRunOutcome,
 )
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.identity.ownership import GuestOwner
 from tailorcraft.domain.identity.value_objects import GuestSessionId
 from tailorcraft.domain.intake.base_cv import BaseCv
@@ -100,9 +102,11 @@ from tailorcraft.domain.tailoring.value_objects import (
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeBaseCvRepository,
+    FakeCreditAccountRepository,
     FakeJobPostingRepository,
     FakeLlm,
     FakeTailoringRunRepository,
+    RecordingDailyCounter,
     RecordingEventPublisher,
 )
 
@@ -221,7 +225,22 @@ def _use_case(
     clock: FixedClock,
     stale_after_seconds: int = 300,
 ) -> ExecuteTailoringRun:
-    return ExecuteTailoringRun(runs, cvs, postings, llm, events, clock, stale_after_seconds)
+    return ExecuteTailoringRun(
+        runs,
+        cvs,
+        postings,
+        llm,
+        events,
+        clock,
+        stale_after_seconds,
+        record_failure=RecordRunFailure(
+            runs,
+            RefundCreditForRun(FakeCreditAccountRepository()),
+            RecordingDailyCounter(),
+            events,
+        ),
+        counters=RecordingDailyCounter(),
+    )
 
 
 # --- 1. Happy path ---------------------------------------------------------------------------------

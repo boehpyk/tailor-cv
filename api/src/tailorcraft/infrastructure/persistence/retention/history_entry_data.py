@@ -2,7 +2,7 @@
 
 Deleting one entry of a signed-in user's history is retention's shape — *delete what an owner has for
 X, rows committed, then files* — over three contexts' tables, so it is Core SQL here rather than a
-`remove` on `TailoringRunRepository`. Six statements, one transaction, the owner in every `WHERE`:
+`remove` on `TailoringRunRepository`. Seven statements, one transaction, the owner in every `WHERE`:
 
     DELETE FROM tailoring_run WHERE id = :r AND user_id = :u RETURNING job_posting_id;  -- 0 rows → None
     DELETE FROM tracking_application WHERE tailoring_run_id = :r AND user_id = :u RETURNING id;
@@ -12,6 +12,7 @@ X, rows committed, then files* — over three contexts' tables, so it is Core SQ
      WHERE id = :p AND user_id = :u
        AND NOT EXISTS (SELECT 1 FROM tailoring_run WHERE job_posting_id = :p);        -- rowcount
     DELETE FROM scoring_fit_score WHERE job_posting_id = :p AND user_id = :u;         -- if it went
+    DELETE FROM scoring_fit_score WHERE tailoring_run_id = :r AND user_id = :u;      -- draft scores
 
 **`RETURNING` makes "what I deleted" and "what I must unlink" one set.** 2.2's erasure collects keys
 first and locks the user row so nothing slips in between; here the export rows' `(id, format)` come
@@ -80,7 +81,7 @@ from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.posting.job_posting import JobPosting
 from tailorcraft.domain.posting.value_objects import JobPostingId
 from tailorcraft.domain.retention.value_objects import DeletedHistoryEntry
-from tailorcraft.domain.scoring.value_objects import ScoredPostingRef
+from tailorcraft.domain.scoring.value_objects import ScoredPostingRef, ScoredRunRef
 from tailorcraft.domain.shared.files import FileRef
 from tailorcraft.domain.tailoring.tailoring_run import TailoringRun
 from tailorcraft.domain.tailoring.value_objects import TailoringRunId
@@ -117,7 +118,7 @@ class SqlAlchemyHistoryEntryData:
     async def delete_history_entry(
         self, user_id: UserId, run_id: UUID
     ) -> DeletedHistoryEntry | None:
-        """The port's contract; the six statements are the module docstring's.
+        """The port's contract; the seven statements are the module docstring's.
 
         **Loaded aggregates leave the identity map first**, by identity: `EraseHistoryEntry` loaded
         the run through `GetTailoringRun` to authorize it, and a Core `DELETE` does not tell the ORM
@@ -219,6 +220,16 @@ class SqlAlchemyHistoryEntryData:
                     fit_score_table.c.user_id == user_id,
                 )
             )
+
+        # Slice 5.2 (plan §0.8): the run's draft scores. Its own statement after the run's `DELETE`,
+        # the posting scores' pattern: a draft `store` holds the run `FOR KEY SHARE`, so this sees a
+        # score committed while the run `DELETE` waited.
+        await connection.execute(
+            delete(fit_score_table).where(
+                fit_score_table.c.tailoring_run_id == ScoredRunRef(run_id),
+                fit_score_table.c.user_id == user_id,
+            )
+        )
 
         return DeletedHistoryEntry(
             export_files=tuple(export_files),

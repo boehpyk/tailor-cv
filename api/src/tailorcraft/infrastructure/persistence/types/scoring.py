@@ -30,6 +30,7 @@ from tailorcraft.domain.scoring.value_objects import (
     PromptVersion,
     ScoredCvRef,
     ScoredPostingRef,
+    ScoredRunRef,
     ScorePercent,
 )
 
@@ -71,6 +72,21 @@ class ScoredPostingRefType(TypeDecorator[ScoredPostingRef]):
 
     def process_result_value(self, value: Any | None, dialect: Dialect) -> ScoredPostingRef | None:
         return None if value is None else ScoredPostingRef(value)
+
+
+class ScoredRunRefType(TypeDecorator[ScoredRunRef]):
+    """`scoring_fit_score.tailoring_run_id` (slice 5.2): the run whose draft was judged, `NULL` for a
+    base CV. A native `UUID`, no foreign key (ADR-0014): the store's run lock and the history-entry
+    deletion's `DELETE` keep it honest instead."""
+
+    impl = postgresql.UUID(as_uuid=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: ScoredRunRef | None, dialect: Dialect) -> UUID | None:
+        return None if value is None else value.value
+
+    def process_result_value(self, value: Any | None, dialect: Dialect) -> ScoredRunRef | None:
+        return None if value is None else ScoredRunRef(value)
 
 
 class CvFingerprintType(TypeDecorator[CvFingerprint]):

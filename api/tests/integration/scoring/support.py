@@ -47,8 +47,10 @@ from tailorcraft.domain.scoring.value_objects import (
     PromptVersion,
     ScoredCvRef,
     ScoredPostingRef,
+    ScoredRunRef,
     ScorePercent,
     ScoringPrices,
+    ScoringPurpose,
     ScoringUsage,
 )
 from tailorcraft.domain.shared.events import DomainEvent
@@ -61,6 +63,7 @@ from tests.integration.fakes import (
     FakeGuestSessionRepository,
     FakeJobPostingRepository,
     FakeUserRepository,
+    RecordingDailyCounter,
     RecordingEventPublisher,
     RecordingSpendLedger,
     create_active_session,
@@ -204,6 +207,7 @@ class World:
         reserve_raises: Exception | None = None,
         settle_raises: Exception | None = None,
         store_raises: Exception | None = None,
+        counters_in_journal: bool = False,
     ) -> None:
         self.fixed = fixed
         self.clock = CountingClock(fixed)
@@ -221,6 +225,9 @@ class World:
             journal=self.journal, reserve_raises=reserve_raises, settle_raises=settle_raises
         )
         self.events = JournalingPublisher(self.journal)
+        # Slice 5.2: the counter the use case writes to. `counters_in_journal` puts each increment in
+        # the shared journal as `count:<name>`, for the one test that asserts it lands before `settle`.
+        self.counters = RecordingDailyCounter(journal=self.journal if counters_in_journal else None)
 
         def snapshot_then(hook: Callable[[], None] | None) -> Callable[[], None]:
             def run() -> None:
@@ -273,10 +280,20 @@ class World:
             max_cv_characters=max_cv_characters,
             model=ModelName("gemini-test"),
             prompt_version=PromptVersion("1"),
+            counters=self.counters,
         )
 
-    async def ask(self, owner: Owner, pair: ScoringPair, **config: object) -> RequestOutcome:
-        return await self.request(**config)(RequestFitScoreCommand(owner=owner, pair=pair))  # type: ignore[arg-type]
+    async def ask(
+        self,
+        owner: Owner,
+        pair: ScoringPair,
+        *,
+        purpose: ScoringPurpose = ScoringPurpose.CHECK,
+        draft_of: ScoredRunRef | None = None,
+        **config: object,
+    ) -> RequestOutcome:
+        command = RequestFitScoreCommand(owner=owner, pair=pair, purpose=purpose, draft_of=draft_of)
+        return await self.request(**config)(command)  # type: ignore[arg-type]
 
     # --- people and rows ---
 

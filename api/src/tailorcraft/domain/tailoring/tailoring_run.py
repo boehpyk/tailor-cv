@@ -663,6 +663,20 @@ class TailoringRun(RecordsEvents):
             return True
         return now - self._started_at > stale_after
 
+    def is_lost_in_queue(self, now: datetime, after: timedelta) -> bool:
+        """Whether this run is still `QUEUED` so long after it was requested that no delivery is coming
+        (slice 5.2, plan §0.5): a pure query, no event. `is_stale`'s twin for the other live status.
+
+        - `QUEUED` → `True` when `now - requested_at > after`. **Strict `>`**, like `is_stale`: a run
+          exactly `after` old is still waiting.
+        - `RUNNING`, `SUCCEEDED`, `FAILED` → `False`. A running run is `is_stale`'s question, and a
+          decided one is over (TR-3).
+
+        `after` is configuration (`tailoring_queued_lost_after_seconds`), held above the broker's
+        visibility timeout at startup so a redelivery always gets its chance first.
+        """
+        return self._status is TailoringRunStatus.QUEUED and now - self._requested_at > after
+
     @property
     def id(self) -> TailoringRunId:
         return self._id

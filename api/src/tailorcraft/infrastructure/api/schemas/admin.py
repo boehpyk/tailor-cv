@@ -13,7 +13,7 @@ is not shared meaning).
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Final, Literal
 from uuid import UUID
 
@@ -61,6 +61,8 @@ class AdminAccountCounts(BaseModel):
     export_jobs: int
     tracked_applications: int
     fit_scores: int
+    credits_left: int
+    credit_entries: int
 
 
 class AdminUserDetailResponse(BaseModel):
@@ -246,3 +248,33 @@ class AdminSweepResponse(BaseModel):
     reclaimed: int
     failed: int
     dry_run: bool
+
+
+class DemandCountsResponse(BaseModel):
+    """One day's (or the range's) counts: every `DemandCounter` member, zero when nothing was counted
+    (ADR-0043). Anonymous by construction: a count, never who."""
+
+    fit_scores: int
+    fit_scores_busy: int
+    sign_ups: int
+    pack_clicks: int
+    pack_clickers: int
+    runs_failed: int
+    runs_succeeded: int
+
+
+class DemandDayResponse(BaseModel):
+    day: date
+    counts: DemandCountsResponse
+
+
+class DemandCountersResponse(BaseModel):
+    """`GET /api/admin/demand-counters` (slice 5.2, plan §4): every day in `[from, to]`, oldest first,
+    zeros filled, and the totals. `from` is a Python keyword, hence the alias."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    from_day: date = Field(alias="from")
+    to_day: date = Field(alias="to")
+    days: list[DemandDayResponse]
+    totals: DemandCountsResponse

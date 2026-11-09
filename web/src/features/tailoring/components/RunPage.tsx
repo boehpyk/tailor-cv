@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 
 import { ApiError } from '@/api/client';
+import { GuestTailorOffer } from '@/features/billing/components/GuestTailorOffer';
+import { FAILED_RUN_REFUND } from '@/features/billing/billingCopy';
 import { GuestRunPrompt } from '@/features/claim/components/GuestRunPrompt';
 import { SessionEndedHistoryNote } from '@/features/claim/components/SessionEndedHistoryNote';
 import { DocumentWorkspace } from '@/features/editor/components/DocumentWorkspace';
@@ -10,6 +12,7 @@ import { ExportSheet } from '@/features/export/components/ExportSheet';
 import { runLink } from '@/features/scope/scopeMap';
 import { useScopeMap, useWorkspaceScope } from '@/features/scope/useWorkspaceScope';
 import { TrackButton } from '@/features/tracking/components/TrackButton';
+import { ScoreComparisonPanel } from '@/features/scoring/components/ScoreComparisonPanel';
 import { ProgressStepper } from '@/features/workspace/components/ProgressStepper';
 import { progressOfRun } from '@/features/workspace/progress';
 
@@ -140,6 +143,9 @@ export function RunPage(): React.JSX.Element {
   }
 
   const view = viewOfWatchedRun(runId, watched.data, watched.error, null, map.kind);
+  // Slice 5.2 (AC-15): a guest cannot start a run, so a failed guest run offers no *Try again*.
+  const stepperRun =
+    map.kind === 'guest' && view.kind === 'failed' ? { ...view, retryable: false } : view;
 
   function retry(run: TailoringRun): void {
     create.mutate(
@@ -212,7 +218,7 @@ export function RunPage(): React.JSX.Element {
       {(view.kind === 'working' || view.kind === 'failed' || view.kind === 'succeeded') && (
         <ProgressStepper
           progress={progressOfRun(view)}
-          run={view}
+          run={stepperRun}
           canStart={true}
           isStarting={create.isPending}
           holdUntil={holdUntil}
@@ -225,6 +231,11 @@ export function RunPage(): React.JSX.Element {
             }
           }}
         />
+      )}
+
+      {/* Slice 5.2 (AC-33): a failed account run was refunded. */}
+      {view.kind === 'failed' && map.kind === 'account' && (
+        <p className="text-sm text-slate-700">{FAILED_RUN_REFUND}</p>
       )}
 
       {view.kind === 'working' && (
@@ -258,25 +269,36 @@ export function RunPage(): React.JSX.Element {
         </div>
       )}
 
+      {/* Slice 5.2 (AC-37): before and after, on a click only. Account runs only: the route is
+          an account's. */}
+      {view.kind === 'succeeded' && scope.kind === 'account' && (
+        <ScoreComparisonPanel runId={runId} />
+      )}
+
       {/* `succeeded` implies the detail query answered (a list summary cannot show the documents,
           so the view never says `succeeded` from one), hence `data` is set; the narrowing is for
           the type, the same as `onRetry` above. */}
       {view.kind === 'succeeded' && watched.data !== undefined && (
         <DocumentWorkspace
           run={watched.data}
-          renderAbove={(saveState) => (
-            // The one bar, inline at sm+ and a bottom sheet below (web-design-refresh AC-23); its
-            // *Download* toggle lands just above the tabs row, which is where the top bar is.
-            <ExportSheet>
-              <ExportBar
-                runId={runId}
-                document={documentSegment}
-                saveState={saveState}
-                layout={chosenLayout}
-                onLayoutChange={setChosenLayout}
-              />
-            </ExportSheet>
-          )}
+          renderAbove={(saveState) =>
+            // Slice 5.2 (AC-36): exports need an account, so a guest's run shows the offer where
+            // the bar was. The account's one bar is inline at sm+ and a bottom sheet below
+            // (web-design-refresh AC-23); its *Download* toggle lands just above the tabs row.
+            map.kind === 'guest' ? (
+              <GuestTailorOffer placement="run" />
+            ) : (
+              <ExportSheet>
+                <ExportBar
+                  runId={runId}
+                  document={documentSegment}
+                  saveState={saveState}
+                  layout={chosenLayout}
+                  onLayoutChange={setChosenLayout}
+                />
+              </ExportSheet>
+            )
+          }
         />
       )}
 

@@ -66,3 +66,6 @@ docs/*
 
 # Claude Code local overrides (settings.json IS committed — the hooks are part of the harness)
 .claude/settings.local.json
+
+# `make eval` keeps each draft CV here for `make eval.score drafts=1` (5.2, AC-24). Generated.
+api/eval/drafts/

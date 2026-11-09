@@ -454,3 +454,18 @@ class InvalidHistoryCursor(DomainError):
     """`HistoryCursor` was given a `requested_at` that is naive or not whole-second. A cursor is an
     echo of a value the server handed out (ADR-0024, unsigned on purpose), so one that could never
     have come from a stored `requested_at` is refused rather than silently matching nothing."""
+
+
+class TailoringRunNotSucceeded(DomainError):
+    """A run that has not succeeded has no draft to compare (slice 5.2, S-5): 409
+    `tailoring_run_not_succeeded`."""
+
+    def __init__(self, run_id: TailoringRunId, status: TailoringRunStatus) -> None:
+        super().__init__(f"tailoring run {run_id.value} is {status.value}, not succeeded")
+        self.run_id = run_id
+        self.status = status
+
+
+class AccountRequired(DomainError):
+    """Tailoring costs a credit, and a credit is a user's (slice 5.2, ADR-0023 as amended): a guest
+    may not request a run. 403 `account_required`."""

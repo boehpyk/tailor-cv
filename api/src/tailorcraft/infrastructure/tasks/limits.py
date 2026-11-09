@@ -23,6 +23,10 @@ TASK_TIME_LIMIT_SECONDS: Final = 180
 # for the same reason as the hard limit: `create_celery`'s config and the mail-deadline refusal
 # below both read it (slice 2.5).
 TASK_SOFT_TIME_LIMIT_SECONDS: Final = 120
+# Redis's redelivery window (`broker_transport_options`, see `tasks/app.py` for the full reasoning).
+# Named here for slice 5.2: `create_celery`'s config and the lost-queued refusal below both read it,
+# one constant feeding both, so the refusal can never guard a number the broker no longer uses.
+BROKER_VISIBILITY_TIMEOUT_SECONDS: Final = 600
 
 
 def refuse_stale_windows_within_time_limit(settings: Settings) -> None:
@@ -98,4 +102,26 @@ def refuse_mail_deadline_within_soft_limit(settings: Settings) -> None:
             f"task_soft_time_limit={TASK_SOFT_TIME_LIMIT_SECONDS}. A send could then be interrupted "
             "by the soft limit before the mail adapter records an outcome. Set it below "
             f"{TASK_SOFT_TIME_LIMIT_SECONDS} (the default is 30)."
+        )
+
+
+def refuse_queued_lost_window_within_visibility_timeout(settings: Settings) -> None:
+    """Raise `MisconfiguredSettings` unless `TAILORING_QUEUED_LOST_AFTER_SECONDS` is above the broker's
+    `visibility_timeout`.
+
+    Slice 5.2 (plan §0.5). Same shape, same two callers, same "every environment" as the refusals
+    above. The sweep records a `queued` run older than this window `failed` / `not_queued` and refunds
+    its credit. A message lost with a killed main process comes back after `visibility_timeout`; at or
+    below it, the sweep could fail (and refund) a run whose redelivery is about to arrive, and the late
+    delivery would then find it decided and do nothing. Above it, the redelivery always gets its chance
+    first. Equality is refused: a redelivery and a sweep at the same second is that race.
+    """
+    if settings.tailoring_queued_lost_after_seconds <= BROKER_VISIBILITY_TIMEOUT_SECONDS:
+        raise MisconfiguredSettings(
+            "TAILORING_QUEUED_LOST_AFTER_SECONDS must be greater than the broker's "
+            "visibility_timeout: tailoring_queued_lost_after_seconds="
+            f"{settings.tailoring_queued_lost_after_seconds} is not above "
+            f"visibility_timeout={BROKER_VISIBILITY_TIMEOUT_SECONDS}. The sweep would fail a queued "
+            "run before its redelivery had a chance to run it. Set it above "
+            f"{BROKER_VISIBILITY_TIMEOUT_SECONDS} (the default is 1800)."
         )

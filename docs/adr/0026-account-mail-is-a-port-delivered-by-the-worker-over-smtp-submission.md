@@ -209,3 +209,21 @@ where they type their address, that the provider sees it (Constitution §8).
   `docker compose up -d api worker beat`, because `env_file:` is read when a container is created,
   not when it restarts.
 
+
+## Amendment: 2026-11-07, from the plan of slice 5.2 (`credits-and-demand-test`)
+
+Decision 9's *"nothing else is ever mailed"* gains **one** exception, and only one: the **payment notice**.
+
+- **What it is.** A single plain-text email telling an account that payments are open, sent once, in
+  6.1, to accounts that opted in. It is not marketing, not a newsletter, and not repeated: sending it
+  clears the consent.
+- **Opt-in, recorded now, sent later.** Slice 5.2 records consent only, as a nullable instant on the
+  account's credit account (ADR-0042), set or cleared from the pack dialog. **This slice sends no mail
+  and queues none**; a test spies on the mail queue to prove it. The checkbox names the account's own
+  address and promises one plain-text email and nothing else. No address is collected: it is the
+  account's existing one, and a guest has no way to opt in.
+- **The same rules as every account mail.** It goes through `AccountMailQueuePort` and the worker, as
+  plain text with no HTML part, no CV, no name, no account id, click and open tracking off (the
+  2026-10-03 amendment). Its message type is 6.1's to add to the union in decision 1.
+
+Anything beyond this one notice still needs its own amendment.

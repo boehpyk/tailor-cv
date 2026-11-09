@@ -1,5 +1,5 @@
 """Slice 4.4, T16 (test-after): AC-27 (b)-(e), the structural guarantees of the admin guest and
-retention routers. (a) is `test_admin_users_structure`'s thirty-one-route walk (`_EXPECTED_ADMIN_ROUTES`
+retention routers. (a) is `test_admin_users_structure`'s thirty-two-route walk (`_EXPECTED_ADMIN_ROUTES`
 lists the fourteen new routes) and (f) its 429 scan over every `routers/admin*.py`; both already
 cover the new modules, and the (a) count is asserted again here so this slice owns the claim.
 
@@ -27,10 +27,10 @@ from tests.api.test_auth_route_dependency_boundary import _unguarded_admin_route
 from tests.integration.test_port_bindings import _BOUND_ELSEWHERE
 
 
-def test_ac27a_the_admin_surface_is_thirty_one_routes_each_behind_require_admin(
+def test_ac27a_the_admin_surface_is_thirty_two_routes_each_behind_require_admin(
     app: FastAPI,
 ) -> None:
-    assert len(_admin_routes(app)) == 31
+    assert len(_admin_routes(app)) == 32  # 5.2 adds demand-counters
     assert _unguarded_admin_routes(app) == []
 
 

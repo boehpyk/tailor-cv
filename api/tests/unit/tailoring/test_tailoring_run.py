@@ -552,3 +552,40 @@ def test_non_running_run_is_never_stale_however_old(status: TailoringRunStatus) 
     long_after = _COMPLETED_AT + timedelta(days=365)
 
     assert run.is_stale(long_after, _STALE_AFTER) is False
+
+
+# --- is_lost_in_queue (slice 5.2, plan section 0.5): `is_stale`'s twin for QUEUED ---------------------
+
+_LOST_AFTER = timedelta(seconds=900)
+
+
+def test_queued_run_older_than_the_window_is_lost_in_queue() -> None:
+    now = _REQUESTED_AT + _LOST_AFTER + timedelta(seconds=1)
+
+    assert _requested().is_lost_in_queue(now, _LOST_AFTER) is True
+
+
+def test_queued_run_exactly_the_window_old_is_not_lost_in_queue() -> None:
+    """Strict `>`, like `is_stale`: a run exactly `after` old is still waiting."""
+    now = _REQUESTED_AT + _LOST_AFTER
+
+    assert _requested().is_lost_in_queue(now, _LOST_AFTER) is False
+
+
+def test_queued_run_younger_than_the_window_is_not_lost_in_queue() -> None:
+    now = _REQUESTED_AT + timedelta(seconds=1)
+
+    assert _requested().is_lost_in_queue(now, _LOST_AFTER) is False
+
+
+@pytest.mark.parametrize(
+    "status",
+    [TailoringRunStatus.RUNNING, TailoringRunStatus.SUCCEEDED, TailoringRunStatus.FAILED],
+)
+def test_run_that_is_not_queued_is_never_lost_in_queue_however_old(
+    status: TailoringRunStatus,
+) -> None:
+    run = _run_in_status(status)
+    long_after = _COMPLETED_AT + timedelta(days=365)
+
+    assert run.is_lost_in_queue(long_after, _LOST_AFTER) is False

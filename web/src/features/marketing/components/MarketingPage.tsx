@@ -1,4 +1,3 @@
-import { useId } from 'react';
 import { Link } from 'react-router';
 
 import logo from '@/assets/brand/fixcv-logo-light.png';
@@ -18,7 +17,7 @@ import {
   NAV_TAILOR,
   PLAN_ACCOUNT,
   PLAN_GUEST,
-  PLAN_PRO,
+  PLAN_PACKS,
   PRICING_HEADING,
   PRICING_SUBLINE,
   STEPS,
@@ -64,8 +63,6 @@ function Features({ items, tone }: { readonly items: readonly string[]; readonly
  * 1f's plan switch is not built, OQ-19).
  */
 export default function MarketingPage(): React.JSX.Element {
-  const proNoteId = useId();
-
   return (
     <div className="min-h-dvh bg-surface">
       <header>
@@ -209,27 +206,22 @@ export default function MarketingPage(): React.JSX.Element {
             </article>
 
             <article className="flex flex-col gap-4.5 rounded-2xl border border-slate-200 bg-white p-8">
-              <h3 className="font-display text-2xl font-bold text-slate-900">{PLAN_PRO.name}</h3>
-              <p className="text-slate-900">
-                <span className="font-display text-5xl font-bold">{PLAN_PRO.price}</span>{' '}
-                <span className="text-slate-600">{PLAN_PRO.period}</span>
-              </p>
-              <p className="text-[15px] leading-normal text-slate-600">{PLAN_PRO.tagline}</p>
-              <div className="stitch" />
-              <Features items={PLAN_PRO.features} tone="text-slate-700" />
-              <div className="mt-auto space-y-2">
-                <button
-                  type="button"
-                  disabled
-                  aria-describedby={proNoteId}
-                  className="min-h-11 w-full rounded-md border border-slate-300 font-semibold text-slate-600 disabled:cursor-not-allowed"
-                >
-                  {PLAN_PRO.cta}
-                </button>
-                <p id={proNoteId} className="text-center text-sm text-slate-600">
-                  {PLAN_PRO.note}
-                </p>
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="font-display text-2xl font-bold text-slate-900">
+                  {PLAN_PACKS.name}
+                </h3>
+                <span className="rounded-full bg-highlight-100 px-3 py-1 text-xs font-semibold text-slate-900">
+                  {PLAN_PACKS.badge}
+                </span>
               </div>
+              <p className="font-display text-5xl font-bold text-slate-900">{PLAN_PACKS.price}</p>
+              <p className="text-[15px] leading-normal text-slate-600">{PLAN_PACKS.tagline}</p>
+              <div className="stitch" />
+              <Features items={PLAN_PACKS.features} tone="text-slate-700" />
+              <p className="text-[15px] text-slate-600">{PLAN_PACKS.note}</p>
+              <Link to="/register" className={`${secondaryButton} mt-auto`}>
+                {PLAN_PACKS.cta}
+              </Link>
             </article>
           </div>
         </section>

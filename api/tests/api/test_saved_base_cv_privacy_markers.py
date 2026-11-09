@@ -76,7 +76,7 @@ from tailorcraft.infrastructure.files.local_file_store import LocalFileStore
 from tailorcraft.infrastructure.redis_client import create_redis
 from tailorcraft.infrastructure.retention import purge_command
 from tailorcraft.infrastructure.settings import Settings
-from tests.api.me_support import seed_user_and_sign_in
+from tests.api.me_support import seed_guest_queued_run, seed_user_and_sign_in
 from tests.integration.working_copy_support import seed_working_copy
 
 ME_BASE_CVS_URL = "/api/me/base-cvs"
@@ -324,16 +324,13 @@ async def _tailor(
 
     app.dependency_overrides[get_tailoring_queue] = lambda: FakeTailoringQueue()
 
-    created = await client.post(
-        TAILORING_RUNS_URL, json={"base_cv_id": base_cv_id, "job_posting_id": job_posting_id}
-    )
-    assert created.status_code == 202, created.text
+    created_run_id = await seed_guest_queued_run(client, base_cv_id, job_posting_id)
 
     fake_llm = FakeLlm(_a_draft())
 
     with pytest.MonkeyPatch.context() as mp:
         _install_worker_llm(mp, fake_llm)
-        await _run_worker(session, settings, str(created.json()["id"]))
+        await _run_worker(session, settings, created_run_id)
 
     assert len(fake_llm.calls) == 1, (
         f"expected the fake LlmPort to be called exactly once, was called {len(fake_llm.calls)} "

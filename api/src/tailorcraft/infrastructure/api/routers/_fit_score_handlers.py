@@ -5,13 +5,14 @@
 `{POST /api/me/guest-work/claim}`. There is no `translate` argument: no scoring path raises a cap that
 speaks differently to an account, so both credentials use `domain_error_to_http_exception`.
 
-**No commit here, on purpose.** `RequestFitScore`'s call order is the transaction boundary and
-`CommittingSpendLedger` makes it one (plan §0.2): nothing is open across `assess`, and a row is durable
-before its response is built. Every other path has written nothing, so `get_session` rolls back or
-commits an empty transaction.
+**One commit here, on the busy path only.** `RequestFitScore`'s call order is the transaction
+boundary and `CommittingSpendLedger` makes it one (plan §0.2): nothing is open across `assess`, and a
+row is durable before its response is built. The exception is a full cap: the use case counts
+`fit_scores_busy` and raises, and `get_session` would roll the count back with the error, so
+`commit_busy_count` commits it before the 503 (slice 5.2, plan §0.9).
 
 **`no-store` is set twice for one reason.** Headers on the injected `Response` are lost when a handler
-raises, so every refusal carries its own (`_refusal`, `_unavailable`, the two limiter answers).
+raises, so every refusal carries its own (`refusal`, `unavailable`, the two limiter answers).
 
 Logs ids, counts and exception type names. Never text, a fingerprint, a score beside an identity, or
 a client IP (Constitution §8).
@@ -26,6 +27,7 @@ from uuid import UUID
 import structlog
 from fastapi import HTTPException, Request, Response, status
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.scoring.find_fit_score_for_pair import FindFitScoreForPair
 from tailorcraft.application.scoring.request_fit_score import (
@@ -56,6 +58,7 @@ from tailorcraft.infrastructure.api.schemas.scoring import (
 from tailorcraft.infrastructure.llm.gemini import qualified_type
 from tailorcraft.infrastructure.rate_limit import (
     RateLimiterUnavailable,
+    RateLimitScope,
     RedisFixedWindowRateLimiter,
     client_ip,
 )
@@ -124,13 +127,13 @@ def to_response(score: FitScore, expires_at: datetime | None) -> FitScoreRespons
     )
 
 
-def _refusal(exc: DomainError) -> HTTPException:
+def refusal(exc: DomainError) -> HTTPException:
     refusal = domain_error_to_http_exception(exc)
     refusal.headers = {**(refusal.headers or {}), "Cache-Control": "no-store"}
     return refusal
 
 
-def _unavailable(exc: Exception) -> HTTPException:
+def unavailable(exc: Exception) -> HTTPException:
     """S-13 to S-15: the generic answer, `main.py`'s `SQLAlchemyError` sentence plus `no-store`. Also
     `store`'s last-resort `RuntimeError`, which no app-level handler catches. The type alone is logged:
     the driver's message can quote a parameter."""
@@ -145,17 +148,26 @@ def _unavailable(exc: Exception) -> HTTPException:
     )
 
 
-async def _spend_the_ip_limit(
-    request: Request, settings: Settings, rate_limiter: RedisFixedWindowRateLimiter
-) -> None:
-    """Fails closed (S-12). The address is computed in the call and kept in no local, so no frame or
-    log line can pair it with a score. `from None` for the same reason."""
+async def commit_busy_count(db: AsyncSession, exc: FitScoreSpendCapReached) -> None:
+    """S-10 and plan §0.9: one line per refusal (the UTC day and nothing else), then commit the
+    `fit_scores_busy` count the use case wrote before raising. A failed commit loses one count and
+    still answers `scoring_busy`: the person's answer does not depend on the counter."""
+    log.warning("scoring.spend_cap_reached", day=exc.day.isoformat())
     try:
-        decision = await rate_limiter.check(
-            "ip",
-            client_ip(request, settings.trusted_proxy_hops),
-            settings.fit_score_rate_limit_per_ip_per_hour,
-        )
+        await db.commit()
+    except SQLAlchemyError as commit_failed:
+        await db.rollback()
+        log.error("scoring.busy_count_not_committed", error_type=type(commit_failed).__name__)
+
+
+async def spend_limit(
+    rate_limiter: RedisFixedWindowRateLimiter, scope: RateLimitScope, identifier: str, limit: int
+) -> None:
+    """One hit on a fail-closed scoring limiter: 429 `rate_limited` over `limit`, 503
+    `rate_limit_unavailable` when Redis is down (S-12; 5.2's S-11). `from None`: the identifier may be
+    a client IP."""
+    try:
+        decision = await rate_limiter.check(scope, identifier, limit)
     except RateLimiterUnavailable:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -166,7 +178,7 @@ async def _spend_the_ip_limit(
             headers={"Cache-Control": "no-store"},
         ) from None
     if not decision.allowed:
-        log.info("rate_limit.exceeded", scope="ip", namespace=rate_limiter.namespace)
+        log.info("rate_limit.exceeded", scope=scope, namespace=rate_limiter.namespace)
         retry_after = decision.retry_after_seconds
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -176,6 +188,19 @@ async def _spend_the_ip_limit(
             },
             headers={"Retry-After": str(retry_after), "Cache-Control": "no-store"},
         )
+
+
+async def _spend_the_ip_limit(
+    request: Request, settings: Settings, rate_limiter: RedisFixedWindowRateLimiter
+) -> None:
+    """Fails closed (S-12). The address is computed in the call and kept in no local of this
+    frame, so no log line here can pair it with a score."""
+    await spend_limit(
+        rate_limiter,
+        "ip",
+        client_ip(request, settings.trusted_proxy_hops),
+        settings.fit_score_rate_limit_per_ip_per_hour,
+    )
 
 
 async def request_fit_score(
@@ -190,6 +215,7 @@ async def request_fit_score(
     resolve_pair: ResolveScoringPair,
     find_score: FindFitScoreForPair,
     request_score: RequestFitScore,
+    db: AsyncSession,
 ) -> FitScoreResponse:
     """`POST`'s body, in plan §0.5's order: resolve the pair, a stored hit answers 200, the fail-closed
     IP limiter, then `RequestFitScore`, whose ledger commits around the call. 201, or 200 for the
@@ -216,8 +242,7 @@ async def request_fit_score(
             outcome = await request_score(RequestFitScoreCommand(owner=requester, pair=pair))
         except DomainError as exc:
             if isinstance(exc, FitScoreSpendCapReached):
-                # S-10, ADR-0041 decision 6: one line per refusal, the UTC day and nothing else.
-                log.warning("scoring.spend_cap_reached", day=exc.day.isoformat())
+                await commit_busy_count(db, exc)
             elif (
                 isinstance(exc, FitScoringFailed)
                 and exc.reason is FitScoreFailureReason.INPUTS_TOO_LARGE
@@ -234,9 +259,9 @@ async def request_fit_score(
                 log.error("scoring.settle_failed", error_type=qualified_type(exc.__cause__))
             raise
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
     except (SQLAlchemyError, RuntimeError) as exc:
-        raise _unavailable(exc) from None
+        raise unavailable(exc) from None
 
     if not outcome.created:
         response.status_code = status.HTTP_200_OK
@@ -258,9 +283,9 @@ async def read_fit_score(
     try:
         stored = await find_score(requester, BaseCvId(base_cv_id), JobPostingId(job_posting_id))
     except DomainError as exc:
-        raise _refusal(exc) from None
+        raise refusal(exc) from None
     except SQLAlchemyError as exc:
-        raise _unavailable(exc) from None
+        raise unavailable(exc) from None
     return FitScoreForPairResponse(
         fit_score=None if stored is None else to_response(stored, expires_at)
     )

@@ -97,6 +97,7 @@ from tests.api.me_support import (
     bearer,
     build_concurrent_app,
     new_client,
+    seed_guest_queued_run,
     seed_user_and_sign_in,
 )
 from tests.api.test_export import _run_export_worker
@@ -286,12 +287,9 @@ async def test_ac46_no_marker_leaks_across_a_claim_and_ac47_the_llm_sees_nothing
         assert fetcher.calls == 1
         ids["fetched_posting_id"] = str(fetched.json()["id"])
 
-        requested = await client.post(
-            GUEST_RUNS,
-            json={"base_cv_id": ids["base_cv_id"], "job_posting_id": ids["pasted_posting_id"]},
+        ids["guest_run_id"] = await seed_guest_queued_run(
+            client, ids["base_cv_id"], ids["pasted_posting_id"]
         )
-        assert requested.status_code == 202, requested.text
-        ids["guest_run_id"] = str(requested.json()["id"])
         guest_llm, outcome = await _run_tailoring_worker(
             session, settings, ids["guest_run_id"], _draft(run_cv, run_letter)
         )

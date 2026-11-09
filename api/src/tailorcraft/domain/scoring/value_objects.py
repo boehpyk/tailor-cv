@@ -85,6 +85,48 @@ class ScoredPostingRef:
     value: UUID
 
 
+@dataclass(frozen=True, slots=True)
+class ScoredRunRef:
+    """The tailoring run whose draft a score judged (slice 5.2), as this context's own type
+    (`ScoredCvRef`'s reason). No foreign key behind it (ADR-0040 decision 8)."""
+
+    value: UUID
+
+
+class ScoringPurpose(StrEnum):
+    """Why a score is asked for. A `check` is the free one, limited per owner and counted; a
+    `comparison` is one side of a run's before/after, bounded by credits instead (plan §0.8)."""
+
+    CHECK = "check"
+    COMPARISON = "comparison"
+
+
+# 5.1's stability bar: the same pair judged twice lands within this many points.
+SAME_JUDGEMENT_BAND = 5
+
+
+class ComparisonVerdict(StrEnum):
+    """What a before/after delta says, read against `SAME_JUDGEMENT_BAND`."""
+
+    HIGHER = "higher"
+    ABOUT_THE_SAME = "about_the_same"
+    LOWER = "lower"
+
+
+class ComparisonSide(StrEnum):
+    """Which side of a run's comparison: its base CV (`before`) or its draft CV (`after`)."""
+
+    BEFORE = "before"
+    AFTER = "after"
+
+
+class ComparisonUnavailableReason(StrEnum):
+    """Why a run can have no comparison at all (plan §4's `unavailable`)."""
+
+    BASE_CV_DELETED = "base_cv_deleted"
+    NOT_SUCCEEDED = "not_succeeded"
+
+
 class FitScoreFailureReason(StrEnum):
     """Why an assessment failed. Closed, and **an error vocabulary only: never persisted**, because
     only a success is a row (ADR-0040 decision 2)."""

@@ -190,8 +190,12 @@ async def run_eval(
     pairs: Sequence[CorpusPair] | None = None,
     width: int = DEFAULT_WIDTH,
     generate: GenerateFn | None = None,
+    drafts_dir: Path | None = None,
 ) -> int:
     """Run `pairs` (default: the whole corpus), print the report to `out`, return the exit code.
+
+    With `drafts_dir`, each draft's CV is kept there as `<pair id>.md`, overwriting the last one, so
+    `make eval.score drafts=1` (5.2, AC-24) can score what this run paid for without paying again.
 
     `generate` is the testing seam, with **the real SDK path as its strict default** — the same shape
     as `GeminiLlm`'s own. `make eval` never passes it; an offline verification passes a fake.
@@ -214,13 +218,20 @@ async def run_eval(
         )
         render_pair(out, result, width=width)
         results.append(result)
+        if drafts_dir is not None and result.draft is not None:
+            await asyncio.to_thread(_keep_draft, drafts_dir, pair.id, result.draft)
     summary = summarise(results)
     render_summary(out, summary, settings, results=results)
     return summary.exit_code
 
 
 def run_from_cli(
-    *, corpus_dir: Path, only: Sequence[str] | None, width: int, validate_only: bool
+    *,
+    corpus_dir: Path,
+    only: Sequence[str] | None,
+    width: int,
+    validate_only: bool,
+    drafts_dir: Path | None = None,
 ) -> int:
     """`tailorcraft.cli eval-prompts`. Exit 0/1 from the eval; 2 when it cannot start.
 
@@ -248,7 +259,14 @@ def run_from_cli(
             file=sys.stderr,
         )
         return 2
-    return asyncio.run(run_eval(corpus, settings, out=sys.stdout, pairs=pairs, width=width))
+    return asyncio.run(
+        run_eval(corpus, settings, out=sys.stdout, pairs=pairs, width=width, drafts_dir=drafts_dir)
+    )
+
+
+def _keep_draft(drafts_dir: Path, pair_id: str, draft: TailoredDraft) -> None:
+    drafts_dir.mkdir(parents=True, exist_ok=True)
+    (drafts_dir / f"{pair_id}.md").write_text(draft.documents.cv.value, encoding="utf-8")
 
 
 # -- checks ----------------------------------------------------------------------------------------

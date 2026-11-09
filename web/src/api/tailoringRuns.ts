@@ -1,6 +1,7 @@
 import { request } from './client';
-import { authOptionFor } from './target';
+import { ACCOUNT_API_TARGET, authOptionFor } from './target';
 
+import type { FitScore, FitScoreSide, RunFitScores } from '@/features/scoring/types';
 import type {
   NewTailoringRun,
   ReviseDocumentBody,
@@ -118,4 +119,34 @@ export function reviseTailoredDocument(
       ...(signal ? { signal } : {}),
     },
   );
+}
+
+/** `/api/me/tailoring-runs/{id}/fit-scores`: the comparison is an account's only (slice 5.2). */
+function runFitScoresPath(runId: string): string {
+  return `${ACCOUNT_API_TARGET.tailoringRunsPath}/${encodeURIComponent(runId)}/fit-scores`;
+}
+
+/**
+ * A run's stored before and after scores and the server's comparison of them (slice 5.2). A read:
+ * nothing here reaches Gemini. Rejections: 404 `tailoring_run_not_found`, and the bearer's usual
+ * 401 / 403 / 503.
+ */
+export function fetchRunFitScores(runId: string, signal?: AbortSignal): Promise<RunFitScores> {
+  return request<RunFitScores>(runFitScoresPath(runId), {
+    auth: 'required',
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/**
+ * Score one side of a run: **a paid call**, made on a click only. 201 a new score, 200 a stored one.
+ * Rejections: 404 `tailoring_run_not_found`; 409 `tailoring_run_not_succeeded` / `base_cv_deleted` /
+ * `base_cv_not_extracted`; 422 `inputs_too_large` / `scoring_refused`; 503 `scoring_busy` /
+ * `scoring_failed`. Never retried automatically (`retry.grep.test.ts`).
+ */
+export function postRunFitScore(runId: string, side: FitScoreSide): Promise<FitScore> {
+  return request<FitScore>(`${runFitScoresPath(runId)}/${side}`, {
+    method: 'POST',
+    auth: 'required',
+  });
 }

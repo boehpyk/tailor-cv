@@ -45,7 +45,9 @@ URL = "/api/me/fit-scores"
 BURST = 50
 CAP_MICROUSD = 5_000
 READERS = 4  # concurrent GET loops
-HOLD_SECONDS = 0.5  # how long the fake scorer is "thinking": the window the GETs must fit inside
+HOLD_SECONDS = 0.5  # the least the fake scorer "thinks" once gathered
+HOLD_GETS = 20  # overlapping GETs the hold must outlast: load-independent, unlike a fixed window
+HOLD_LIMIT_SECONDS = 30  # a hold the readers cannot fill fails loudly rather than hanging
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +57,8 @@ def _reset_redis_between_tests(clear_redis: None) -> None:
 
 class SlowScorer:
     """Suspends every call. With `gather=N` no call returns until N are inside at once, then each
-    holds for HOLD_SECONDS: `holding` is True only in that window, when the pool should be idle."""
+    holds for at least HOLD_SECONDS and until `enough_gets` (if set) is set: `holding` is True
+    only in that window, when the pool should be idle."""
 
     def __init__(self, gather: int | None = None) -> None:
         self.calls = 0
@@ -64,6 +67,7 @@ class SlowScorer:
         self._gather = gather
         self._all_in = asyncio.Event()
         self.holding = False
+        self.enough_gets: asyncio.Event | None = None
 
     async def assess(self, cv: object, posting: object) -> object:
         self.calls += 1
@@ -76,6 +80,8 @@ class SlowScorer:
                     self.holding = True
                 await asyncio.wait_for(self._all_in.wait(), 30)
             await asyncio.sleep(HOLD_SECONDS)
+            if self.enough_gets is not None:
+                await asyncio.wait_for(self.enough_gets.wait(), HOLD_LIMIT_SECONDS)
         finally:
             self.inside -= 1
             self.holding = False
@@ -114,7 +120,7 @@ class Burst:
 
 
 async def _burst(
-    world: World, engine: AsyncEngine, scorer: SlowScorer, *, cap_microusd: int
+    world: World, engine: AsyncEngine, scorer: SlowScorer, *, cap_microusd: int, hold_gets: int = 0
 ) -> Burst:
     """Fire BURST POSTs; meanwhile sample the ledger and the pool and time concurrent GETs."""
     override_settings(
@@ -132,6 +138,8 @@ async def _burst(
     get_ms: list[float] = []
     hold_ms: list[float] = []
     hold_pool: list[int] = []
+    if hold_gets:
+        scorer.enough_gets = asyncio.Event()
     get_statuses: list[int] = []
     done = asyncio.Event()
 
@@ -153,6 +161,8 @@ async def _burst(
             get_ms.append(elapsed)
             if holding and scorer.holding:
                 hold_ms.append(elapsed)
+                if scorer.enough_gets is not None and len(hold_ms) >= hold_gets:
+                    scorer.enough_gets.set()
             get_statuses.append(response.status_code)
             await asyncio.sleep(0.01)
 
@@ -204,7 +214,7 @@ async def test_concurrent_gets_beside_50_suspended_scores_never_wait_for_the_poo
     world: World, engine: AsyncEngine
 ) -> None:
     scorer = SlowScorer(gather=BURST)
-    burst = await _burst(world, engine, scorer, cap_microusd=10_000_000)
+    burst = await _burst(world, engine, scorer, cap_microusd=10_000_000, hold_gets=HOLD_GETS)
     ceiling = engine.pool.size() + engine.pool._max_overflow  # type: ignore[attr-defined]
     ramp_p95, ramp_worst = _p95(burst.get_ms), max(burst.get_ms)
     hold = burst.hold_ms

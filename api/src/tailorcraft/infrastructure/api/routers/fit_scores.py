@@ -16,6 +16,7 @@ from tailorcraft.infrastructure.api.deps import (
     RequestFitScoreDep,
     RequireGuestSessionDep,
     ResolveScoringPairDep,
+    SessionDep,
     SettingsDep,
 )
 from tailorcraft.infrastructure.api.routers import _fit_score_handlers as handlers
@@ -56,6 +57,7 @@ async def request_fit_score(
     resolve_pair: ResolveScoringPairDep,
     find_score: FindFitScoreForPairDep,
     request_score: RequestFitScoreDep,
+    db: SessionDep,
 ) -> FitScoreResponse:
     """Score a new pair inside this request, or answer with the stored score."""
     return await handlers.request_fit_score(
@@ -69,6 +71,7 @@ async def request_fit_score(
         resolve_pair=resolve_pair,
         find_score=find_score,
         request_score=request_score,
+        db=db,
     )
 
 

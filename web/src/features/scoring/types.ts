@@ -30,3 +30,32 @@ export interface FitScore {
 export interface FitScoreForPair {
   readonly fit_score: FitScore | null;
 }
+
+/** Which half of a run's comparison (slice 5.2): its base CV, or its tailored CV as drafted. */
+export type FitScoreSide = 'before' | 'after';
+
+/** Computed by the server's domain: *about the same* is a change of at most 5 points. */
+export type ComparisonVerdict = 'higher' | 'about_the_same' | 'lower';
+
+export interface ScoreComparison {
+  /** `after − before`, in points. */
+  readonly delta: number;
+  readonly verdict: ComparisonVerdict;
+}
+
+/** Why a run can have no comparison at all. */
+export type ComparisonUnavailableReason = 'base_cv_deleted' | 'not_succeeded';
+
+/**
+ * `GET /api/me/tailoring-runs/{id}/fit-scores` (slice 5.2, plan §4). Stored scores only: a read
+ * never reaches the scorer.
+ */
+export interface RunFitScores {
+  readonly before: FitScore | null;
+  readonly after: FitScore | null;
+  /** `null` unless both exist; `false` when they came from different scorer versions. */
+  readonly comparable: boolean | null;
+  /** `null` unless both exist and are comparable. */
+  readonly comparison: ScoreComparison | null;
+  readonly unavailable: ComparisonUnavailableReason | null;
+}

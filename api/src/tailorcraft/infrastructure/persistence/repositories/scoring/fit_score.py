@@ -22,6 +22,10 @@ to commit the settlement that follows:
    between steps 1 and 2, the locks answer the 404 that a read coming first would have turned into
    "the winner vanished".
 
+Since slice 5.2 a draft's score (`draft_of` set) also takes `FOR KEY SHARE` on its `tailoring_run` row,
+after the CV and posting locks, for the same reason: no FK, and a history-entry deletion's draft-score
+`DELETE` runs after its run `DELETE`, so whichever goes first, no draft score outlives its run.
+
 `read=True` is load-bearing: `with_for_update(key_share=True)` alone renders `FOR NO KEY UPDATE`
 (CLAUDE.md, and the 2.3 defect left in `tailoring_run.py`).
 
@@ -54,12 +58,18 @@ from tailorcraft.domain.scoring.value_objects import (
     PostingFingerprint,
     ScoredCvRef,
     ScoredPostingRef,
+    ScoredRunRef,
 )
+from tailorcraft.domain.tailoring.errors import TailoringRunNotFound
+from tailorcraft.domain.tailoring.value_objects import TailoringRunId
 from tailorcraft.infrastructure.identifiers import uuid7
 from tailorcraft.infrastructure.persistence.database import violated_constraint
 from tailorcraft.infrastructure.persistence.mapping.intake.base_cv import base_cv_table
 from tailorcraft.infrastructure.persistence.mapping.posting.job_posting import job_posting_table
 from tailorcraft.infrastructure.persistence.mapping.scoring.fit_score import fit_score_table
+from tailorcraft.infrastructure.persistence.mapping.tailoring.tailoring_run import (
+    tailoring_run_table,
+)
 
 if TYPE_CHECKING:
     from tailorcraft.domain.scoring.ports import FitScoreRepository
@@ -95,6 +105,7 @@ def _insert_if_absent(score: FitScore) -> ReturningInsert[tuple[FitScoreId]]:
             llm_duration_ms=score._llm_duration_ms,
             cost_microusd=score._cost,
             scored_at=score._scored_at,
+            tailoring_run_id=score._draft_of,
         )
         .on_conflict_do_nothing()
         .returning(_table.c.id)
@@ -114,6 +125,14 @@ def _key_share_job_posting(ref: ScoredPostingRef) -> Select[tuple[JobPostingId]]
     return (
         select(job_posting_table.c.id)
         .where(job_posting_table.c.id == JobPostingId(ref.value))
+        .with_for_update(read=True, key_share=True)
+    )
+
+
+def _key_share_tailoring_run(ref: ScoredRunRef) -> Select[tuple[TailoringRunId]]:
+    return (
+        select(tailoring_run_table.c.id)
+        .where(tailoring_run_table.c.id == TailoringRunId(ref.value))
         .with_for_update(read=True, key_share=True)
     )
 
@@ -154,6 +173,12 @@ class SqlAlchemyFitScoreRepository:
                 posting = await self._session.execute(_key_share_job_posting(score.job_posting_id))
                 if posting.scalar_one_or_none() is None:
                     raise JobPostingNotFound(f"no JobPosting with id {score.job_posting_id.value}")
+                if score.draft_of is not None:
+                    run = await self._session.execute(_key_share_tailoring_run(score.draft_of))
+                    if run.scalar_one_or_none() is None:
+                        raise TailoringRunNotFound(
+                            f"no TailoringRun with id {score.draft_of.value}"
+                        )
                 if inserted is not None:
                     return score
                 winner = await self.find_for_pair(

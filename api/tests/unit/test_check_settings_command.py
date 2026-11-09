@@ -193,6 +193,24 @@ def test_export_stale_window_at_the_hard_limit_exits_1_with_the_sentence(
     assert str(_TASK_TIME_LIMIT_SECONDS) in err
 
 
+def test_queued_lost_window_at_the_visibility_timeout_exits_1_with_the_sentence(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Slice 5.2's refusal (the twelfth), reached by `check-settings` as `create_celery` reaches it."""
+    monkeypatch.setattr(
+        check_settings_command,
+        "get_settings",
+        _provider(lambda: Settings(app_env="test", tailoring_queued_lost_after_seconds=600)),
+    )
+
+    exit_code = check_settings_command.run_from_cli()
+
+    assert exit_code == check_settings_command.EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "TAILORING_QUEUED_LOST_AFTER_SECONDS" in err
+    assert "600" in err
+
+
 def test_test_redis_url_collision_exits_1_with_the_sentence_and_never_a_password(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

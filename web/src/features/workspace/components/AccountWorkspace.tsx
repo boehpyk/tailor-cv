@@ -2,6 +2,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 
+import { ApiError } from '@/api/client';
+import { CreditsLine } from '@/features/billing/components/CreditsLine';
+import { CreditsNotice } from '@/features/billing/components/CreditsNotice';
+import { OutOfCredits } from '@/features/billing/components/OutOfCredits';
+import { useCredits } from '@/features/billing/hooks/useCredits';
 import { GuestWorkOffer } from '@/features/claim/components/GuestWorkOffer';
 import { JobPostingPanel } from '@/features/posting/components/JobPostingPanel';
 import { useJobPostings } from '@/features/posting/hooks/useJobPostings';
@@ -73,6 +78,9 @@ function Section({
  * - **Launch** — `POST /api/me/tailoring-runs`, guarded against a same-tick double click by the
  *   mutation cache (H-58), then `/history/{id}` (AC-41). The latest-run card reads
  *   `useLatestAccountRun`; a 409 `tailoring_already_running` links to the active run.
+ * - **Credits** (slice 5.2, AC-33/34): the one-time notice above the launch, *Uses 1 credit · You
+ *   have N* under it, and `OutOfCredits` in its place when the read says 0 or a 409 `no_credits`
+ *   has not been answered by a read since. A failed credits read leaves Tailor enabled.
  * - **Guest work** in this browser is offered, not hidden (`GuestWorkOffer`, slice 2.4's AC-37,
  *   amending 2.3's AC-42 notice): *Keep them in my account* moves it here, and the claim's own
  *   invalidations re-read the picker, the posting and the latest run.
@@ -87,6 +95,7 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
   const postings = useJobPostings();
   const latest = useLatestAccountRun(userId);
   const create = useCreateTailoringRun();
+  const credits = useCredits(userId);
   const map = useScopeMap();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -122,6 +131,13 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
 
   const rejection = create.error;
   const activeRunId = rejection === null ? null : activeTailoringRunId(rejection);
+  // Slice 5.2 (AC-33): out of credits when the read says so, or when the server refused with 409
+  // `no_credits` and no read has answered since. A failed or loading read swaps nothing: the
+  // server decides, so Tailor stays enabled. Derived during render; nothing is stored.
+  const refusedNoCredits = rejection instanceof ApiError && rejection.code === 'no_credits';
+  const readSinceRefusal = credits.data !== undefined && credits.dataUpdatedAt > create.submittedAt;
+  const outOfCredits =
+    refusedNoCredits && !readSinceRefusal ? true : credits.data?.out_of_credits === true;
 
   return (
     // 2b, one column: nothing on this page is a step to move on to (no "Next" button).
@@ -163,17 +179,26 @@ export function AccountWorkspace({ userId }: AccountWorkspaceProps): React.JSX.E
             <LatestRunCard run={latestRun} />
           )}
 
-          <TailorLaunch
-            baseCv={baseCv}
-            jobPosting={jobPosting}
-            hasPreviousRun={latestRun !== null}
-            isStarting={create.isPending}
-            runInProgress={runInProgress}
-            holdUntil={holdUntil}
-            onLaunch={launch}
-          />
+          <CreditsNotice userId={userId} />
 
-          {rejection !== null && (
+          {outOfCredits ? (
+            <OutOfCredits userId={userId} />
+          ) : (
+            <div className="space-y-2">
+              <TailorLaunch
+                baseCv={baseCv}
+                jobPosting={jobPosting}
+                hasPreviousRun={latestRun !== null}
+                isStarting={create.isPending}
+                runInProgress={runInProgress}
+                holdUntil={holdUntil}
+                onLaunch={launch}
+              />
+              <CreditsLine userId={userId} />
+            </div>
+          )}
+
+          {rejection !== null && !refusedNoCredits && (
             <TailoringRejectionNotice
               message={rejectionMessage(rejection, createHold.phrase, 'account')}
               onViewActiveRun={null}

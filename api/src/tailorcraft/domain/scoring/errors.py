@@ -12,7 +12,11 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from tailorcraft.domain.scoring.value_objects import FitScoreFailureReason, ScoringUsage
+from tailorcraft.domain.scoring.value_objects import (
+    ComparisonUnavailableReason,
+    FitScoreFailureReason,
+    ScoringUsage,
+)
 from tailorcraft.domain.shared.errors import DomainError
 
 
@@ -61,6 +65,14 @@ class BaseCvNotReadyForScoring(DomainError):
     Scoring's own rather than tailoring's `BaseCvNotReadyForTailoring`, so that closing tailoring
     (5.2) or changing its answer cannot move this one.
     """
+
+
+class ComparisonUnavailable(DomainError):
+    """A run's comparison cannot be scored: its base CV is gone (S-6, 409 `base_cv_deleted`)."""
+
+    def __init__(self, reason: ComparisonUnavailableReason) -> None:
+        super().__init__(f"comparison unavailable: {reason.value}")
+        self.reason = reason
 
 
 class FitScoreSpendCapReached(DomainError):

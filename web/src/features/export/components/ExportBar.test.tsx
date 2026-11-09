@@ -1,10 +1,13 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { __resetForTests } from '@/features/auth/authStore';
+import { USER_A, signInAs } from '@/test/accountFetch';
 import { jsonResponse } from '@/test/fixtures';
 
 import { exportJobsQueryKey } from '../hooks/useExportJobs';
+import { ACCOUNT_SCOPE_MAP, InAccountScope } from '../test/accountScope';
 import { blobResponse, stubExportFetch } from '../test/fetchStub';
 import { EXPORT_RUN_ID, makeExportJob } from '../test/fixtures';
 import { ExportBar } from './ExportBar';
@@ -60,6 +63,15 @@ function makeQueryClient(): QueryClient {
 
 const SAVED: SaveState = { kind: 'saved' };
 
+// Slice 5.2 (AC-16): exports are an account's: every bar here is in account scope, with a bearer.
+beforeEach(() => {
+  signInAs(USER_A);
+});
+
+afterEach(() => {
+  __resetForTests();
+});
+
 interface RenderedBar {
   readonly queryClient: QueryClient;
   readonly rerender: (next: Partial<ExportBarProps>) => void;
@@ -82,7 +94,11 @@ function renderBar(
   };
 
   function Wrapper({ children }: { children: ReactNode }): React.JSX.Element {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <QueryClientProvider client={client}>
+        <InAccountScope>{children}</InAccountScope>
+      </QueryClientProvider>
+    );
   }
 
   const { rerender, unmount, container } = render(<ExportBar {...props} />, { wrapper: Wrapper });
@@ -361,7 +377,7 @@ describe('ExportBar', () => {
     await advance(1000); // the poller's second fetch — the job is now `ready`, terminal
     await flushMicrotasks();
 
-    const exportsPath = `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`;
+    const exportsPath = `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`;
     const callsAfterReady = fetchMock.mock.calls.filter(
       (call) => (call[0] as string) === exportsPath,
     ).length;
@@ -464,7 +480,9 @@ describe('ExportBar', () => {
     // Simulates the one line `useDocumentAutosave`'s `onSuccess` already carries (F2, AC-41): a
     // successful save invalidates the run's export list on the SAME query client the bar reads.
     await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: exportJobsQueryKey(EXPORT_RUN_ID) });
+      await queryClient.invalidateQueries({
+        queryKey: exportJobsQueryKey(EXPORT_RUN_ID, ACCOUNT_SCOPE_MAP),
+      });
     });
 
     expect(await screen.findByText('Your document changed — Export again')).toBeInTheDocument();
@@ -503,7 +521,7 @@ describe('ExportBar', () => {
   it('AC-42: 410 export_file_gone maps to "That file is no longer available — Export again", and the recovery the copy promises is reachable — MAJOR 2 (/verify slice 1.5)', async () => {
     stubObjectUrl();
     spyOnAnchorClicks();
-    const exportsPath = `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`;
+    const exportsPath = `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`;
     const fetchMock = stubExportFetch(EXPORT_RUN_ID, {
       exportJobs: () =>
         Promise.resolve(
@@ -562,7 +580,7 @@ describe('ExportBar', () => {
     // And the retry must NOT be a second GET on the file that already 410'd — that would be the bug
     // this test exists to catch, passing anyway because nobody checked what the click did.
     const fileCalls = fetchMock.mock.calls.filter(
-      (call) => (call[0] as string) === '/api/export-jobs/job-410/file',
+      (call) => (call[0] as string) === '/api/me/export-jobs/job-410/file',
     );
     expect(fileCalls).toHaveLength(1);
 
@@ -670,6 +688,8 @@ describe('ExportBar', () => {
     expect(container.querySelectorAll('a[href^="/api/"]')).toHaveLength(0);
   });
 
+  // Slice 5.2 (AC-16): the bar is an account's, and retention follows the scope (2.3's AC-49): an
+  // account's files live with its history, not 24 hours.
   it('AC-35: states where the files are made, how long they live, and that nothing else sees them', async () => {
     stubExportFetch(EXPORT_RUN_ID, {
       exportJobs: () => Promise.resolve(jsonResponse(200, { items: [] })),
@@ -679,7 +699,7 @@ describe('ExportBar', () => {
 
     expect(
       await screen.findByText(
-        'Your files are made on our server, kept for 24 hours, and never sent anywhere else.',
+        'Your files are made on our server, kept with your history until you delete it, and never sent anywhere else.',
       ),
     ).toBeInTheDocument();
   });
@@ -859,7 +879,7 @@ describe('ExportBar', () => {
 
       fireEvent.click(within(pdfRegion).getByRole('button', { name: /export again/i }));
 
-      const exportsPath = `/api/tailoring-runs/${EXPORT_RUN_ID}/exports`;
+      const exportsPath = `/api/me/tailoring-runs/${EXPORT_RUN_ID}/exports`;
       await waitFor(() => {
         const posts = fetchMock.mock.calls.filter(
           (call) =>

@@ -6,6 +6,8 @@ its responses carry, the rate-limit principal — the `(scope, identifier)` pair
 is keyed on (`"session"` and the session id for a guest) — and, where a `Location` is written, the
 collection's URL prefix. The guest router (`routers/tailoring.py`) is then only its decorators, its
 credential and a call. The contract each body implements is documented on the guest route.
+`request_tailoring_run` is the exception since slice 5.2: account-only (the guest `POST` is a fixed
+403), so it takes the `user_id` and nothing guest-shaped.
 
 **Nothing here reads a credential**, so this module adds nothing to the AST scan's transfer-route
 set, which is exactly `{POST /api/me/guest-work/claim}` since 2.4 (AC-25).
@@ -28,6 +30,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tailorcraft.application.tailoring.get_tailoring_run import GetTailoringRun
+from tailorcraft.application.tailoring.record_run_not_queued import (
+    RecordRunNotQueued,
+    RecordRunNotQueuedCommand,
+)
 from tailorcraft.application.tailoring.request_tailoring_run import (
     RequestTailoringRun,
     RequestTailoringRunCommand,
@@ -39,11 +45,10 @@ from tailorcraft.application.tailoring.revise_tailored_document import (
     ReviseTailoredDocumentCommand,
 )
 from tailorcraft.domain.identity.ownership import GuestOwner, Owner, UserOwner
+from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.intake.value_objects import BaseCvId
 from tailorcraft.domain.posting.value_objects import JobPostingId
-from tailorcraft.domain.shared.clock import Clock
 from tailorcraft.domain.shared.errors import DomainError
-from tailorcraft.domain.shared.events import EventPublisherPort
 from tailorcraft.domain.tailoring.errors import (
     TailoredDocumentVersionConflict,
     TailoringNotQueued,
@@ -72,6 +77,7 @@ from tailorcraft.infrastructure.api.schemas.tailoring import (
     TailoringRunResponse,
     TailoringRunSummary,
 )
+from tailorcraft.infrastructure.events.deferred_publisher import DeferredEventPublisher
 from tailorcraft.infrastructure.rate_limit import (
     RateLimitDecision,
     RateLimiterUnavailable,
@@ -260,75 +266,41 @@ def no_store(response: Response) -> None:
 
 async def record_not_queued(
     run_id: TailoringRunId,
-    runs: TailoringRunRepository,
-    events: EventPublisherPort,
-    clock: Clock,
+    record: RecordRunNotQueued,
+    events: DeferredEventPublisher,
     db: AsyncSession,
 ) -> None:
-    """G-14's **second transaction**: record a committed run the broker refused as `failed` /
-    `not_queued`, so the client is not left polling a run that can never run.
+    """G-14's **second transaction**: a committed run the broker refused is recorded `failed` /
+    `not_queued`, its credit comes back and `runs_failed` counts, in one commit (F-10). The rule lives
+    in `RecordRunNotQueued`; this is only the transaction around it.
 
-    A separate transaction from the one that created the row, and it has to be: that one is already
-    committed — deliberately, *before* the enqueue (ADR-0014 §5) — so there is nothing left to roll
-    back into "no run". What remains is to tell the truth about the row that exists. `mark_failed`
-    is legal from `queued` for exactly this case, and it leaves `started_at` `None`, because no
-    worker ever began a call.
+    The first transaction is already committed (commit-then-enqueue, ADR-0014 §5), so there is no "no
+    run" to roll back to; what remains is to tell the truth about the row that exists.
 
-    **If this write fails too, the run stays `queued`, and that is the chosen survivor rather than a
-    gap** — ADR-0006 §2's rule: of the crash windows available, pick the one whose survivor is
-    recoverable. A `queued` run with no task is visible in the database, reads to the user as
-    "Waiting for a worker…" (G-15's copy), and is recovered by re-enqueuing its id. Nothing is
-    raised from here in that branch: the caller still answers 503 `queue_unavailable`, which is the
-    true answer to what the user asked for regardless of which of the two states the row ended in.
+    **If this write fails, the run stays `queued` and charged, and that is the chosen survivor**
+    (ADR-0006 §2): visible, and the sweep's lost-queued list fails and refunds it (F-11). Nothing is
+    raised: the caller answers 503 `queue_unavailable` either way. `except Exception` is the floor
+    (a publish reported refused that actually reached a worker makes `mark_failed` refuse with a
+    `DomainError`; a driver error outside SQLAlchemy's tree), never `BaseException`, so a cancelled
+    request still cancels. The fully-qualified type only, never the message (a driver's can quote
+    parameters), and no client IP.
 
-    The event is published only **after** the commit, so a log line never announces a `failed` state
-    that a rollback is about to un-happen.
-
-    Known, accepted residual: `get` returns the instance already in this session's identity map
-    (`expire_on_commit=False`), not a fresh read. The only way a worker could have touched the row
-    in between is a publish that *reached* the broker and was still reported as refused (a timeout
-    after the write) — rare enough that a `populate_existing` re-read on the broker-down path is not
-    worth its own branch today.
+    **The events are published only after the commit** (`events` holds them until `release`), so a
+    log line never announces a `failed` run or a refund that a rollback is about to un-happen.
     """
     try:
-        run = await runs.get(run_id)
-        run.mark_failed(TailoringFailureReason.NOT_QUEUED, clock.now())
-        await runs.save(run)
+        await record(RecordRunNotQueuedCommand(tailoring_run_id=run_id))
         await db.commit()
-    except SQLAlchemyError as exc:
-        await db.rollback()
-        # The run stays `queued` — the recoverable survivor. The id and the exception's type name
-        # only: no message (a driver error can quote parameters) and, above all, no client IP.
-        log.warning(
-            "tailoring.not_queued_unrecorded",
-            tailoring_run_id=str(run_id.value),
-            error_type=type(exc).__name__,
-        )
-        return
     except Exception as exc:
-        # **THE FLOOR** under the handler above, and it has a concrete scenario rather than a
-        # hypothetical one: the publish that `queue.enqueue` reported as refused actually *reached*
-        # the broker (a timeout after the write — the residual this docstring already names), a
-        # worker picked the task up, and by the time `mark_failed` runs here the run is `running` or
-        # already decided, so the aggregate refuses the transition with a `DomainError`. That is not
-        # a `SQLAlchemyError`, and without this branch it escaped the handler as a bare 500 — breaking
-        # G-14's promise that every way this second write can fail still answers 503
-        # `queue_unavailable`. A driver error that is not wrapped in SQLAlchemy's tree lands here too.
-        #
-        # Same outcome as the branch above, and the same privacy rules: the fully-qualified TYPE,
-        # never `str(exc)` (a domain error is harmless, a driver's is not, and this branch cannot tell
-        # which it has) and never `exc_info`. Nothing is re-raised — the caller answers 503 either
-        # way — so there is no chain to cut with `from None`. `Exception`, never `BaseException`: a
-        # cancelled request must still cancel.
+        events.discard()
         await db.rollback()
         log.warning(
             "tailoring.not_queued_unrecorded",
             tailoring_run_id=str(run_id.value),
             error_type=f"{type(exc).__module__}.{type(exc).__qualname__}",
         )
-        return
-
-    await events.publish(*run.release_events())
+    else:
+        await events.release()
 
 
 def _owner_log_fields(requester: Owner) -> dict[str, str]:
@@ -353,26 +325,68 @@ async def request_tailoring_run(
     request: Request,
     response: Response,
     body: CreateTailoringRunRequest,
-    requester: Owner,
-    expires_at: datetime | None,
-    principal: tuple[RateLimitScope, str],
+    user_id: UserId,
     location_prefix: str,
     settings: Settings,
-    clock: Clock,
     rate_limiter: RedisFixedWindowRateLimiter,
     request_run: RequestTailoringRun,
     runs: TailoringRunRepository,
     queue: TailoringQueuePort,
-    events: EventPublisherPort,
+    record_not_queued_run: RecordRunNotQueued,
+    not_queued_events: DeferredEventPublisher,
     db: AsyncSession,
-    translate: Callable[[DomainError], HTTPException] = domain_error_to_http_exception,
+    translate: Callable[[DomainError], HTTPException],
 ) -> TailoringRunResponse:
-    """`POST /api/tailoring-runs`'s body: the fail-closed limiter (principal and IP), the use case,
-    the in-handler commit, **then** the enqueue, then `Location: {location_prefix}/{id}`.
+    """`POST /api/me/tailoring-runs`'s body: the fail-closed limiter (principal and IP), the use case
+    (which charges the credit), the in-handler commit, **then** the enqueue, then
+    `Location: {location_prefix}/{id}`. Account-only since slice 5.2: the guest `POST` is a fixed 403.
 
-    `translate` maps a `DomainError` from the use case to a response; the account twin passes one
-    whose cap messages speak to a signed-in user (`errors.account_error_to_http_exception`).
+    **`no-store` on every answer, refusals included** (plan §4): a raised `HTTPException` loses the
+    injected `Response`'s headers, so each refusal gets its own on the way out.
+
+    `translate` maps a `DomainError` from the use case to a response; the account's cap messages speak
+    to a signed-in user (`errors.account_error_to_http_exception`).
     """
+    no_store(response)
+    try:
+        return await _request_tailoring_run(
+            request=request,
+            response=response,
+            body=body,
+            user_id=user_id,
+            location_prefix=location_prefix,
+            settings=settings,
+            rate_limiter=rate_limiter,
+            request_run=request_run,
+            runs=runs,
+            queue=queue,
+            record_not_queued_run=record_not_queued_run,
+            not_queued_events=not_queued_events,
+            db=db,
+            translate=translate,
+        )
+    except HTTPException as exc:
+        exc.headers = {**(exc.headers or {}), "Cache-Control": "no-store"}
+        raise
+
+
+async def _request_tailoring_run(
+    *,
+    request: Request,
+    response: Response,
+    body: CreateTailoringRunRequest,
+    user_id: UserId,
+    location_prefix: str,
+    settings: Settings,
+    rate_limiter: RedisFixedWindowRateLimiter,
+    request_run: RequestTailoringRun,
+    runs: TailoringRunRepository,
+    queue: TailoringQueuePort,
+    record_not_queued_run: RecordRunNotQueued,
+    not_queued_events: DeferredEventPublisher,
+    db: AsyncSession,
+    translate: Callable[[DomainError], HTTPException],
+) -> TailoringRunResponse:
     # -- 1. The rate limiter, both scopes, FAIL-CLOSED (G-11, G-12, AC-17, AC-18). -----------------
     #
     # Before the use case, so a 429 or a 503 here creates no row and spends nothing (ADR-0014 §2:
@@ -389,9 +403,8 @@ async def request_tailoring_run(
     # `namespace` and the error type — and never the identifier, which for the IP scope IS the client
     # address — so this branch adds no second line.
     ip_identifier = client_ip(request, settings.trusted_proxy_hops)
-    principal_scope, principal_id = principal
     checks: tuple[tuple[RateLimitScope, str, int], ...] = (
-        (principal_scope, principal_id, settings.tailoring_rate_limit_per_hour),
+        ("user", str(user_id.value), settings.tailoring_rate_limit_per_hour),
         ("ip", ip_identifier, settings.tailoring_rate_limit_per_ip_per_hour),
     )
     decisions: list[tuple[RateLimitScope, RateLimitDecision]] = []
@@ -427,7 +440,7 @@ async def request_tailoring_run(
 
     # -- 2. The use case (G-6 … G-10, AC-14, AC-15). ---------------------------------------------
     command = RequestTailoringRunCommand(
-        owner=requester,
+        owner=UserOwner(user_id),
         base_cv_id=BaseCvId(body.base_cv_id),
         job_posting_id=JobPostingId(body.job_posting_id),
     )
@@ -444,7 +457,7 @@ async def request_tailoring_run(
     # the status and the request time.
     run_id = result.tailoring_run_id
     saved = await runs.get(run_id)
-    wire = to_response(saved, expires_at)
+    wire = to_response(saved, None)
 
     # -- 3. Commit HERE, inside this handler's own error boundary (G-13). -------------------------
     #
@@ -480,7 +493,7 @@ async def request_tailoring_run(
         # G-14. The adapter has already logged `tailoring.not_queued` with the run id and the error
         # type. The row is committed; record the truth about it in a second transaction, then answer
         # 503 whichever way that write went (see `record_not_queued` for both branches).
-        await record_not_queued(run_id, runs, events, clock, db)
+        await record_not_queued(run_id, record_not_queued_run, not_queued_events, db)
         raise domain_error_to_http_exception(exc) from exc
 
     # -- 5. Tell the client where to poll. --------------------------------------------------------

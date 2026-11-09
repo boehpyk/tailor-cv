@@ -17,7 +17,16 @@ The authoritative migration is `alembic/versions/…_add_scoring_tables.py`; `al
 
 from __future__ import annotations
 
-from sqlalchemy import CheckConstraint, Column, ForeignKey, Integer, Table, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    Column,
+    ForeignKey,
+    Index,
+    Integer,
+    Table,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 from tailorcraft.domain.scoring.fit_score import FitScore
@@ -37,6 +46,7 @@ from tailorcraft.infrastructure.persistence.types.scoring import (
     PromptVersionType,
     ScoredCvRefType,
     ScoredPostingRefType,
+    ScoredRunRefType,
     ScorePercentType,
 )
 
@@ -72,6 +82,9 @@ fit_score_table = Table(
     Column("llm_duration_ms", Integer, nullable=False),
     Column("cost_microusd", MicroUsdType, nullable=False),
     Column("scored_at", TIMESTAMP(timezone=True, precision=0), nullable=False),
+    # Slice 5.2 (plan §0.8): the run whose draft CV was judged, `NULL` for a base CV. No foreign key
+    # (ADR-0014); a history-entry deletion deletes the run's draft scores by this column.
+    Column("tailoring_run_id", ScoredRunRefType, nullable=True),
     # FS-1.
     CheckConstraint("num_nonnulls(guest_session_id, user_id) = 1", name="exactly_one_owner"),
     CheckConstraint("score BETWEEN 0 AND 100", name="score_in_range"),
@@ -86,6 +99,12 @@ fit_score_table = Table(
         "cv_fingerprint",
         "posting_fingerprint",
         name="uq_scoring_fit_score_user_pair",
+    ),
+    # Partial: almost every row is a base CV's, and only a run's deletion reads by this column.
+    Index(
+        "ix_scoring_fit_score_tailoring_run_id",
+        "tailoring_run_id",
+        postgresql_where=text("tailoring_run_id IS NOT NULL"),
     ),
 )
 
@@ -110,5 +129,6 @@ mapper_registry.map_imperatively(
         "_llm_duration_ms": fit_score_table.c.llm_duration_ms,
         "_cost": fit_score_table.c.cost_microusd,
         "_scored_at": fit_score_table.c.scored_at,
+        "_draft_of": fit_score_table.c.tailoring_run_id,
     },
 )

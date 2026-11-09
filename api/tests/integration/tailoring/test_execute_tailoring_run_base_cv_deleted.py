@@ -19,11 +19,13 @@ from __future__ import annotations
 from datetime import timedelta
 from uuid import uuid4
 
+from tailorcraft.application.billing.refund_credit_for_run import RefundCreditForRun
 from tailorcraft.application.tailoring.execute_tailoring_run import (
     ExecuteTailoringRun,
     ExecuteTailoringRunCommand,
     ExecuteTailoringRunOutcome,
 )
+from tailorcraft.application.tailoring.record_run_failure import RecordRunFailure
 from tailorcraft.domain.identity.ownership import UserOwner
 from tailorcraft.domain.identity.value_objects import UserId
 from tailorcraft.domain.tailoring.events import TailoringRunFailed
@@ -31,9 +33,11 @@ from tailorcraft.domain.tailoring.value_objects import TailoringFailureReason, T
 from tailorcraft.infrastructure.clock import FixedClock
 from tests.integration.fakes import (
     FakeBaseCvRepository,
+    FakeCreditAccountRepository,
     FakeJobPostingRepository,
     FakeLlm,
     FakeTailoringRunRepository,
+    RecordingDailyCounter,
     RecordingEventPublisher,
 )
 from tests.integration.owners import a_draft, extracted_cv, pasted_posting, queued_run
@@ -51,7 +55,19 @@ class _World:
 
     def use_case(self) -> ExecuteTailoringRun:
         return ExecuteTailoringRun(
-            self.runs, self.cvs, self.postings, self.llm, self.events, self.clock
+            self.runs,
+            self.cvs,
+            self.postings,
+            self.llm,
+            self.events,
+            self.clock,
+            record_failure=RecordRunFailure(
+                self.runs,
+                RefundCreditForRun(FakeCreditAccountRepository()),
+                RecordingDailyCounter(),
+                self.events,
+            ),
+            counters=RecordingDailyCounter(),
         )
 
 

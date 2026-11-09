@@ -173,6 +173,7 @@ _READ_ONLY = [
     "usage",
     "cost",
     "scored_at",
+    "draft_of",
 ]
 
 

@@ -51,6 +51,8 @@ from tailorcraft.infrastructure.api.deps import (
     GetTailoringRunDep,
     ListExportsForRunDep,
     ListTailoringHistoryDep,
+    NotQueuedEventsDep,
+    RecordRunNotQueuedDep,
     RenderDocumentInlineDep,
     RequestExportDep,
     RequestTailoringRunDep,
@@ -154,15 +156,15 @@ def _principal(user_id: UserId) -> tuple[Literal["user"], str]:
             "model": ErrorResponse,
             "description": (
                 "base_cv_not_extracted | tailoring_already_running (+ `active_tailoring_run_id`) "
-                "| too_many_tailoring_runs"
+                "| too_many_tailoring_runs | no_credits (slice 5.2: balance 0, nothing written)"
             ),
         },
         status.HTTP_503_SERVICE_UNAVAILABLE: {
             "model": ErrorResponse,
             "description": (
                 "rate_limit_unavailable (the tailoring limiter fails closed — this endpoint "
-                "spends money) | queue_unavailable (the row is committed and recorded "
-                "`failed`/`not_queued` first) | service_unavailable"
+                "spends money) | queue_unavailable (the row is committed, then recorded "
+                "`failed`/`not_queued` and refunded) | service_unavailable"
             ),
         },
         **REQUEST_TOO_LARGE,
@@ -177,33 +179,31 @@ async def request_my_tailoring_run(
     body: Annotated[CreateTailoringRunRequest, Body()],
     user_id: RequireUserDep,
     settings: SettingsDep,
-    clock: ClockDep,
     rate_limiter: TailoringRateLimiterDep,
     request_run: RequestTailoringRunDep,
     runs: TailoringRunRepositoryDep,
     queue: TailoringQueueDep,
-    events: EventPublisherDep,
+    record_not_queued: RecordRunNotQueuedDep,
+    not_queued_events: NotQueuedEventsDep,
     db: SessionDep,
 ) -> TailoringRunResponse:
-    """Request one tailoring run from the account's own saved CV and posting — 1.3's contract, the
-    principal `("user", <id>)` plus the client IP on the fail-closed budget, checked before the use
-    case; commit, then enqueue (the shared body)."""
-    _no_store(response)
+    """Request one tailoring run from the account's own saved CV and posting, spending one credit
+    (slice 5.2): the principal `("user", <id>)` plus the client IP on the fail-closed budget, checked
+    before the use case; commit, then enqueue; a refused enqueue fails the run and refunds it in a
+    second transaction (F-10). 409 `no_credits` at balance 0. `no-store` on every answer."""
     return await handlers.request_tailoring_run(
         request=request,
         response=response,
         body=body,
-        requester=UserOwner(user_id),
-        expires_at=None,
-        principal=_principal(user_id),
+        user_id=user_id,
         location_prefix=router.prefix,
         settings=settings,
-        clock=clock,
         rate_limiter=rate_limiter,
         request_run=request_run,
         runs=runs,
         queue=queue,
-        events=events,
+        record_not_queued_run=record_not_queued,
+        not_queued_events=not_queued_events,
         db=db,
         translate=partial(
             account_error_to_http_exception,

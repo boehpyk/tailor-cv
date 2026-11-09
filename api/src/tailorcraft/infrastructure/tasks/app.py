@@ -43,8 +43,10 @@ from kombu import Queue
 from tailorcraft.infrastructure.observability import configure_logging, configure_sentry
 from tailorcraft.infrastructure.settings import Settings, get_settings
 from tailorcraft.infrastructure.tasks.limits import (
+    BROKER_VISIBILITY_TIMEOUT_SECONDS,
     TASK_SOFT_TIME_LIMIT_SECONDS,
     refuse_mail_deadline_within_soft_limit,
+    refuse_queued_lost_window_within_visibility_timeout,
     refuse_stale_windows_within_time_limit,
 )
 
@@ -161,6 +163,8 @@ def create_celery() -> Celery:
         MisconfiguredSettings: `tailoring_stale_after_seconds` is not above the hard time limit.
         MisconfiguredSettings: `export_stale_after_seconds` is not above the hard time limit.
         MisconfiguredSettings: `mail_total_deadline_seconds` is not below the soft time limit.
+        MisconfiguredSettings: `tailoring_queued_lost_after_seconds` is not above the visibility
+            timeout.
     """
     settings = get_settings()
 
@@ -175,6 +179,8 @@ def create_celery() -> Celery:
     refuse_stale_windows_within_time_limit(settings)
     # Slice 2.5: the mail adapter's deadline must end before the soft limit interrupts a send.
     refuse_mail_deadline_within_soft_limit(settings)
+    # Slice 5.2: a lost `queued` run is swept only after its redelivery has had its chance.
+    refuse_queued_lost_window_within_visibility_timeout(settings)
 
     celery_app = Celery(
         "tailorcraft",
@@ -244,8 +250,10 @@ def create_celery() -> Celery:
         #     run therefore arrives after the sweep has recorded that run, and step 3 finds it
         #     decided.
         #   * A `queued` run whose message was lost with a SIGKILLed main process is delivered again
-        #     after ten minutes rather than an hour. **That is the only recovery a `queued` run
-        #     has**: the sweep looks only at `running` runs.
+        #     after ten minutes rather than an hour. Since slice 5.2 the sweep also fails a `queued`
+        #     run older than `tailoring_queued_lost_after_seconds` (`not_queued`, refunded), and
+        #     `create_celery` refuses that window unless it is above this one, so the redelivery
+        #     always gets its chance first.
         #
         # **This also bounds any future `countdown`/`eta` task.** On Redis, a message scheduled
         # further ahead than this is restored and delivered again every 600 s until it runs, which
@@ -253,7 +261,7 @@ def create_celery() -> Celery:
         #
         # Set in the shared config so the API, which publishes, and the worker, which restores,
         # agree on one value.
-        broker_transport_options={"visibility_timeout": 600},
+        broker_transport_options={"visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS},
         # --- The named queues (slice 1.3) ------------------------------------------------------
         #
         # Tailoring gets its **own** named queue from the first slice that needs one. One line now,

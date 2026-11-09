@@ -412,6 +412,10 @@ class AccountErasureReport:
     # unchanged. The adapter fills it from T17, and `EraseAccount` passes it through from T9.
     # The account's tracked applications (cards) the erasure deleted. A count, never a tracking type.
     tracked_applications: int = 0
+    # Slice 5.2 (AC-31): the account's balance and ledger lines, gone by the cascade. Defaulted, so
+    # they follow the card count. Counts, never a billing type.
+    credits_left: int = 0
+    credit_entries: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -438,6 +442,10 @@ class AccountCounts:
     # anything fills it; `AccountDataPort.count_account`'s adapter fills it from T17. A count, never a
     # tracking type.
     tracked_applications: int = 0
+    # Slice 5.2 (AC-31): the balance (`SUM(credits)`) and the ledger lines. Defaulted, after the card
+    # count, so `AccountErasureReport`'s field order stays legal (plan §2).
+    credits_left: int = 0
+    credit_entries: int = 0
 
 
 # --------------------------------------------------------------------------------------------------

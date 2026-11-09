@@ -243,3 +243,29 @@ that its text need not change when it does. When it lands, it must count this ta
   scores, as the table says.) The claim's offer does not name scores: they travel with the work it does name.
 - **The spend ledger (ADR-0041) is not part of this.** It holds a date and a number, no personal data,
   and it survives every deletion, which is what lets the cap survive the purge.
+
+## Amendment: 2026-11-07, from the plan of slice 5.2 (`credits-and-demand-test`)
+
+Slice 5.2 adds a credit history per account (ADR-0042) and anonymous demand counters (ADR-0043). The
+letter (g) stays held for ADR-0039, and (h) is 5.1's. When (g) lands, it must count the two billing
+tables as registered users' data and the counter table as holding none.
+
+**(i) A credit history is kept until the account is erased; the counters are kept for good, because they
+hold nobody.**
+
+| Data | What it holds | What deletes it |
+|---|---|---|
+| `billing_credit_account` | the user id, when it opened, the first pack click, the payment-notice consent | Account erasure (CLI, `/admin`, self-service), by FK cascade from `identity_user`, under the user-row lock (c) already holds |
+| `billing_credit_entry` | the user id, a kind, a signed amount, a run id for a charge or a refund, an instant | The same cascade, through the account. Never updated, never deleted otherwise |
+| `demand_daily_counter` | a UTC day, a counter name, a number | Nothing. No owner, no id: it survives the purge and every erasure, which is its purpose |
+
+- **Never guest data, by schema.** The billing tables have no `guest_session_id` column, so the purge
+  cannot reach them and the claim (e) moves none. A test proves registered users' billing rows survive
+  the purge.
+- **A history-entry deletion keeps the credit entries.** A deleted run's charge and refund keep the run's
+  id, a dangling reference with no content, as ADR-0014's amendment (b) keeps a run's `base_cv_id`.
+- **No files.** §2's order has nothing to unlink, and the orphan sweep is unaffected.
+- **Stated where it happens (§5).** `erase-account` appends `; billing: N credit(s) left, N credit
+  entr(y/ies)`, dry run included, and both erasure flows warn *"N unused credit(s) will be removed and
+  can't be restored"* (or *"Any unused credits are removed too."* when the balance can't be read).
+  Erasure is never blocked by billing.

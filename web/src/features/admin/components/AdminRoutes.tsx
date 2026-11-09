@@ -6,6 +6,7 @@ import { AdminCvPage } from './AdminCvPage';
 import { AdminNav } from './AdminNav';
 import { AdminPostingPage } from './AdminPostingPage';
 import { AdminRunPage } from './AdminRunPage';
+import { DemandPage } from './DemandPage';
 import { GuestListPage } from './GuestListPage';
 import { GuestSessionPage } from './GuestSessionPage';
 import { StoragePage } from './StoragePage';
@@ -43,6 +44,7 @@ export function AdminRoutes({ actorId }: AdminRoutesProps): React.JSX.Element {
       element: <AdminPostingPage actorId={actorId} />,
     },
     { path: 'storage', element: <StoragePage actorId={actorId} /> },
+    { path: 'demand', element: <DemandPage actorId={actorId} /> },
     { path: '*', element: <NotFoundPage /> },
   ]);
   return (

@@ -72,10 +72,14 @@ async def test_ac36_the_dry_run_appends_the_scoring_segment_to_the_unchanged_lin
         )
 
         assert exit_code == erase_account_command.EXIT_OK
-        assert capsys.readouterr().out.strip() == (
-            f"would erase account {user_id}: 0 saved CV(s), 0 file(s), 0 login(s) (dry run); "
-            "history: 0 tailoring run(s), 0 job posting(s), 0 export job(s); "
-            "tracking: 0 tracked application(s); scoring: 2 fit score(s)"
+        assert (
+            capsys.readouterr()
+            .out.strip()
+            .startswith(
+                f"would erase account {user_id}: 0 saved CV(s), 0 file(s), 0 login(s) (dry run); "
+                "history: 0 tailoring run(s), 0 job posting(s), 0 export job(s); "
+                "tracking: 0 tracked application(s); scoring: 2 fit score(s)"
+            )
         )
         assert await _scores_of(engine, user_id) == 2, "a dry run deletes nothing"
     finally:
@@ -99,10 +103,14 @@ async def test_ac36_erasure_removes_the_scores_and_appends_the_segment_to_the_un
             )
 
         assert exit_code == erase_account_command.EXIT_OK, caplog.text
-        assert capsys.readouterr().out.strip() == (
-            f"erased account {user_id}: 0 saved CV(s), 0 file(s) unlinked, 0 failed; "
-            "history: 0 tailoring run(s), 0 job posting(s), 0 export job(s), 0 file(s) in all; "
-            "tracking: 0 tracked application(s); scoring: 3 fit score(s)"
+        assert (
+            capsys.readouterr()
+            .out.strip()
+            .startswith(
+                f"erased account {user_id}: 0 saved CV(s), 0 file(s) unlinked, 0 failed; "
+                "history: 0 tailoring run(s), 0 job posting(s), 0 export job(s), 0 file(s) in all; "
+                "tracking: 0 tracked application(s); scoring: 3 fit score(s)"
+            )
         )
         assert await _scores_of(engine, user_id) == 0
         assert await _scores_of(engine, bystander) == 1, "another account's score stays"
@@ -122,6 +130,6 @@ async def test_ac36_an_account_with_no_scores_reports_zero(
     try:
         await erase_account_command.erase_account(settings, user_id=UserId(user_id), dry_run=True)
 
-        assert capsys.readouterr().out.strip().endswith("; scoring: 0 fit score(s)")
+        assert "; scoring: 0 fit score(s)" in capsys.readouterr().out
     finally:
         await _drop_user(engine, user_id)

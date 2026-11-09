@@ -555,3 +555,38 @@ line:
 
 §4's rejected *unique partial index* is unaffected: `scoring_fit_score`'s unique constraints
 state a different fact, one assessment per pair (ADR-0040 decision 6).
+
+## Amendment: 2026-11-07, from the plan of slice 5.2 (`credits-and-demand-test`)
+
+Slice 5.2 makes a run cost the user one credit (ADR-0042) and closes guest tailoring. §1's queue, §5's
+commit-then-enqueue, §6's retries and the failure reasons all stand; five things around them change.
+
+**(f) A run is an account's, and it is charged and refunded with its state.**
+
+- **§3's guest route is closed.** `POST /api/tailoring-runs` keeps its path and answers **403
+  `account_required`** to every request, before any cookie, body, limiter or mint, so the per-session
+  cap of (c) no longer applies to anything new. A stale bundle gets a 403 it can explain instead of a
+  405. Guest `GET` and `PUT` stay, so a run made before release is readable, editable and claimable
+  until the purge.
+- **§4 is hard for accounts.** The charge locks the account row (`FOR NO KEY UPDATE`) after the run's
+  insert, and a re-check of the active run runs under that lock, so a second request that waited sees the
+  first's committed run and answers 409 `tailoring_already_running`. This is the lock on the hot path §4
+  rejected, made per account, and justified by money: **relaxing it brings back double charges.** The
+  soft check before the insert stays as the fast path.
+- **A queued run whose task was lost is recovered.** §5 and the 2026-09-13 amendment left a `queued` run
+  with no task stuck for good, and the active-run rule then blocked its owner. The stale sweep now also
+  marks `failed` / `not_queued` any run still `queued` 30 minutes after `requested_at`
+  (`TailoringRun.is_lost_in_queue`, strict). The interval is a setting refused at startup unless it is
+  above the broker's `visibility_timeout`, so a redelivery always gets its chance first. A late delivery
+  finds a decided run and SKIPs. `not_queued` is reused: no new reason, CHECK or copy.
+- **Every failure site refunds, in the failure's transaction.** The worker's `_record_failure`, the stale
+  sweep (both lists) and a refused enqueue (now the `RecordRunNotQueued` use case, not the handler's body)
+  go through one collaborator, `RecordRunFailure`: mark failed, refund if charged, count, save, publish.
+  §2's receipt is unchanged: `LlmCallMetrics` stay on a succeeded run only, and a refund never touches them.
+- **The worker's failed save rolls back the whole transaction.** `CommittingTailoringRunRepository.save`
+  keeps its SAVEPOINT and now calls `session.rollback()` before re-raising, so a refund written before the
+  save cannot survive a version conflict. The sweep lists ids first and re-reads each run, because a
+  rollback expires the instances it had loaded.
+
+The entries name the run by id with no foreign key, as this ADR's cross-context rule requires, and keep it
+after the run is deleted: a dangling id, as (b) does for `base_cv_id`.
