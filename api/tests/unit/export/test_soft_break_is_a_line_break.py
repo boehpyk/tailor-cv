@@ -7,6 +7,7 @@ read off the output. `SOFT_BREAK_FIXTURE_MARKDOWN` has single-newline lines the 
 
 from __future__ import annotations
 
+import re
 from io import BytesIO
 
 from docx import Document
@@ -48,7 +49,9 @@ def test_normalize_to_grammar_yields_a_hardbreak_for_each_single_newline() -> No
 def test_pdf_html_has_a_br_between_the_header_lines() -> None:
     html = render_body_fragment(normalize_to_grammar(parse_document(SOFT_BREAK_FIXTURE_MARKDOWN)))
 
-    assert "Senior Backend Engineer<br />jordan@example.com | London" in html
+    # The `<br />` is what AC-13 asks for; the whitespace after it is the hardbreak arm's own
+    # (`<br />\n`, unchanged since 1.5) and is not pinned.
+    assert re.search(r"Senior Backend Engineer<br />\s*jordan@example\.com \| London", html)
 
 
 def test_pdf_html_has_one_br_per_soft_break() -> None:
@@ -78,7 +81,8 @@ def test_docx_header_lines_are_not_joined_by_a_space() -> None:
     texts = [p.text for p in Document(BytesIO(data)).paragraphs]
 
     assert not any("Acme Corp 2021" in t or "Engineer Acme" in t for t in texts)
-    assert any(t == "Acme Corp\n2021 - Present" for t in texts)
+    # The fixture's role is one paragraph of three lines, so its DOCX paragraph is all three.
+    assert any(t == "Senior Backend Engineer\nAcme Corp\n2021 - Present" for t in texts)
 
 
 def test_txt_keeps_a_newline_between_the_role_lines() -> None:
