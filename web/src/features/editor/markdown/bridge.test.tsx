@@ -191,9 +191,10 @@ describe('AC-14/17 — a single newline is a line break, and it round-trips', ()
     expect(doc.textContent).toBe('line oneline two');
   });
 
-  it('keeps every line of the soft-break fixture on its own line (5 breaks)', () => {
-    // header 2 + role 2 + hard-wrapped paragraph 1 = 5; list items are separate nodes, not breaks.
-    expect(hardBreakCount(parseMarkdown(softBreakFixtureMarkdown))).toBe(5);
+  it('keeps every line of the soft-break fixture on its own line (4 breaks)', () => {
+    // 1 under the h1 (an ATX heading is one line, so its newline ends the block) + 2 in the role +
+    // 1 mid-sentence = 4, as the backend twin counts; list items are separate nodes, not breaks.
+    expect(hardBreakCount(parseMarkdown(softBreakFixtureMarkdown))).toBe(4);
   });
 
   it('is stable over two round trips of the soft-break fixture', () => {
