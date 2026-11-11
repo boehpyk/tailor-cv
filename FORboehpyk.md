@@ -7690,12 +7690,36 @@ The other habit worth copying is T1's gate: **write down what each possible answ
 before you look.** When production came back with a case the plan hadn't hoped for, there was no debate
 and no bending the data. The table said "reopen OQ-9", so OQ-9 was reopened.
 
+## `/verify`: the budget no mutation could break
+
+`/verify` passed on its first round: every gate green, the reviewer found nothing serious, and every RED
+had its failure on record with no GREEN touching a test. The interesting part was AC-4.
+
+The 25 ms load budget held easily: about **6 ms** in the container. But the spec also asked for proof
+that the check could fail, by putting back the regression it guards against, a per-character Python
+loop, and watching it go over. It didn't. A loop added on top took about 16 ms; the whole normalization
+rewritten character by character took about 19 ms. **Both pass a 25 ms test.** The arithmetic was there
+all along: 2.2's lesson priced that loop at 0.4 s per 10 million characters, which is 10 ms for
+250,000. The budget was set too loose to see the thing it was named after.
+
+It's a smoke alarm mounted in the next room. It isn't broken, and the house isn't on fire, but it
+can't tell you about the fire it was installed for. You chose to accept the budget as held and write
+the measurement down (ADR-0044 §1): the code is about four times inside the limit, and the next person
+who needs a real guard here should compare against a per-character version (a ratio), not a stopwatch,
+because a ratio doesn't care how fast the machine is. **The lesson: a performance test isn't proven by
+passing; it's proven by failing when you break it on purpose.** Twice now in this project (1.6's loop
+test, and this) the deliberate break is what showed a check that couldn't fail.
+
+Two smaller notes went into ADR-0044 as accepted limits. The 200-character minimum now counts `#`
+and `**` in a Word CV, and bold text touching punctuation isn't always valid Markdown. Neither matters
+while only the model reads the text. Uploads stayed fast: p95 0.047 s for the sample Word file and
+0.060 s for a heavily formatted one, against a 3 s budget.
+
 ## What's next
 
-`/verify` (T18): the reviewer, the 25 ms load budget measured in the container with its mutation, and
-one gap to close: no test yet *types* into a run and saves, to prove the hard breaks are stored. Then the
-release, and AC-25: you rerun T1's query on runs made after it. Flat runs can't succeed any more, so
-they'll show up as failed v5 runs, and that count says how often the model still writes one block. The
-fit-score measurement grew with the corpus (64 scores, at most 128 calls). Carried, not fixed: pair 09's
-latency, the admin CV page not checked by hand, and the export screen saying "Waiting for a worker…" for
-about 15 seconds on a PDF that rendered in 182 ms, because of how often it polls.
+The release (the merge waits for your approval), then AC-25: you rerun T1's query on runs made after
+it. Flat runs can't succeed any more, so they'll show up as failed v5 runs, and that count says how
+often the model still writes one block. The fit-score measurement grew with the corpus (64 scores, at
+most 128 calls). Carried, not fixed: pair 09's latency, the admin CV page not checked by hand, five
+over-long comment lines, and the export screen saying "Waiting for a worker…" for about 15 seconds on
+a PDF that rendered in 182 ms, because of how often it polls.

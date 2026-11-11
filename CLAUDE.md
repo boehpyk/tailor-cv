@@ -20,8 +20,8 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-**Slice `tailoring-preserve-cv-formatting` is implemented (2026-11-11) on
-`feature/tailoring-preserve-cv-formatting`, awaiting `/verify`, not yet released** (ADR-0044, no
+**Slice `tailoring-preserve-cv-formatting` is verified (2026-11-11, PASS round 1) on
+`feature/tailoring-preserve-cv-formatting`, not yet released** (ADR-0044, no
 migration; HISTORY.md). Twenty-four slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, 5.2, `__Host-tc_guest`,
 `web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is
 **`credits-and-demand-test`** (slice 5.2: one credit per account, refund on failure, the pack demand

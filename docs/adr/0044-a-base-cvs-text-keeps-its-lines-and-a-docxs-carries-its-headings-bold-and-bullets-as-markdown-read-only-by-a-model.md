@@ -52,8 +52,13 @@ It is **idempotent**, so a value stored before this ADR, which is one line, load
 (200 non-whitespace characters), `EmptyExtraction`, `ExtractedTextTooShort` and `character_count =
 len(value)` are unchanged; `character_count` now counts newlines. The normalization and the
 non-whitespace count stay C-level (`splitlines`, `re.sub`, `str.count`), because they run on every
-`BaseCv` load, on the event loop: a 250,000-character, 25,000-line text constructs in 25 ms or less,
-measured at `/verify` with a mutation that breaks it.
+`BaseCv` load, on the event loop: a 250,000-character, 25,000-line text constructs in 25 ms or less.
+**Measured at `/verify` (2026-11-11, api container, median of 21, twice): 5.6–6.0 ms** (max 9.2 ms).
+No mutation broke the budget: a per-character generator added on top took 15.7–16.2 ms, and the
+whole normalization rewritten per character 18.7–19.4 ms. The owner accepted the budget as held
+(option c): 2.2's regression costs about 10 ms at this size, so 25 ms was never tight enough to catch
+it. A future change that needs a guard here measures a ratio against a per-character version, not a
+wall-clock bound.
 
 **2. A DOCX is written as Markdown, one block per paragraph.**
 
@@ -70,11 +75,15 @@ character cap (`max_extracted_characters`) counts the emitted Markdown, markup i
 still `text_too_long`. PDF and TXT get no markup: they keep the lines their library returns, because
 decision 1 stopped removing them.
 
-**Three limits, chosen and stated:**
+**Four limits, chosen and stated:**
 
 - **Inherited bold is invisible.** `run.bold` is `None` when a character or paragraph style makes the
   text bold, and resolving the style chain is more code than the report asked for. A CV that bolds its
   headings through a style shows them unbolded. Only `True` counts.
+- **Bold is not always valid CommonMark emphasis.** The markers hug the text, so a bold stretch that
+  starts or ends with punctuation and touches a letter (`**(Lead)**er`) is not a valid close, and bold
+  text holding a `*` gives `**5***`. Harmless while only a model reads it (decision 4), and the eval's
+  bold-span count may miss such a span. The trigger below covers it too.
 - **Every list is `- `.** python-docx does not expose numbering formats publicly, and reading
   `_p.pPr.numPr` is private API.
 - **Tables, text boxes, headers and footers are not extracted**, as before this ADR. Many CV templates
@@ -136,7 +145,14 @@ side. This paragraph is where to start.
 - **The admin CV page shows raw Markdown** for a new DOCX: `#` and `**` as characters. The admin is
   the one reader who sees the text, and seeing exactly what the model saw is the right thing for that
   reader.
-- **ADR-0009's 3 s p95** is re-timed at `/verify` for `sample.docx` and the new formatted fixture. The
+- **The 200-character floor now counts a DOCX's markup.** The rule is unchanged, but `#`, `**` and
+  `- ` are non-whitespace, so a DOCX with about 190 visible characters and a few headings or bold spans
+  now passes `CvTextTooShort` and `ExtractedTextTooShort`. Accepted (owner, 2026-11-11 `/verify`): the
+  floor was always provisional (OQ-9 of 1.1), and a CV that short fails on quality, not safety. Count
+  the floor on the plain text if it is ever made precise.
+- **ADR-0009's 3 s p95**, re-timed at `/verify` (2026-11-11, dev stack, 20 uploads each after 3
+  warm-ups, a fresh guest session per upload): `sample.docx` p50 0.027 s, **p95 0.047 s**; a formatted
+  DOCX (title, 16 headings, bold, 48 bullets, 4,546 characters) p50 0.037 s, **p95 0.060 s**. The
   extra work is a walk over runs already in memory.
 - **No new PII and no new destination.** The text goes where it went before, with its lines. The new
   log line carries a class name, and no event's field set changes.

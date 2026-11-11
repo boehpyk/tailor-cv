@@ -1077,7 +1077,7 @@ in [FORboehpyk.md](./FORboehpyk.md).
 > - **`tailoring-preserve-cv-formatting`** (owner-reported after 5.2's production manual test, outside
 >   the phase numbering; approved 2026-11-10 as written, every OQ on its recommendation; implemented
 >   2026-11-10 to 2026-11-11, T1–T17 on `feature/tailoring-preserve-cv-formatting` from `main` at
->   `5b2fb54`; **implemented, awaiting `/verify` (T18); not released**; no migration, no route, no API
+>   `5b2fb54`; **verified 2026-11-11 (T18, PASS round 1); not released**; no migration, no route, no API
 >   field) — two owner reports: **D3**, *"sometimes the tailored CV doesn't have line breaks"*, and
 >   *"keep headers and bold fonts as in the original"*. **The cause was older than the report:**
 >   `ExtractedText` ran `" ".join(value.split())` since 1.1, so no CV ever reached the model with its
@@ -1148,6 +1148,20 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   account is not an admin); (5) noted only, pre-existing: the export UI's poll interval shows
 >   *"Waiting for a worker…"* for about 15 s on a PDF that rendered in 182 ms. AC-25 (the owner reruns
 >   T1's query after release, flat runs now counted as `failed` with `prompt_version = '5'`) is T19.
+>   **`/verify` (T18, 2026-11-11): PASS round 1.** `make check` green (6,341 pytest, 1,907 vitest);
+>   reviewer: 0 CRITICAL / 0 MAJOR, 3 MINOR, 1 STYLE; red-first clean (four REDs recorded on
+>   assertions, no GREEN edits a test). **AC-4, measured in the api container (median of 21, twice):
+>   5.6–6.0 ms** against 25 ms (max 9.2). **No mutation broke it:** a per-character generator on top
+>   15.7–16.2 ms, the whole normalization per character 18.7–19.4 ms. The owner chose to accept the
+>   budget as held (option c): 2.2's regression costs ~10 ms at this size, so the bound never could
+>   catch it; a future guard measures a ratio (ADR-0044 §1). **ADR-0009's upload p95** (dev, 20
+>   uploads each after 3 warm-ups, a fresh guest per upload): `sample.docx` **0.047 s**, a formatted
+>   DOCX (16 headings, 48 bullets) **0.060 s**. **MINORs recorded in ADR-0044, accepted:** the 200
+>   floor now counts a DOCX's markup; bold touching punctuation, or holding a `*`, is not valid
+>   CommonMark emphasis. **Carried item (2) closed:** AC-17 is met at the bridge (serialize writes
+>   `\` + newline, stable over two more round trips); no test types into the editor. **Left (STYLE):**
+>   five comment lines over 100 columns (`checks.py:202`, `parsing.py:212`, `extraction.py:84`,
+>   `value_objects.py:149`, `corpus.py:76`).
 >
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
