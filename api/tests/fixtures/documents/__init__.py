@@ -117,6 +117,29 @@ NO_SCHEME_BRACKET_FIXTURE_MARKDOWN = (
     "Negotiated salary range [100k](150k) after the offer, cited as [1](note) in the report.\n"
 )
 
+# CommonMark soft breaks: single-newline lines, the shape a model (and an imported CV) produces. The
+# header, a role's title/employer/dates, a paragraph with a mid-sentence hard wrap, and a list.
+# **The twin of `SOFT_BREAK_FIXTURE_MARKDOWN` in the frontend's `fixtures.ts` (T11)**, typed out by
+# hand on purpose (AC-15). Deliberately NOT in `MARKDOWN_FIXTURE_CORPUS`: that corpus is mirrored
+# one-for-one by the editor's own, and its golden digests are pinned.
+SOFT_BREAK_FIXTURE_MARKDOWN = (
+    "# Jordan Rivera\n"
+    "Senior Backend Engineer\n"
+    "jordan@example.com | London\n"
+    "\n"
+    "## Experience\n"
+    "\n"
+    "**Senior Backend Engineer**\n"
+    "Acme Corp\n"
+    "2021 - Present\n"
+    "\n"
+    "Led the migration to a hexagonal architecture and kept the payments service\n"
+    "fast under load.\n"
+    "\n"
+    "- Reduced p95 latency by 40%\n"
+    "- Owned the on-call rotation\n"
+)
+
 # The full corpus AC-47's every-format-renders test iterates — the same eight documents the
 # editor's own `markdownFixtureCorpus` exports, in the same order.
 MARKDOWN_FIXTURE_CORPUS: tuple[MarkdownFixture, ...] = (
