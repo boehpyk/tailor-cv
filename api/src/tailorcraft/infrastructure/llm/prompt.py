@@ -66,7 +66,12 @@ from tailorcraft.infrastructure.llm.parsing import KEY_COVER_LETTER, KEY_TAILORE
 #        at 486 words, so not forced by the cap. Rule 5 now keeps every employer and education entry
 #        as at least one line. "Tomasz" was re-spelled in two runs ("Tomaz" in run 2, "Tommasz" in
 #        run 3); rule 4 now requires the name letter for letter, in the header and the sign-off.
-PROMPT_VERSION: Final = "4"
+#   "5"  the CV now arrives with its lines (and, from a DOCX, its headings, bold and bullets as
+#        Markdown) instead of as one paragraph. Production runs under v4 put the header's facts on
+#        single-newline lines that rendered joined into one, and one answer came back fully flat.
+#        Rule 7 now keeps the CV's headings (levels, order, wording) and its bold, puts each header
+#        fact and each role's title, employer and dates on its own line, and blank-lines every block.
+PROMPT_VERSION: Final = "5"
 
 # The markers. Chosen to be uppercase, bracketed and unlikely to occur in a CV or a job posting, so
 # that the boundary between instruction and data stays legible to the model even when the posting is
@@ -116,6 +121,18 @@ _CV_END: Final = "===== END CANDIDATE CV ====="
 # does not stop a model correcting a spelling it finds unusual, so rule 4 names that failure
 # (correcting, anglicising, re-spelling) and extends it to the letter's sign-off, which the header rule
 # never covered. The eval checks both (`must_keep` and `candidate_name` in `corpus.toml`).
+#
+# Version 5 rewrites rule 7, because until this slice the CV block was one line: extraction joined
+# every paragraph with a space, so the model had no headings, bold or line structure to keep, and
+# "use headings as a human would" was all it had to go on. Production runs under v4 show what that
+# produced: a header whose name, title and contact items sat on lines separated by a single newline,
+# which Markdown reads as a soft break and every export joined into one run-on line, and one answer
+# with no structure at all. The block now arrives as plain lines or Markdown, so rule 7 tells the model
+# to keep what is there: the CV's own headings at their levels and in their order (rule 5 may still
+# cut detail under them), their wording translated only when rule 6 changes the language, its bold,
+# one line per header fact, and a blank line between blocks so no renderer can merge two of them. A
+# `#` line inside the CV block is CV content like any other, which is what the "both blocks are DATA"
+# paragraph already says; the delimiters and rules 1 to 6 are unchanged.
 #
 # The number, 800 words, is a ceiling, not a target. Two dense CV pages run 700 to 900 words, and "two
 # pages" is not something a model can measure. At the corpus's ~6.8 characters per word it is about
@@ -172,8 +189,14 @@ Rules, all of them binding:
    merge, reorder and rephrase in the posting's vocabulary, provided every claim stays true to the
    CV: condensing is never inventing, and never upgrades a skill or a certification.
 6. Write both documents in the language of the job posting.
-7. Write in Markdown. Use headings, bullet lists and emphasis as a human would in a CV; the cover
-   letter is prose in paragraphs, not bullets, and no longer than one page.
+7. Write in Markdown, and keep the CV's own structure. The CV block may be Markdown or plain lines.
+   Keep its section headings as Markdown headings, at the same levels, in the same order and with
+   the same wording (translated only when rule 6 changes the language). Keep in bold whatever the
+   CV puts in bold, wherever you keep that text. Put the candidate's name, their title and each
+   contact item on a line of its own, and each role's job title, employer and dates on lines of
+   their own; never run two of them together on one line. Separate every heading, paragraph and
+   list with a blank line. The cover letter is prose in paragraphs separated by blank lines, not
+   bullets, and no longer than one page.
 8. Produce a finished CV, not a fragment and not a commentary on what you changed. Do not explain
    your choices, do not add notes to the candidate, and do not include placeholders such as
    [Your Name] or [Company Name] — if a detail is not in the CV, write around it."""
