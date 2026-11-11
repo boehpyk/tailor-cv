@@ -82,7 +82,9 @@ class FakeGenerate:
         prompt_tokens: int = 1_000,
         completion_tokens: int = 100,
     ) -> None:
-        cvs = {cv.id: cv.text.value for cv in corpus.base.cvs}
+        # The scoring form, not `ExtractedText.value`: the prompt carries the CV through `CvForScoring`,
+        # which collapses whitespace, while `ExtractedText` keeps lines since ADR-0044.
+        cvs = {cv.id: " ".join(cv.text.value.split()) for cv in corpus.base.cvs}
         postings = {p.id: p.text.value for p in corpus.base.postings}
         postings.update({i.posting.id: i.posting.text.value for i in corpus.injected})
         self._cvs, self._postings = cvs, postings
@@ -307,6 +309,9 @@ async def test_the_output_never_contains_a_gap_a_quote_a_prompt_or_a_completion(
     quotes = {" ".join(p.text.value.split()[:8]) for p in corpus.base.postings}
     forbidden = {GAP_SENTINEL, *quotes}
     forbidden |= {cv.text.value[:60] for cv in corpus.base.cvs}
+    # And the scoring form (ADR-0044): a multi-line prefix alone would never match a leak of the
+    # whitespace-collapsed text the prompt carries, and the check would pass vacuously.
+    forbidden |= {" ".join(cv.text.value.split())[:60] for cv in corpus.base.cvs}
     forbidden |= {p.text.value[:60] for p in corpus.base.postings}
     forbidden |= {prompt[:200] for prompt in fake.prompts} | set(fake.completions)
     for text in forbidden:
