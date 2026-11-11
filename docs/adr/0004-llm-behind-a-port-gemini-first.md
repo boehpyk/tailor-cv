@@ -97,3 +97,27 @@ The rest applies unchanged: a timeout and a bounded retry on every call, no prom
 a log, a defined behaviour for each failure, and structured output re-validated on receipt. There, the
 parser also refuses a gap that does not quote the posting. The suite still never calls the API, and
 score stability is measured by hand, like prompt quality.
+
+## Amendment: 2026-11-10, from the plan of slice `tailoring-preserve-cv-formatting`
+
+The slice keeps a base CV's lines (ADR-0044). Everything above stands, and one more answer that
+**parses but is wrong** gets a defined behaviour.
+
+- **A flat tailored CV is refused on receipt.** On 2026-11-10 a production run (prompt v4) succeeded
+  with a 3,708-character tailored CV holding no newline at all: one paragraph, charged a credit. Showing
+  soft breaks as line breaks (ADR-0015 §2, ADR-0017 §2, as amended) cannot help a document that has no
+  breaks. So `parse_tailoring_response` raises `LlmOutputInvalid` with a new closed label,
+  **`document_flat`**, when the tailored CV, as `TailoredCv` holds it, contains no `\n`.
+- **In the parser, not in `TailoredCv`.** Stored flat runs must still load, and a domain invariant would
+  refuse them on every read. The rule is about what this product accepts from the model, which is the
+  parser's job, as with the fit score's gap-quoting rule above. It runs **after** both value objects are
+  built, so a too-short or invalid document keeps its existing label. The cover letter is not checked.
+- **No new mechanism.** `LlmOutputInvalid` is already retryable, so the existing bounded retry runs
+  (`llm_max_attempts` is 2: one more call), and a flat last attempt is a failed run, refunded
+  (ADR-0042), like any malformed answer. The cost is a retry of about 7 s against the 15 s budget on the
+  runs that hit it, accepted because a flat CV charged a credit is worse. The log line carries the label,
+  never text.
+
+Why here and not in ADR-0044: that ADR decides what the model is **given**. This decides what is
+**accepted back**, which is this ADR's re-validation clause. A tailored CV with one newline is not
+flat by this rule; "almost flat" is measured by `make eval` (`is_flat`), not refused.
