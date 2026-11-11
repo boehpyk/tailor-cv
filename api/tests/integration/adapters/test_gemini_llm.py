@@ -79,8 +79,11 @@ def _posting(text: str = "x" * 150) -> JobPostingText:
 
 def _valid_response_text(cv_chars: int = 450, letter_chars: int = 250) -> str:
     """A JSON body that clears both documents' floors (400 / 200 non-whitespace characters) and
-    stays under both ceilings (20,000 / 8,000)."""
-    payload = {KEY_TAILORED_CV: "a" * cv_chars, KEY_COVER_LETTER: "b" * letter_chars}
+    stays under both ceilings (20,000 / 8,000). The CV holds one newline, still `cv_chars` long:
+    a CV with none is refused as `document_flat` (AC-26, ADR-0004's 2026-11-10 amendment)."""
+    half = cv_chars // 2
+    cv = "a" * half + "\n" + "a" * (cv_chars - half - 1)
+    payload = {KEY_TAILORED_CV: cv, KEY_COVER_LETTER: "b" * letter_chars}
     return json.dumps(payload)
 
 
@@ -144,7 +147,7 @@ async def test_the_happy_path_records_correct_llm_call_metrics(settings: Setting
     assert draft.metrics.prompt_tokens == 111
     assert draft.metrics.completion_tokens == 222
     assert draft.metrics.duration_ms >= 0
-    assert draft.documents.cv.value == "a" * 450
+    assert draft.documents.cv.value == json.loads(_valid_response_text())[KEY_TAILORED_CV]
     assert draft.documents.cover_letter.value == "b" * 250
     assert len(calls) == 1
 

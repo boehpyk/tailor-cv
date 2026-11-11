@@ -217,8 +217,9 @@ class SourceUrl:
 class JobPostingText:
     """The job description itself — pasted by the user or extracted from a page by the fetcher.
 
-    Non-blank; whitespace-normalized with `" ".join(value.split())` exactly as `ExtractedText` does
-    it; then **at least 100 non-whitespace characters** and **at most 30,000 characters of
+    Non-blank; whitespace-normalized with `" ".join(value.split())` — flattened to one line, which
+    `ExtractedText` no longer does (ADR-0044 keeps a CV's lines; a posting's layout is still noise);
+    then **at least 100 non-whitespace characters** and **at most 30,000 characters of
     normalized length**. Raises `EmptyJobPostingText`, `JobPostingTextTooShort` or
     `JobPostingTextTooLong` (P-4, P-5, P-6). Invariant J-1 lives here rather than in `JobPosting`:
     the aggregate cannot hold an invalid text because the type that carries it cannot exist in an
@@ -271,7 +272,8 @@ class JobPostingText:
 
         # `str.split()` with no argument already treats any run of whitespace (spaces, tabs,
         # newlines) as one separator and drops leading/trailing whitespace, so re-joining with a
-        # single space collapses everything in one pass. Same call `ExtractedText` makes.
+        # single space collapses everything in one pass. `ExtractedText` made the same call until
+        # ADR-0044; it now keeps lines, and this deliberately does not (a posting is not a CV).
         normalized = " ".join(self.value.split())
         non_whitespace_count = sum(1 for char in normalized if not char.isspace())
 

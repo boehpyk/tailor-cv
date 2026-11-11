@@ -92,6 +92,9 @@ class BaseCvRepository(Protocol):
 class CvTextExtractorPort(Protocol):
     """Pulls text out of an uploaded file's bytes.
 
+    Returns the CV's text with its lines. For a DOCX, headings, bold and bullets are written as
+    Markdown (ADR-0044).
+
     Takes `bytes` rather than a `FileRef`, on purpose: that keeps this port single-purpose (parse
     bytes into text — nothing about where they came from) and testable from a plain byte fixture, with
     no `FileStorePort` or file system anywhere in the test. Holding the whole file in memory to do

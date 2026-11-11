@@ -73,7 +73,7 @@ class CorpusCv:
     id: str
     # As committed, line breaks intact: what the human reads beside the tailored CV.
     raw_text: str
-    # As the pipeline sees it: whitespace-collapsed, exactly as extraction from a PDF or DOCX yields.
+    # As the pipeline sees it: normalized line by line by `ExtractedText`, as extraction yields (ADR-0044).
     text: ExtractedText
     # The candidate's name as the CV states it, declared rather than read off the first line: that line
     # carries credentials (", RN") and its shape varies from CV to CV.

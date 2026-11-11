@@ -5,10 +5,11 @@ import { createMemoryRouter, RouterProvider } from 'react-router';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { tailoringRunQueryKey } from '@/features/tailoring/hooks/useTailoringRun';
+import { createAppQueryClient } from '@/queryClient';
 import { countCallsTo, jsonResponse, makeRun } from '@/test/fixtures';
 
 import { DocumentWorkspace } from './DocumentWorkspace';
-import { normalizationFixtureMarkdown } from '../markdown/fixtures';
+import { normalizationFixtureMarkdown, softBreakFixtureMarkdown } from '../markdown/fixtures';
 import { AUTOSAVE_DEBOUNCE_MS } from '../saveState';
 import { stubDocumentFetch } from '../test/fetchStub';
 
@@ -82,8 +83,11 @@ function makeQueryClient(): QueryClient {
  * (`useTailoringRun`, read by `RunPage`) would already hold by the time a succeeded run reaches this
  * component, and the same key `useDocumentAutosave` reads/writes.
  */
-function renderDocumentWorkspace(run: TailoringRun, documentSegment: 'cv' | 'cover_letter' = 'cv') {
-  const queryClient = makeQueryClient();
+function renderDocumentWorkspace(
+  run: TailoringRun,
+  documentSegment: 'cv' | 'cover_letter' = 'cv',
+  queryClient: QueryClient = makeQueryClient(),
+) {
   queryClient.setQueryData(tailoringRunQueryKey(run.id), run);
   const router = createMemoryRouter(
     [{ path: '/runs/:runId/:document', element: <DocumentWorkspace run={run} /> }],
@@ -155,6 +159,36 @@ describe('AC-29 — opening a document does not dirty it, even when the bridge n
     expect(within(pane).getByText('bold').tagName).toBe('STRONG');
     expect(pane).toHaveTextContent('A paragraph with bold text that should normalize.');
     expect(pane).not.toHaveTextContent('__bold__');
+
+    await advance(AUTOSAVE_DEBOUNCE_MS);
+
+    expect(countCallsTo(fetchMock, putPath(RUN_ID, 'cv'), 'PUT')).toBe(0);
+  });
+});
+
+describe('AC-14/16/24 — soft-break lines show on their own lines, and opening is not dirtying', () => {
+  it('renders the CV header lines separated by <br> and issues no PUT', async () => {
+    vi.useFakeTimers();
+    const run = makeRun({
+      id: RUN_ID,
+      status: 'succeeded',
+      tailored_cv: softBreakFixtureMarkdown,
+      cover_letter: 'a cover letter',
+    });
+    const fetchMock = stubDocumentFetch({});
+
+    renderDocumentWorkspace(run, 'cv', createAppQueryClient());
+
+    const pane = paneFor('cv');
+    const heading = within(pane).getByRole('heading', { level: 1 });
+    // The two header lines under the # heading are one paragraph with a line break between them.
+    const header = within(pane).getByText(/Senior Backend Engineer/, { selector: 'p' });
+    expect(heading).toHaveTextContent('Jordan Rivera');
+    expect(header.querySelectorAll('br')).toHaveLength(1);
+    expect(header.innerHTML).toMatch(/Senior Backend Engineer<br[^>]*>/);
+    expect(
+      within(pane).getByText('Acme Corp', { exact: false }).querySelectorAll('br'),
+    ).toHaveLength(2);
 
     await advance(AUTOSAVE_DEBOUNCE_MS);
 

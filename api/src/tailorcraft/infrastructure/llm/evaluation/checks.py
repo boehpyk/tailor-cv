@@ -41,6 +41,7 @@ import math
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Final
 
 # Constitution §7: end-to-end tailoring under 15 seconds (PRD §8). A target, not a setting — see the
@@ -176,6 +177,74 @@ def unfamiliar_phrases(document: str, base_text: str, *, limit: int = 20) -> tup
         if len(found) >= limit:
             break
     return tuple(found)
+
+
+# AC-19's "flat": a CV at least this long that has fewer than `FLAT_MIN_LINES` non-blank lines, or one
+# line holding more than half of all its characters. Below the length floor a CV is too short to judge.
+FLAT_MIN_CHARACTERS: Final = 1_500
+FLAT_MIN_LINES: Final = 8
+
+# Counted as the T1 query counted them (technical-plan.md § T1), so the eval and that query agree.
+_BOLD_SPAN: Final = re.compile(r"\*\*[^*\n]+\*\*")
+# A line that opens a new block rather than continuing a paragraph: a heading or a list item.
+_BLOCK_OPENER: Final = re.compile(r"[ \t]*(?:#|[-*+] |[0-9]+[.)] )")
+
+
+@dataclass(frozen=True, slots=True)
+class LayoutCounts:
+    """The shape of a Markdown document, as counts only: never a line of its text (AC-19)."""
+
+    lines: int  # non-blank lines
+    blocks: int  # runs of non-blank lines separated by blank lines
+    headings: int
+    bold_spans: int
+    # A paragraph line followed by one that neither is blank nor opens a heading or a list item: a
+    # single `\n` inside a paragraph (a heading is one line, so the line after it is not counted), which this product shows as a line break (ADR-0015 §2 amended).
+    soft_breaks: int
+    longest_line: int
+    characters: int
+
+
+def layout_counts(markdown: str) -> LayoutCounts:
+    """Count `markdown`'s lines, blocks, headings, bold spans and soft breaks, and its longest line.
+
+    **What it cannot see:** a heading or bold span inside a code fence still counts, `__bold__` and
+    Setext headings (`===` underlines) do not, and a soft break says nothing about whether the line
+    it ends was a header field or a sentence hard-wrapped in the middle.
+    """
+    all_lines = markdown.splitlines()
+    blank = [not line.strip() for line in all_lines]
+    following = pairwise(all_lines)
+    return LayoutCounts(
+        lines=blank.count(False),
+        blocks=sum(
+            1 for i, is_blank in enumerate(blank) if not is_blank and (i == 0 or blank[i - 1])
+        ),
+        headings=sum(1 for line in all_lines if _ATX_HEADING.match(line)),
+        bold_spans=len(_BOLD_SPAN.findall(markdown)),
+        soft_breaks=sum(
+            1
+            for line, after in following
+            if line.strip()
+            and after.strip()
+            and not _ATX_HEADING.match(line)
+            and not _BLOCK_OPENER.match(after)
+        ),
+        longest_line=max((len(line) for line in all_lines), default=0),
+        characters=len(markdown),
+    )
+
+
+def is_flat(counts: LayoutCounts) -> bool:
+    """AC-19: at least 1,500 characters, and fewer than 8 lines or one line over half the document."""
+    return counts.characters >= FLAT_MIN_CHARACTERS and (
+        counts.lines < FLAT_MIN_LINES or counts.longest_line * 2 > counts.characters
+    )
+
+
+def formatting_dropped(base: LayoutCounts, tailored: LayoutCounts) -> bool:
+    """AC-19: the base CV has a heading or a bold span, and the tailored CV has neither."""
+    return bool(base.headings or base.bold_spans) and not (tailored.headings or tailored.bold_spans)
 
 
 def nearest_rank(values: Sequence[int], percentile: float) -> int:

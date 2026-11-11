@@ -23,6 +23,17 @@
  * - core: `normalize`, `block`, `inline`, `text_join` — the four the `zero` preset already
  *   carries; `text_join` folds the `text_special` tokens `escape` emits back into text.
  *
+ * **In this product, a soft break is a line break** (ADR-0015 §2, amended 2026-11-10). A single
+ * `\n` inside a paragraph is a CommonMark soft break, which CommonMark joins with a space; the model
+ * writes a CV's header (name, title, each contact line) and a role's title and dates as exactly
+ * such lines, and nobody writing a CV means "join these". So the token map sends `softbreak` to
+ * the same `hardBreak` node as `hardbreak`, and the serializer writes it back as `\` + newline —
+ * CommonMark's hard break, which `escape` reads straight back as `hardbreak`, so the round trip is
+ * stable. Opening a stored run is not an edit: the editor's dirty baseline is the serialization at
+ * seed time. **Not markdown-it's `breaks: true`:** that is an option of the HTML *renderer*; the
+ * `newline` rule emits a `softbreak` token either way, and this file never renders HTML — it walks
+ * the tokens — so the option would change nothing.
+ *
  * Everything else — `table`, `fence`, `code`, `blockquote`, `hr`, `html_block`, `html_inline`,
  * `image`, `autolink`, `backticks`, `strikethrough`, `entity`, `reference`, `lheading` — stays
  * off, so a table or a fenced block in the model's output is a paragraph of text. `html: false`
@@ -126,6 +137,8 @@ function createParser(schema: Schema): MarkdownParser {
     },
     list_item: { block: 'listItem' },
     hardbreak: { node: 'hardBreak' },
+    // A soft break is a line break here (ADR-0015 §2, amended) — see the module docstring.
+    softbreak: { node: 'hardBreak' },
     em: { mark: 'italic' },
     strong: { mark: 'bold' },
     link: {

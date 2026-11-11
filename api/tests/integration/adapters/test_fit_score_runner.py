@@ -82,7 +82,9 @@ class FakeGenerate:
         prompt_tokens: int = 1_000,
         completion_tokens: int = 100,
     ) -> None:
-        cvs = {cv.id: cv.text.value for cv in corpus.base.cvs}
+        # The scoring form, not `ExtractedText.value`: the prompt carries the CV through `CvForScoring`,
+        # which collapses whitespace, while `ExtractedText` keeps lines since ADR-0044.
+        cvs = {cv.id: " ".join(cv.text.value.split()) for cv in corpus.base.cvs}
         postings = {p.id: p.text.value for p in corpus.base.postings}
         postings.update({i.posting.id: i.posting.text.value for i in corpus.injected})
         self._cvs, self._postings = cvs, postings
@@ -144,7 +146,7 @@ async def test_a_stable_and_discriminating_scorer_exits_0_after_one_call_per_pla
     fake = FakeGenerate(corpus, _separating(corpus))
     code, out = await _run(corpus, _cfg(settings), fake)
     assert code == EXIT_OK
-    assert fake.calls == len(plan_jobs(corpus, REPEAT)) == 58
+    assert fake.calls == len(plan_jobs(corpus, REPEAT)) == 64
     assert "verdict: AC-51 PASS, AC-52 PASS" in out
 
 
@@ -211,10 +213,10 @@ async def test_a_pair_whose_repeats_do_not_all_score_is_unstable_not_skipped(
 async def test_cost_per_score_is_metered_tokens_priced_and_rounded_up_each_way(
     settings: Settings, corpus: FitScoreCorpus
 ) -> None:
-    # 1,000 in at $0.30/M = 300 micro-USD; 100 out at $2.50/M = 250: 550 per score, 58 scores.
+    # 1,000 in at $0.30/M = 300 micro-USD; 100 out at $2.50/M = 250: 550 per score, 64 scores.
     fake = FakeGenerate(corpus, _separating(corpus), prompt_tokens=1_000, completion_tokens=100)
     _, out = await _run(corpus, _cfg(settings), fake)
-    assert "mean $0.000550, p95 $0.000550, max $0.000550, total $0.031900 over 58 scores" in out
+    assert "mean $0.000550, p95 $0.000550, max $0.000550, total $0.035200 over 64 scores" in out
     assert "above the PRD" not in out
 
 
@@ -246,7 +248,7 @@ async def test_the_plan_upper_bound_prices_every_attempt_at_one_token_per_charac
     out = io.StringIO()
     fit_score_runner.render_plan(out, plan_jobs(corpus, REPEAT), cfg, repeat=REPEAT)
     assert f"upper bound: ${Decimal(expected) / 1_000_000:.6f}" in out.getvalue()
-    assert "58 scores, at most 116 calls" in out.getvalue()
+    assert "64 scores, at most 128 calls" in out.getvalue()
 
 
 # -- AC-54: parser verdicts counted per call ----------------------------------------------------
@@ -265,10 +267,10 @@ async def test_a_refusal_repaired_by_the_retry_is_still_counted_as_a_refusal(
     fake = FakeGenerate(corpus, behave)
     code, out = await _run(corpus, _cfg(settings), fake)
     assert code == EXIT_OK  # the retry repaired it: the score exists
-    assert fake.calls == 59
-    assert "AC-54 per call (59 calls)" in out
-    assert "  not_json: 1 (1.7%)" in out
-    assert "  parsed: 58 (98.3%)" in out
+    assert fake.calls == 65
+    assert "AC-54 per call (65 calls)" in out
+    assert "  not_json: 1 (1.5%)" in out
+    assert "  parsed: 64 (98.5%)" in out
     assert "[not_json, parsed]" in out
 
 
@@ -280,19 +282,19 @@ async def test_a_refusal_rate_above_ten_percent_is_called_a_prompt_defect(
     def behave(key: Key, n: int) -> int | str:
         return (
             "nope" if n == 1 else base(key, n)
-        )  # each key refused on its first call only: 18 keys
+        )  # each key refused on its first call only: 20 keys
 
     _, out = await _run(corpus, _cfg(settings), FakeGenerate(corpus, behave))
     assert (
-        "parser refusals 23.7% are above 10%: a prompt defect to fix before release" in out
-    )  # 18 of 76
+        "parser refusals 23.8% are above 10%: a prompt defect to fix before release" in out
+    )  # 20 of 84
 
 
 async def test_thoughts_tokens_reported_by_the_provider_fail_the_thinking_check(
     settings: Settings, corpus: FitScoreCorpus
 ) -> None:
     _, out = await _run(corpus, _cfg(settings), FakeGenerate(corpus, _separating(corpus)))
-    assert "AC-54 thinking: 0 of 58 returned calls reported thoughts PASS" in out
+    assert "AC-54 thinking: 0 of 64 returned calls reported thoughts PASS" in out
 
 
 # -- the output never carries text --------------------------------------------------------------
@@ -307,6 +309,9 @@ async def test_the_output_never_contains_a_gap_a_quote_a_prompt_or_a_completion(
     quotes = {" ".join(p.text.value.split()[:8]) for p in corpus.base.postings}
     forbidden = {GAP_SENTINEL, *quotes}
     forbidden |= {cv.text.value[:60] for cv in corpus.base.cvs}
+    # And the scoring form (ADR-0044): a multi-line prefix alone would never match a leak of the
+    # whitespace-collapsed text the prompt carries, and the check would pass vacuously.
+    forbidden |= {" ".join(cv.text.value.split())[:60] for cv in corpus.base.cvs}
     forbidden |= {p.text.value[:60] for p in corpus.base.postings}
     forbidden |= {prompt[:200] for prompt in fake.prompts} | set(fake.completions)
     for text in forbidden:
@@ -433,7 +438,7 @@ def _edit(root: Path, old: str, new: str) -> None:
 
 def test_an_untouched_copy_loads(corpus_copy: Path) -> None:
     loaded = load_fit_score_corpus(corpus_copy, max_cv_characters=40_000)
-    assert len(loaded.cross) == 6
+    assert len(loaded.cross) == 7
     assert len(loaded.injected) == 2
 
 

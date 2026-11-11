@@ -29,12 +29,18 @@ import logging
 import random
 import time
 import zipfile
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import cast
 
 import pytest
 from docx import Document
+from docx.document import Document as DocxDocument
+from docx.enum.style import WD_STYLE_TYPE
+from docx.oxml import parse_xml
+from docx.oxml.ns import nsdecls
 from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 from pypdf import PdfWriter
 from pypdf.errors import DependencyError
 from pypdf.generic import ContentStream, DictionaryObject, NameObject
@@ -558,38 +564,321 @@ async def test_docx_with_many_paragraphs_stops_reading_paragraphs_once_the_cap_i
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`document.paragraphs` (python-docx) hands back the whole paragraph list up front — the cap
-    cannot stop *that* — but each paragraph's own `.text` is where its run-joined string is actually
-    built (`Paragraph.text.fget`, verified by reading its source: `return self._p.text`), and that is
-    the per-piece cost the running count exists to bound. 300 fifty-character paragraphs, cap 1_000:
-    arithmetic (50 the first paragraph, 51 every one after, for the "\\n" separator) crosses 1_000
-    at the 20th paragraph's `.text` access — so the assertion here is not "eventually stops" but
-    "reads at most a handful of paragraphs out of 300", counted by wrapping the real property rather
-    than by timing or by touching `extraction.py`'s own floor.
+    cannot stop *that* — but a paragraph's runs are only walked when its block is pulled, through
+    `Paragraph.iter_inner_content` (the Markdown path, ADR-0044 §2, no longer reads
+    `Paragraph.text`, so counting that read proved nothing). 300 fifty-character paragraphs, cap
+    1_000: the running count (50 for the first, 52 for every one after: the blank line) crosses
+    1_000 at about the 19th block, so the assertion is "reads at most a handful of paragraphs out of
+    300", counted by wrapping the real method. Proven by mutation: materialising every block before
+    joining (`list(...)`) makes the count 300 and this test fail.
     """
     paragraph_length = 50
     paragraph_count = 300
     data = _docx_bytes_with_paragraphs([paragraph_length] * paragraph_count)
 
     accessed = 0
+    real_iter_inner_content = Paragraph.iter_inner_content
 
-    def _counting_text_getter(self: Paragraph) -> str:
-        # The real property's own body (`Paragraph.text.fget`'s source, read above): delegating to
-        # it directly rather than fetching `.fget` dynamically keeps this typed under mypy --strict.
-        # `CT_P.text` (docx/oxml/text/paragraph.py) is itself unannotated, so `cast` — not this
-        # module's own untyped surface — is what mypy sees, matching the real property's own return
-        # type (`str`, per `Paragraph.text`'s docstring, read above).
+    def _counting_iter_inner_content(self: Paragraph) -> Iterator[object]:
         nonlocal accessed
         accessed += 1
-        return cast("str", self._p.text)
+        return cast("Iterator[object]", real_iter_inner_content(self))
 
-    monkeypatch.setattr(Paragraph, "text", property(_counting_text_getter))
+    monkeypatch.setattr(Paragraph, "iter_inner_content", _counting_iter_inner_content)
 
     extractor = _extractor_with_cap(_CAP)
     with pytest.raises(CvExtractionFailed) as exc_info:
         await extractor.extract(CvContentType.DOCX, data)
 
     assert exc_info.value.reason is ExtractionFailureReason.TEXT_TOO_LONG
-    assert accessed < 25, (
+    assert 0 < accessed < 25, (
         f"expected the cap to stop paragraph reads well short of all {paragraph_count}; "
-        f"{accessed} paragraphs' `.text` was accessed"
+        f"{accessed} paragraphs' inner content was walked"
     )
+
+
+# ==================================================================================================
+# tailoring-preserve-cv-formatting (T7, test-after): ExtractedText keeps lines (AC-5), a DOCX is
+# extracted as Markdown (AC-6, AC-7), with a best-effort fallback (AC-8) and a cap that counts the
+# markup (AC-9). Every expected string below is written by hand from the spec, never copied from a
+# run of the adapter.
+# ==================================================================================================
+
+_FILLER = "F" * 250  # clears the 200-non-whitespace floor so a small document is extractable
+_FALLBACK_LOG_FIELDS = {"content_type", "size_bytes", "error_type"}
+
+
+def _docx_from(build: Callable[[DocxDocument], None]) -> bytes:
+    document = Document()
+    build(document)
+    document.add_paragraph(_FILLER)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+async def _markdown_of(build: Callable[[DocxDocument], None]) -> str:
+    """The extracted text of the built document, minus the trailing filler block."""
+    result = await _extractor().extract(CvContentType.DOCX, _docx_from(build))
+    suffix = "\n\n" + _FILLER
+    assert result.value.endswith(suffix)
+    return result.value[: -len(suffix)]
+
+
+def _add_runs(
+    document: DocxDocument, runs: list[tuple[str, bool]], style: str | None = None
+) -> Paragraph:
+    paragraph = document.add_paragraph(style=style)
+    for text, bold in runs:
+        paragraph.add_run(text).bold = True if bold else None
+    return paragraph
+
+
+# --- AC-6: headings -------------------------------------------------------------------------------
+
+
+async def test_docx_title_and_headings_become_markdown_headings_and_level_seven_clamps_to_six() -> (
+    None
+):
+    def build(document: DocxDocument) -> None:
+        document.add_paragraph("Alex Doe", style="Title")
+        document.add_paragraph("Experience", style="Heading 1")
+        document.add_paragraph("Acme", style="Heading 2")
+        document.add_paragraph("Deep", style="Heading 7")
+
+    assert await _markdown_of(build) == "# Alex Doe\n\n# Experience\n\n## Acme\n\n###### Deep"
+
+
+async def test_a_style_named_heading_zero_is_plain_text() -> None:
+    def build(document: DocxDocument) -> None:
+        document.styles.add_style("Heading 0", WD_STYLE_TYPE.PARAGRAPH)
+        document.add_paragraph("Not a heading", style="Heading 0")
+
+    assert await _markdown_of(build) == "Not a heading"
+
+
+async def test_empty_headings_and_empty_bold_runs_emit_no_markup() -> None:
+    def build(document: DocxDocument) -> None:
+        document.add_paragraph("before")
+        document.add_paragraph("", style="Heading 1")
+        document.add_paragraph("   ", style="Heading 2")
+        _add_runs(document, [("", True)])
+        _add_runs(document, [("  ", True)])
+        document.add_paragraph("after")
+
+    assert await _markdown_of(build) == "before\n\nafter"
+
+
+# --- AC-6: bold -----------------------------------------------------------------------------------
+
+
+async def test_a_bold_run_inside_a_sentence_is_wrapped_in_asterisks() -> None:
+    def build(document: DocxDocument) -> None:
+        _add_runs(document, [("Led the ", False), ("team", True), (" well", False)])
+
+    assert await _markdown_of(build) == "Led the **team** well"
+
+
+async def test_adjacent_bold_runs_are_merged_into_one_span() -> None:
+    def build(document: DocxDocument) -> None:
+        _add_runs(document, [("Led ", False), ("the ", True), ("team", True)])
+
+    assert await _markdown_of(build) == "Led **the team**"
+
+
+async def test_the_spaces_around_a_bold_run_stay_outside_the_markers() -> None:
+    def build(document: DocxDocument) -> None:
+        _add_runs(document, [("Led", False), (" the team ", True), ("now", False)])
+
+    assert await _markdown_of(build) == "Led **the team** now"
+
+
+# --- AC-6: lists ----------------------------------------------------------------------------------
+
+
+async def test_list_items_become_dashes_joined_by_one_newline_and_a_normal_block_follows_a_blank_line() -> (
+    None
+):
+    def build(document: DocxDocument) -> None:
+        document.add_paragraph("Duties")
+        document.add_paragraph("one", style="List Bullet")
+        document.add_paragraph("two", style="List Bullet")
+        document.add_paragraph("three", style="List Number")
+        document.add_paragraph("done")
+
+    assert await _markdown_of(build) == "Duties\n\n- one\n- two\n- three\n\ndone"
+
+
+# --- AC-7: nothing is escaped ---------------------------------------------------------------------
+
+
+async def test_literal_markdown_characters_in_docx_text_pass_through_unescaped() -> None:
+    literal = "5* rating, snake_case, # hash, C# / .NET, `tick`, [bracket], back\\slash"
+
+    def build(document: DocxDocument) -> None:
+        document.add_paragraph(literal)
+
+    assert await _markdown_of(build) == literal
+
+
+# --- A hyperlinked run is kept (python-docx 1.2.0's `Paragraph.runs` skips it) ---------------------
+
+
+async def test_a_hyperlinked_email_is_kept_in_the_text() -> None:
+    def build(document: DocxDocument) -> None:
+        paragraph = document.add_paragraph("Mail ")
+        paragraph._p.append(
+            parse_xml(
+                f"<w:hyperlink {nsdecls('w')}><w:r><w:t>a@example.com</w:t></w:r></w:hyperlink>"
+            )
+        )
+        paragraph.add_run(" today")
+
+    assert await _markdown_of(build) == "Mail a@example.com today"
+
+
+# --- AC-5 / AC-10: the committed corpus keeps its lines -------------------------------------------
+
+
+def _sample_txt_lines() -> list[str]:
+    return (FIXTURES_DIR / "sample.txt").read_text(encoding="utf-8").splitlines()
+
+
+async def test_sample_txt_keeps_its_lines() -> None:
+    result = await _extractor().extract(CvContentType.TXT, _read_fixture("sample.txt"))
+
+    assert result.value.splitlines() == _sample_txt_lines()
+
+
+async def test_sample_pdf_keeps_its_lines() -> None:
+    result = await _extractor().extract(CvContentType.PDF, _read_fixture("sample.pdf"))
+
+    assert result.value.startswith("Alex Rivera\nBackend Engineer\nalex.rivera@example.com")
+    assert len(result.value.splitlines()) > 5
+
+
+async def test_sample_docx_is_its_paragraphs_separated_by_blank_lines_with_no_markup() -> None:
+    result = await _extractor().extract(CvContentType.DOCX, _read_fixture("sample.docx"))
+
+    # The fixture's text is `sample.txt`'s (README.md); the DOCX has one paragraph per non-empty line.
+    expected = "\n\n".join(line for line in _sample_txt_lines() if line.strip())
+    assert result.value == expected
+    assert "*" not in result.value
+    assert "#" not in result.value
+
+
+# --- AC-8: the formatting fallback ----------------------------------------------------------------
+
+
+def _formatted_docx() -> bytes:
+    def build(document: DocxDocument) -> None:
+        document.add_paragraph("Experience", style="Heading 1")
+        _add_runs(document, [("Led the ", False), ("team", True)])
+        document.add_paragraph("shipped", style="List Bullet")
+
+    return _docx_from(build)
+
+
+def _raise_runtime_error(self: Run) -> bool | None:
+    raise RuntimeError("secret-cv-text")
+
+
+async def test_a_style_or_run_that_raises_falls_back_to_plain_paragraph_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data = _formatted_docx()
+    monkeypatch.setattr(Run, "bold", property(_raise_runtime_error))
+
+    result = await _extractor().extract(CvContentType.DOCX, data)
+
+    assert result.value == f"Experience\n\nLed the team\n\nshipped\n\n{_FILLER}"
+
+
+async def test_the_fallback_logs_one_line_with_only_type_size_and_error_type(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    data = _formatted_docx()
+    monkeypatch.setattr(Run, "bold", property(_raise_runtime_error))
+
+    configure_logging(Settings(app_env="test"))
+    with caplog.at_level(logging.INFO):
+        await _extractor().extract(CvContentType.DOCX, data)
+
+    events = _json_log_events(caplog)
+    fallbacks = [e for e in events if e.get("event") == "cv_extraction.docx_formatting_fallback"]
+    assert len(fallbacks) == 1, events
+    event = fallbacks[0]
+    assert set(event) - _STRUCTLOG_METADATA_FIELDS == _FALLBACK_LOG_FIELDS
+    assert event["content_type"] == CvContentType.DOCX.value
+    assert event["size_bytes"] == len(data)
+    assert event["error_type"] == "builtins.RuntimeError"
+    assert "secret-cv-text" not in json.dumps(events)
+    assert not [e for e in events if e.get("event") == "cv_extraction.unexpected_error"]
+    for record in caplog.records:
+        assert record.exc_info is None
+
+
+async def test_a_cv_extraction_failure_inside_the_formatting_pass_is_not_swallowed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    data = _formatted_docx()
+
+    def _refuse(self: Run) -> bool | None:
+        raise CvTextTooLong()
+
+    monkeypatch.setattr(Run, "bold", property(_refuse))
+
+    configure_logging(Settings(app_env="test"))
+    with caplog.at_level(logging.INFO), pytest.raises(CvTextTooLong):
+        await _extractor().extract(CvContentType.DOCX, data)
+
+    events = _json_log_events(caplog)
+    assert not [e for e in events if e.get("event") == "cv_extraction.docx_formatting_fallback"]
+
+
+# --- AC-9: the cap counts the emitted Markdown ----------------------------------------------------
+
+
+def _bold_paragraph_docx(length: int) -> bytes:
+    document = Document()
+    _add_runs(document, [("A" * length, True)])
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+async def test_a_document_under_the_cap_as_plain_text_but_over_it_as_markdown_is_text_too_long(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # 300 characters of text; 304 once wrapped in `**…**`. Cap 302 sits between the two.
+    data = _bold_paragraph_docx(300)
+
+    configure_logging(Settings(app_env="test"))
+    with caplog.at_level(logging.INFO), pytest.raises(CvExtractionFailed) as exc_info:
+        await _extractor_with_cap(302).extract(CvContentType.DOCX, data)
+
+    assert exc_info.value.reason is ExtractionFailureReason.TEXT_TOO_LONG
+    events = _json_log_events(caplog)
+    assert not [e for e in events if e.get("event") == "cv_extraction.docx_formatting_fallback"]
+
+
+async def test_a_markdown_document_exactly_at_the_cap_is_accepted() -> None:
+    result = await _extractor_with_cap(304).extract(CvContentType.DOCX, _bold_paragraph_docx(300))
+
+    assert result.value == "**" + "A" * 300 + "**"
+
+
+# --- AC-9: `cv_extraction.finished` keeps its field set -------------------------------------------
+
+
+async def test_finished_log_field_set_is_unchanged_for_a_markdown_docx(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    configure_logging(Settings(app_env="test"))
+    with caplog.at_level(logging.INFO):
+        await _extractor().extract(CvContentType.DOCX, _formatted_docx())
+
+    finished = [e for e in _json_log_events(caplog) if e.get("event") == "cv_extraction.finished"]
+    assert len(finished) == 1
+    assert set(finished[0]) - _STRUCTLOG_METADATA_FIELDS == _FINISHED_LOG_FIELDS
+    assert finished[0]["outcome"] == "success"

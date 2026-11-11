@@ -241,3 +241,25 @@ is the aggregate's and the CHECK's invariant.
 image."* None of the three layouts has one, and ADR-0030 rejects a local-font `@font-face` with a
 permissive fetcher for the reason the Alternatives here rejected `base_url`. ADR-0012 stays closed.
 This paragraph is where the next person proposing a webfont should start.
+
+## Amendment: 2026-11-10, from the plan of slice `tailoring-preserve-cv-formatting`
+
+ADR-0015 §2 now says a soft break is a line break (its 2026-11-10 amendment, which has the reason).
+§1's pipeline, obligations 1, 3 and 4, and §5–§7 are unchanged. One obligation changes.
+
+**§2, obligation 2: `normalize_to_grammar` maps `softbreak` to `hardbreak`.** One branch, before the
+`GRAMMAR_TOKEN_TYPES` check, copies the token as `type="hardbreak"`, `tag="br"`, and `"softbreak"`
+leaves `GRAMMAR_TOKEN_TYPES`, so a walker cannot be handed one. PDF HTML then has `<br />`, DOCX an
+`add_break()`, and TXT a newline, where the first two used to render a space. **One rule, in the one
+function all three walkers already route through**, which is this ADR's argument for having that
+function. The walkers' `softbreak` arms in `html.py`, `docx.py` and `plain_text.py` are dead and are
+removed; a test pins that the normalized stream never holds a `softbreak`.
+
+- **The golden digests that move** are those whose fixture has a soft break, each listed with its reason
+  in the commit that changes it. `MODEL_CV_FIXTURE_MARKDOWN`, the layout previews' source, has none, so
+  3.2's preview WebPs and their drift test should not move. If they do, stop and find out why.
+- **`md` is untouched**: no parse, the stored text is the export (§1).
+- **§3's aside, read with ADR-0044:** *"the base CV's own extracted text (1.1) never had them"* is no
+  longer true for a DOCX uploaded after 2026-11-10, whose extracted text carries `#`, `**` and `- `.
+  §3's decision does not change: it is about a tailored document's TXT export, and no export renders a
+  base CV.

@@ -32,8 +32,12 @@ Per `technical-plan.md`'s test plan, these are built on the fly rather than stor
   in the test; no reason for a fixture file.
 - **A bare ZIP and an XLSX-shaped ZIP** (F-4/AC-3) — built with `zipfile` inline in the test, to
   prove `sniff_cv_content_type`'s namelist check (not just the magic bytes) is what rejects them.
+- **A formatted DOCX** (`tailoring-preserve-cv-formatting`, AC-6 to AC-8) — built with `python-docx`
+  in `tests/integration/adapters/test_extraction.py`: `Title`, `Heading 1`/`2`/`7`, a `Heading 0`
+  style name, bold runs (merged, spaced, empty), `List Bullet`/`List Number`, literal `*`, `_`, `#`,
+  `C# / .NET`, a `w:hyperlink` email, and a patched `Run.bold` that raises for the fallback.
+  Expected Markdown is written by hand in each test.
 
-## Regenerating this corpus
 
 There is no committed generator script (it was a one-off, run interactively). To regenerate: build a
 one-page PDF from PDF content-stream operators against `pypdf.PdfWriter` (no `reportlab` dependency),

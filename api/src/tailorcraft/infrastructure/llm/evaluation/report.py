@@ -176,7 +176,7 @@ def render_pair(out: TextIO, result: PairResult, *, width: int) -> None:
     _emit(out)
     _side_by_side(
         out,
-        "BASE CV (as committed; the model receives it whitespace-collapsed, as extraction yields)",
+        "BASE CV (as committed; the model receives it as ExtractedText normalizes it)",
         pair.cv.raw_text,
         f"TAILORED CV ({len(result.draft.documents.cv.value):,} chars)",
         result.draft.documents.cv.value,

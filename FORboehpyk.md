@@ -7483,3 +7483,243 @@ runs (they fail free, by design) lasted seconds: the smoke check found `/health/
 no longer has a session to limit, the verdict wording (*above / below* instead of *higher / lower*,
 because 5.1's no-gain scan bans "higher"), a guest run page that shows two offers at once, and tailoring
 output that arrives without line breaks, which predates this slice.
+
+# tailoring-preserve-cv-formatting: the CV that lost its line breaks, twice
+
+*Implemented 2026-11-10 to 2026-11-11 (T1–T17). Not yet verified or released: `/verify` and the
+release are next. No migration, no new route, no new screen.*
+
+## What changed for a person using it
+
+5.2's chapter ended on a loose thread: *tailoring output that arrives without line breaks.* You found
+it during the production manual test, and added a second wish the same evening: *keep the headings and
+bold of my original CV.*
+
+After this slice:
+
+- **A tailored CV keeps its lines.** The name, the title and the contact details sit on their own lines
+  in the editor, the PDF and the Word file, instead of running together into one sentence.
+- **A Word CV's headings and bold survive.** Upload a DOCX with *Experience* as a heading and your job
+  titles in bold, and the tailored version comes back with the same headings at the same levels, and
+  the same words in bold.
+- **Old runs are fixed too**, with no migration. Open a run made last week and its lines appear. Opening
+  it doesn't count as an edit, so nothing is saved behind your back.
+- **A CV that comes back as one solid block is refused** and retried. If the retry is a block too, the
+  run fails and the credit comes back, like any other broken answer.
+
+## Two bugs wearing one coat
+
+"The tailored CV has no line breaks" sounds like one bug. It was two, stacked, and the first one had
+been there since slice 1.1.
+
+### Bug one: the value object that ironed every CV
+
+When you upload a CV, the text goes into a small domain type called `ExtractedText`. Its job is to tidy
+up whatever pypdf or python-docx hands over. Since September its tidying was one line:
+
+```python
+" ".join(self.value.split())
+```
+
+That's the classic Python idiom for "collapse the whitespace". It's also an iron: `split()` with no
+argument splits on **every** kind of whitespace, newlines included, so every line break in every CV
+became a space. The DOCX extractor carefully joined paragraphs with `\n`. The PDF extractor carefully
+joined pages with `\n`. And the value object flattened both, every time, for twenty-four slices.
+
+So **the model had never seen a CV's lines.** It got your whole CV as one enormous sentence and was
+asked to produce a nicely structured document from it. That it mostly did is a small miracle.
+
+And here's the uncomfortable part: **the eval couldn't see it either.** The eval corpus's CVs are
+Markdown files with real lines on disk. But the loader builds an `ExtractedText` from each one, the
+same as the product does, so the eval fed the model the same flattened line. The test harness had
+inherited the bug from the thing it was testing. It's like checking a scale by weighing the test
+weight on the same scale: it agrees with itself every time.
+
+The fix (`281c4c3`, ADR-0044) keeps the lines and still tidies inside them: each line's whitespace
+collapses, blank-line runs shrink to one, the ends are trimmed. It's **idempotent**: feed it its own
+output and nothing changes. That one property is why no migration was needed. Every CV stored before
+this slice is one line, and one line is already "tidy" under the new rule, so it loads unchanged.
+
+### Bug two: the line break that was only a suggestion
+
+Even with flat input, the model often wrote the header like this, one fact per line:
+
+```
+# Jordan Rivera
+Senior Backend Engineer
+jordan@example.com | London
+```
+
+And the editor showed *Senior Backend Engineer jordan@example.com | London* on one line. Why?
+Markdown. In CommonMark, a single newline inside a paragraph is a **soft break**: "the author pressed
+Enter here, but join it with a space when you display it". That rule exists for people writing prose in
+text editors that wrap at 80 columns. For a CV header it's exactly wrong. The editor, the PDF and the
+Word export all honoured it faithfully. Only the plain-text download, which writes newlines as
+newlines, ever looked right.
+
+Your production run `01a1c765` had five of them. The very first one sat at character 12: right after
+the name.
+
+## The option that would have done nothing
+
+Every Markdown library has a switch that sounds like the answer. markdown-it's is `breaks: true`:
+"convert newlines in paragraphs into `<br>`". Flip it, ship it, done?
+
+It would have changed nothing. We measured it in both containers before planning. In markdown-it,
+`breaks` is a **renderer** option: the parser always emits a `softbreak` token, and only markdown-it's
+own HTML renderer looks at `breaks` when it turns that token into text. This product never uses that
+renderer. The editor feeds the tokens to prosemirror-markdown, and the exports walk them with three
+small Python functions. None of them reads `breaks`.
+
+So the fix went where the tokens actually flow, at the two seams everything already routes through:
+
+- **Exports:** `normalize_to_grammar` turns every `softbreak` into a `hardbreak` (`1bf7617`). One branch.
+  The PDF gets `<br />`, Word gets a break, and the three walkers' `softbreak` code became dead and was
+  deleted.
+- **Editor:** one line in the bridge's token map, `softbreak: { node: 'hardBreak' }` (`20f0692`). When you
+  save, it writes the break back as a proper CommonMark hard break (backslash, newline), so the next
+  load reads it the same way.
+
+The lesson is small and very general: **an option's name tells you what someone hoped it did. Where the
+code reads it tells you what it does.** Look before you flip.
+
+## T1: asking production before believing the dev box
+
+The plan rested on one dev run that showed soft breaks. A plan resting on one sample is a guess with a
+nice font, so the very first task was yours: run a read-only query on the box against runs you had seen
+as one paragraph, and paste back **counts only**, never text.
+
+Two runs came back, and they disagreed:
+
+- `01a1c765`: 39 newlines, 5 soft breaks, 0 sentences broken mid-way. The soft-break story, exactly.
+- `01a1c740`: 3,708 characters, **0 newlines**, and a longest line of 3,708. Not soft breaks: the model
+  had written the entire CV as one paragraph. No rendering change can fix that, because there's no line
+  to render.
+
+The plan had a gate for exactly this case, written before anyone looked: "flat output → reopen OQ-9".
+You chose to **refuse** a flat answer. Better a retry (about 7 seconds) than a credit spent on a block of
+text.
+
+Where to put that check was the interesting decision. The obvious place is `TailoredCv`, the value
+object for a tailored CV: "must contain a newline", an invariant, done. But `01a1c740` is stored in
+production, and a domain invariant applies to **every load**, so that run would refuse to open. The
+check went into the parser instead (`2f885ad`), the place that judges a fresh answer from the model, as
+a new problem label, `document_flat`. The rule is about the model's behaviour today, not about what a CV
+*is*. Old history stays readable.
+
+## War stories
+
+### The fakes that believed the old world
+
+Changing what a value object does is like changing the time zone on a shared calendar: everything that
+quietly assumed the old value is now off. Twice, a test helper had baked in "CVs are flat":
+
+- **The fit-score runner's fake** (`4004ac5`) found each CV inside a prompt by searching for
+  `ExtractedText.value`. But the scoring prompt carries the CV through `CvForScoring`, which still
+  flattens. While both were flat, the search matched. The moment `ExtractedText` kept lines, the fake
+  found nothing and ten tests went red. Worse, the "the prompt leaks no other CV" check would have
+  passed for the wrong reason, because it searched for a string that could no longer appear.
+- **The Gemini adapter's stub answer** (`c5a503b`) was a CV of 450 letter `a`s, no newline. After the
+  new rule, that's a flat CV. Three tests failed for a fixture reason, not a code reason.
+
+Both were fixed **in their own commits, before the GREEN**, so the GREEN commits edit no tests, the
+discipline this project lives by. The takeaway: when you change how a value is normalized, or what a
+parser accepts, grep the fakes for anything derived from the old shape before you run the suite.
+
+### Two REDs that counted wrong
+
+Red-first tests are written before the code, so sometimes they're wrong. Twice here:
+
+- An HTML assertion expected `<br />` directly followed by the next line, but the renderer has always
+  written `<br />` and a newline. A DOCX assertion expected a role's three lines as separate paragraphs,
+  when the fixture makes them one paragraph with breaks (`d37856c`).
+- A frontend test counted **five** soft breaks in the shared fixture. There are four. `# Jordan Rivera`
+  is a heading, and a heading is always one line: the newline after it ends the block, it doesn't
+  "soften" (`b6c98ad`). The Python twin of the same fixture already said four.
+
+Each correction got its own commit, and each was re-run to prove it still failed on the old code. A
+corrected RED that no longer fails isn't a test any more, it's a decoration.
+
+### python-docx's hidden runs
+
+The Word extractor now writes Markdown: a `Heading 1` paragraph becomes `# `, list styles become `- `,
+and bold runs are wrapped in `**`. Three surprises from python-docx (`31ad7f4`):
+
+- **`paragraph.runs` skips hyperlinks.** A run inside a link is a different XML element, and `runs`
+  quietly leaves it out, even though `paragraph.text` includes it. Walk runs for bold, and the linked
+  e-mail address in the header vanishes. The extractor walks `iter_inner_content()` and steps into each
+  hyperlink's runs.
+- **A Word file with no body** blows up while listing paragraphs. That read stays outside the
+  "formatting is best-effort" fallback on purpose, so a broken file is still reported as broken, not
+  rescued as an empty CV.
+- **`Heading 0` exists in the wild.** The pattern starts at 1, so it's plain text, and anything past 6
+  is clamped to 6.
+
+And the safety net: if reading any style or run throws, the **whole** document falls back to plain lines,
+the upload still succeeds, and one log line records the exception's class name. Formatting is a bonus;
+it never costs anyone their upload.
+
+### The regex that was 30% over budget
+
+The plan proposed the obvious regex for "collapse whitespace but not newlines", `[^\S\n]+`. It's correct.
+It also took about **33 ms** on the stress case (a 250,000-character text of 25,000 lines) against a
+25 ms budget, and this runs on every load of a saved CV. The shipped version splits into lines and uses
+the old idiom per line, `" ".join(line.split())`: plain string methods written in C, about **5 ms**. The
+same idiom that caused the bug, used one line at a time, became the fix.
+
+## The numbers
+
+- **T15, the eval** (owner-approved, prompt v5, 12 calls): 10 of 11 pairs succeeded, **0 flat**. The new
+  Markdown CV (pair 11) kept **7 of 7 headings and 12 of 12 bold spans**. Name fidelity, employers and
+  the foreign-organisation checks all passed. Pair 09 timed out twice, exactly as it did on 2026-11-08:
+  its posting is the longest in the corpus, and that latency predates this slice. Median 5.7 s, p95
+  6.7 s on the ten.
+- **T16, by hand on the dev stack** (one call, a synthetic Word CV): 7 headings and 4 bold in, 7 headings
+  and 4 bold out, 0 soft breaks; the editor showed them at the right levels; opening saved nothing. A
+  last-week run with 3 soft breaks now renders 3 line breaks in the PDF's HTML and 3 in Word, where it
+  rendered 3 spaces before.
+
+## What a good engineer takes from this one
+
+**Check what actually crosses the boundary, not what your fixtures contain.** For two months of evals and
+thousands of tests, everyone could see the CV files had lines. Nobody printed what reached the prompt. The
+bug lived in the gap between "the input looks right" and "the input arrives right", and only a question
+about production ("why is *this* run one paragraph?") made anyone measure the second.
+
+The other habit worth copying is T1's gate: **write down what each possible answer will make you do
+before you look.** When production came back with a case the plan hadn't hoped for, there was no debate
+and no bending the data. The table said "reopen OQ-9", so OQ-9 was reopened.
+
+## `/verify`: the budget no mutation could break
+
+`/verify` passed on its first round: every gate green, the reviewer found nothing serious, and every RED
+had its failure on record with no GREEN touching a test. The interesting part was AC-4.
+
+The 25 ms load budget held easily: about **6 ms** in the container. But the spec also asked for proof
+that the check could fail, by putting back the regression it guards against, a per-character Python
+loop, and watching it go over. It didn't. A loop added on top took about 16 ms; the whole normalization
+rewritten character by character took about 19 ms. **Both pass a 25 ms test.** The arithmetic was there
+all along: 2.2's lesson priced that loop at 0.4 s per 10 million characters, which is 10 ms for
+250,000. The budget was set too loose to see the thing it was named after.
+
+It's a smoke alarm mounted in the next room. It isn't broken, and the house isn't on fire, but it
+can't tell you about the fire it was installed for. You chose to accept the budget as held and write
+the measurement down (ADR-0044 §1): the code is about four times inside the limit, and the next person
+who needs a real guard here should compare against a per-character version (a ratio), not a stopwatch,
+because a ratio doesn't care how fast the machine is. **The lesson: a performance test isn't proven by
+passing; it's proven by failing when you break it on purpose.** Twice now in this project (1.6's loop
+test, and this) the deliberate break is what showed a check that couldn't fail.
+
+Two smaller notes went into ADR-0044 as accepted limits. The 200-character minimum now counts `#`
+and `**` in a Word CV, and bold text touching punctuation isn't always valid Markdown. Neither matters
+while only the model reads the text. Uploads stayed fast: p95 0.047 s for the sample Word file and
+0.060 s for a heavily formatted one, against a 3 s budget.
+
+## What's next
+
+The release (the merge waits for your approval), then AC-25: you rerun T1's query on runs made after
+it. Flat runs can't succeed any more, so they'll show up as failed v5 runs, and that count says how
+often the model still writes one block. The fit-score measurement grew with the corpus (64 scores, at
+most 128 calls). Carried, not fixed: pair 09's latency, the admin CV page not checked by hand, five
+over-long comment lines, and the export screen saying "Waiting for a worker…" for about 15 seconds on
+a PDF that rendered in 182 ms, because of how often it polls.

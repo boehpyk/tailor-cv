@@ -150,3 +150,27 @@ export const markdownFixtureCorpus: readonly MarkdownFixture[] = [
     markdown: noSchemeBracketFixtureMarkdown,
   },
 ];
+
+/**
+ * CommonMark soft breaks: single-newline lines, the shape a model (and an imported CV) produces —
+ * the header, a role's title/employer/dates, a mid-sentence hard wrap, and a list (AC-15).
+ * **The twin of `SOFT_BREAK_FIXTURE_MARKDOWN` in `api/tests/fixtures/documents/__init__.py`**, typed
+ * out by hand on purpose: change one and you change the other. Deliberately NOT in
+ * `markdownFixtureCorpus`, which mirrors the backend corpus one-for-one.
+ */
+export const softBreakFixtureMarkdown =
+  '# Jordan Rivera\n' +
+  'Senior Backend Engineer\n' +
+  'jordan@example.com | London\n' +
+  '\n' +
+  '## Experience\n' +
+  '\n' +
+  '**Senior Backend Engineer**\n' +
+  'Acme Corp\n' +
+  '2021 - Present\n' +
+  '\n' +
+  'Led the migration to a hexagonal architecture and kept the payments service\n' +
+  'fast under load.\n' +
+  '\n' +
+  '- Reduced p95 latency by 40%\n' +
+  '- Owned the on-call rotation\n';

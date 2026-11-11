@@ -201,8 +201,6 @@ def _render_inline(children: Sequence[Token]) -> str:
         match token.type:
             case "text":
                 parts.append(_escape_text(token.content))
-            case "softbreak":
-                parts.append("\n")
             case "hardbreak":
                 parts.append("<br />\n")
             case "strong_open":

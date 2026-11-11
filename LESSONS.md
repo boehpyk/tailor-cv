@@ -409,6 +409,26 @@ numbers are here.
   overlapping background commits run two pytest sessions against one `tailorcraft_test` and fail
   dozens of unrelated tests (`ALTER TABLE` errors in `_migrated`, 71 at T42): web-design-refresh's
   "two suites at once" again. Commit one at a time, and wait for the process to exit.
+- **A value object flattened every CV from slice 1.1 on, through twenty-four slices, and the eval
+  could not see it** (tailoring-preserve-cv-formatting, `281c4c3`). `ExtractedText.__post_init__` ran
+  `" ".join(self.value.split())`, which turns every newline into a space. The DOCX and PDF
+  extractors joined paragraphs and pages with `\n` and the value object threw both away, so the
+  model never saw a CV's lines, let alone its headings. The eval's corpus CVs had lines on disk, but
+  `load_corpus` built an `ExtractedText` from them, so the eval fed the model the same one line the
+  product did. **An eval that builds its input through the code under test inherits that code's
+  bugs:** check what actually reaches the boundary (here, the prompt), not what the fixture file
+  holds. The fix keeps lines (a per-line `" ".join(line.split())`, C-level; the plan's
+  `re.sub(r"[^\S\n]+", …)` took ~33 ms against a 25 ms budget, ~5 ms now on the host) and is
+  idempotent, so the one-line rows stored before it load unchanged.
+- **A fake built on an old invariant breaks when the invariant changes** (same slice, `4004ac5`,
+  `c5a503b`). The fit-score runner's `FakeGenerate` found each corpus CV in the prompt by
+  `ExtractedText.value`, which matched only while both sides were flat; once `ExtractedText` kept
+  lines, the fake found nothing and 10 runner tests failed (and the no-leak check would have passed
+  vacuously). The Gemini adapter tests' stub CV was 450 `a`s with no newline, which the new
+  `document_flat` refusal rejected, turning three tests red for a fixture reason. **When a value
+  object's normalization or a parser's acceptance changes, grep the fakes and stub builders for
+  values derived from it before the GREEN**, and fix them in their own commit (both landed under
+  `TDD_RED=1`, so neither GREEN edited a test).
 
 ## Infrastructure footguns (baked-in guards)
 
@@ -712,6 +732,25 @@ Documented failure modes we design against (see [docs/infrastructure.md](./docs/
   `small-caps` change the **case of text extracted** from the PDF, and WeasyPrint's embedded
   `BaseFont` names are hyphenated (`Liberation-Serif-Bold`), so a read-back check compares
   case-insensitively and hyphen-tolerantly.
+- **markdown-it's `breaks: true` would have done nothing here** (tailoring-preserve-cv-formatting,
+  `f5f2e92`, `1bf7617`, `20f0692`). The model writes a CV's header as single-newline lines, which
+  CommonMark reads as **soft breaks** and every walker showed as a space: the "one paragraph" CV.
+  `breaks` looks like the switch, but in markdown-it 14.3.2 (JS) and markdown-it-py 4.2.0 it is a
+  **renderer** option: the `newline` rule always emits `softbreak`, and only the HTML renderer
+  reads `breaks`. This product never uses that renderer; it walks tokens (prosemirror-markdown in
+  the editor, three Python walkers for export). So the fix is a mapping at the two token seams:
+  `normalize_to_grammar` copies `softbreak` as `hardbreak`, and the bridge maps `softbreak` to
+  `hardBreak`. Measured in both containers before planning. Check where an option is read before
+  you trust its name.
+- **python-docx's `Paragraph.runs` skips the runs inside a `w:hyperlink`** (same slice, `31ad7f4`,
+  `9a7178f`), though `Paragraph.text` includes them, so walking runs for bold would have dropped a
+  CV's linked e-mail or profile URL. Walk `paragraph.iter_inner_content()` and take a
+  `Hyperlink`'s `.runs`. Two more from the same pass: a `document.xml` with no `<w:body>` raises
+  `AttributeError` at `Document(...).paragraphs`, so that read sits **outside** the formatting
+  fallback and still reaches the floor's `extractor_error`; and a style named `Heading 0` exists in
+  the wild, so the heading pattern is `Heading ([1-9][0-9]*)` (clamped to 6) and `Heading 0` is
+  plain text. The cap test that counted `Paragraph.text` reads went vacuous when the Markdown path
+  stopped making them; it now counts `iter_inner_content`.
 - **A migration adding a CHECK on a column the mapping does not write yet cannot land green alone**
   (3.2, `37c7424`). Every ORM PDF insert left the column `NULL` and hit
   `ck_export_job_layout_template_only_for_pdf`: 198 failures. The migration (T11) and the mapping

@@ -200,3 +200,30 @@ path's sanitizer (`nh3`) is 1.5's obligation, handed on the way G-33 handed this
   [ADR-0017](./0017-the-rendering-pipeline-markdown-to-tokens-to-four-formats.md) §3**: a
   marker-stripped rendering, with `- ` bullets and `1.` numbers kept as plain-text structure.
   ADR-0017 also executes §2's three obligations and names the owner of each.
+
+## Amendment: 2026-11-10, from the plan of slice `tailoring-preserve-cv-formatting`
+
+§2 stands, and its grammar gains one sentence: **in this product, a soft break is a line break.**
+
+A single `\n` inside a paragraph is a CommonMark *soft break*, and CommonMark joins the two lines with
+a space. The model writes a CV's header (name, title, each contact line) and a role's title and dates
+as single-newline lines, and production showed the editor, the PDF and the DOCX joining them into one
+paragraph. Nobody writing a CV means "join these". So the grammar treats `softbreak` as `hardbreak`,
+at the two token seams the stored Markdown passes through: the editor bridge's token map
+(`softbreak` → the `hardBreak` node) and the export's `normalize_to_grammar` (ADR-0017 §2, amended).
+
+- **Not `breaks: true`.** In markdown-it (14.3.2 in the browser, markdown-it-py 4.2.0 on the server),
+  `breaks` is an option of the HTML **renderer**; the `newline` rule emits a `softbreak` token either
+  way. This product never uses that renderer. It walks the tokens, so the option would change nothing.
+  Measured in both containers on 2026-11-10.
+- **No migration, and stored runs are fixed.** The stored text is unchanged; it renders differently.
+  Opening an old run is not an edit: the editor's dirty baseline is the serialization at seed time, so
+  a document whose soft breaks now serialize as `\` + newline fires no save.
+- **A save stores CommonMark hard breaks** (`\` + newline), which every reader agrees on. Before this
+  amendment, a save turned soft breaks into spaces for good; an `edited_cv` already saved that way
+  stays flat.
+- **The cost:** a model that hard-wraps prose mid-sentence would now show broken lines. Production and
+  dev showed none (the slice's T1). If that changes, the narrower fix is a rewrite on receipt where the
+  next line starts a header field, not a revert.
+- **The MD download is unchanged**: still the stored text, byte for byte. Markdown viewers differ on
+  soft breaks, and that export's promise is the source.

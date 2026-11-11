@@ -44,6 +44,12 @@ The order of the checks, so that the test and the implementation agree on one re
    wrong type, not an absent key.
 6. Construct `TailoredCv` and `CoverLetter`, translating the domain errors they raise into
    `PROBLEM_DOCUMENT_TOO_SHORT` / `PROBLEM_DOCUMENT_TOO_LONG` / `PROBLEM_DOCUMENT_INVALID`.
+7. The tailored CV, as `TailoredCv` holds it, contains no `\n` → `PROBLEM_DOCUMENT_FLAT` (AC-26,
+   ADR-0004's 2026-11-10 amendment). A CV that is one paragraph lost every heading and line of its
+   layout, and charging a credit for it is worse than one more call. It runs **after** step 6, so a
+   too-short or invalid document keeps its own label, and it lives here rather than in `TailoredCv`
+   because stored flat runs must still load through the value object. The cover letter is not
+   checked: a letter is prose, and one paragraph is a legitimate letter.
 
 **The bounds live in the value objects, not here.** `TailoredCv` and `CoverLetter` own their floors
 and ceilings, their normalization and their control-character rule; this function *translates* their
@@ -56,7 +62,7 @@ Two decisions the value objects force, resolved here once so T23 and T24 do not 
 - `EmptyTailoredDocument` (a blank or whitespace-only document) maps to
   `PROBLEM_DOCUMENT_TOO_SHORT`. It is a distinct domain error because the value object checks blank
   before it counts, but the closed label vocabulary below has no `document_empty`, and blank is the
-  limiting case of below-the-floor. Inventing an eighth label here would put a value in the code that
+  limiting case of below-the-floor. Inventing another label here would put a value in the code that
   the spec's failure contract does not carry.
 - The translation catches `DomainError`, with the three specific errors mapped on top and
   `PROBLEM_DOCUMENT_INVALID` as the floor beneath them — the same shape, and the same reason, as the
@@ -102,6 +108,7 @@ PROBLEM_WRONG_TYPE: Final = "wrong_type"
 PROBLEM_DOCUMENT_TOO_SHORT: Final = "document_too_short"
 PROBLEM_DOCUMENT_TOO_LONG: Final = "document_too_long"
 PROBLEM_DOCUMENT_INVALID: Final = "document_invalid"
+PROBLEM_DOCUMENT_FLAT: Final = "document_flat"
 
 # The two keys the response schema asks for (technical plan, step 4). Named constants because the
 # same two strings appear in `prompt.py`'s output contract and in the SDK schema the adapter builds;
@@ -201,9 +208,8 @@ def _problem_for(error: DomainError) -> str:
     """
     match error:
         # `EmptyTailoredDocument` is a distinct domain error because the value object checks blank
-        # before it counts, but the label vocabulary above is closed at seven and has no
-        # `document_empty`: blank is the limiting case of below-the-floor. Inventing an eighth label
-        # here would put a value in the code that the spec's failure contract does not carry.
+        # before it counts, but the label vocabulary above is closed and has no `document_empty`:
+        # blank is the limiting case of below-the-floor. Inventing another label here would put a value in the code that the spec's failure contract does not carry.
         case EmptyTailoredDocument() | TailoredDocumentTooShort():
             return PROBLEM_DOCUMENT_TOO_SHORT
         case TailoredDocumentTooLong():
@@ -273,5 +279,11 @@ def parse_tailoring_response(raw: str) -> TailoredDocuments:
         # message carries a character count, and its frame carries the normalized document. Neither
         # belongs in a traceback that a log handler or Sentry will walk.
         raise LlmOutputInvalid(_problem_for(error)) from None
+
+    # Step 7 (AC-26). Outside the `try`: nothing is being translated, so there is no cause to chain
+    # and no `from None` to need. The check reads `cv.value`, the normalized text, so a CV whose only
+    # line breaks were stripped by the value object is flat too.
+    if "\n" not in cv.value:
+        raise LlmOutputInvalid(PROBLEM_DOCUMENT_FLAT)
 
     return TailoredDocuments(cv=cv, cover_letter=cover_letter)

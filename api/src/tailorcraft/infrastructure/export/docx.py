@@ -279,12 +279,9 @@ def _fill_inline(paragraph: Paragraph, children: Sequence[Token]) -> None:
         match token.type:
             case "text":
                 _add_text_run(paragraph, token.content, bold=bold, italic=italic)
-            case "softbreak":
-                # A space, not a break. The DOCX is a rendered document like the PDF, where a soft
-                # break collapses to whitespace; `plain_text` keeps the author's line structure
-                # instead because a textarea has no other way to show it.
-                _add_text_run(paragraph, " ", bold=bold, italic=italic)
             case "hardbreak":
+                # A soft break arrives here too: `normalize_to_grammar` makes every `softbreak` a
+                # `hardbreak` (ADR-0017's 2026-11-10 amendment).
                 paragraph.add_run().add_break()
             case "strong_open":
                 bold += 1
