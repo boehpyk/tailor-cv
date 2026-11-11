@@ -50,8 +50,10 @@ should `watch_for`, which is usually the gap between what the posting asks for a
 contains. A CV may appear in several pairs.
 
 The CV files keep their line breaks so the report can show them side by side with the tailored CV.
-The pipeline itself receives them whitespace-collapsed through `ExtractedText`, exactly as text
-extracted from an uploaded PDF or DOCX arrives.
+The pipeline receives them through `ExtractedText`, which since ADR-0044 keeps their lines and
+collapses only the whitespace inside each line, exactly as text extracted from an uploaded PDF or
+DOCX arrives. `bi-analyst-markdown` is written in Markdown (headings, bold, bullets) because a DOCX
+now arrives that way; it is the pair the layout check (AC-19) has formatting to compare against.
 
 ## What the loader checks before any call
 
@@ -143,7 +145,9 @@ missing entry by its first form and counts toward the exit code. With no documen
 | 08 | marketing manager | Product Marketing Manager, B2B SaaS | industry stretch |
 | 09 | director of engineering (long CV) | VP Engineering, healthtech (long posting) | the largest prompt; output-cap truncation risk |
 | 10 | teacher moving into UX | UX Researcher, edtech | career change |
+| 11 | data analyst, written in Markdown | BI Analyst, healthcare | the formatted pair: headings and bold must survive (AC-21) |
 
-One run is ten model calls, and up to twenty if every run retries once (`llm_max_attempts = 2`). Use
+One run is eleven model calls, and up to twenty-two if every run retries once
+(`llm_max_attempts = 2`). Use
 `--only 03 --only 09` while iterating on the prompt, and run the whole corpus before merging a prompt
 change.

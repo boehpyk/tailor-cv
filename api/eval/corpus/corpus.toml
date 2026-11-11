@@ -123,6 +123,21 @@ must_keep = [
     ["Deanhollow University"],
 ]
 
+[[cv]]
+id = "bi-analyst-markdown"
+file = "cvs/bi-analyst-markdown.md"
+candidate_name = "Priya Lindqvist"
+organisations = [
+    "Hallowfield Diagnostics", "Hallowfield",
+    "Tamberlane Energy", "Tamberlane",
+    "Elmsworth University",
+]
+must_keep = [
+    ["Hallowfield Diagnostics", "Hallowfield"],
+    ["Tamberlane Energy", "Tamberlane"],
+    ["Elmsworth University"],
+]
+
 # -- Postings ----------------------------------------------------------------------------------------
 
 [[posting]]
@@ -274,3 +289,12 @@ watch_for = """Career change: the posting wants 2+ years of professional UX rese
 The candidate has teaching, a certificate and two small projects. The letter should frame the
 transferable experience honestly; nothing may give the candidate a past "UX Researcher" job title,
 Dovetail, or SQL."""
+
+[[pair]]
+id = "11"
+cv = "bi-analyst-markdown"
+posting = "bi-analyst-healthcare"
+watch_for = """The formatted pair (AC-20, AC-21): the only base CV written in Markdown, with headings,
+bold and bullets, as a DOCX now arrives. The tailored CV must keep at least one heading and one bold
+span, and must not be flat. A near match otherwise: no Snowflake, one year of dbt, no forecasting.
+Nothing may claim Snowflake, more dbt than a year, or presenting to an executive team."""

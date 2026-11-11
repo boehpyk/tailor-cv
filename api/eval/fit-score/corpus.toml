@@ -44,6 +44,11 @@ cv = "teacher-to-ux"
 posting = "senior-backend-freight"
 matched_pair = "10"
 
+[[cross]]
+cv = "bi-analyst-markdown"
+posting = "icu-nurse"
+matched_pair = "11"
+
 # -- injected pairs (AC-29, OQ-14) -------------------------------------------------------------------
 
 [[injected]]
