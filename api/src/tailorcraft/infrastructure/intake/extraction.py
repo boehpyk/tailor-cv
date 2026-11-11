@@ -22,14 +22,20 @@ unexpected-failure path only — the exception's fully-qualified *type*. Never a
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 import zipfile
+from collections.abc import Iterable, Iterator
 from io import BytesIO
+from itertools import groupby
 from typing import TYPE_CHECKING, Final, NoReturn
 
 import structlog
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
+from docx.text.hyperlink import Hyperlink
+from docx.text.paragraph import Paragraph
+from docx.text.run import Run
 from pypdf import PdfReader
 from pypdf.errors import DependencyError, FileNotDecryptedError, PdfReadError
 
@@ -74,8 +80,8 @@ class PypdfDocxTextExtractor:
     pass, one database value and one loop-side `ExtractedText` per load.
 
     What the count MEANS: **raw extracted characters** — exactly `len()` of the string this adapter
-    would have handed to `ExtractedText`, separators included, before whitespace is collapsed. Not
-    `ExtractedText.character_count` (normalized), on purpose: normalization only shrinks a string, so
+    would have handed to `ExtractedText`, separators and a DOCX's Markdown included (ADR-0044),
+    before whitespace is collapsed. Not `ExtractedText.character_count` (normalized), on purpose: normalization only shrinks a string, so
     raw ≤ cap guarantees stored ≤ cap, and a running count needs no normalizing pass of its own.
     The price is that a file padded with whitespace can be refused at a normalized length under the
     cap; at 10 times what tailoring accepts, that file is not a CV we could have used.
@@ -287,19 +293,45 @@ class PypdfDocxTextExtractor:
 
     def _extract_docx(self, data: bytes) -> str:
         try:
-            document = Document(BytesIO(data))
-            paragraphs: list[str] = []
-            # Same running count as `_extract_pdf`'s, per paragraph.
-            character_count = 0
-            for paragraph in document.paragraphs:
-                paragraph_text = paragraph.text
-                character_count += len(paragraph_text) + (1 if paragraphs else 0)
-                if character_count > self._max_characters:
-                    self._refuse_text_too_long()
-                paragraphs.append(paragraph_text)
-            return "\n".join(paragraphs)
+            # Read outside the formatting pass on purpose: a `document.xml` with no `<w:body>`
+            # raises `AttributeError` right here, and that is the floor's `extractor_error`, not a
+            # formatting failure — the plain pass would only raise it again.
+            paragraphs = Document(BytesIO(data)).paragraphs
         except (zipfile.BadZipFile, PackageNotFoundError) as exc:
             raise CorruptCvFile() from exc
+        # ADR-0044 §3: formatting is best-effort. Anything reading a style or a run raises (other
+        # than our own refusals) costs the markup, never the upload.
+        try:
+            return self._join_blocks(_markdown_block(paragraph) for paragraph in paragraphs)
+        except CvExtractionFailed:
+            raise
+        except Exception as exc:
+            # Type only, never the message, no `exc_info` — the same rule as the floor's line.
+            log.warning(
+                "cv_extraction.docx_formatting_fallback",
+                content_type=CvContentType.DOCX.value,
+                size_bytes=len(data),
+                error_type=f"{type(exc).__module__}.{type(exc).__qualname__}",
+            )
+        return self._join_blocks((paragraph.text, False) for paragraph in paragraphs)
+
+    def _join_blocks(self, blocks: Iterable[tuple[str, bool]]) -> str:
+        """Join `(text, is_list_item)` blocks: a blank line between blocks, one `\n` between two
+        list items, nothing for a blank block. The running cap counts exactly what is emitted,
+        markup and separators included (AC-9), and stops pulling blocks once past it."""
+        parts: list[str] = []
+        character_count = 0
+        previous_is_list = False
+        for text, is_list in blocks:
+            if not text.strip():
+                continue
+            separator = ("\n" if is_list and previous_is_list else "\n\n") if parts else ""
+            character_count += len(separator) + len(text)
+            if character_count > self._max_characters:
+                self._refuse_text_too_long()
+            parts += (separator, text)
+            previous_is_list = is_list
+        return "".join(parts)
 
     def _decode_txt(self, data: bytes) -> str:
         text = self._decode_txt_bytes(data)
@@ -332,6 +364,55 @@ class PypdfDocxTextExtractor:
         carries no count: the reason is the contract.
         """
         raise CvTextTooLong()
+
+
+# -- DOCX → Markdown (ADR-0044 §2), pure functions over python-docx objects ---------------------
+
+_HEADING_STYLE = re.compile(r"Heading ([1-9][0-9]*)")
+
+
+def _markdown_block(paragraph: Paragraph) -> tuple[str, bool]:
+    """One paragraph as `(markdown, is_list_item)`; `("", False)` when it has no visible text, so
+    an empty heading or bold run never becomes a lone `#` or `****`. Nothing is escaped (§4)."""
+    body = _bold_markdown(paragraph)
+    if not body.strip():
+        return "", False
+    style = paragraph.style
+    name = (style.name if style is not None else None) or ""
+    if name == "Title":
+        return f"# {body}", False
+    if heading := _HEADING_STYLE.fullmatch(name):
+        return f"{'#' * min(int(heading[1]), 6)} {body}", False
+    if name.startswith(("List Bullet", "List Number")) or name == "List Paragraph":
+        return f"- {body}", True
+    return body, False
+
+
+def _bold_markdown(paragraph: Paragraph) -> str:
+    """The paragraph's text with each stretch of `bold is True` runs wrapped in `**…**`, the
+    markers hugging the stripped text. Only an explicit `True`: inherited bold reads `None` and is
+    not resolved (a stated limit, ADR-0044 §2)."""
+    pieces: list[str] = []
+    for bold, group in groupby(_runs(paragraph), key=lambda run: run.bold is True):
+        text = "".join(run.text for run in group)
+        core = text.strip()
+        if bold and core:
+            leading = text[: len(text) - len(text.lstrip())]
+            trailing = text[len(text.rstrip()) :]
+            pieces.append(f"{leading}**{core}**{trailing}")
+        else:
+            pieces.append(text)
+    return "".join(pieces)
+
+
+def _runs(paragraph: Paragraph) -> Iterator[Run]:
+    """Every run whose text `Paragraph.text` shows, hyperlinks' included — `paragraph.runs` alone
+    skips the runs inside a `w:hyperlink`, which would drop a CV's linked e-mail or profile URL."""
+    for item in paragraph.iter_inner_content():
+        if isinstance(item, Hyperlink):
+            yield from item.runs
+        else:
+            yield item
 
 
 if TYPE_CHECKING:
