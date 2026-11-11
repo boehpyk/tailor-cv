@@ -201,3 +201,16 @@ change what "extraction failed" means operationally: `extractor_error` is now re
 the 10 s timeout and an unrecognised library failure — so a rise in that reason is no longer
 automatically a latency signal. The `error_type` field on `cv_extraction.unexpected_error` is what
 separates them.
+
+## Amendment: 2026-11-10, from the plan of slice `tailoring-preserve-cv-formatting`
+
+The context's *"turns it into plain text"* now means the text
+[ADR-0044](./0044-a-base-cvs-text-keeps-its-lines-and-a-docxs-carries-its-headings-bold-and-bullets-as-markdown-read-only-by-a-model.md)
+describes: a CV's text **with its lines**, and for a DOCX its headings, bold and bullets as Markdown.
+Until then, `ExtractedText` collapsed every newline, so "plain text" meant one line.
+
+Nothing here changes. Extraction still runs inline in `asyncio.to_thread` under the 10 s `wait_for`,
+the `except Exception` floor and its two privacy rules stand, and the DOCX formatting pass sits **above**
+that floor with its own fallback to the plain pass (ADR-0044 §3). The added work is a walk over runs
+python-docx has already parsed. The 3 s p95 is re-timed at that slice's `/verify` for `sample.docx` and
+the new formatted fixture, one timing each, recorded here or in HISTORY.md.
