@@ -1,8 +1,9 @@
 import { EditorContent, useEditor } from '@tiptap/react';
-import { render, screen } from '@testing-library/react';
+import { render, renderHook, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { documentExtensions } from '../schema';
+import { useDocumentEditor } from '../hooks/useDocumentEditor';
 import { parseMarkdown, serializeMarkdown } from './bridge';
 import {
   javascriptLinkFixtureMarkdown,
@@ -11,6 +12,7 @@ import {
   normalizationFixtureMarkdown,
   rawHtmlFixtureMarkdown,
   selfDescribingLinkFixtureMarkdown,
+  softBreakFixtureMarkdown,
 } from './fixtures';
 
 import type { Node } from '@tiptap/pm/model';
@@ -166,4 +168,57 @@ describe('MAJOR 1 — a [url](url) link survives the Markdown bridge as a mark, 
       expect(afterHrefs).toEqual(beforeHrefs);
     },
   );
+});
+
+/**
+ * T11 RED (slice tailoring-preserve-cv-formatting, AC-14, AC-16, AC-17) — a CommonMark soft break
+ * (a single newline) is a line break in the editor, not a space. Expected values come from the
+ * spec: each source line is its own line, and a `hardBreak` is what TipTap calls a line break.
+ */
+describe('AC-14/17 — a single newline is a line break, and it round-trips', () => {
+  function hardBreakCount(doc: Node): number {
+    let count = 0;
+    doc.descendants((node) => {
+      if (node.type.name === 'hardBreak') count += 1;
+    });
+    return count;
+  }
+
+  it('parses "line one\nline two" into a paragraph holding a hardBreak node', () => {
+    const doc = parseMarkdown('line one\nline two');
+
+    expect(hardBreakCount(doc)).toBe(1);
+    expect(doc.textContent).toBe('line oneline two');
+  });
+
+  it('keeps every line of the soft-break fixture on its own line (5 breaks)', () => {
+    // header 2 + role 2 + hard-wrapped paragraph 1 = 5; list items are separate nodes, not breaks.
+    expect(hardBreakCount(parseMarkdown(softBreakFixtureMarkdown))).toBe(5);
+  });
+
+  it('is stable over two round trips of the soft-break fixture', () => {
+    const first = serializeMarkdown(parseMarkdown(softBreakFixtureMarkdown));
+    const second = serializeMarkdown(parseMarkdown(first));
+    const third = serializeMarkdown(parseMarkdown(second));
+
+    expect(second).toBe(first);
+    expect(third).toBe(second);
+  });
+
+  it('writes the lines back as CommonMark hard breaks (backslash + newline), never joined by a space', () => {
+    const serialized = serializeMarkdown(parseMarkdown(softBreakFixtureMarkdown));
+
+    expect(serialized).toContain('Senior Backend Engineer\\\njordan@example.com | London');
+    expect(serialized).not.toContain('Senior Backend Engineer jordan@example.com');
+  });
+
+  it('is not dirty right after seeding an editor from the soft-break fixture (AC-16: opening is not saving)', () => {
+    const { result } = renderHook(() =>
+      useDocumentEditor(softBreakFixtureMarkdown, { editable: true }),
+    );
+
+    expect(result.current.isDirty()).toBe(false);
+    // And the seeded document really holds the lines, so "not dirty" is not vacuous.
+    expect(result.current.serialize()).toContain('Senior Backend Engineer\\\njordan@example.com');
+  });
 });
