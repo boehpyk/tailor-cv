@@ -53,6 +53,7 @@ import io
 import json
 import logging
 import random
+import re
 import zipfile
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -314,11 +315,14 @@ async def test_uploading_a_txt_with_real_text_succeeds_and_reports_the_exact_nor
     per-line reassembly heuristic the way PDF/DOCX extraction has) — so this is the one format
     where AC-1's "character_count equals the length of the extracted text" is checkable from an
     independently-computed expectation rather than by re-running the extractor, matching
-    `ExtractedText.__post_init__`'s documented normalization (whitespace collapsed to single
-    spaces, ends stripped) rather than the code's behaviour observed by running it.
+    `ExtractedText.__post_init__`'s documented normalization (ADR-0044: lines kept, whitespace
+    collapsed within a line, ends stripped) rather than the code's behaviour observed by running it.
     """
     raw = _read_fixture("sample.txt")
-    expected_character_count = len(" ".join(raw.decode("utf-8").split()))
+    # ADR-0044: lines are kept. Each line is collapsed and stripped, runs of blank lines become one
+    # blank line, and the ends are stripped. Worked here by hand, not by calling the value object.
+    collapsed = [" ".join(line.split()) for line in raw.decode("utf-8").splitlines()]
+    expected_character_count = len(re.sub(r"\n{3,}", "\n\n", "\n".join(collapsed)).strip("\n"))
 
     response = await client.post("/api/base-cvs", files=_file_part("sample.txt", raw, "text/plain"))
 
