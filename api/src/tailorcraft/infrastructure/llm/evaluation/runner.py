@@ -23,6 +23,9 @@ from tailorcraft.domain.tailoring.value_objects import TailoredDraft
 from tailorcraft.infrastructure.llm.evaluation.checks import (
     experience_section,
     foreign_organisations,
+    formatting_dropped,
+    is_flat,
+    layout_counts,
     mentions,
     missing_entries,
     unfamiliar_phrases,
@@ -72,6 +75,7 @@ _CHECK_CV_ENTRIES = "tailored CV keeps every employer and education entry"
 _CHECK_LETTER_EMPLOYERS = "cover letter names no other candidate's employer"
 _CHECK_CV_NAME = "tailored CV names the candidate as the base CV does"
 _CHECK_LETTER_NAME = "cover letter names the candidate as the base CV does"
+_CHECK_LAYOUT = "tailored CV keeps its layout (not flat, headings or bold kept)"
 _CHECK_THINKING = "thinking off (thoughts_token_count zero or absent)"
 
 
@@ -163,6 +167,7 @@ async def evaluate_pair(
         _letter_names_no_other_candidates_employer(pair, draft, corpus_organisations),
         _cv_names_candidate(pair, draft),
         _letter_names_candidate(pair, draft),
+        _cv_keeps_layout(pair, draft),
         _thinking_off(calls),
     )
     phrases = (
@@ -433,6 +438,26 @@ def _names_candidate(check: str, document_label: str, document: str, name: str) 
         f"{document_label} never names {name} as a whole phrase (any case) -- misspelled, "
         "shortened or missing; read its header and sign-off",
     )
+
+
+def _cv_keeps_layout(pair: CorpusPair, draft: TailoredDraft | None) -> CheckResult:
+    """AC-19: the tailored CV's layout counts and its two flags, against the base CV as the model saw
+    it. Counts only, never a line of either document. AC-21's stricter bar for the formatted pair (a
+    heading AND a bold span kept) is read off these counts by a person, not gated here."""
+    if draft is None:
+        return CheckResult(_CHECK_LAYOUT, CheckStatus.SKIP, "no documents")
+    base = layout_counts(pair.cv.text.value)
+    cv = layout_counts(draft.documents.cv.value)
+    flat = is_flat(cv)
+    dropped = formatting_dropped(base, cv)
+    detail = (
+        f"lines {cv.lines}, blocks {cv.blocks}, headings {cv.headings}, bold {cv.bold_spans}, "
+        f"soft breaks {cv.soft_breaks}, longest line {cv.longest_line:,} of {cv.characters:,} "
+        f"chars (base: headings {base.headings}, bold {base.bold_spans}); "
+        f"flat: {'YES' if flat else 'no'}, formatting dropped: {'YES' if dropped else 'no'}"
+    )
+    status = CheckStatus.FAIL if flat or dropped else CheckStatus.PASS
+    return CheckResult(_CHECK_LAYOUT, status, detail)
 
 
 def _thinking_off(calls: Sequence[SdkCall]) -> CheckResult:
