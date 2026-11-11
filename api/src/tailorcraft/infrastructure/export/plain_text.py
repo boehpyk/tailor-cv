@@ -187,10 +187,9 @@ def _render_inline(children: Sequence[Token]) -> str:
         match token.type:
             case "text":
                 parts.append(strip_refused_link_markup(token.content))
-            case "softbreak" | "hardbreak":
-                # A hard break is a line break; so is a soft one here. Plain text has no way to say
-                # "the author wrapped this line but meant one paragraph", and keeping the author's
-                # own line structure is the friendlier answer for something pasted into a form.
+            case "hardbreak":
+                # A soft break arrives as a `hardbreak` too (ADR-0017's 2026-11-10 amendment), so
+                # the author's own line structure survives, as it always did here.
                 parts.append("\n")
             case "link_open":
                 link_urls.append(_printable_link_url(token))

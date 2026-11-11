@@ -108,9 +108,12 @@ ALLOWED_LINK_SCHEMES: Final[frozenset[str]] = frozenset({"http", "https", "mailt
 # The closed set of token types the three walkers are allowed to see. Everything else becomes text.
 #
 # It is written as the set of types the enabled rules can actually emit — nine block types, the
-# `inline` container, and the seven inline types — rather than as a list of things to exclude. That
+# `inline` container, and the six inline types — rather than as a list of things to exclude. That
 # direction is the point: a rule enabled tomorrow adds a type that is *not* on this list, so it
 # arrives at the walkers as harmless text instead of as an unhandled `match` arm.
+#
+# `softbreak` is absent on purpose (ADR-0017's 2026-11-10 amendment): `normalize_to_grammar` turns
+# every one into a `hardbreak`, so no walker can be handed one.
 GRAMMAR_TOKEN_TYPES: Final[frozenset[str]] = frozenset(
     {
         "paragraph_open",
@@ -125,7 +128,6 @@ GRAMMAR_TOKEN_TYPES: Final[frozenset[str]] = frozenset(
         "list_item_close",
         "inline",
         "text",
-        "softbreak",
         "hardbreak",
         "strong_open",
         "strong_close",
@@ -180,12 +182,14 @@ def parse_document(markdown: str) -> Sequence[Token]:
 def normalize_to_grammar(tokens: Sequence[Token]) -> Sequence[Token]:
     """Clamp a parsed stream into the closed grammar the three walkers are allowed to assume.
 
-    Obligation 2 of ADR-0017 §2: `h4`+ becomes `h3`; a token type outside the grammar becomes a
+    Obligation 2 of ADR-0017 §2: `h4`+ becomes `h3`; a `softbreak` becomes a `hardbreak` (the
+    2026-11-10 amendment: a single newline in a CV is a line break in every export, the rule in the
+    one function all three walkers route through); a token type outside the grammar becomes a
     `text` token carrying its content; list nesting is bounded. A rendering bound, not a security
     one — the security happened at the parse.
 
     **This one function is what protects all three walkers.** `render_plain_text`, `render_docx` and
-    `render_html` each handle the twenty types of `GRAMMAR_TOKEN_TYPES` and nothing else, which is
+    `render_html` each handle the nineteen types of `GRAMMAR_TOKEN_TYPES` and nothing else, which is
     only safe because nothing else can reach them — so a hostile token cannot arrive at
     `python-docx` any more than it can arrive at the HTML emitter.
 
@@ -214,6 +218,8 @@ def normalize_to_grammar(tokens: Sequence[Token]) -> Sequence[Token]:
             normalized.append(token)
         elif token.type in ("heading_open", "heading_close"):
             normalized.append(_clamped_heading(token))
+        elif token.type == "softbreak":
+            normalized.append(token.copy(type="hardbreak", tag="br"))
         elif token.type == "inline":
             children = list(normalize_to_grammar(token.children or []))
             normalized.append(token.copy(children=children))
