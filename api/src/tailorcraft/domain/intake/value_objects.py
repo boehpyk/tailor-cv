@@ -12,10 +12,14 @@ business rules that have nothing to do with the HTTP boundary.
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
+
+# Two or more blank lines in a row, for `ExtractedText` (ADR-0044); compiled once, not per load.
+_BLANK_LINE_RUN = re.compile(r"\n{3,}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,14 +80,22 @@ class OriginalFilename:
 
 @dataclass(frozen=True, slots=True)
 class ExtractedText:
-    """The text `CvTextExtractorPort` pulled out of an uploaded file.
+    """The text `CvTextExtractorPort` pulled out of an uploaded file, **with its lines** (ADR-0044).
 
-    Non-blank and at least 200 non-whitespace characters after whitespace normalization (OQ-9: the
-    floor is provisional, chosen rather than measured — verify it against the fixture corpus and
-    change it once, on purpose, rather than letting a test quietly ratify whatever the corpus
-    produces). Raises `EmptyExtraction` or `ExtractedTextTooShort`. The aggregate can never hold an
-    invalid extraction because the type that carries it cannot exist in an invalid state — invariant
-    I-5 is enforced here, not in `BaseCv`.
+    Normalized line by line: every boundary `str.splitlines()` knows becomes `\\n`; inside a line,
+    each run of whitespace becomes one space and the line is stripped; a run of blank lines becomes
+    one blank line; leading and trailing blank lines are dropped. The newline is kept because it is
+    structure, not noise: a CV's sections, bullets and dates sit on their own lines, and a DOCX now
+    arrives as Markdown (`#`, `**`, `- `), where a line is the unit that markup lives on. Markup itself
+    is never touched — only whitespace. Idempotent, and a value stored as one line by the flattening
+    version before ADR-0044 loads unchanged.
+
+    Non-blank and at least 200 non-whitespace characters after normalization (OQ-9: the floor is
+    provisional, chosen rather than measured — verify it against the fixture corpus and change it
+    once, on purpose, rather than letting a test quietly ratify whatever the corpus produces). Raises
+    `EmptyExtraction` or `ExtractedTextTooShort`. The aggregate can never hold an invalid extraction
+    because the type that carries it cannot exist in an invalid state — invariant I-5 is enforced
+    here, not in `BaseCv`.
     """
 
     value: str
@@ -94,16 +106,20 @@ class ExtractedText:
         # module-level import in the other direction would be a circular import at collection time.
         from tailorcraft.domain.intake.errors import EmptyExtraction, ExtractedTextTooShort
 
-        # Whitespace normalization: `str.split()` with no argument already treats any run of
-        # whitespace (spaces, tabs, newlines) as one separator and drops leading/trailing
-        # whitespace, so re-joining with a single space collapses everything in one pass.
-        normalized = " ".join(self.value.split())
-        # Exact, not an approximation: no-argument `str.split()` splits on precisely the characters
-        # `str.isspace()` accepts, so after the join the only whitespace left in `normalized` is the
-        # single ASCII spaces we inserted. Counting them is a C-level scan; the generator it replaces
-        # (`sum(1 for c in normalized if not c.isspace())`) cost ~0.4 s per 10 M characters, on the
-        # event loop, every time a `BaseCv` is loaded (T30b-B).
-        non_whitespace_count = len(normalized) - normalized.count(" ")
+        # This runs on every `BaseCv` load (2.2's T30b-B: a generator over characters cost ~0.4 s
+        # per 10 M characters, on the event loop), so AC-4 holds it to 25 ms for 250,000
+        # characters. The Python loop below is per *line*; every per-character step is C-level.
+        # `" ".join(line.split())` collapses and strips a line in one pass. It was measured against
+        # `re.sub(r"[^\S\n]+", " ", …)` over the whole string, which is ~3x slower: a negated
+        # Unicode class costs more per character than `str.split()` does.
+        lines = [" ".join(line.split()) for line in self.value.splitlines()]
+        # A blank line is now `""`, so a run of them is a run of `\n`; `strip("\n")` drops the
+        # leading and trailing blank lines, since no line has whitespace left at either end.
+        normalized = _BLANK_LINE_RUN.sub("\n\n", "\n".join(lines)).strip("\n")
+        # Exact, not an approximation: the only whitespace left is the single spaces `join` wrote and
+        # the newlines between lines (`str.split()` and `str.isspace()` agree on what whitespace is,
+        # and every boundary `splitlines()` knows was consumed by it).
+        non_whitespace_count = len(normalized) - normalized.count(" ") - normalized.count("\n")
 
         if not normalized:
             raise EmptyExtraction("extracted text must not be blank")
@@ -128,9 +144,9 @@ class ExtractedText:
         counts diverge on any text that contains whitespace, so one of them has to give way, and it
         is written here rather than left for whoever next reads this to guess.
 
-        `character_count` reports **the length of the normalized text** (whitespace collapsed to
-        single spaces, ends stripped) — AC-1's reading, not the non-whitespace-only count used for
-        the floor. Rationale: this is the number shown to the user ("4,821 characters extracted"),
+        `character_count` reports **the length of the normalized text** (whitespace collapsed
+        within each line, ends stripped, newlines included — ADR-0044) — AC-1's reading, not the
+        non-whitespace-only count used for the floor. Rationale: this is the number shown to the user ("4,821 characters extracted"),
         and a person counting characters in their own CV would count the spaces between words too.
         Reporting only non-whitespace characters would make the number on screen silently disagree
         with what they can see in the document itself, which is a worse failure than the two counts

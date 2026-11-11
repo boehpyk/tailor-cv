@@ -149,16 +149,17 @@ class TailoredCv:
     the one place this codebase has decided not to guess.
 
     **Why this type does NOT collapse whitespace, when `ExtractedText` and `JobPostingText` both do.**
-    Both of those call `" ".join(value.split())`, and a reader who spots that this one does not is
-    entitled to the reason rather than a "fix" (CLAUDE.md: *where a new type deliberately contradicts
-    an existing one, comment why at the point of contradiction*). The two families hold different
-    kinds of text. `ExtractedText` and `JobPostingText` hold text whose **layout is noise** — a PDF's
-    column breaks, a scraped page's indentation, the ragged spacing of a `<div>` soup — so flattening
-    it loses nothing and makes two copies of the same posting compare equal. This type holds
-    **Markdown, where the newline is semantic**: a blank line is a paragraph break and a leading `- `
-    is a bullet. Collapsing whitespace here would turn a bulleted, sectioned CV into one unreadable
-    paragraph — and it would do so to the document we just paid Google to produce. Same class of
-    operation, opposite correct answer, because the inputs mean different things.
+    A reader who spots the difference is entitled to the reason rather than a "fix" (CLAUDE.md:
+    *where a new type deliberately contradicts an existing one, comment why at the point of
+    contradiction*). `JobPostingText` calls `" ".join(value.split())`: a posting's **layout is
+    noise** — a scraped page's indentation, the ragged spacing of a `<div>` soup — so flattening it
+    loses nothing and makes two copies of the same posting compare equal. `ExtractedText` keeps its
+    lines since ADR-0044 but still **collapses within a line**: a PDF's or DOCX's runs of spaces and
+    tabs are extraction noise, while its line breaks are the CV's structure. This type holds
+    **Markdown the model wrote, where every whitespace character may be semantic**: a blank line is a
+    paragraph break, a leading `- ` is a bullet and indentation nests a list. Collapsing whitespace
+    here, even within a line, would rewrite the document we just paid Google to produce. Same class
+    of operation, different correct answer, because the inputs mean different things.
 
     **Neither this type nor `CoverLetter` strips or rejects HTML, and that absence is deliberate.**
     A value object that rejected `<` would reject "C++ → C# migration" and "throughput > 10k/s",
@@ -263,7 +264,8 @@ class CoverLetter:
     - any control character other than `\\n` and `\\t`, or a NUL → `InvalidTailoredDocument`.
 
     Normalizes `\\r\\n` to `\\n` and strips trailing whitespace per line, and — like `TailoredCv` and
-    unlike `ExtractedText`/`JobPostingText` — **does not collapse whitespace**. The full reasoning is
+    unlike `ExtractedText`/`JobPostingText` — **does not collapse whitespace** (not even within a
+    line, which is all `ExtractedText` still collapses since ADR-0044). The full reasoning is
     in `TailoredCv`'s docstring and it applies verbatim: this is Markdown, the newline is semantic,
     and flattening it destroys the paragraph structure of the letter. It does not strip or reject
     HTML either, for the reasons recorded there.
