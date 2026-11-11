@@ -1074,6 +1074,81 @@ in [FORboehpyk.md](./FORboehpyk.md).
 >   worker refund), F-29 (stale bundle). The 15 s end-to-end budget was not re-measured; the slice's
 >   addition (+10 ms p95) was.
 >
+> - **`tailoring-preserve-cv-formatting`** (owner-reported after 5.2's production manual test, outside
+>   the phase numbering; approved 2026-11-10 as written, every OQ on its recommendation; implemented
+>   2026-11-10 to 2026-11-11, T1–T17 on `feature/tailoring-preserve-cv-formatting` from `main` at
+>   `5b2fb54`; **implemented, awaiting `/verify` (T18); not released**; no migration, no route, no API
+>   field) — two owner reports: **D3**, *"sometimes the tailored CV doesn't have line breaks"*, and
+>   *"keep headers and bold fonts as in the original"*. **The cause was older than the report:**
+>   `ExtractedText` ran `" ".join(value.split())` since 1.1, so no CV ever reached the model with its
+>   lines, and the eval could not see it because `load_corpus` built the same value object. **And a
+>   single `\n` in the model's Markdown is a soft break**, which the editor, the PDF and the DOCX showed
+>   as a space, so a header written one fact per line read as one paragraph. **ADR-0044** (`b194e24`):
+>   `ExtractedText` keeps lines (every `splitlines()` boundary → `\n`, whitespace collapsed inside a
+>   line, blank-line runs → one, ends trimmed; idempotent, so stored one-line rows load unchanged); a
+>   DOCX is extracted as Markdown (`Title`/`Heading n` → `#`…, list styles → `- `, merged bold runs →
+>   `**…**` hugging the text), with a whole-document plain fallback and one
+>   `cv_extraction.docx_formatting_fallback` line (`content_type`, `size_bytes`, `error_type`); no
+>   escaping and no format column, because nothing renders a base CV. **Amendments** (`f5f2e92`, with
+>   `b194e24`): ADR-0015 §2 and ADR-0017 §2 obligation 2 (a soft break is a line break, mapped at
+>   `normalize_to_grammar` and the editor bridge; markdown-it's `breaks: true` is a renderer option and
+>   would do nothing), ADR-0009 ("plain text" → ADR-0044), ADR-0004 (a flat tailored CV is refused).
+>   **Prompt v5** (`35c0e58`): rule 7 keeps the CV's headings, bold and lines, one header fact per
+>   line, blank lines between blocks.
+>   **T1 (the owner, on the box, read-only, counts only, 2026-11-10; both prompt v4, both DOCX base CVs
+>   with 0 newlines):** run `01a1c765`: 4,183 characters, 39 newlines, 7 blank lines, 0 headings, 20
+>   bullets, 4 bold, **5 soft breaks** (first at 12, first blank line at 120), 0 mid-sentence wraps,
+>   longest line 584, letter 1 soft / 0 mid, not edited. Run `01a1c740`: 3,708 characters, **0
+>   newlines**, longest line **3,708**: flat. **Gate:** both rows applied, the "stop" row (mid-sentence
+>   wraps) did not. The soft-break row is the plan as written; the flat row reopened OQ-9, and the
+>   owner chose **B**: refuse a flat answer (AC-26, F-8b). **Dev evidence** (the spec's item 6, one v4
+>   run from a DOCX): 29 newlines, 3 soft breaks (the first at 23, the first blank line at 106), 0
+>   `#` headings, 11 bold spans, 0 newlines in the base CV.
+>   **Commits:** ADR-0044 `b194e24`; amendments `f5f2e92`; `ExtractedText` RED `7405d12` (19 failed on
+>   assertions) → GREEN `281c4c3`; DOCX → Markdown `31ad7f4`, its tests `9a7178f`; prompt v5
+>   `35c0e58`; `document_flat` RED `7943093` (`DID NOT RAISE`) → GREEN `2f885ad` (in
+>   `parse_tailoring_response`, after the value objects, **not** in `TailoredCv`, so the stored flat run
+>   `01a1c740` still loads; `LlmOutputInvalid` is already retried, then failed and refunded); export
+>   RED `466e65d` (6 failed) → GREEN `1bf7617` (one `softbreak` → `hardbreak` branch, the walkers' dead
+>   arms removed; no golden digest moved, the layout previews did not move); editor RED `5ab2163` (5
+>   failed) → GREEN `20f0692` (`softbreak: { node: 'hardBreak' }`); eval checks `b0e19f9`; corpus
+>   `5dabb07`. **Four test corrections, each in its own commit before its GREEN:** `4004ac5`: the
+>   fit-score runner's `FakeGenerate` found each CV in the prompt by `ExtractedText.value`, which
+>   matched only while it was flat (the prompt carries `CvForScoring`, which still collapses), so T5
+>   would have turned 10 runner tests red; it now builds the scoring form, and the no-leak check
+>   checks it too or a multi-line prefix passes vacuously. `c5a503b`: the Gemini adapter tests' stub CV
+>   was 450 characters with no newline, which T8b refuses as `document_flat` (three tests red for a
+>   fixture reason); it gains one newline, same length. `d37856c`: two T9 assertions pinned the wrong
+>   shape (HTML's hardbreak has emitted `<br />\n` since 1.5; the DOCX fixture's role is one paragraph
+>   of three lines), still red on the pre-T10 code. `b6c98ad`: T11 counted 5 soft breaks, the fixture
+>   has 4 (`# Jordan Rivera` is an ATX heading, so its newline ends the block), as the backend twin says.
+>   **T5's regex swap:** the plan's `re.sub(r"[^\S\n]+", " ", …)` took **~33 ms** for AC-4's workload
+>   (250,000 characters, 25,000 lines) against 25 ms; a per-line `" ".join(line.split())` takes **~5 ms**
+>   on the host. AC-4 is measured in the api container, with its mutation, at `/verify`.
+>   **T6's python-docx findings:** `Paragraph.runs` skips runs inside a `w:hyperlink` (a linked e-mail
+>   would vanish), so runs come from `iter_inner_content()`; a `document.xml` with no `<w:body>` raises
+>   `AttributeError` at `.paragraphs`, so that read stays outside the fallback and reaches the floor's
+>   `extractor_error`; `Heading 0` matches no heading (the pattern starts at 1) and is plain text.
+>   **T15 (`make eval`, owner-approved, 2026-11-11, prompt v5, 12 SDK calls): AC-21 met.** 10 of 11
+>   succeeded, **0 flat**; pair 11 (the Markdown CV) kept **7/7 headings and 12/12 bold**; name
+>   fidelity, employers kept and foreign-organisation checks PASS on all 10; pair 09 `llm_timed_out`
+>   (2 attempts, 25 s), as on 2026-11-08 (its posting is the longest, 28,733 input characters); p50
+>   **5,734 ms**, p95 **6,719 ms** over the 10. **T16 (dev stack, Chromium, 1 Gemini call, a synthetic
+>   DOCX):** the stored base CV had 33 newlines, 7 headings, 4 bold, 5 bullets; run `01a1cc53` (v5)
+>   came back with 7 headings, 4 bold, 0 soft breaks, and the editor showed h1 ×5 / h2 ×2 at the
+>   original levels, 4 strong, 5 list items, and the name, title and contact on separate lines;
+>   `edited_cv` stayed NULL after opening (AC-16). The renderers on that run: HTML h1 5 / h2 2 /
+>   strong 4, DOCX 7 headings / 4 bold runs. A pre-slice v4 run (`01a11d0f`, 3 soft breaks) now
+>   renders 3 `<br />` in HTML and 3 `w:br` in DOCX (were spaces). PDF export through the worker:
+>   ready, 11,622 bytes, 182 ms render.
+>   **Carried:** (1) pair 09's tailoring latency (pre-existing, two attempts time out); (2) AC-17's
+>   "type, then save, stores CommonMark hard breaks" has no test that types and saves (the bridge
+>   round trip is tested), for `/verify`; (3) the fit-score measurement grows to **64 scores, ≤ 128
+>   calls** (pair 11's cross pair, `5dabb07`); (4) the admin CV page was not checked by hand (the test
+>   account is not an admin); (5) noted only, pre-existing: the export UI's poll interval shows
+>   *"Waiting for a worker…"* for about 15 s on a PDF that rendered in 182 ms. AC-25 (the owner reruns
+>   T1's query after release, flat runs now counted as `failed` with `prompt_version = '5'`) is T19.
+>
 > **1.6's `/verify` took three rounds and found four gaps a green suite of 1423 was happy with — and all
 > four were the same *kind* of gap: something the spec promised that no test asserted.**
 > - **The beat entry and its task had no test at all.** AC-25…AC-29 were entirely unasserted,

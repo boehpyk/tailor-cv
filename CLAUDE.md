@@ -20,7 +20,9 @@ Vite · Tailwind v4 · TanStack Query · TipTap · Docker Compose · Traefik · 
 
 ## Status
 
-Twenty-four slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, 5.2, `__Host-tc_guest`,
+**Slice `tailoring-preserve-cv-formatting` is implemented (2026-11-11) on
+`feature/tailoring-preserve-cv-formatting`, awaiting `/verify`, not yet released** (ADR-0044, no
+migration; HISTORY.md). Twenty-four slices have shipped: 1.1–1.6, 2.1–2.5, 3.1–3.3, 4.1–4.4, 5.1, 5.2, `__Host-tc_guest`,
 `web-design-refresh`, `domain-fixcv-app` and `brand-fixcv`. The latest released is
 **`credits-and-demand-test`** (slice 5.2: one credit per account, refund on failure, the pack demand
 test; ADR-0042/0043, migration `9d2cb5b8ec5f`, PR #47, `b45db12`), released 2026-11-09 (run 42698144865).
@@ -294,7 +296,7 @@ make layout.previews
 # LLM evaluation — NOT a test. Calls the real API, costs money, is not in `make check`.
 make eval
 make eval.score            # fit-score measurement (5.1): prints the plan and its upper bound, calls nothing
-make eval.score confirm=1  # spends it (58 scores, ≤ 116 calls); the owner approves first
+make eval.score confirm=1  # spends it (64 scores, ≤ 128 calls); the owner approves first
 # Fit-score spend: one scoring_daily_spend row per UTC day, reserved before the call. The off switch is
 # FIT_SCORE_DAILY_SPEND_CAP_USD=0 in .env, applied with `up -d api` (never `restart`). docs/infrastructure.md.
 
@@ -317,6 +319,8 @@ The evidence, commit ids and measurements behind each line are in **[LESSONS.md]
 - **Validation:** untrusted input is validated at the boundary. Three inputs are critical: the
   uploaded file (sniff bytes, cap size, generated name), the job URL (SSRF), and the LLM's output
   (sanitize before HTML/PDF).
+- **`ExtractedText` keeps a CV's lines, and a DOCX's text is Markdown** (headings, bold, bullets; ADR-0044), read only by a model, so nothing escapes it.
+- **A flat tailored CV is refused as `document_flat` in the parser**, never in `TailoredCv`: stored flat runs must still load (ADR-0004, amended).
 
 **React**
 - Server state lives in TanStack Query, never copied into `useState`. `useEffect` only syncs with
@@ -554,6 +558,7 @@ Full stories in [LESSONS.md](./LESSONS.md) and [docs/infrastructure.md](./docs/i
   `url_fetcher` needs `_fail_on_errors`. `FatalURLFetchingError` is a `BaseException`.
   `li::marker { content }` crashes, so use `list-style-type: "…"`. Sanitize the fragment, then wrap.
 - markdown-it drops a link without an `href`, leaving literal text.
+- **A soft break is a line break** (ADR-0015 §2, ADR-0017), mapped at `normalize_to_grammar` and the editor bridge. `breaks: true` is a renderer option and would do nothing: we walk tokens.
 
 ## SDLC
 
