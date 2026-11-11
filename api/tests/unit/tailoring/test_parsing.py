@@ -50,8 +50,8 @@ _SENTINEL = "Zbigniew Kowalczyk (ref 778f1c92e4b1)"
 def _cv_text(filler: int = 500) -> str:
     """Valid `TailoredCv` text: well past the 400-character floor, nowhere near the 20,000 ceiling,
     carrying the sentinel so a leak from this field is catchable even when it is not the field under
-    test."""
-    return f"{_SENTINEL} " + "x" * filler
+    test. It has a line break, because a flat tailored CV is refused on receipt (AC-26)."""
+    return f"{_SENTINEL}\n" + "x" * filler
 
 
 def _letter_text(filler: int = 300) -> str:
@@ -267,3 +267,63 @@ def test_valid_response_returns_both_documents_intact() -> None:
     )
     assert result.cv.value == TailoredCv(cv_text).value
     assert result.cover_letter.value == CoverLetter(letter_text).value
+
+
+# --- AC-26 / F-8b: a flat tailored CV (no newline at all) is refused on receipt ----------------------
+#
+# Hard-coded label "document_flat", like every other label in this file. The cover letter is not
+# checked, and the value objects run first, so a too-short or invalid CV keeps its existing label.
+
+
+def _flat_cv_text() -> str:
+    """A CV well past the 400-character floor that is one line: valid for `TailoredCv`, flat for AC-26."""
+    return "Jordan Example Senior Engineer " + "Built and operated services. " * 20
+
+
+def _lined_cv_text() -> str:
+    return "Jordan Example\nSenior Engineer\n" + "Built and operated services. " * 20
+
+
+def test_a_long_valid_but_flat_tailored_cv_is_refused_as_document_flat() -> None:
+    raw = json.dumps({"tailored_cv": _flat_cv_text(), "cover_letter": _letter_text()})
+
+    with pytest.raises(LlmOutputInvalid) as exc_info:
+        parse_tailoring_response(raw)
+
+    assert exc_info.value.problem == "document_flat"
+
+
+def test_the_same_tailored_cv_with_one_newline_parses() -> None:
+    cv_text = _flat_cv_text().replace("Engineer ", "Engineer\n", 1)
+    letter_text = _letter_text()
+    raw = json.dumps({"tailored_cv": cv_text, "cover_letter": letter_text})
+
+    result = parse_tailoring_response(raw)
+
+    assert result == TailoredDocuments(
+        cv=TailoredCv(cv_text), cover_letter=CoverLetter(letter_text)
+    )
+
+
+def test_a_flat_tailored_cv_that_is_also_too_short_keeps_document_too_short() -> None:
+    raw = json.dumps(
+        {"tailored_cv": "Jordan Example Senior Engineer", "cover_letter": _letter_text()}
+    )
+
+    with pytest.raises(LlmOutputInvalid) as exc_info:
+        parse_tailoring_response(raw)
+
+    assert exc_info.value.problem == "document_too_short"
+
+
+def test_a_flat_cover_letter_with_a_lined_tailored_cv_parses() -> None:
+    cv_text = _lined_cv_text()
+    letter_text = "Dear hiring team, " + "I would like to apply for this role. " * 10
+    assert "\n" not in letter_text
+    raw = json.dumps({"tailored_cv": cv_text, "cover_letter": letter_text})
+
+    result = parse_tailoring_response(raw)
+
+    assert result == TailoredDocuments(
+        cv=TailoredCv(cv_text), cover_letter=CoverLetter(letter_text)
+    )
